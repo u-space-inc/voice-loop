@@ -1,6 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# ///
 """off / on（メモリを空ける）の試験。scripts/ctl.py の launchctl・docker・本体への問い合わせを作り物に差し替え、
 ホーム・設定・状態のフォルダも一時フォルダにして動かす（本物の常駐・コンテナ・launchd には触れない）。
 使い方: uv run spike/power_test.py"""

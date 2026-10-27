@@ -1,6 +1,3 @@
-# /// script
-# dependencies = ["websockets>=12"]
-# ///
 """ハブのモデル比較用。同じ発言を順に送り、返答が出るまでの時間と返答の長さを記録する（音は鳴らさない）。
 使い方: uv run spike/model_ab.py <ラベル> <結果を書く JSON> [先頭から何問だけ送るか]"""
 import asyncio, json, sys, time, urllib.request

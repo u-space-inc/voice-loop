@@ -1,0 +1,25 @@
+# 試験と試しの道具（spike/）の環境。uv run spike/xxx_test.py で、この作業木の .venv に入る（README「試験」）。
+# spike/ の先頭に「# /// script」を書かない。書くと uv が、ファイルの置き場ごとに別の環境を共有のキャッシュに作り、消さずに残す。
+# 本体（server.py）・hubctl・scripts/ はここを読まず、自分の先頭の依存で動く。試験は本体を読み込むので、本体の依存もここに入れる。
+[project]
+name = "voice-loop"
+version = "0"  # 使わない（パッケージを作らない）。版の正本は herdr-plugin.toml
+requires-python = ">=3.11"
+
+[tool.uv]
+package = false  # 入れるのは依存だけ（このフォルダをパッケージとして作らない）
+
+[dependency-groups]
+dev = [
+  # 本体と同じもの（server.py の先頭の依存。spike/env_test.py が、ここにそろっているかを確かめる）
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "anthropic>=1.0",
+  "openai>=1.40",
+  "pywebpush>=2.0",
+  # 試験と試しの道具
+  "httpx>=0.27",
+  "websockets>=12",
+  "pillow>=10",
+  "playwright==1.63.0",  # 手元に入っているブラウザ（chromium 1243・webkit 2359）に合わせる
+]

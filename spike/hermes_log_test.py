@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "anthropic>=1.0", "openai>=1.40", "httpx>=0.27"]
-# ///
 """Hermes との会話の記録（hermes-log.jsonl）の試験。
 画面を閉じた・止めた間の返事、画面が無い間の報告が記録に残り、履歴に出ること。Hermes とのやり取りが同時に1件だけなこと。
 Hermes の API・herdr・語り手・音声合成には触れない（差し替える）。使い方: uv run spike/hermes_log_test.py"""

@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "anthropic>=1.0", "openai>=1.40", "pywebpush>=2.0", "httpx>=0.27"]
-# ///
 """Hermes の手順の書き足し（承認待ち）を画面で採る・捨てる、と、Hermes の記憶を拾う役に渡す、の試験。
 Hermes の置き場は一時のフォルダに作り、コンテナの台本（hermes_skills.run_script / still_running）は差し替える。docker にも、常駐の 8790 にも触れない。
 本物のコンテナでの台本の確かめは spike/hermes_skills_container_test.py。

@@ -1,6 +1,3 @@
-# /// script
-# dependencies = ["pillow>=10"]
-# ///
 """voice-loop のアイコンを描いて、各サイズで static/icons/ に書き出す。
 図柄: 黒地に、緑の輪（ループ）と白い声の波形。自分の画像に替えるなら、正方形の PNG を引数に渡す。
 使い方: uv run spike/make_icon.py [元にする画像.png]"""

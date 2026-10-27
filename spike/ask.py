@@ -1,6 +1,3 @@
-# /// script
-# dependencies = ["websockets>=12"]
-# ///
 """文字で1往復して、経過時刻・返信・音声の数を出す（音は鳴らさない）。使い方: uv run spike/ask.py <pane> <質問>"""
 import asyncio, json, sys, time
 import websockets

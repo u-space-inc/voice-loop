@@ -1,6 +1,3 @@
-# /// script
-# dependencies = ["websockets>=12"]
-# ///
 """E2E: 合成音声を「マイク入力」として WebSocket に流し、往復の時刻と返答音声を記録する。"""
 import asyncio, json, sys, time, urllib.parse, urllib.request, subprocess, os
 import websockets
