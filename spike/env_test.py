@@ -1,4 +1,4 @@
-"""試験の環境の試験。spike/ の先頭に「# /// script」が無いこと（あると uv がファイルの置き場ごとに環境を作り、共有のキャッシュに残す）、
+"""試験の環境の試験。spike/ のファイルに「# /// script」のブロックが無いこと（先頭でなくても uv は読み、ファイルの置き場ごとに環境を作って共有のキャッシュに残す）、
 本体（server.py の先頭）の依存が pyproject.toml の dev にそろっていること、この試験自体が作業木の .venv で動いていること。
 使い方: uv run spike/env_test.py"""
 import re
@@ -21,8 +21,8 @@ def script_deps(path):
     return meta.get("dependencies", [])
 
 
-headed = [p.name for p in sorted((ROOT / "spike").glob("*.py")) if "# /// script" in p.read_text(encoding="utf-8").splitlines()[:5]]
-check("spike/ の先頭に「# /// script」が無い", not headed, headed)
+headed = [p.name for p in sorted((ROOT / "spike").glob("*.py")) if re.search(r"^# /// script$", p.read_text(encoding="utf-8"), re.M)]
+check("spike/ のファイルに「# /// script」のブロックが無い（何行目でも）", not headed, headed)
 
 dev = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["dependency-groups"]["dev"]
 missing = [d for d in script_deps(ROOT / "server.py") if d not in dev]
