@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "anthropic>=1.0", "openai>=1.40", "pywebpush>=2.0", "playwright==1.63.0"]  # 手元に入っているブラウザ（chromium 1243・webkit 2359）に合わせる
-# ///
 """PC の形（横幅 1100px 以上で 3 列）と、Hermes の記憶を足す・直す・消す画面の通し。本体の写しを 127.0.0.1:8791 に立て、本物のブラウザ
 （Chromium と WebKit）で開く。Hermes の記憶の置き場は一時のフォルダ、コンテナの台本は差し替える（docker・常駐の 8790 には触れない）。声の一覧は
 この試験の中の小さな偽物（127.0.0.1:8795）から取る。

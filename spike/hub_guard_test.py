@@ -1,6 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# ///
 """ハブの見張り（scripts/hub_guard.py）の判定の試験。通すべき形と、止めるべき形を並べて確かめる。
 使い方: uv run spike/hub_guard_test.py"""
 import sys

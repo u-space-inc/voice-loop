@@ -1,6 +1,3 @@
-# /// script
-# dependencies = ["anthropic", "openai"]
-# ///
 """語り手のモデル比較。server.py の narrate() と同じ呼び方で、同じ原稿を各モデルに渡し、
 最初の文が出るまでの時間・全体の時間・トークン数・決まりの守り具合を記録する。
 モデル名に "/" があれば Vercel AI Gateway 経由（設定フォルダの gateway/.env.local の VERCEL_OIDC_TOKEN。12時間で切れるので

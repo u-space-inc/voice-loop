@@ -1,6 +1,3 @@
-# /// script
-# dependencies = ["websockets>=12"]
-# ///
 """ハブに指示の振り分けを頼み、その場の返答と、あとから届く「頼んだ件の報告」を受け取る（音は鳴らさない）。
 使い方: uv run spike/report_test.py <ハブへの発言> [待つ報告の数=1]"""
 import asyncio, json, sys, time, urllib.request
