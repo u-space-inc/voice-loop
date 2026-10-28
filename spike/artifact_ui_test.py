@@ -76,7 +76,10 @@ TEXT = ("検証の結果です。\n\n- 差分の画像は `out/a.png` です\n- 
         "<div><style>@import url(\"https://example.invalid/import.css\"); @font-face { font-family: x; src: url(https://example.invalid/f.woff); } "
         ".md { font-family: x; }</style><span style=\"background:url(https://example.invalid/y.png)\">背景</span>"
         "<link rel=\"prefetch\" href=\"https://example.invalid/p\"><iframe src=\"https://example.invalid/i\"></iframe><embed src=\"https://example.invalid/e\">"
-        "<meta http-equiv=\"refresh\" content=\"0;url=https://example.invalid/m\"><script src=\"https://example.invalid/s.js\"></script></div>")
+        "<meta http-equiv=\"refresh\" content=\"0;url=https://example.invalid/m\"><script src=\"https://example.invalid/s.js\"></script></div>\n\n"
+        # 画面の部品と同じ id・class を書いて、本物の部品を取り違えさせる（送る宛先と文・サムネイルの列）。form で外へ送らせる
+        "<div class=\"media\"></div><input id=\"agent\" value=\"w9:p9\"><input id=\"typed\" value=\"攻め手の文\"><span id=\"vStage\"></span>"
+        "<form action=\"https://example.invalid/f\"><button>送る</button></form>")
 TEXT2 = "動画は out/missing.mp4、画像は out/a.png と out/b.webp です。"  # 無い動画は、有無の確かめ（HEAD）が遅れて返る
 TEXT3 = "動画は out/gone.mp4 だけです。"
 # 読み込みの途中で止めることを見る会話（段ごとに別の無い動画にして、ブラウザが前の結果を使わず、必ず新しく要求するようにする）
@@ -124,6 +127,8 @@ def run(page, who):
     done, failed = [], []  # 外のサイトへの要求の、終わり方（CSP で止まった要求も request には出るので、失敗の理由で見る）
     page.on("requestfinished", lambda r: done.append(r.url))
     page.on("requestfailed", lambda r: failed.append((r.url, r.failure)))
+    failed_reqs = []  # 失敗した要求そのもの（同じ URL の GET と HEAD を分けて見るため）
+    page.on("requestfailed", lambda r: failed_reqs.append(r))
     page.add_init_script("window.__csp = []; document.addEventListener('securitypolicyviolation', e => window.__csp.push(e.blockedURI));")
     open_page(page, 1400)
     page.select_option("#agent", "w1:p1")
@@ -135,6 +140,13 @@ def run(page, who):
     ext = lambda: [x for x in done if "example.invalid" in x] + [x for x, _ in failed if "example.invalid" in x]
     check(f"{who} 返事の style の要素と属性・link・iframe・embed・meta・script は落とし、外のサイトへは何も要求しない。ふだんの画面に CSP の違反は出ない",
           (page.locator("#log .msg.ai :is(style, [style], link, iframe, embed, meta, script)").count(), ext(), page.evaluate("window.__csp")), (0, [], []))
+    page.evaluate("(() => { window.__sent = []; const o = ws.send.bind(ws); ws.send = m => { window.__sent.push(m); if (typeof m !== 'string' || JSON.parse(m).type !== 'text') o(m); }; })()")
+    wait(lambda: not page.locator("#bar #send").is_disabled())
+    page.fill("#bar #typed", "本物の文")
+    page.press("#bar #typed", "Enter")
+    sent = page.evaluate("window.__sent.map(m => JSON.parse(m)).filter(m => m.type === 'text').map(m => [m.pane, m.text])")
+    check(f"{who} 返事に画面の部品と同じ id を書かれても、送る宛先と文は本物の欄から取る（返事の id・class・name と form は落とす）",
+          (sent, page.locator("#log .msg.ai :is([id], [name], form)").count(), page.locator("#log .msg.ai .media").count()), ([["w1:p1", "本物の文"]], 0, 1))
     # 画面の CSP そのもの（返事の HTML を落とす働きを抜けた場合の守り）: 外のサイトの画像・CSS・フォントは、ブラウザが止める
     page.evaluate("""(() => { const d = document.createElement('div');
       d.innerHTML = '<img src="https://example.invalid/z.png"><link rel="stylesheet" href="https://example.invalid/s.css">'
@@ -217,7 +229,8 @@ def run(page, who):
         wait(lambda: page.evaluate("0") == 0 and {"GET", "HEAD"} <= {q.method for q in mine()})  # 同期の Playwright は、呼んだときに route と通知を動かす
         return mine()
 
-    gone = lambda reqs: wait(lambda: page.evaluate("0") == 0 and len(reqs) >= 2 and all(any(q.url == x and (f or "").endswith("ERR_ABORTED") for x, f in failed) for q in reqs))
+    gone = lambda reqs: wait(lambda: page.evaluate("0") == 0 and len(reqs) >= 2
+                             and all(any(q is r for r in failed_reqs) and (q.failure or "").endswith("ERR_ABORTED") for q in reqs))  # 要求ごとに
     reqs = hold("w4:p1")
     page.select_option("#agent", "w1:p1")
     check(f"{who} 読み込みの途中で話し相手を替えると、前の会話の動画と HEAD の要求を、ブラウザが取りやめる", gone(reqs), True)

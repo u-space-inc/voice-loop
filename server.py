@@ -648,7 +648,7 @@ app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 # （乗せられたハブが、URL に情報を載せて外へ出す道を塞ぐ。返事の style は画面でも落とす）。読み込みの種類ごとに書く。
 # script は絞らない: 返事から script を動かさない守りは DOMPurify が受け持ち、画面の script は index.html の中にある
 INDEX_CSP = ("img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self'; "
-             "frame-src 'none'; object-src 'none'; worker-src 'self'; manifest-src 'self'; base-uri 'none'")
+             "frame-src 'none'; object-src 'none'; worker-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'")
 
 
 class PageCSP:

@@ -358,8 +358,10 @@ function markLeads(root) {
 // 返事の中のファイルの場所を拾い、PC の幅では下にサムネイルを並べる（押すと #viewer で大きく見る）。読むのは本体の /api/file で、
 // 本体が、そのセッションのフォルダの中の画像・動画だけを返す（ハブの会話では絶対パスだけ。返さないものは、並べたあとで消す）。
 // 拾う場所: Markdown の画像（その場では読み込まず文字にする。外のサイトの画像は出さない）・リンク・` ` で囲んだ場所・文の中の英数字の場所
-// 返事の HTML から、読み込みを起こすもの（動画・音声の要素）と、外へ通信できる CSS（style の要素と属性。@import・@font-face・url()）を落とす
-const PURIFY = { FORBID_TAGS: ['video', 'audio', 'source', 'track', 'picture', 'style'], FORBID_ATTR: ['style'] };
+// 返事の HTML から落とすもの: 読み込みを起こすもの（動画・音声の要素）、外へ通信できる CSS（style の要素と属性。@import・@font-face・url()）、
+// 画面の部品と取り違えさせるもの（id・name・class。$('agent') などは id で探すので、会話より後ろの部品と同じ id を書かれると、送る宛先や文を
+// 差し替えられる）、外へ送らせる form
+const PURIFY = { FORBID_TAGS: ['video', 'audio', 'source', 'track', 'picture', 'style', 'form'], FORBID_ATTR: ['style', 'id', 'name', 'class'] };
 const MEDIA_EXT = /\.(?:png|jpe?g|gif|webp|avif|mp4|m4v|webm|mov)$/i, VIDEO_EXT = /\.(?:mp4|m4v|webm|mov)$/i;
 const MEDIA_IN_TEXT = /(^|[^\w./-])((?:\/|\.{1,2}\/)?[\w.-]+(?:\/[\w.-]+)*\.(?:png|jpe?g|gif|webp|avif|mp4|m4v|webm|mov))(?![\w/-])/gi;
 const isLocal = s => !!s && !/^[a-z][a-z0-9+.-]*:/i.test(s) && !s.startsWith('//');
@@ -415,14 +417,14 @@ function mountMedia(el) {
     b.onclick = () => openViewer(items, it, b);
     items.push(it); strip.appendChild(b);
   }
-  el.appendChild(strip);
+  el.appendChild(strip); el._strip = strip;  // 外すときはこの参照で（返事が書いた要素を、クラス名などで取り違えない）
 }
 function clearLog() { $('log').querySelectorAll('.msg.ai').forEach(unmountMedia); $('log').innerHTML = ''; }  // 会話を描き直す・相手を替えるとき（読み込みの途中も止める）
 function stopVideo(v) { v.pause(); v.removeAttribute('src'); v.load(); }  // 外すだけでは読み込みが止まるとは限らないので、src を外して読み込み直させる
 function unmountMedia(el) {  // サムネイルを外す（動画の読み込みと、途中の HEAD も止める）。PC の幅に戻すと mountMedia で作り直す
   if (!el._mounted) return;
   el._mounted.abort(); el._mounted = null;
-  const m = el.querySelector(':scope > .media'); if (m) { m.querySelectorAll('video').forEach(stopVideo); m.remove(); }
+  const m = el._strip; el._strip = null; if (m) { m.querySelectorAll('video').forEach(stopVideo); m.remove(); }
 }
 function sys(text) { const el = document.createElement('div'); el.className = 'sys'; el.textContent = text; $('log').appendChild(el); $('log').scrollTop = $('log').scrollHeight; }
 const curAgent = () => agents.find(a => a.pane === $('agent').value);

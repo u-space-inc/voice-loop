@@ -121,9 +121,9 @@ for site, want in (("cross-site", 403), ("same-site", 403), ("same-origin", 200)
 check("コンテナからは、鍵があっても断る（画面の口）", get("w1:p1", "out/a.png", host="host.docker.internal:8790", **{"x-vl-key": "k1"}).status_code, 403)
 for page in ("/", "/static/index.html"):  # 同じ画面を開ける場所のどちらにも
     csp = c.get(page).headers.get("content-security-policy", "")
-    check(f"画面（{page}）の CSP: 画像・動画と声・CSS・フォント・接続は自分からだけ（画像は data:・blob:、動画と声は blob: も）、枠と object は無し",
+    check(f"画面（{page}）の CSP: 画像・動画と声・CSS・フォント・接続は自分からだけ（画像は data:・blob:、動画と声は blob: も）、枠と object は無し、form は自分へだけ",
           [x in csp for x in ("img-src 'self' data: blob:", "media-src 'self' blob:", "style-src 'self' 'unsafe-inline'", "font-src 'self' data:",
-                              "connect-src 'self'", "frame-src 'none'", "object-src 'none'")], [True] * 7)
+                              "connect-src 'self'", "frame-src 'none'", "object-src 'none'", "form-action 'self'")], [True] * 8)
 
 AGENTS.append(A("w5:p1", PROJ / ".git"))
 s._artifact_agents = (0.0, [])  # 覚えている一覧を捨てる
