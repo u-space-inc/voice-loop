@@ -358,10 +358,13 @@ function markLeads(root) {
 // 返事の中のファイルの場所を拾い、PC の幅では下にサムネイルを並べる（押すと #viewer で大きく見る）。読むのは本体の /api/file で、
 // 本体が、そのセッションのフォルダの中の画像・動画だけを返す（ハブの会話では絶対パスだけ。返さないものは、並べたあとで消す）。
 // 拾う場所: Markdown の画像（その場では読み込まず文字にする。外のサイトの画像は出さない）・リンク・` ` で囲んだ場所・文の中の英数字の場所
-// 返事の HTML から落とすもの: 読み込みを起こすもの（動画・音声の要素）、外へ通信できる CSS（style の要素と属性。@import・@font-face・url()）、
-// 画面の部品と取り違えさせるもの（id・name・class。$('agent') などは id で探すので、会話より後ろの部品と同じ id を書かれると、送る宛先や文を
-// 差し替えられる）、外へ送らせる form
-const PURIFY = { FORBID_TAGS: ['video', 'audio', 'source', 'track', 'picture', 'style', 'form'], FORBID_ATTR: ['style', 'id', 'name', 'class'] };
+// 返事の HTML の扱い。落とす要素: 読み込みを起こすもの（動画・音声）、外へ通信できる CSS（style。@import・@font-face・url()）、form。
+// 属性は、Markdown が出すものだけを残す（許可リスト）。id・name・class・style・for・form・popovertarget などの、画面の部品を指したり
+// 部品に化けたりする属性は落とす（$('agent') などは id で探すので、会話より後ろの部品と同じ id を書かれると送る宛先や文を差し替えられ、
+// <label for="send"> や <button form="typedForm"> を押させると、本物の送る・録音が動く）。data-・aria- も残さない
+const PURIFY = { FORBID_TAGS: ['video', 'audio', 'source', 'track', 'picture', 'style', 'form'],
+                 ALLOWED_ATTR: ['href', 'title', 'alt', 'src', 'align', 'colspan', 'rowspan', 'start', 'type', 'checked', 'disabled', 'lang', 'dir'],
+                 ALLOW_DATA_ATTR: false, ALLOW_ARIA_ATTR: false };
 const MEDIA_EXT = /\.(?:png|jpe?g|gif|webp|avif|mp4|m4v|webm|mov)$/i, VIDEO_EXT = /\.(?:mp4|m4v|webm|mov)$/i;
 const MEDIA_IN_TEXT = /(^|[^\w./-])((?:\/|\.{1,2}\/)?[\w.-]+(?:\/[\w.-]+)*\.(?:png|jpe?g|gif|webp|avif|mp4|m4v|webm|mov))(?![\w/-])/gi;
 const isLocal = s => !!s && !/^[a-z][a-z0-9+.-]*:/i.test(s) && !s.startsWith('//');

@@ -79,7 +79,10 @@ TEXT = ("検証の結果です。\n\n- 差分の画像は `out/a.png` です\n- 
         "<meta http-equiv=\"refresh\" content=\"0;url=https://example.invalid/m\"><script src=\"https://example.invalid/s.js\"></script></div>\n\n"
         # 画面の部品と同じ id・class を書いて、本物の部品を取り違えさせる（送る宛先と文・サムネイルの列）。form で外へ送らせる
         "<div class=\"media\"></div><input id=\"agent\" value=\"w9:p9\"><input id=\"typed\" value=\"攻め手の文\"><span id=\"vStage\"></span>"
-        "<form action=\"https://example.invalid/f\"><button>送る</button></form>")
+        "<form action=\"https://example.invalid/f\"><button>送る</button></form>"
+        # 本物の部品を押させる（label の for・button の form・popovertarget・commandfor）
+        "<label for=\"send\">画像を大きく見る</label> <label for=\"talk\">録音を見る</label> <button form=\"typedForm\">図を開く</button>"
+        "<button popovertarget=\"viewer\" commandfor=\"viewer\" command=\"--x\">開く</button>")
 TEXT2 = "動画は out/missing.mp4、画像は out/a.png と out/b.webp です。"  # 無い動画は、有無の確かめ（HEAD）が遅れて返る
 TEXT3 = "動画は out/gone.mp4 だけです。"
 # 読み込みの途中で止めることを見る会話（段ごとに別の無い動画にして、ブラウザが前の結果を使わず、必ず新しく要求するようにする）
@@ -147,6 +150,15 @@ def run(page, who):
     sent = page.evaluate("window.__sent.map(m => JSON.parse(m)).filter(m => m.type === 'text').map(m => [m.pane, m.text])")
     check(f"{who} 返事に画面の部品と同じ id を書かれても、送る宛先と文は本物の欄から取る（返事の id・class・name と form は落とす）",
           (sent, page.locator("#log .msg.ai :is([id], [name], form)").count(), page.locator("#log .msg.ai .media").count()), ([["w1:p1", "本物の文"]], 0, 1))
+    page.fill("#bar #typed", "まだ送らない文")
+    for text in ("画像を大きく見る", "録音を見る", "図を開く", "開く"):
+        page.locator("#log .msg.ai", has_text=text).get_by_text(text, exact=True).click()
+    time.sleep(0.4)
+    after = page.evaluate("window.__sent.map(m => JSON.parse(m)).filter(m => m.type === 'text').length")
+    check(f"{who} 返事の label・button を押させても、本物の送る・録音は動かない（for・form・popovertarget・commandfor を落とす）",
+          (after, page.input_value("#bar #typed"), page.locator("#talk.rec").count(), page.locator("#viewer").is_visible(),
+           page.locator("#log .msg.ai :is([for], [form], [popovertarget], [commandfor], [command])").count()), (1, "まだ送らない文", 0, False, 0))
+    page.fill("#bar #typed", "")
     # 画面の CSP そのもの（返事の HTML を落とす働きを抜けた場合の守り）: 外のサイトの画像・CSS・フォントは、ブラウザが止める
     page.evaluate("""(() => { const d = document.createElement('div');
       d.innerHTML = '<img src="https://example.invalid/z.png"><link rel="stylesheet" href="https://example.invalid/s.css">'
