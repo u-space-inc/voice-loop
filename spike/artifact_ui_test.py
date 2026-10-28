@@ -68,14 +68,19 @@ Image.new("RGB", (80, 40), (200, 120, 40)).save(PROJ / "out" / "b.webp")
 Image.new("RGB", (30, 30), (40, 200, 120)).save(PROJ / "out" / "c.png")
 Image.new("RGB", (30, 30), (0, 0, 0)).save(PROJ / ".git" / "x.png")
 (PROJ / "out" / "clip.webm").write_bytes(b"\x1a\x45\xdf\xa3" + b"0" * 2000)  # 再生はできない中身（並べるのは HEAD で見て、▶ だけ出す）
-s.list_agents = lambda: [{"pane": "w1:p1", "title": "検証", "cwd": str(PROJ), "kind": "claude", "session": "s1", "status": "idle", "name": "", "hub": False}]
+A = lambda pane: {"pane": pane, "title": "検証", "cwd": str(PROJ), "kind": "claude", "session": pane, "status": "idle", "name": "", "hub": False}
+s.list_agents = lambda: [A("w1:p1"), A("w2:p1")]
+# 乗せられたセッションが書きうる、外へ通信する HTML（外のサイトの画像・CSS の @import・@font-face・style の url()）も混ぜる
 TEXT = ("検証の結果です。\n\n- 差分の画像は `out/a.png` です\n- 二つ目は out/b.webp を見てください\n- 動画は [ここ](out/clip.webm) にあります\n"
         "- 無い out/none.png と、隠しの .git/x.png\n\n![図の説明](out/c.png)\n\n![外](https://example.invalid/x.png)\n\n"
-        "<span style=\"background:url(https://example.invalid/y.png)\">背景</span>")
-JSONL = TMP / "s1.jsonl"
-JSONL.write_text(json.dumps({"type": "user", "message": {"content": "検証の画像を見せて"}}, ensure_ascii=False) + "\n"
-                 + json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": TEXT}]}}, ensure_ascii=False) + "\n")
-s.jsonl_path = lambda a: JSONL if a and a["pane"] == "w1:p1" else None
+        "<div><style>@import url(\"https://example.invalid/import.css\"); @font-face { font-family: x; src: url(https://example.invalid/f.woff); } "
+        ".md { font-family: x; }</style><span style=\"background:url(https://example.invalid/y.png)\">背景</span></div>")
+TEXT2 = "動画は out/missing.mp4、画像は out/a.png と out/b.webp です。"  # 無い動画は、有無の確かめ（HEAD）が遅れて返る
+JSONL = {"w1:p1": TMP / "s1.jsonl", "w2:p1": TMP / "s2.jsonl"}
+for pane, text in (("w1:p1", TEXT), ("w2:p1", TEXT2)):
+    JSONL[pane].write_text(json.dumps({"type": "user", "message": {"content": "検証の画像を見せて"}}, ensure_ascii=False) + "\n"
+                           + json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}, ensure_ascii=False) + "\n")
+s.jsonl_path = lambda a: JSONL.get(a["pane"]) if a else None
 s.hermes_log("ai", f"api の画像は {PROJ}/out/a.png です。相対の out/b.webp は見せません。")
 
 srv = uvicorn.Server(uvicorn.Config(s.app, host="127.0.0.1", port=PORT, log_level="warning"))
@@ -120,10 +125,18 @@ def run(page, who):
     check(f"{who} Markdown の画像は、その場では読み込まず文字にする（外のサイトの画像は出さない）",
           (page.eval_on_selector_all("#log .msg.ai .mref", "els => els.map(e => e.textContent)"), page.locator("#log .msg.ai img:not(.media img)").count()),
           (["🖼 図の説明", "🖼 外（外の画像は出しません）"], 0))
-    out = lambda: [(u.split("/")[-1], f) for u, f in failed if "example.invalid" in u]
-    check(f"{who} 外のサイトの画像は CSP で止まり、外へは何も取りに行かない（届いた要求は無く、止まった理由は CSP）",
-          (wait(lambda: any("example.invalid/y.png" in x for x in page.evaluate("window.__csp"))) and wait(lambda: out() != []),
-           [x for x in done if "example.invalid" in x], out()), (True, [], [("y.png", "csp")]))
+    time.sleep(0.5)
+    ext = lambda: [x for x in done if "example.invalid" in x] + [x for x, _ in failed if "example.invalid" in x]
+    check(f"{who} 返事の style の要素と属性は落とし、外のサイトへは何も要求しない（@import・@font-face・url()）。ふだんの画面に CSP の違反は出ない",
+          (page.locator("#log .msg.ai style, #log .msg.ai [style]").count(), ext(), page.evaluate("window.__csp")), (0, [], []))
+    # 画面の CSP そのもの（返事の HTML を落とす働きを抜けた場合の守り）: 外のサイトの画像・CSS・フォントは、ブラウザが止める
+    page.evaluate("""(() => { const d = document.createElement('div');
+      d.innerHTML = '<img src="https://example.invalid/z.png"><link rel="stylesheet" href="https://example.invalid/s.css">'
+        + '<style>@font-face { font-family: y; src: url(https://example.invalid/g.woff); } .probe { font-family: y; }</style><span class="probe">あ</span>';
+      document.body.appendChild(d); })()""")
+    blocked = lambda: sorted(x.split("/")[-1] for x in page.evaluate("window.__csp") if "example.invalid" in x)
+    check(f"{who} 画面の CSP が、外のサイトの画像・CSS・フォントを止める（届いた要求は無い）",
+          (wait(lambda: blocked() == ["g.woff", "s.css", "z.png"]), [x for x in done if "example.invalid" in x]), (True, []))
     page.locator("#log .media .thumb", has_text="a.png").click()
     inert = lambda: page.evaluate("['side', 'asks', 'log', 'bar', 'rec'].map(id => document.getElementById(id).inert)")
     check(f"{who} 押すと大きく見る画面が開き、画像を原寸の大きさで読める。ほかの列（右の列も）は inert",
@@ -145,12 +158,35 @@ def run(page, who):
     page.locator("#log .media .thumb", has_text="c.png").click()
     page.click("#vClose")
     check(f"{who} 「✕ 閉じる」でも閉じる", (page.locator("#viewer").is_visible(), inert()), (False, [False] * 5))
+    page.locator("#log .media .thumb", has_text="clip.webm").click()
+    page.focus("#vStage video")
+    page.keyboard.press("ArrowRight")
+    check(f"{who} 動画の上の ← → は動画のもの（成果物を送らない）", page.text_content("#vName"), "clip.webm")
+    page.click("#vClose")
+
+    held = []  # 無い動画の要求（HEAD と、先頭のコマの読み込み）を、大きく見る画面を開くまで止めておく
+    page.route("**/*missing.mp4*", lambda route: held.append(route))
+    page.select_option("#agent", "w2:p1")
+    wait(lambda: names(page) == ["missing.mp4", "a.png", "b.webp"] and len(held) >= 1)
+    page.locator("#log .media .thumb", has_text="a.png").click()
+    before = page.text_content("#vPos")
+    for r in held:
+        r.fulfill(status=404, body="")
+    check(f"{who} 開いている間に並びから消えたものがあれば、位置を直し、→ で次へ進める",
+          (before, wait(lambda: page.text_content("#vPos") == "1 / 2"), page.text_content("#vName")), ("2 / 3", True, "a.png"))
+    page.keyboard.press("ArrowRight")
+    check(f"{who} …→ で b.webp（2 / 2）", (page.text_content("#vName"), page.text_content("#vPos")), ("b.webp", "2 / 2"))
+    page.set_viewport_size({"width": 390, "height": 844})
+    check(f"{who} 開いたままスマホの幅に狭めると閉じ、inert も外す", (wait(lambda: not page.locator("#viewer").is_visible()), inert()), (True, [False] * 5))
+    page.set_viewport_size({"width": 1400, "height": 900})
+    page.unroute("**/*missing.mp4*")
 
     page.select_option("#agent", s.HERMES_PANE)
     check(f"{who} ハブ（Hermes）の会話では、絶対パスのものだけを並べる（相対の場所は本体が返さない）", wait(lambda: names(page) == ["a.png"]), True)
 
     page.set_viewport_size({"width": 390, "height": 844})
-    check(f"{who} スマホの幅では、サムネイルを出さない", wait(lambda: not page.locator("#log .media").first.is_visible()), True)
+    check(f"{who} スマホの幅に狭めると、サムネイルを外す（画像・動画の要素も残さない）",
+          wait(lambda: page.locator("#log .media").count() == 0 and page.locator("#log video, #log .media img").count() == 0), True)
     page.select_option("#agent", "w1:p1")
     page.wait_for_selector("#log .msg.ai .mref")
     check(f"{who} スマホの幅で描いた返事は、サムネイルをまだ作らない（読み込まない）", page.locator("#log .media").count(), 0)

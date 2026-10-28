@@ -643,9 +643,36 @@ async def narrate(text: str, cancel: asyncio.Event):
 app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 
 
-# 画面が読み込んでよい画像と動画は、この本体からのもの（と data:・blob:。声は blob: で鳴らす）だけ。返事の Markdown に外のサイトの画像
-# （![](https://…) や style の url(…)）が混じっても、ブラウザが取りに行かない（乗せられたハブが、URL に情報を載せて外へ出す道を塞ぐ）
-INDEX_CSP = "img-src 'self' data: blob:; media-src 'self' blob:"
+# 画面（HTML）の CSP。画面が読み込むものは、この本体からのもの（画像は data:・blob: も。声は blob: で鳴らす）だけにする。
+# 返事の Markdown や HTML に外のサイトの画像・CSS（@import・@font-face・url()）が混じっても、ブラウザが取りに行かない
+# （乗せられたハブが、URL に情報を載せて外へ出す道を塞ぐ。返事の style は画面でも落とす）。画面の script と style は index.html の中に書いてあるので
+# 'unsafe-inline' が要る。返事から script を動かさない守りは DOMPurify が受け持つ（ここでは絞らない。'unsafe-eval' は、試験がブラウザを動かすのに使う）
+INDEX_CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+             "media-src 'self' blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'")
+
+
+class PageCSP:
+    """ASGI のミドルウェア。HTML を返すすべての応答に INDEX_CSP を付ける（/ のほかに /static/index.html でも同じ画面が開けるため）。"""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        async def send_csp(m):
+            if m["type"] == "http.response.start":
+                h = list(m.get("headers", []))
+                html = any(k.lower() == b"content-type" and v.lower().startswith(b"text/html") for k, v in h)
+                if html and not any(k.lower() == b"content-security-policy" for k, _ in h):
+                    m = {**m, "headers": h + [(b"content-security-policy", INDEX_CSP.encode())]}
+            await send(m)
+
+        await self.app(scope, receive, send_csp)
+
+
+app.add_middleware(PageCSP)
 
 
 @app.get("/")
@@ -968,6 +995,7 @@ def api_history(pane: str):
 ARTIFACT_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".avif": "image/avif",
                   ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime"}
 _artifact_agents: tuple[float, list[dict]] = (0.0, [])  # (取った時刻, セッションの一覧)。サムネイルが並ぶと続けて呼ばれるので 5 秒は覚える
+# （閉じたセッションのフォルダも、最大 5 秒は返しうる。herdr を毎回呼ばないための、決めたうえでの遅れ）
 
 
 def artifact_file(pane: str, raw: str) -> tuple[Path | None, str]:

@@ -358,7 +358,8 @@ function markLeads(root) {
 // 返事の中のファイルの場所を拾い、PC の幅では下にサムネイルを並べる（押すと #viewer で大きく見る）。読むのは本体の /api/file で、
 // 本体が、そのセッションのフォルダの中の画像・動画だけを返す（ハブの会話では絶対パスだけ。返さないものは、並べたあとで消す）。
 // 拾う場所: Markdown の画像（その場では読み込まず文字にする。外のサイトの画像は出さない）・リンク・` ` で囲んだ場所・文の中の英数字の場所
-const PURIFY = { FORBID_TAGS: ['video', 'audio', 'source', 'track', 'picture'] };
+// 返事の HTML から、読み込みを起こすもの（動画・音声の要素）と、外へ通信できる CSS（style の要素と属性。@import・@font-face・url()）を落とす
+const PURIFY = { FORBID_TAGS: ['video', 'audio', 'source', 'track', 'picture', 'style'], FORBID_ATTR: ['style'] };
 const MEDIA_EXT = /\.(?:png|jpe?g|gif|webp|avif|mp4|m4v|webm|mov)$/i, VIDEO_EXT = /\.(?:mp4|m4v|webm|mov)$/i;
 const MEDIA_IN_TEXT = /(^|[^\w./-])((?:\/|\.{1,2}\/)?[\w.-]+(?:\/[\w.-]+)*\.(?:png|jpe?g|gif|webp|avif|mp4|m4v|webm|mov))(?![\w/-])/gi;
 const isLocal = s => !!s && !/^[a-z][a-z0-9+.-]*:/i.test(s) && !s.startsWith('//');
@@ -388,25 +389,33 @@ function findMedia(el) {  // 文に出てくる順に拾う（同じ場所は 1 
 }
 function mountMedia(el) {
   if (el._mounted || !el._media || !el._media.length) return;
-  el._mounted = true;
+  el._mounted = new AbortController();  // スマホの幅にしたら、読み込みの途中も止める（unmountMedia）
   const strip = node('div', 'media'), items = [];
   for (const path of el._media) {
     const url = `/api/file?pane=${encodeURIComponent(el.dataset.pane || '')}&path=${encodeURIComponent(path)}`, video = VIDEO_EXT.test(path);
     const b = node('button', 'thumb'), frame = node('span', 'frame'), it = { url, path, video };
     b.title = path; b.setAttribute('aria-label', `${video ? '動画' : '画像'}を大きく見る: ${path}`);
-    const drop = () => { b.remove(); const i = items.indexOf(it); if (i >= 0) items.splice(i, 1); if (!items.length) strip.remove(); };  // 本体が返さないもの
+    const drop = () => {  // 本体が返さないもの。大きく見る画面がこの並びを開いていれば、位置を直す
+      b.remove(); const i = items.indexOf(it); if (i >= 0) items.splice(i, 1); if (!items.length) strip.remove();
+      if (viewer && viewer.items === items) viewerPos();
+    };
     if (video) {  // ファイルがあるかは HEAD で見る。先頭のコマが読めない形でも、▶ だけで並べる
       const v = document.createElement('video'); v.muted = true; v.playsInline = true; v.preload = 'metadata'; v.src = url + '#t=0.1'; v.onerror = () => v.remove();
       frame.append(v, node('span', 'play', '▶'));
-      fetch(url, { method: 'HEAD' }).then(r => { if (!r.ok) drop(); }, drop);
+      fetch(url, { method: 'HEAD', signal: el._mounted.signal }).then(r => { if (!r.ok) drop(); }, e => { if (e.name !== 'AbortError') drop(); });
     } else {
       const im = document.createElement('img'); im.alt = ''; im.loading = 'lazy'; im.onerror = drop; im.src = url; frame.appendChild(im);
     }
     b.append(frame, node('span', 'nm', path.split('/').pop()));
-    b.onclick = () => openViewer(items, items.indexOf(it), b);
+    b.onclick = () => openViewer(items, it, b);
     items.push(it); strip.appendChild(b);
   }
   el.appendChild(strip);
+}
+function unmountMedia(el) {  // サムネイルを外す（画像・動画の要素と、途中の HEAD を止める）。PC の幅に戻すと mountMedia で作り直す
+  if (!el._mounted) return;
+  el._mounted.abort(); el._mounted = null;
+  const m = el.querySelector(':scope > .media'); if (m) m.remove();
 }
 function sys(text) { const el = document.createElement('div'); el.className = 'sys'; el.textContent = text; $('log').appendChild(el); $('log').scrollTop = $('log').scrollHeight; }
 const curAgent = () => agents.find(a => a.pane === $('agent').value);
@@ -1028,6 +1037,7 @@ function applyWide() {
     $('log').querySelectorAll('.msg.ai').forEach(mountMedia);  // スマホの幅で描いた返事にも、サムネイルを付ける
   } else {
     closeViewer(); setReading(false);
+    $('log').querySelectorAll('.msg.ai').forEach(unmountMedia);  // スマホの幅では読み込まない
     homeOf.tasks.after($('tasks')); homeOf.situation.after($('situation'));
     runMemory(false); runTasks(phone.tasks); runSituation(phone.sit);
   }
@@ -1057,24 +1067,29 @@ $('readAsks').onclick = () => {  // 戻って、承認のカードの押せる�
 };
 // 成果物を大きく見る画面（#viewer）。サムネイルを押すと開き、同じ返事の中の成果物を ← → で送る。✕ か Esc で閉じ、押したサムネイルに戻る。
 // 開いている間は、ほかの列（右の列も）を inert にする。スマホの幅に狭めたら閉じる
-let viewer = null;  // { items, i, back }
+let viewer = null;  // { items, cur（いま出している項目）, back（閉じたら戻る所） }。位置は毎回 items から数える（並べたあとで消えるものがあるため）
 function applyInert() {
   for (const id of ['side', 'asks', 'log', 'bar']) $(id).inert = reading || !!viewer;
   $('rec').inert = !!viewer;
 }
-function openViewer(items, i, back) {
-  if (!items.length || i < 0) return;
-  viewer = { items, i, back };
+function openViewer(items, cur, back) {
+  if (!items.includes(cur)) return;
+  viewer = { items, cur, back };
   $('viewer').hidden = false; applyInert(); showViewerItem(); $('vClose').focus();
 }
 function showViewerItem() {
-  const { items, i } = viewer, it = items[i], m = document.createElement(it.video ? 'video' : 'img');
+  const it = viewer.cur, m = document.createElement(it.video ? 'video' : 'img');
   if (it.video) { m.controls = true; m.playsInline = true; m.preload = 'metadata'; } else m.alt = it.path;
   m.src = it.url; $('vStage').replaceChildren(m);
-  $('vName').textContent = it.path.split('/').pop(); $('vPath').textContent = it.path; $('vPos').textContent = `${i + 1} / ${items.length}`;
-  $('vPrev').disabled = i === 0; $('vNext').disabled = i === items.length - 1;
+  $('vName').textContent = it.path.split('/').pop(); $('vPath').textContent = it.path;
+  viewerPos();
 }
-function stepViewer(d) { if (viewer && viewer.items[viewer.i + d]) { viewer.i += d; showViewerItem(); } }
+function viewerPos() {
+  const i = viewer.items.indexOf(viewer.cur), n = viewer.items.length;
+  $('vPos').textContent = i < 0 ? `— / ${n}` : `${i + 1} / ${n}`;
+  $('vPrev').disabled = i <= 0; $('vNext').disabled = i < 0 || i >= n - 1;
+}
+function stepViewer(d) { if (!viewer) return; const i = viewer.items.indexOf(viewer.cur), next = viewer.items[i + d]; if (i >= 0 && next) { viewer.cur = next; showViewerItem(); } }
 function closeViewer() {
   if (!viewer) return;
   const back = viewer.back; viewer = null;

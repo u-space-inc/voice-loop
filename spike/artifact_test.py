@@ -119,8 +119,11 @@ check("ハブ（Hermes）の会話では、セッションのフォルダの中�
 for site, want in (("cross-site", 403), ("same-site", 403), ("same-origin", 200), ("none", 200)):
     check(f"Sec-Fetch-Site が {site} なら {want}", get("w1:p1", "out/a.png", **{"sec-fetch-site": site}).status_code, want)
 check("コンテナからは、鍵があっても断る（画面の口）", get("w1:p1", "out/a.png", host="host.docker.internal:8790", **{"x-vl-key": "k1"}).status_code, 403)
-csp = c.get("/").headers.get("content-security-policy", "")
-check("画面（/）の CSP: 画像と動画は自分（と data:・blob:）からだけ", ("img-src 'self' data: blob:" in csp, "media-src 'self' blob:" in csp), (True, True))
+for page in ("/", "/static/index.html"):  # 同じ画面を開ける場所のどちらにも
+    csp = c.get(page).headers.get("content-security-policy", "")
+    check(f"画面（{page}）の CSP: 読み込みは自分からだけ（画像は data:・blob:、動画と声は blob: も）、CSS とフォントも外から読まない",
+          [x in csp for x in ("default-src 'self'", "img-src 'self' data: blob:", "media-src 'self' blob:", "style-src 'self' 'unsafe-inline'", "font-src 'self' data:",
+                              "connect-src 'self'")], [True] * 6)
 
 AGENTS.append(A("w5:p1", PROJ / ".git"))
 s._artifact_agents = (0.0, [])  # 覚えている一覧を捨てる
