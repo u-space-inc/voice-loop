@@ -417,6 +417,7 @@ function mountMedia(el) {
   }
   el.appendChild(strip);
 }
+function clearLog() { $('log').querySelectorAll('.msg.ai').forEach(unmountMedia); $('log').innerHTML = ''; }  // 会話を描き直す・相手を替えるとき（読み込みの途中も止める）
 function stopVideo(v) { v.pause(); v.removeAttribute('src'); v.load(); }  // 外すだけでは読み込みが止まるとは限らないので、src を外して読み込み直させる
 function unmountMedia(el) {  // サムネイルを外す（動画の読み込みと、途中の HEAD も止める）。PC の幅に戻すと mountMedia で作り直す
   if (!el._mounted) return;
@@ -430,7 +431,7 @@ const localKey = () => 'vl.thread.' + curKey();
 function localMsgs() { try { return JSON.parse(localStorage.getItem(localKey()) || '[]'); } catch { return []; } }
 function localPush(role, text) { if (threadSource !== 'none') return; try { localStorage.setItem(localKey(), JSON.stringify([...localMsgs(), { role, text }].slice(-80))); } catch {} }
 function renderThread(msgs) {
-  $('log').innerHTML = '';
+  clearLog();
   if (!msgs.length) sys('このセッションにはまだ会話がありません');
   msgs.forEach(m => m.role === 'note' ? sys('通知: ' + m.text) : m.role === 'error' ? sys('⚠ ' + m.text) : bubble(m.role, m.text)); // note = ハブへの自動通知（頼んだ件が片づいた等）。error = Hermes に届かなかった・返事が無かった
 }
@@ -487,7 +488,7 @@ async function loadAgents() {
     if (!setupChecked) { setupChecked = true; showSetup(loadSeq); } // ハブが居ても、聞き取りや声の準備が残っていることがある
     return;
   }
-  loadSeq++; $('log').innerHTML = '';
+  loadSeq++; clearLog();
   sys(want === 'hub' ? 'ハブが起動していません。「ハブを起動」を押すか、話し相手を選んでください。'
                      : '選んでいた話し相手が見つかりません（閉じられたか、Mac が再起動されました）。選び直してください。');
   if (want === 'hub') { setupChecked = true; showSetup(loadSeq); }

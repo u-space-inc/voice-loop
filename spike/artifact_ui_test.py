@@ -69,16 +69,21 @@ Image.new("RGB", (30, 30), (40, 200, 120)).save(PROJ / "out" / "c.png")
 Image.new("RGB", (30, 30), (0, 0, 0)).save(PROJ / ".git" / "x.png")
 (PROJ / "out" / "clip.webm").write_bytes(b"\x1a\x45\xdf\xa3" + b"0" * 2000)  # 再生はできない中身（並べるのは HEAD で見て、▶ だけ出す）
 A = lambda pane: {"pane": pane, "title": "検証", "cwd": str(PROJ), "kind": "claude", "session": pane, "status": "idle", "name": "", "hub": False}
-s.list_agents = lambda: [A("w1:p1"), A("w2:p1"), A("w3:p1")]
+s.list_agents = lambda: [A(p) for p in ("w1:p1", "w2:p1", "w3:p1", "w4:p1", "w5:p1", "w6:p1")]
 # 乗せられたセッションが書きうる、外へ通信する HTML（外のサイトの画像・CSS の @import・@font-face・style の url()）も混ぜる
 TEXT = ("検証の結果です。\n\n- 差分の画像は `out/a.png` です\n- 二つ目は out/b.webp を見てください\n- 動画は [ここ](out/clip.webm) にあります\n"
         "- 無い out/none.png と、隠しの .git/x.png\n\n![図の説明](out/c.png)\n\n![外](https://example.invalid/x.png)\n\n"
         "<div><style>@import url(\"https://example.invalid/import.css\"); @font-face { font-family: x; src: url(https://example.invalid/f.woff); } "
-        ".md { font-family: x; }</style><span style=\"background:url(https://example.invalid/y.png)\">背景</span></div>")
+        ".md { font-family: x; }</style><span style=\"background:url(https://example.invalid/y.png)\">背景</span>"
+        "<link rel=\"prefetch\" href=\"https://example.invalid/p\"><iframe src=\"https://example.invalid/i\"></iframe><embed src=\"https://example.invalid/e\">"
+        "<meta http-equiv=\"refresh\" content=\"0;url=https://example.invalid/m\"><script src=\"https://example.invalid/s.js\"></script></div>")
 TEXT2 = "動画は out/missing.mp4、画像は out/a.png と out/b.webp です。"  # 無い動画は、有無の確かめ（HEAD）が遅れて返る
 TEXT3 = "動画は out/gone.mp4 だけです。"
-JSONL = {"w1:p1": TMP / "s1.jsonl", "w2:p1": TMP / "s2.jsonl", "w3:p1": TMP / "s3.jsonl"}
-for pane, text in (("w1:p1", TEXT), ("w2:p1", TEXT2), ("w3:p1", TEXT3)):
+# 読み込みの途中で止めることを見る会話（段ごとに別の無い動画にして、ブラウザが前の結果を使わず、必ず新しく要求するようにする）
+SLOW = {"w4:p1": "m4.mp4", "w5:p1": "m5.mp4", "w6:p1": "m6.mp4"}
+TEXTS = {"w1:p1": TEXT, "w2:p1": TEXT2, "w3:p1": TEXT3, **{p: f"動画は out/{n} 、画像は out/a.png です。" for p, n in SLOW.items()}}
+JSONL = {p: TMP / f"{p.replace(':', '_')}.jsonl" for p in TEXTS}
+for pane, text in TEXTS.items():
     JSONL[pane].write_text(json.dumps({"type": "user", "message": {"content": "検証の画像を見せて"}}, ensure_ascii=False) + "\n"
                            + json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}, ensure_ascii=False) + "\n")
 s.jsonl_path = lambda a: JSONL.get(a["pane"]) if a else None
@@ -128,8 +133,8 @@ def run(page, who):
           (["🖼 図の説明", "🖼 外（外の画像は出しません）"], 0))
     time.sleep(0.5)
     ext = lambda: [x for x in done if "example.invalid" in x] + [x for x, _ in failed if "example.invalid" in x]
-    check(f"{who} 返事の style の要素と属性は落とし、外のサイトへは何も要求しない（@import・@font-face・url()）。ふだんの画面に CSP の違反は出ない",
-          (page.locator("#log .msg.ai style, #log .msg.ai [style]").count(), ext(), page.evaluate("window.__csp")), (0, [], []))
+    check(f"{who} 返事の style の要素と属性・link・iframe・embed・meta・script は落とし、外のサイトへは何も要求しない。ふだんの画面に CSP の違反は出ない",
+          (page.locator("#log .msg.ai :is(style, [style], link, iframe, embed, meta, script)").count(), ext(), page.evaluate("window.__csp")), (0, [], []))
     # 画面の CSP そのもの（返事の HTML を落とす働きを抜けた場合の守り）: 外のサイトの画像・CSS・フォントは、ブラウザが止める
     page.evaluate("""(() => { const d = document.createElement('div');
       d.innerHTML = '<img src="https://example.invalid/z.png"><link rel="stylesheet" href="https://example.invalid/s.css">'
@@ -202,24 +207,38 @@ def run(page, who):
     page.locator("#log .media .thumb", has_text="gone.mp4").click()
     release()
     check(f"{who} 一つしか無い項目が消えたら、大きく見る画面を閉じ、inert も外す", (wait(lambda: not page.locator("#viewer").is_visible()), inert()), (True, [False] * 5))
-    page.select_option("#agent", "w2:p1")
-    wait(lambda: len(held) >= 2)  # 無い動画の HEAD と、先頭のコマの読み込み（どちらも応答を止めてある）
+    slow = []  # 応答を止めておく要求（SLOW の無い動画の HEAD と、先頭のコマの読み込み）
+    for n in SLOW.values():
+        page.route(f"**/*{n}*", lambda route: slow.append(route))
+
+    def hold(pane):  # その会話を描かせ、無い動画の HEAD と GET が出て止まるのを待ち、その要求を返す
+        page.select_option("#agent", pane)
+        mine = lambda: [r.request for r in slow if SLOW[pane] in r.request.url]
+        wait(lambda: page.evaluate("0") == 0 and {"GET", "HEAD"} <= {q.method for q in mine()})  # 同期の Playwright は、呼んだときに route と通知を動かす
+        return mine()
+
+    gone = lambda reqs: wait(lambda: page.evaluate("0") == 0 and len(reqs) >= 2 and all(any(q.url == x and (f or "").endswith("ERR_ABORTED") for x, f in failed) for q in reqs))
+    reqs = hold("w4:p1")
+    page.select_option("#agent", "w1:p1")
+    check(f"{who} 読み込みの途中で話し相手を替えると、前の会話の動画と HEAD の要求を、ブラウザが取りやめる", gone(reqs), True)
+    reqs = hold("w5:p1")
+    page.evaluate("loadThread()")
+    check(f"{who} 読み込みの途中で同じ会話を描き直しても、前の要求を取りやめる", gone(reqs), True)
+    reqs = hold("w6:p1")
     page.evaluate("window.__vids = [...document.querySelectorAll('#log .media video')]")
     page.locator("#log .media .thumb", has_text="a.png").click()
-    aborted = lambda: [f for x, f in failed if "missing.mp4" in x and "ABORTED" in (f or "")]
     page.set_viewport_size({"width": 390, "height": 844})
     check(f"{who} 開いたままスマホの幅に狭めると閉じ、inert も外す", (wait(lambda: not page.locator("#viewer").is_visible()), inert()), (True, [False] * 5))
     check(f"{who} 読み込みの途中でスマホの幅にすると、動画の読み込みと有無の確かめ（HEAD）の要求を、ブラウザが取りやめる",
-          (wait(lambda: len(aborted()) >= 2), page.evaluate("window.__vids.length > 0 && window.__vids.every(v => !v.hasAttribute('src') && v.networkState !== HTMLMediaElement.NETWORK_LOADING)")),
+          (gone(reqs), page.evaluate("window.__vids.length > 0 && window.__vids.every(v => !v.hasAttribute('src') && v.networkState !== HTMLMediaElement.NETWORK_LOADING)")),
           (True, True))
     page.set_viewport_size({"width": 1400, "height": 900})
-    for r in held:  # 取りやめた要求は、もう返せない
+    for r in held + slow:  # 取りやめた要求は、もう返せない
         try:
             r.fulfill(status=404, body="")
         except Exception:
             pass
-    held.clear()
-    for pat in ("**/*missing.mp4*", "**/*gone.mp4*"):
+    for pat in ["**/*missing.mp4*", "**/*gone.mp4*"] + [f"**/*{n}*" for n in SLOW.values()]:
         page.unroute(pat)
 
     page.select_option("#agent", s.HERMES_PANE)
