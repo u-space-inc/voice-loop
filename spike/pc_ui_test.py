@@ -12,6 +12,8 @@
 PC の見た目（Chromium）: 頼んだ件を「動いている」「終わった」に分け、状態の色の帯・指示の文は 2 行で切って押すと全文（取り直しても開いたまま）・
 ハブの返事の行頭の【見出し】を太く・記憶の上限との棒・長い項目は 4 行で切って「続きを表示」・直す・消すはマウスを載せた項目と消すの確かめ中だけ出す・
 入力は文字の欄が上で、話す・停止は相手と声と同じ行に小さく。
+左の一覧（Chromium）: 状態の札で絞り込む・状態順と herdr の順の並べ方・開き直しても覚えている・ハブはいつも先頭・いま話している相手は絞り込みの外でも出す。
+広げて読む（Chromium）: ⤢ で右の列を画面いっぱいに・ほかの列は inert・長い記憶を切らずに出す・直す途中の文が残る・Esc（文の欄では効かない）・✕・狭めると戻る。
 使い方: uv run spike/pc_ui_test.py"""
 import json
 import os
@@ -183,10 +185,10 @@ def run_wide(page, who):
 
     # セッションの一覧
     names = lambda: page.eval_on_selector_all("#sessions .sess", "els => els.map(e => [e.querySelector('.nm').textContent, e.querySelector('.st').textContent, e.classList.contains('on')])")
-    check(f"{who} 左の一覧: ハブが先頭で選ばれていて、承認待ちのセッションはそう出る", wait(lambda: len(names()) == 3) and names(),
-          [["ハブ（Hermes）", "待機", True], ["blog｜記事", "待機", False], ["shop｜受注", "承認・入力待ち", False]])
-    page.locator("#sessions .sess").nth(1).click()
-    check(f"{who} 一覧で押すと話し相手が替わる（select も同じ相手）", (page.evaluate("document.getElementById('agent').value"), wait(lambda: names()[1][2])), ("w1:p1", True))
+    check(f"{who} 左の一覧: ハブが先頭で選ばれていて、承認待ちのセッションはそう出る（既定は状態順なので、承認待ちが待機より上）", wait(lambda: len(names()) == 3) and names(),
+          [["ハブ（Hermes）", "待機", True], ["shop｜受注", "承認・入力待ち", False], ["blog｜記事", "待機", False]])
+    page.locator("#sessions .sess").nth(2).click()
+    check(f"{who} 一覧で押すと話し相手が替わる（select も同じ相手）", (page.evaluate("document.getElementById('agent').value"), wait(lambda: names()[2][2])), ("w1:p1", True))
     wait(lambda: not page.locator("#send").is_disabled())
     page.evaluate("(() => { window.__sent = []; const o = ws.send.bind(ws); ws.send = m => { window.__sent.push(m); if (typeof m !== 'string' || JSON.parse(m).type !== 'text') o(m); }; })()")
     page.fill("#typed", "PC から送る文")
@@ -412,6 +414,88 @@ def run_design(page, who):
     s.TASKS.clear()
 
 
+def run_sessions(page, who):
+    """左の一覧の絞り込み（状態の札を 1 つ選ぶ）と並べ方（状態順・herdr の順）。端末ごとに覚える。ハブはいつも先頭で札の数に入れない。
+    絞り込みの外でも、いま話している相手は薄くして出す"""
+    seed()
+    saved = list(AGENTS)
+    AGENTS[:] = [dict(saved[0], status="idle"), dict(saved[0], pane="w3:p1", session="s3", cwd="/x/api", title="改修", status="working"),
+                 dict(saved[1], status="blocked"), dict(saved[0], pane="w4:p1", session="s4", cwd="/x/docs", title="手順", status="working")]
+    open_page(page, 1400)
+    rows = lambda: page.eval_on_selector_all("#sessions .sess", "els => els.map(e => e.querySelector('.pj').textContent + (e.classList.contains('outside') ? '（外）' : ''))")
+    chips = lambda: page.eval_on_selector_all("#sessTools button", "els => els.map(e => [e.textContent, e.getAttribute('aria-pressed')])")
+    sort = lambda: page.text_content(".side-h .sort")
+    check(f"{who} 既定は状態順（ハブ → 承認・入力待ち → 作業中 → 待機。同じ状態の中は herdr の順）", wait(lambda: len(rows()) == 5) and (rows(), sort()),
+          (["ハブ（Hermes）", "shop", "api", "docs", "blog"], "並び: 状態順"))
+    check(f"{who} 札は「すべて」と状態ごとの数（ハブは数えない）。既定は「すべて」", chips(),
+          [["すべて", "true"], ["承認待ち1", "false"], ["作業中2", "false"], ["完了0", "false"], ["待機1", "false"]])
+    page.locator("#sessTools button", has_text="作業中").click()
+    check(f"{who} 「作業中」を押すと、ハブと作業中のセッションだけになる", (rows(), chips()[2][1], chips()[0][1]), (["ハブ（Hermes）", "api", "docs"], "true", "false"))
+    page.locator("#sessTools button", has_text="完了").click()
+    check(f"{who} 当てはまるセッションが無ければ、そう出す", (rows(), page.text_content("#sessions .sessNone")), (["ハブ（Hermes）"], "完了のセッションはありません"))
+    page.locator("#sessTools button", has_text="作業中").click()
+    page.select_option("#agent", "w1:p1")
+    check(f"{who} 絞り込みの外でも、いま話している相手は薄くして出す", wait(lambda: rows() == ["ハブ（Hermes）", "api", "docs", "blog（外）"]), True)
+    page.click(".side-h .sort")
+    check(f"{who} 並べ方を herdr の順に替えられる", (rows(), sort()), (["ハブ（Hermes）", "blog（外）", "api", "docs"], "並び: herdr の順"))
+    page.reload()
+    page.wait_for_function("document.getElementById('conn').classList.contains('on')")
+    check(f"{who} 絞り込みと並べ方は、開き直しても覚えている", wait(lambda: rows() == ["ハブ（Hermes）", "blog（外）", "api", "docs"]) and (chips()[2][1], sort()), ("true", "並び: herdr の順"))
+    AGENTS[1]["status"] = "idle"
+    page.evaluate("loadAgents()")
+    check(f"{who} 状態が変われば、取り直しで一覧と札の数が替わる", wait(lambda: rows() == ["ハブ（Hermes）", "blog（外）", "docs"] and chips()[2][0] == "作業中1"), True)
+    AGENTS[:] = saved
+
+
+def run_reading(page, who):
+    """⤢ で右の列（記憶・状況）を画面いっぱいに広げて読む。CSS で広げるだけなので、直す途中の文はそのまま。ほかの列は押せない（inert）。
+    ✕・Esc・スマホの幅へ狭めると戻る（文の欄を打っている間の Esc では戻らない）"""
+    seed()
+    (MEM / "USER.md").write_text(s.hermes_memory.DELIM.join(["利用者の名前は山田", LONG]))
+    open_page(page, 1400)
+    page.wait_for_selector("#memPanel .mem")
+    more = lambda: page.eval_on_selector_all("#memPanel .mem > .more", "els => els.map(e => e.offsetParent !== null)")
+    check(f"{who} 3 列では、長い項目に「続きを表示」が出る", wait(lambda: more() == [False, True, False]), True)
+    card = lambda i: page.locator("#memPanel .memT").nth(0).locator(".mem").nth(i)
+    card(0).locator("button", has_text="直す").click()
+    card(0).locator("textarea").fill("広げる前に打った文")
+    page.click("#readBtn")
+    rec = page.locator("#rec").bounding_box()
+    inert = lambda: page.evaluate("['side', 'asks', 'log', 'bar'].map(id => document.getElementById(id).inert)")
+    reading = lambda: page.evaluate("document.body.classList.contains('reading')")
+    check(f"{who} ⤢ で右の列が画面いっぱいになり、ほかの列は押せない（inert）。ボタンは「✕ 戻す」になる",
+          (reading(), [round(rec[k]) for k in ("x", "y", "width", "height")], inert(), page.text_content("#readBtn"), page.get_attribute("#readBtn", "aria-pressed")),
+          (True, [0, 0, 1400, 900], [True] * 4, "✕ 戻す", "true"))
+    w = page.locator("#memPanel .memT").nth(0).bounding_box()
+    check(f"{who} 中身は 960px までの幅に寄せて真ん中に置く・横にはみ出さない",
+          (round(w["x"]), 940 <= w["width"] <= 960, page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")), (220, True, True))
+    check(f"{who} 広げると長い項目も切らずに出し、「続きを表示」は隠す",
+          (card(1).locator(".text").evaluate("e => e.scrollHeight <= e.clientHeight + 2"), more()), (True, [False, False]))
+    check(f"{who} 直している途中の文は、広げても残る", card(0).locator("textarea").input_value(), "広げる前に打った文")
+    page.click("#tabSit")
+    check(f"{who} 広げたまま「状況」に替えられる", wait(lambda: page.locator("#situation").is_visible() and "ひな形を作ってください" in (page.text_content("#sitBody") or "")), True)
+    page.click("#tabMem")
+    card(0).locator("textarea").focus()
+    page.keyboard.press("Escape")
+    check(f"{who} 文の欄を打っている間の Esc では戻らない", reading(), True)
+    page.evaluate("document.activeElement.blur()")
+    page.keyboard.press("Escape")
+    check(f"{who} Esc で 3 列に戻り、ほかの列も押せる・「⤢ 広げる」に戻り、そこにフォーカス・打った文は残る",
+          (reading(), inert(), page.text_content("#readBtn"), page.evaluate("document.activeElement.id"), card(0).locator("textarea").input_value()),
+          (False, [False] * 4, "⤢ 広げる", "readBtn", "広げる前に打った文"))
+    check(f"{who} 戻すと、長い項目の「続きを表示」がまた出る（測り直す）", wait(lambda: more() == [True, False]), True)
+    card(0).locator("button", has_text="やめる").click()
+    page.click("#readBtn")
+    page.click("#readBtn")
+    check(f"{who} 「✕ 戻す」でも戻る", (reading(), inert()), (False, [False] * 4))
+    page.click("#readBtn")
+    page.set_viewport_size({"width": 1099, "height": 900})
+    check(f"{who} 広げたままスマホの幅に狭めると、広げるのをやめ、押せない印も外す",
+          (wait(lambda: not page.evaluate("document.body.classList.contains('wide')")), reading(), inert()), (True, False, [False] * 4))
+    page.set_viewport_size({"width": 1400, "height": 900})
+    check(f"{who} PC の幅に戻すと 3 列（広げてはいない）", (wait(lambda: page.evaluate("document.body.classList.contains('wide')")), reading()), (True, False))
+
+
 def run_phone(page, who):
     seed()
     open_page(page, 390)
@@ -450,6 +534,8 @@ with sync_playwright() as pw:
     b = pw.chromium.launch()
     run_wide(b.new_page(), "Chromium:")
     run_design(b.new_page(), "Chromium（見た目）:")
+    run_sessions(b.new_page(), "Chromium（一覧の絞り込み）:")
+    run_reading(b.new_page(), "Chromium（広げて読む）:")
     run_phone(b.new_page(), "Chromium（スマホ）:")
     b.close()
     b = pw.webkit.launch()

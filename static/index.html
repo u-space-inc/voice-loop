@@ -109,6 +109,9 @@
   .prop.hsk { border-color:#4d5a80; background:#161b29; }
   .prop.hsk .go { background:#4d5a80; }
   pre.diff { margin:4px 0 0; max-height:40dvh; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font-size:11px; line-height:1.45; color:#cfd6e6; background:#0f121b; border-radius:6px; padding:6px 8px; }
+  /* 差分の行の色（足した行・消した行・位置の行） */
+  pre.diff span { display:block; min-height:1.45em; }
+  pre.diff .add { color:#9fdcae; background:#132a1c; } pre.diff .del { color:#f0aaa4; background:#2c1717; } pre.diff .hunk { color:#8fa8dc; }
   #sitNote { font-size:12px; color:#d8c88f; overflow-wrap:anywhere; }
   #sitNote.bad { color:#e07a74; }
   #situation details summary { font-size:12px; color:#c9b77a; cursor:pointer; }
@@ -152,6 +155,17 @@
   .sess .tt { font-size:12px; color:var(--w-t3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .sess .st { flex:none; font-size:11px; color:var(--w-t3); }
   .sess.blocked .st { color:var(--s-wait); } .sess.working .st { color:var(--s-run); } .sess.done .st { color:var(--s-done); }
+  /* 一覧の絞り込み（状態ごとの札。点の色は帯と同じ）と並べ方。絞り込みの外でも、いま話している相手は薄くして出す */
+  .side-h .sort { margin-left:auto; border:none; background:none; color:var(--w-t3); font-size:12px; font-weight:400; padding:2px 4px; }
+  .side-h .sort:hover { color:var(--w-t1); }
+  #sessTools { display:flex; flex-wrap:wrap; gap:4px; padding:0 12px 8px; }
+  #sessTools button { display:inline-flex; align-items:center; gap:5px; border:1px solid var(--w-rule); border-radius:12px; background:none; color:var(--w-t2); font-size:12px; line-height:1; padding:4px 9px; }
+  #sessTools button:hover { background:var(--w-hover); }
+  #sessTools button[aria-pressed="true"] { border-color:var(--w-line); background:var(--w-sel); color:var(--w-t1); }
+  #sessTools i { width:6px; height:6px; border-radius:50%; background:var(--lane, var(--s-idle)); }
+  #sessTools .n { color:var(--w-t3); font-variant-numeric:tabular-nums; }
+  .sess.outside { opacity:.55; }
+  .sessNone { padding:6px 16px; font-size:12px; color:var(--w-t3); }
   /* 頼んだ件。指示の文は 2 行で切り、押すと全文 */
   body.wide #tasks { flex:1; min-height:0; max-height:none; gap:0; padding:0 8px 16px; border-bottom:none; background:none; }
   body.wide #tasks .top { display:none; }
@@ -189,8 +203,11 @@
   body.wide #typed { height:46px; font-size:15px; padding:0 14px; background:var(--w-field); border-color:var(--w-line); }
   body.wide #typed:focus { outline:none; border-color:var(--s-run); }
   body.wide #send { width:auto; height:46px; padding:0 22px; background:var(--w-go); color:#fff; font-weight:600; }
-  /* 右: 記録のタブ */
-  #recTabs { display:flex; gap:22px; padding:0 20px; border-bottom:1px solid var(--w-rule); }
+  /* 右: 記録のタブと、広げて読む（⤢ 広げる） */
+  #recHead { display:flex; align-items:center; padding:0 12px 0 20px; border-bottom:1px solid var(--w-rule); }
+  #recTabs { flex:1; display:flex; gap:22px; }
+  #readBtn { flex:none; border:none; border-radius:6px; background:none; color:var(--w-t2); font-size:12px; line-height:1; padding:6px 8px; }
+  #readBtn:hover { background:var(--w-hover); color:var(--w-t1); }
   #recTabs button { border:none; border-bottom:2px solid transparent; border-radius:0; background:none; color:var(--w-t3); font-size:14px; font-weight:600; padding:14px 0 10px; margin-bottom:-1px; }
   #recTabs button[aria-selected="true"] { color:var(--w-t1); border-bottom-color:var(--w-t1); }
   #recTabs .n { margin-left:6px; font-size:11px; background:#6b5a2a; color:#fff; border-radius:8px; padding:0 6px; }
@@ -233,11 +250,20 @@
   .memAdd .ttl { font-size:14px; font-weight:600; color:var(--w-t1); }
   .memAdd select { flex:none; align-self:flex-start; height:32px; font-size:13px; background:var(--w-field); border-color:var(--w-line); }
   #memNote { font-size:12px; color:#d8c88f; overflow-wrap:anywhere; } #memNote.bad { color:#e07a74; }
+  /* 広げて読む: 右の列の箱をそのまま画面いっぱいに広げる（打ちかけ・開いた差分・確かめの途中は残る）。中身は読みやすい幅に寄せ、字を大きく、切らずに出す */
+  body.wide.reading #rec { position:fixed; inset:0; z-index:20; border-left:none; --read-pad:max(20px, calc((100% - 960px) / 2)); }
+  body.reading #recHead { padding:0 var(--read-pad); }
+  body.reading #memPanel, body.reading #situation { padding-left:var(--read-pad); padding-right:var(--read-pad); }
+  body.reading .mem { font-size:15px; }
+  body.reading .mem .text.clamp { display:block; -webkit-line-clamp:unset; overflow:visible; }
+  body.reading .mem > .more { display:none; }
+  body.reading .topic, body.reading .prop { font-size:14px; } body.reading .topic .now, body.reading .topic .nx, body.reading .sitMeta { font-size:13px; }
+  body.reading pre.diff { max-height:none; font-size:13px; line-height:1.55; padding:10px 14px; }
 </style>
 </head>
 <body>
-  <div id="side"><div class="side-h">セッション</div><div id="sessions"></div></div>
-  <div id="rec" data-tab="mem"><div id="recTabs" role="tablist"><button id="tabMem" role="tab" aria-selected="true">記憶</button><button id="tabSit" role="tab" aria-selected="false">状況<span class="n" id="sitCount" hidden></span></button></div><div id="memPanel"></div></div>
+  <div id="side"><div class="side-h">セッション</div><div id="sessTools" role="group" aria-label="状態で絞り込む"></div><div id="sessions"></div></div>
+  <div id="rec" data-tab="mem"><div id="recHead"><div id="recTabs" role="tablist"><button id="tabMem" role="tab" aria-selected="true">記憶</button><button id="tabSit" role="tab" aria-selected="false">状況<span class="n" id="sitCount" hidden></span></button></div><button id="readBtn" aria-pressed="false" aria-label="記憶と状況を画面いっぱいに広げて読む" title="記憶と状況を画面いっぱいに広げて読む">⤢ 広げる</button></div><div id="memPanel"></div></div>
   <div id="asks"></div>
   <div id="tasks" hidden><div class="top"><span>頼んだ件（ハブ経由で送った指示と、その見張り）</span><button id="tasksClose" aria-label="閉じる">✕</button></div><div id="taskList"></div></div>
   <div id="situation" hidden><div class="top"><span>いまの状況（録音・予定・メールから）</span><button id="sitClose" aria-label="閉じる">✕</button></div><div id="sitBody"></div><form id="factForm"><input id="factText" placeholder="覚えてほしいこと（打った文のまま覚えます）" maxlength="150" autocomplete="off"><button type="submit">覚える</button></form></div>
@@ -699,6 +725,9 @@ const HSK_FAIL = {
   timeout: '時間切れになりました。前の処理が終わったと確かめられるまで、採る・捨てるは断ります', off: 'Hermes がハブでないか、置き場がありません',
 };
 const hskOpen = new Set(), hskDiff = new Map();
+// 差分は行ごとに色を分けて出す（足した行・消した行・位置の行）。行は文字として入れる（HTML として読まない）
+const diffKind = l => (l.startsWith('+++') || l.startsWith('---') ? null : l[0] === '+' ? 'add' : l[0] === '-' ? 'del' : l.startsWith('@@') ? 'hunk' : null);
+function showDiff(pre, text) { pre.replaceChildren(...text.replace(/\n$/, '').split('\n').map(l => node('span', diffKind(l), l))); }
 function hskCard(it) {
   const c = node('div', 'prop hsk');
   c.appendChild(node('div', 'text', it.summary || '（要約なし）'));
@@ -712,11 +741,11 @@ function hskCard(it) {
   det.ontoggle = async () => {
     if (!det.open) { hskOpen.delete(it.v); return; }
     hskOpen.add(it.v);
-    if (hskDiff.has(it.v)) { pre.textContent = hskDiff.get(it.v); return; }
+    if (hskDiff.has(it.v)) { showDiff(pre, hskDiff.get(it.v)); return; }
     pre.textContent = '読んでいます…';
     let r; try { r = await postJSON('/api/hermes/skills/diff', { id: it.id, v: it.v }); } catch { r = { ok: false, reason: '本体に届きません' }; }
-    if (r.ok) hskDiff.set(it.v, r.diff);
-    pre.textContent = r.ok ? r.diff : '差分を読めませんでした: ' + (HSK_FAIL[r.reason] || r.reason) + (r.why ? `（${r.why}）` : '');
+    if (r.ok) { hskDiff.set(it.v, r.diff); showDiff(pre, r.diff); }
+    else pre.textContent = '差分を読めませんでした: ' + (HSK_FAIL[r.reason] || r.reason) + (r.why ? `（${r.why}）` : '');
   };
   if (hskOpen.has(it.v)) det.open = true;
   c.appendChild(det);
@@ -914,10 +943,28 @@ function applyWide() {
     $('side').appendChild($('tasks')); $('rec').appendChild($('situation'));
     runTasks(true); runSituation(true); setRecTab(recTab); renderSessions();
   } else {
+    setReading(false);
     homeOf.tasks.after($('tasks')); homeOf.situation.after($('situation'));
     runMemory(false); runTasks(phone.tasks); runSituation(phone.sit);
   }
 }
+// 広げて読む（⤢ 広げる）: 右の列の箱をそのまま画面いっぱいに広げる（CSS だけ。打ちかけ・開いた差分・確かめの途中はそのまま残る）。
+// 広げている間は、ほかの列を押せない・キーで移れないようにする（inert）。声は続く。同じボタン（✕ 戻す）か Esc で戻る（文の欄を打っている間の Esc は使わない）。
+// スマホの幅に狭めたら戻す
+let reading = false;
+function setReading(on) {
+  reading = on && wide;
+  document.body.classList.toggle('reading', reading);
+  for (const id of ['side', 'asks', 'log', 'bar']) $(id).inert = reading;
+  const b = $('readBtn'); b.textContent = reading ? '✕ 戻す' : '⤢ 広げる'; b.title = reading ? '3 列に戻す（Esc）' : '記憶と状況を画面いっぱいに広げて読む';
+  b.setAttribute('aria-label', b.title); b.setAttribute('aria-pressed', String(reading));
+  requestAnimationFrame(measureMore);  // 「続きを表示」が要るかは幅で変わる
+}
+$('readBtn').onclick = () => setReading(!reading);
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape' || !reading || e.isComposing || (e.target.closest && e.target.closest('textarea, input'))) return;
+  setReading(false); $('readBtn').focus();
+});
 function setRecTab(t) {
   recTab = t; try { localStorage.setItem('vl.recTab', t); } catch {}
   $('rec').dataset.tab = t;
@@ -928,13 +975,43 @@ $('tabMem').onclick = () => setRecTab('mem');
 $('tabSit').onclick = () => setRecTab('sit');
 
 // セッションの一覧（PC の左）。押すと、下の select の値を替えて change を送るだけ（選ぶ処理・覚える・履歴の読み直しは今のまま 1 つ）
+// 状態で絞り込める（札は 1 つだけ選ぶ）。並べ方は「状態順」（承認・入力待ち → 作業中 → 完了 → 待機。同じ状態の中は herdr の順）か「herdr の順」。
+// どちらも端末ごとに覚える。ハブはいつも先頭に出し、札の数にも入れない。絞り込みの外でも、いま話している相手は薄くして出す
 const SESS_ST = { idle: '待機', working: '作業中', blocked: '承認・入力待ち', done: '完了' };
+const SESS_F = [['all', 'すべて'], ['blocked', '承認待ち'], ['working', '作業中'], ['done', '完了'], ['idle', '待機']];
+const SESS_RANK = { blocked: 0, working: 1, done: 2, idle: 3 };
+const SESS_LANE = { blocked: 'wait', working: 'run', done: 'done' };
+let sessFilter = (() => { try { const v = localStorage.getItem('vl.sessFilter'); return SESS_F.some(f => f[0] === v) ? v : 'all'; } catch { return 'all'; } })();
+let sessSort = (() => { try { return localStorage.getItem('vl.sessSort') === 'herdr' ? 'herdr' : 'state'; } catch { return 'state'; } })();
+function setSessView(k, v) {
+  if (k === 'filter') sessFilter = v; else sessSort = v;
+  try { localStorage.setItem(k === 'filter' ? 'vl.sessFilter' : 'vl.sessSort', v); } catch {}
+  renderSessions();
+}
 function renderSessions() {
   if (!wide) return;
   const box = $('sessions'); box.innerHTML = '';
-  $('side').querySelector('.side-h').replaceChildren('セッション', node('span', 'n', `${agents.length}`));
-  for (const a of agents) {
-    const b = node('button', `sess ${a.status || ''}${a.pane === $('agent').value ? ' on' : ''}${a.hub ? ' hub' : ''}`);
+  const sort = node('button', 'sort', sessSort === 'state' ? '並び: 状態順' : '並び: herdr の順');
+  sort.title = `並べ方を切り替える（いまは${sort.textContent}）`; sort.setAttribute('aria-label', sort.title);
+  sort.onclick = () => setSessView('sort', sessSort === 'state' ? 'herdr' : 'state');
+  $('side').querySelector('.side-h').replaceChildren('セッション', node('span', 'n', `${agents.length}`), sort);
+  const rest = agents.filter(a => !a.hub), tools = $('sessTools'); tools.replaceChildren();
+  for (const [k, label] of SESS_F) {
+    const f = node('button'); f.setAttribute('aria-pressed', String(sessFilter === k));
+    if (k !== 'all') { const dot = node('i'); if (SESS_LANE[k]) dot.dataset.lane = SESS_LANE[k]; f.append(dot, label, node('span', 'n', `${rest.filter(a => a.status === k).length}`)); }
+    else f.append(label);
+    f.onclick = () => setSessView('filter', k);
+    tools.appendChild(f);
+  }
+  const rank = a => (a.hub ? -1 : SESS_RANK[a.status] ?? 4);
+  const list = sessSort === 'state' ? agents.map((a, i) => [a, i]).sort((x, y) => rank(x[0]) - rank(y[0]) || x[1] - y[1]).map(x => x[0]) : agents;
+  let hits = 0;
+  for (const a of list) {
+    const cur = a.pane === $('agent').value, hit = a.hub || sessFilter === 'all' || a.status === sessFilter;
+    if (!hit && !cur) continue;
+    if (hit && !a.hub) hits++;
+    const b = node('button', `sess ${a.status || ''}${cur ? ' on' : ''}${a.hub ? ' hub' : ''}${hit ? '' : ' outside'}`);
+    if (!hit) b.title = '絞り込みの外ですが、いま話している相手なので出しています';
     const nm = node('span', 'nm');  // 1 行目に場所（フォルダ）、2 行目に題。文字としては今までどおり「場所｜題」
     if (a.hub || a.hermes) nm.appendChild(node('span', 'pj', a.hub ? `ハブ${a.hermes ? '（Hermes）' : ''}` : 'Hermes（話し相手）'));
     else nm.append(node('span', 'pj', a.cwd.split('/').pop()), node('span', 'sep', '｜'), node('span', 'tt', a.title));
@@ -943,6 +1020,7 @@ function renderSessions() {
     b.onclick = () => { if ($('agent').value === a.pane) return; $('agent').value = a.pane; $('agent').dispatchEvent(new Event('change')); };
     box.appendChild(b);
   }
+  if (sessFilter !== 'all' && !hits) box.appendChild(node('div', 'sessNone', `${SESS_ST[sessFilter]}のセッションはありません`));
 }
 $('agent').addEventListener('change', renderSessions);
 
@@ -1005,11 +1083,15 @@ function drawMemory() {
   }
   for (const v of [...memConfirm.keys()]) if (!shown.has(v)) memConfirm.delete(v);  // 消すの確かめは、項目が見えなくなったら外す（安全側）
   box.appendChild(memAddForm());
-  // 4 行で切った項目のうち、実際にはみ出しているものだけに「続きを表示」を出す（測るのは描いたあと）
-  requestAnimationFrame(() => box.querySelectorAll('.mem .text.clamp').forEach(x => {
+  requestAnimationFrame(measureMore);  // 測るのは描いたあと
+}
+// 4 行で切った項目のうち、実際にはみ出しているものだけに「続きを表示」を出す（広げて読む間は切らないので、戻したときに測り直す）
+function measureMore() {
+  if (reading) return;
+  $('memPanel').querySelectorAll('.mem .text.clamp').forEach(x => {
     const more = x.parentElement.querySelector(':scope > .more');
     if (more) more.hidden = x.scrollHeight <= x.clientHeight + 2;
-  }));
+  });
 }
 const memOpen = new Set();  // 全文を出している項目の版
 async function memWrite(op, body, okText, onOk = () => {}) {
