@@ -542,6 +542,11 @@ def run_reading(page, who):
     page.click("#readAsks")
     check(f"{who} 押すと 3 列に戻り、承認のカード（ボタンがあればボタン）に移る",
           (reading(), inert(), page.evaluate("document.activeElement.closest('#asks .ask') !== null")), (False, [False] * 4, True))
+    page.evaluate("(() => { const b = document.createElement('button'); b.disabled = true; b.textContent = '送っています'; document.querySelector('#asks .ask').appendChild(b); })()")
+    page.click("#readBtn")
+    page.click("#readAsks")
+    check(f"{who} カードのボタンが押せない（答えを送っている途中）ときは、カードそのものに移る",
+          page.evaluate("document.activeElement.classList.contains('ask')"), True)
     page.click("#readBtn")
     page.evaluate("document.querySelectorAll('#asks .ask').forEach(e => e.remove())")
     check(f"{who} 承認・入力待ちが無くなれば、数を消す", wait(lambda: not page.locator("#readAsks").is_visible()), True)

@@ -969,9 +969,9 @@ function showReadAsks() {
   b.hidden = !n; b.textContent = `承認・入力待ち ${n} 件 — 戻って見る`;
 }
 new MutationObserver(showReadAsks).observe($('asks'), { childList: true });
-$('readAsks').onclick = () => {  // 戻って、承認のカードのボタンへ（ボタンの無い問いなら、カードそのものへ）
+$('readAsks').onclick = () => {  // 戻って、承認のカードの押せるボタンへ（ボタンの無い問いや、答えを送っている途中なら、カードそのものへ）
   setReading(false);
-  const x = $('asks').querySelector('button') || $('asks').querySelector('.ask');
+  const x = $('asks').querySelector('button:not(:disabled)') || $('asks').querySelector('.ask');
   if (x) { if (x.tagName !== 'BUTTON') x.tabIndex = -1; x.focus(); }
 };
 document.addEventListener('keydown', e => {
