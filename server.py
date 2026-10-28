@@ -644,11 +644,11 @@ app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 
 
 # 画面（HTML）の CSP。画面が読み込むものは、この本体からのもの（画像は data:・blob: も。声は blob: で鳴らす）だけにする。
-# 返事の Markdown や HTML に外のサイトの画像・CSS（@import・@font-face・url()）が混じっても、ブラウザが取りに行かない
-# （乗せられたハブが、URL に情報を載せて外へ出す道を塞ぐ。返事の style は画面でも落とす）。画面の script と style は index.html の中に書いてあるので
-# 'unsafe-inline' が要る。返事から script を動かさない守りは DOMPurify が受け持つ（ここでは絞らない。'unsafe-eval' は、試験がブラウザを動かすのに使う）
-INDEX_CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
-             "media-src 'self' blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'")
+# 返事の Markdown や HTML に外のサイトの画像・CSS（@import・@font-face・url()）などが混じっても、ブラウザが取りに行かない
+# （乗せられたハブが、URL に情報を載せて外へ出す道を塞ぐ。返事の style は画面でも落とす）。読み込みの種類ごとに書く。
+# script は絞らない: 返事から script を動かさない守りは DOMPurify が受け持ち、画面の script は index.html の中にある
+INDEX_CSP = ("img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self'; "
+             "frame-src 'none'; object-src 'none'; worker-src 'self'; manifest-src 'self'; base-uri 'none'")
 
 
 class PageCSP:
