@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -35,7 +36,7 @@ from pathlib import Path
 
 import anthropic
 import openai
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -642,9 +643,14 @@ async def narrate(text: str, cancel: asyncio.Event):
 app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 
 
+# 画面が読み込んでよい画像と動画は、この本体からのもの（と data:・blob:。声は blob: で鳴らす）だけ。返事の Markdown に外のサイトの画像
+# （![](https://…) や style の url(…)）が混じっても、ブラウザが取りに行かない（乗せられたハブが、URL に情報を載せて外へ出す道を塞ぐ）
+INDEX_CSP = "img-src 'self' data: blob:; media-src 'self' blob:"
+
+
 @app.get("/")
 def index():
-    return FileResponse(HERE / "static" / "index.html", headers={"Cache-Control": "no-cache"})
+    return FileResponse(HERE / "static" / "index.html", headers={"Cache-Control": "no-cache", "Content-Security-Policy": INDEX_CSP})
 
 
 @app.get("/sw.js")
@@ -948,6 +954,82 @@ def api_history(pane: str):
     if not path:
         return JSONResponse({"source": "none", "messages": []})  # 記録を読めない種類のエージェント
     return JSONResponse({"source": "jsonl", "messages": history(path) if path.exists() else []})
+
+
+# ---------- 成果物（画像・動画）を画面で見る ----------
+# 会話に出てきたファイルを、PC の画面がサムネイルと大きく見る画面で読む口。返すのは次を全部満たすものだけ。
+#   - そのセッションのフォルダの中（symlink はたどった先で見る）。ハブと Hermes の会話では、どのセッションからの場所か分からないので、
+#     いまあるセッションのどれかのフォルダの中を指す絶対パスだけ
+#   - フォルダから先の名前に、. で始まるもの（隠しフォルダ・隠しファイル）が無い
+#   - 画像と動画の拡張子（ARTIFACT_TYPES）。型は拡張子で決め、中身から推し量らせない（nosniff）。SVG・HTML は返さない
+#   - フォルダがホームか / そのもののセッションからは返さない（写真などを丸ごと見せないため）
+# ブラウザが別のサイトからの読み込みと知らせてきたもの（Sec-Fetch-Site が same-origin・none 以外）は断る。<img> の読み込みには Origin が
+# 付かず origin_guard を通るので、別のサイトのページから、ファイルがあるか・画像の大きさを探られないように。コンテナからは origin_guard が断る
+ARTIFACT_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".avif": "image/avif",
+                  ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime"}
+_artifact_agents: tuple[float, list[dict]] = (0.0, [])  # (取った時刻, セッションの一覧)。サムネイルが並ぶと続けて呼ばれるので 5 秒は覚える
+
+
+def artifact_file(pane: str, raw: str) -> tuple[Path | None, str]:
+    """画面に返してよいファイルの、たどった先の場所。返さないときは (None, 理由)。"""
+    global _artifact_agents
+    if not raw or "\x00" in raw or len(raw) > 4096:
+        return None, "場所の形が読めません"
+    at, agents = _artifact_agents
+    if time.monotonic() - at > 5:
+        agents = list_agents()
+        _artifact_agents = (time.monotonic(), agents)
+    me = next((a for a in agents if a["pane"] == pane), None)
+    hub = pane == HERMES_PANE or bool(me and me["hub"])
+    if me is None and not hub:
+        return None, "そのセッションがありません"
+    home, roots = Path.home().resolve(), []
+    for a in agents if hub else [me]:
+        if a["hub"] or not a.get("cwd"):
+            continue
+        try:
+            r = Path(a["cwd"]).resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        if r != home and r != Path(r.anchor):
+            roots.append(r)
+    if not roots:
+        return None, "見てよいフォルダがありません"
+    p = Path(raw)
+    if not p.is_absolute():
+        if hub:
+            return None, "ハブの会話では、絶対パスだけを見ます"
+        p = roots[0] / p
+    try:
+        real = p.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None, "ファイルがありません"
+    inside = [r for r in roots if r in real.parents]
+    if not inside:
+        return None, "セッションのフォルダの外です"
+    if any(part.startswith(".") for part in real.relative_to(max(inside, key=lambda r: len(r.parts))).parts):
+        return None, "隠しフォルダ・隠しファイルは見せません"
+    if real.suffix.lower() not in ARTIFACT_TYPES:
+        return None, "画像と動画のほかは見せません"
+    try:
+        if not stat.S_ISREG(real.stat().st_mode):
+            return None, "ふつうのファイルではありません"
+    except OSError:
+        return None, "ファイルがありません"
+    return real, ""
+
+
+@app.api_route("/api/file", methods=["GET", "HEAD"])
+def api_file(request: Request, pane: str = "", path: str = ""):
+    site = request.headers.get("sec-fetch-site", "")
+    if site and site not in ("same-origin", "none"):
+        print(f"[file] 断りました: Sec-Fetch-Site {site}", flush=True)
+        return JSONResponse({"ok": False, "reason": "別のサイトからは読めません"}, status_code=403)
+    real, why = artifact_file(pane, path)
+    if real is None:
+        return JSONResponse({"ok": False, "reason": why}, status_code=404)
+    return FileResponse(real, media_type=ARTIFACT_TYPES[real.suffix.lower()],
+                        headers={"X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox", "Cache-Control": "no-cache"})
 
 
 @app.get("/api/speakers")
