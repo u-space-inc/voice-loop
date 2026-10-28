@@ -208,6 +208,9 @@
   #recTabs { flex:1; display:flex; gap:22px; }
   #readBtn { flex:none; border:none; border-radius:6px; background:none; color:var(--w-t2); font-size:12px; line-height:1; padding:6px 8px; }
   #readBtn:hover { background:var(--w-hover); color:var(--w-t1); }
+  /* 広げている間に出た承認・入力待ちの数（押すと 3 列に戻る）。広げていないときは出さない */
+  #readAsks { flex:none; margin-right:8px; border:1px solid var(--s-wait); border-radius:6px; background:#1c1910; color:var(--s-wait); font-size:12px; line-height:1; padding:6px 10px; }
+  body:not(.reading) #readAsks { display:none; }
   #recTabs button { border:none; border-bottom:2px solid transparent; border-radius:0; background:none; color:var(--w-t3); font-size:14px; font-weight:600; padding:14px 0 10px; margin-bottom:-1px; }
   #recTabs button[aria-selected="true"] { color:var(--w-t1); border-bottom-color:var(--w-t1); }
   #recTabs .n { margin-left:6px; font-size:11px; background:#6b5a2a; color:#fff; border-radius:8px; padding:0 6px; }
@@ -263,7 +266,7 @@
 </head>
 <body>
   <div id="side"><div class="side-h">セッション</div><div id="sessTools" role="group" aria-label="状態で絞り込む"></div><div id="sessions"></div></div>
-  <div id="rec" data-tab="mem"><div id="recHead"><div id="recTabs" role="tablist"><button id="tabMem" role="tab" aria-selected="true">記憶</button><button id="tabSit" role="tab" aria-selected="false">状況<span class="n" id="sitCount" hidden></span></button></div><button id="readBtn" aria-pressed="false" aria-label="記憶と状況を画面いっぱいに広げて読む" title="記憶と状況を画面いっぱいに広げて読む">⤢ 広げる</button></div><div id="memPanel"></div></div>
+  <div id="rec" data-tab="mem"><div id="recHead"><div id="recTabs" role="tablist"><button id="tabMem" role="tab" aria-selected="true">記憶</button><button id="tabSit" role="tab" aria-selected="false">状況<span class="n" id="sitCount" hidden></span></button></div><button id="readAsks" hidden></button><button id="readBtn" aria-pressed="false" aria-label="記憶と状況を画面いっぱいに広げて読む" title="記憶と状況を画面いっぱいに広げて読む">⤢ 広げる</button></div><div id="memPanel"></div></div>
   <div id="asks"></div>
   <div id="tasks" hidden><div class="top"><span>頼んだ件（ハブ経由で送った指示と、その見張り）</span><button id="tasksClose" aria-label="閉じる">✕</button></div><div id="taskList"></div></div>
   <div id="situation" hidden><div class="top"><span>いまの状況（録音・予定・メールから）</span><button id="sitClose" aria-label="閉じる">✕</button></div><div id="sitBody"></div><form id="factForm"><input id="factText" placeholder="覚えてほしいこと（打った文のまま覚えます）" maxlength="150" autocomplete="off"><button type="submit">覚える</button></form></div>
@@ -950,7 +953,7 @@ function applyWide() {
 }
 // 広げて読む（⤢ 広げる）: 右の列の箱をそのまま画面いっぱいに広げる（CSS だけ。打ちかけ・開いた差分・確かめの途中はそのまま残る）。
 // 広げている間は、ほかの列を押せない・キーで移れないようにする（inert）。声は続く。同じボタン（✕ 戻す）か Esc で戻る（文の欄を打っている間の Esc は使わない）。
-// スマホの幅に狭めたら戻す
+// スマホの幅に狭めたら戻す。広げている間は承認のカードが隠れ、画面は見えている扱いなのでプッシュ通知も来ないため、承認・入力待ちの数を見出しに出す
 let reading = false;
 function setReading(on) {
   reading = on && wide;
@@ -961,6 +964,16 @@ function setReading(on) {
   requestAnimationFrame(measureMore);  // 「続きを表示」が要るかは幅で変わる
 }
 $('readBtn').onclick = () => setReading(!reading);
+function showReadAsks() {
+  const n = $('asks').querySelectorAll('.ask').length, b = $('readAsks');
+  b.hidden = !n; b.textContent = `承認・入力待ち ${n} 件 — 戻って見る`;
+}
+new MutationObserver(showReadAsks).observe($('asks'), { childList: true });
+$('readAsks').onclick = () => {  // 戻って、承認のカードのボタンへ（ボタンの無い問いなら、カードそのものへ）
+  setReading(false);
+  const x = $('asks').querySelector('button') || $('asks').querySelector('.ask');
+  if (x) { if (x.tagName !== 'BUTTON') x.tabIndex = -1; x.focus(); }
+};
 document.addEventListener('keydown', e => {
   if (e.key !== 'Escape' || !reading || e.isComposing || (e.target.closest && e.target.closest('textarea, input'))) return;
   setReading(false); $('readBtn').focus();

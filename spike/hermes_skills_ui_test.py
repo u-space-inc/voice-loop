@@ -52,7 +52,7 @@ def fake_run(container, mode, pid, raw, wait=90, env=None):
     CALLS.append((mode, pid))
     r = OUT.get(mode)
     if r is None:
-        r = {"check": {"result": "ok"}, "diff": {"result": "diff", "diff": f"--- a/SKILL.md\n+++ b/SKILL.md\n+<b>足す行</b> {pid}\n"},
+        r = {"check": {"result": "ok"}, "diff": {"result": "diff", "diff": f"--- a/SKILL.md\n+++ b/SKILL.md\n@@ -1,2 +1,2 @@\n-消す行\n+<b>足す行</b> {pid}\n 残る行\n"},
              "approve": {"result": "applied", "discarded": True}, "reject": {"result": "rejected", "discarded": True}}[mode]
     if r.get("result") in ("applied", "rejected") and r.get("discarded"):
         (PEND / f"{pid}.json").unlink(missing_ok=True)  # 台本が承認待ちから消すのにあたる
@@ -142,8 +142,9 @@ def run(page, who):
     first.locator("summary").click()
     check(f"{who} 差分は開いたときに取り、文字として出す", wait(lambda: "+<b>足す行</b> aaaaaaaa" in (first.locator("pre.diff").text_content() or "")), True)
     lines = first.locator("pre.diff span").evaluate_all("els => els.map(e => [e.className, e.textContent])")
-    check(f"{who} 差分は行ごとに色を分ける（足した行に印、ファイル名の行には付けない）。タグは要素にしない",
-          (lines, first.locator("pre.diff b").count()), ([["", "--- a/SKILL.md"], ["", "+++ b/SKILL.md"], ["add", "+<b>足す行</b> aaaaaaaa"]], 0))
+    check(f"{who} 差分は行ごとに色を分ける（足した行・消した行・位置の行に印、ファイル名の行と変わらない行には付けない）。タグは要素にしない",
+          (lines, first.locator("pre.diff b").count()),
+          ([["", "--- a/SKILL.md"], ["", "+++ b/SKILL.md"], ["hunk", "@@ -1,2 +1,2 @@"], ["del", "-消す行"], ["add", "+<b>足す行</b> aaaaaaaa"], ["", " 残る行"]], 0))
     page.evaluate("loadSituation()")
     time.sleep(0.6)
     first = page.locator("#sitBody .prop.hsk").nth(0)

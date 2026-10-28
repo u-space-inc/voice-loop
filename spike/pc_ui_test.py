@@ -12,8 +12,10 @@
 PC の見た目（Chromium）: 頼んだ件を「動いている」「終わった」に分け、状態の色の帯・指示の文は 2 行で切って押すと全文（取り直しても開いたまま）・
 ハブの返事の行頭の【見出し】を太く・記憶の上限との棒・長い項目は 4 行で切って「続きを表示」・直す・消すはマウスを載せた項目と消すの確かめ中だけ出す・
 入力は文字の欄が上で、話す・停止は相手と声と同じ行に小さく。
-左の一覧（Chromium）: 状態の札で絞り込む・状態順と herdr の順の並べ方・開き直しても覚えている・ハブはいつも先頭・いま話している相手は絞り込みの外でも出す。
-広げて読む（Chromium）: ⤢ で右の列を画面いっぱいに・ほかの列は inert・長い記憶を切らずに出す・直す途中の文が残る・Esc（文の欄では効かない）・✕・狭めると戻る。
+左の一覧（Chromium）: 状態の札で絞り込む・状態順と herdr の順の並べ方・開き直しても覚えている（覚えておけない端末でも止まらない）・ハブはいつも先頭・
+いま話している相手は絞り込みの外でも出す。
+広げて読む（Chromium）: ⤢ で右の列を画面いっぱいに・ほかの列は inert・長い記憶を切らずに出す・直す途中の文が残る・Esc（文の欄・一行の欄・
+変換の途中では効かない）・✕・狭めると戻る・広げている間だけ承認・入力待ちの数を出し、押すと戻ってカードのボタンへ。
 使い方: uv run spike/pc_ui_test.py"""
 import json
 import os
@@ -414,25 +416,36 @@ def run_design(page, who):
     s.TASKS.clear()
 
 
+def sess5(saved):
+    """一覧の試し: herdr の順は blog（待機）・api（作業中）・shop（承認待ち）・docs（作業中）・infra（完了）"""
+    return [dict(saved[0], status="idle"), dict(saved[0], pane="w3:p1", session="s3", cwd="/x/api", title="改修", status="working"),
+            dict(saved[1], status="blocked"), dict(saved[0], pane="w4:p1", session="s4", cwd="/x/docs", title="手順", status="working"),
+            dict(saved[0], pane="w5:p1", session="s5", cwd="/x/infra", title="監視", status="done")]
+
+
+def sess_view(page):
+    rows = lambda: page.eval_on_selector_all("#sessions .sess", "els => els.map(e => e.querySelector('.pj').textContent + (e.classList.contains('outside') ? '（外）' : ''))")
+    chips = lambda: page.eval_on_selector_all("#sessTools button", "els => els.map(e => [e.textContent, e.getAttribute('aria-pressed')])")
+    sort = lambda: page.text_content(".side-h .sort")
+    return rows, chips, sort
+
+
 def run_sessions(page, who):
     """左の一覧の絞り込み（状態の札を 1 つ選ぶ）と並べ方（状態順・herdr の順）。端末ごとに覚える。ハブはいつも先頭で札の数に入れない。
     絞り込みの外でも、いま話している相手は薄くして出す"""
     seed()
     saved = list(AGENTS)
-    AGENTS[:] = [dict(saved[0], status="idle"), dict(saved[0], pane="w3:p1", session="s3", cwd="/x/api", title="改修", status="working"),
-                 dict(saved[1], status="blocked"), dict(saved[0], pane="w4:p1", session="s4", cwd="/x/docs", title="手順", status="working")]
+    AGENTS[:] = sess5(saved)
     open_page(page, 1400)
-    rows = lambda: page.eval_on_selector_all("#sessions .sess", "els => els.map(e => e.querySelector('.pj').textContent + (e.classList.contains('outside') ? '（外）' : ''))")
-    chips = lambda: page.eval_on_selector_all("#sessTools button", "els => els.map(e => [e.textContent, e.getAttribute('aria-pressed')])")
-    sort = lambda: page.text_content(".side-h .sort")
-    check(f"{who} 既定は状態順（ハブ → 承認・入力待ち → 作業中 → 待機。同じ状態の中は herdr の順）", wait(lambda: len(rows()) == 5) and (rows(), sort()),
-          (["ハブ（Hermes）", "shop", "api", "docs", "blog"], "並び: 状態順"))
+    rows, chips, sort = sess_view(page)
+    check(f"{who} 既定は状態順（ハブ → 承認・入力待ち → 作業中 → 完了 → 待機。同じ状態の中は herdr の順）", wait(lambda: len(rows()) == 6) and (rows(), sort()),
+          (["ハブ（Hermes）", "shop", "api", "docs", "infra", "blog"], "並び: 状態順"))
     check(f"{who} 札は「すべて」と状態ごとの数（ハブは数えない）。既定は「すべて」", chips(),
-          [["すべて", "true"], ["承認待ち1", "false"], ["作業中2", "false"], ["完了0", "false"], ["待機1", "false"]])
+          [["すべて", "true"], ["承認待ち1", "false"], ["作業中2", "false"], ["完了1", "false"], ["待機1", "false"]])
     page.locator("#sessTools button", has_text="作業中").click()
     check(f"{who} 「作業中」を押すと、ハブと作業中のセッションだけになる", (rows(), chips()[2][1], chips()[0][1]), (["ハブ（Hermes）", "api", "docs"], "true", "false"))
     page.locator("#sessTools button", has_text="完了").click()
-    check(f"{who} 当てはまるセッションが無ければ、そう出す", (rows(), page.text_content("#sessions .sessNone")), (["ハブ（Hermes）"], "完了のセッションはありません"))
+    check(f"{who} 「完了」を押すと、ハブと完了のセッションだけになる", rows(), ["ハブ（Hermes）", "infra"])
     page.locator("#sessTools button", has_text="作業中").click()
     page.select_option("#agent", "w1:p1")
     check(f"{who} 絞り込みの外でも、いま話している相手は薄くして出す", wait(lambda: rows() == ["ハブ（Hermes）", "api", "docs", "blog（外）"]), True)
@@ -442,14 +455,41 @@ def run_sessions(page, who):
     page.wait_for_function("document.getElementById('conn').classList.contains('on')")
     check(f"{who} 絞り込みと並べ方は、開き直しても覚えている", wait(lambda: rows() == ["ハブ（Hermes）", "blog（外）", "api", "docs"]) and (chips()[2][1], sort()), ("true", "並び: herdr の順"))
     AGENTS[1]["status"] = "idle"
+    AGENTS[4]["status"] = "idle"
     page.evaluate("loadAgents()")
-    check(f"{who} 状態が変われば、取り直しで一覧と札の数が替わる", wait(lambda: rows() == ["ハブ（Hermes）", "blog（外）", "docs"] and chips()[2][0] == "作業中1"), True)
+    check(f"{who} 状態が変われば、取り直しで一覧と札の数が替わる", wait(lambda: rows() == ["ハブ（Hermes）", "blog（外）", "docs"] and chips()[2][0] == "作業中1" and chips()[3][0] == "完了0"), True)
+    page.locator("#sessTools button", has_text="完了").click()
+    check(f"{who} 当てはまるセッションが無ければ、そう出す（いま話している相手は出したまま）", (rows(), page.text_content("#sessions .sessNone")),
+          (["ハブ（Hermes）", "blog（外）"], "完了のセッションはありません"))
+    AGENTS[:] = saved
+
+
+def run_sessions_nostore(page, who):
+    """端末に覚えておけない（保存の読み書きが例外になる）ときも、絞り込みと並べ方はその場で使え、画面は止まらない"""
+    seed()
+    saved = list(AGENTS)
+    AGENTS[:] = sess5(saved)
+    page.add_init_script("""(() => {
+      const g = Storage.prototype.getItem, s = Storage.prototype.setItem, deny = k => String(k).startsWith('vl.sess');
+      Storage.prototype.getItem = function (k) { if (deny(k)) throw new DOMException('denied', 'SecurityError'); return g.call(this, k); };
+      Storage.prototype.setItem = function (k, v) { if (deny(k)) throw new DOMException('denied', 'SecurityError'); return s.call(this, k, v); };
+    })()""")
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    open_page(page, 1400)
+    rows, chips, sort = sess_view(page)
+    check(f"{who} 覚えておけなくても、既定（すべて・状態順）で出る", wait(lambda: len(rows()) == 6) and (rows(), chips()[0][1], sort()),
+          (["ハブ（Hermes）", "shop", "api", "docs", "infra", "blog"], "true", "並び: 状態順"))
+    page.locator("#sessTools button", has_text="作業中").click()
+    page.click(".side-h .sort")
+    check(f"{who} 覚えておけなくても、絞り込みと並べ方はその場で効き、画面のエラーは出ない", (rows(), chips()[2][1], sort(), errors),
+          (["ハブ（Hermes）", "api", "docs"], "true", "並び: herdr の順", []))
     AGENTS[:] = saved
 
 
 def run_reading(page, who):
     """⤢ で右の列（記憶・状況）を画面いっぱいに広げて読む。CSS で広げるだけなので、直す途中の文はそのまま。ほかの列は押せない（inert）。
-    ✕・Esc・スマホの幅へ狭めると戻る（文の欄を打っている間の Esc では戻らない）"""
+    ✕・Esc・スマホの幅へ狭めると戻る（文の欄・一行の欄を打っている間と、変換の途中の Esc では戻らない）。広げている間だけ、承認・入力待ちの数を見出しに出す"""
     seed()
     (MEM / "USER.md").write_text(s.hermes_memory.DELIM.join(["利用者の名前は山田", LONG]))
     open_page(page, 1400)
@@ -474,11 +514,16 @@ def run_reading(page, who):
     check(f"{who} 直している途中の文は、広げても残る", card(0).locator("textarea").input_value(), "広げる前に打った文")
     page.click("#tabSit")
     check(f"{who} 広げたまま「状況」に替えられる", wait(lambda: page.locator("#situation").is_visible() and "ひな形を作ってください" in (page.text_content("#sitBody") or "")), True)
+    page.focus("#factText")
+    page.keyboard.press("Escape")
+    check(f"{who} 一行の欄（覚えてほしいこと）にいる間の Esc でも戻らない", reading(), True)
     page.click("#tabMem")
     card(0).locator("textarea").focus()
     page.keyboard.press("Escape")
     check(f"{who} 文の欄を打っている間の Esc では戻らない", reading(), True)
     page.evaluate("document.activeElement.blur()")
+    page.evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true }))")
+    check(f"{who} 変換の途中（IME）の Esc では戻らない", reading(), True)
     page.keyboard.press("Escape")
     check(f"{who} Esc で 3 列に戻り、ほかの列も押せる・「⤢ 広げる」に戻り、そこにフォーカス・打った文は残る",
           (reading(), inert(), page.text_content("#readBtn"), page.evaluate("document.activeElement.id"), card(0).locator("textarea").input_value()),
@@ -488,6 +533,19 @@ def run_reading(page, who):
     page.click("#readBtn")
     page.click("#readBtn")
     check(f"{who} 「✕ 戻す」でも戻る", (reading(), inert()), (False, [False] * 4))
+    # 承認・入力待ち（shop が止まっている）。3 列では見出しに出さず、広げている間だけ数を出す。押すと戻り、承認のカードのボタンに移る
+    page.wait_for_selector("#asks .ask")
+    check(f"{who} 3 列のときは、承認・入力待ちの数を見出しに出さない（カードが見えている）", page.locator("#readAsks").is_visible(), False)
+    page.click("#readBtn")
+    check(f"{who} 広げている間は、承認・入力待ちの数を見出しに出す", (page.locator("#readAsks").is_visible(), page.text_content("#readAsks")),
+          (True, "承認・入力待ち 1 件 — 戻って見る"))
+    page.click("#readAsks")
+    check(f"{who} 押すと 3 列に戻り、承認のカード（ボタンがあればボタン）に移る",
+          (reading(), inert(), page.evaluate("document.activeElement.closest('#asks .ask') !== null")), (False, [False] * 4, True))
+    page.click("#readBtn")
+    page.evaluate("document.querySelectorAll('#asks .ask').forEach(e => e.remove())")
+    check(f"{who} 承認・入力待ちが無くなれば、数を消す", wait(lambda: not page.locator("#readAsks").is_visible()), True)
+    page.click("#readBtn")
     page.click("#readBtn")
     page.set_viewport_size({"width": 1099, "height": 900})
     check(f"{who} 広げたままスマホの幅に狭めると、広げるのをやめ、押せない印も外す",
@@ -535,6 +593,7 @@ with sync_playwright() as pw:
     run_wide(b.new_page(), "Chromium:")
     run_design(b.new_page(), "Chromium（見た目）:")
     run_sessions(b.new_page(), "Chromium（一覧の絞り込み）:")
+    run_sessions_nostore(b.new_page(), "Chromium（一覧・覚えておけない端末）:")
     run_reading(b.new_page(), "Chromium（広げて読む）:")
     run_phone(b.new_page(), "Chromium（スマホ）:")
     b.close()
