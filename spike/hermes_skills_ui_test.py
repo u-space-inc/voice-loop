@@ -7,6 +7,7 @@ iPhone を名乗る WebKit）で開く。Hermes の置き場は一時のフォ�
 見ること: 欄が提案より上に出る（要約・いつ・どこから）、扱えない形は採るを出さない、差分は開いたときに取り、描き直しても開いたまま、
 文は文字として出す（タグを解釈しない）、「採る」は2段（1回目では当てない・描き直しで確かめが消えない）、採った・捨てたの案内、
 分からないの赤い案内と採るが消えること、コンテナが使えないときの理由、承認待ちが無ければ欄を出さない。
+差分は行ごとに色を分ける（文字として入れる）。PC の幅（Chromium）では ⤢ で広げて読む（差分を高さで切らず字を大きく・開いた差分と確かめは残る・Esc で戻る）。
 使い方: uv run spike/hermes_skills_ui_test.py"""
 import json
 import os
@@ -51,7 +52,7 @@ def fake_run(container, mode, pid, raw, wait=90, env=None):
     CALLS.append((mode, pid))
     r = OUT.get(mode)
     if r is None:
-        r = {"check": {"result": "ok"}, "diff": {"result": "diff", "diff": f"--- a/SKILL.md\n+++ b/SKILL.md\n+<b>足す行</b> {pid}\n"},
+        r = {"check": {"result": "ok"}, "diff": {"result": "diff", "diff": f"--- a/SKILL.md\n+++ b/SKILL.md\n@@ -1,2 +1,2 @@\n-消す行\n+<b>足す行</b> {pid}\n 残る行\n"},
              "approve": {"result": "applied", "discarded": True}, "reject": {"result": "rejected", "discarded": True}}[mode]
     if r.get("result") in ("applied", "rejected") and r.get("discarded"):
         (PEND / f"{pid}.json").unlink(missing_ok=True)  # 台本が承認待ちから消すのにあたる
@@ -140,6 +141,10 @@ def run(page, who):
     first = page.locator("#sitBody .prop.hsk").nth(0)
     first.locator("summary").click()
     check(f"{who} 差分は開いたときに取り、文字として出す", wait(lambda: "+<b>足す行</b> aaaaaaaa" in (first.locator("pre.diff").text_content() or "")), True)
+    lines = first.locator("pre.diff span").evaluate_all("els => els.map(e => [e.className, e.textContent])")
+    check(f"{who} 差分は行ごとに色を分ける（足した行・消した行・位置の行に印、ファイル名の行と変わらない行には付けない）。タグは要素にしない",
+          (lines, first.locator("pre.diff b").count()),
+          ([["", "--- a/SKILL.md"], ["", "+++ b/SKILL.md"], ["hunk", "@@ -1,2 +1,2 @@"], ["del", "-消す行"], ["add", "+<b>足す行</b> aaaaaaaa"], ["", " 残る行"]], 0))
     page.evaluate("loadSituation()")
     time.sleep(0.6)
     first = page.locator("#sitBody .prop.hsk").nth(0)
@@ -199,9 +204,36 @@ def run(page, who):
     page.click("#sitClose")
 
 
+def run_wide(page, who):
+    """PC の幅: 右の「状況」で差分を開き、⤢ で広げて読む（差分は高さで切らず、字を大きく。広げても、開いた差分と採るの確かめは残る）"""
+    seed()
+    page.goto(BASE + "/")
+    page.wait_for_function("document.getElementById('conn').classList.contains('on')")
+    page.click("#tabSit")
+    page.wait_for_selector("#sitBody .prop.hsk")
+    first = page.locator("#sitBody .prop.hsk").nth(0)
+    first.locator("summary").click()
+    wait(lambda: "+<b>足す行</b>" in (first.locator("pre.diff").text_content() or ""))
+    style = lambda: first.locator("pre.diff").evaluate("e => [getComputedStyle(e).maxHeight, getComputedStyle(e).fontSize]")
+    narrow = style()
+    first.locator(".acts button").nth(0).click()  # 採るの 1 段目（確かめを出すだけ）
+    page.click("#readBtn")
+    rec = page.locator("#rec").bounding_box()
+    check(f"{who} ⤢ で右の列が画面いっぱいになり、差分は高さで切らず字を大きくする（3 列のときは高さで切り、小さい字）",
+          (page.evaluate("document.body.classList.contains('reading')"), [round(rec["x"]), round(rec["width"])], narrow[0] != "none", narrow[1], style()),
+          (True, [0, 1400], True, "11px", ["none", "13px"]))
+    check(f"{who} 広げても、開いた差分と採るの確かめはそのまま（当ててはいない）",
+          (first.locator("details").get_attribute("open") is not None, first.locator(".acts button").nth(0).text_content(), [c for c in CALLS if c[0] == "approve"]),
+          (True, "Hermes の手順に書き足す", []))
+    page.keyboard.press("Escape")
+    check(f"{who} Esc で 3 列に戻る（確かめはまだ残る）",
+          (page.evaluate("document.body.classList.contains('reading')"), first.locator(".acts button").nth(0).text_content()), (False, "Hermes の手順に書き足す"))
+
+
 with sync_playwright() as pw:
     b = pw.chromium.launch()
     run(b.new_page(viewport={"width": 390, "height": 844}), "Chromium:")
+    run_wide(b.new_page(viewport={"width": 1400, "height": 900}), "Chromium（PC）:")
     b.close()
     b = pw.webkit.launch()
     ctx = b.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True,
