@@ -333,6 +333,15 @@ if (hasMd) {
     if (n.tagName === 'INPUT') { if (n.getAttribute('type') !== 'checkbox') n.setAttribute('type', 'checkbox'); n.setAttribute('disabled', ''); }
   });
 }
+// 返事の HTML の扱い（許可リスト）。要素は Markdown が出すものと、害の無い書式だけ（style・form・SVG・MathML・動画・音声・枠などは入らない）。
+// 属性も Markdown が出すものだけ（id・name・class・style・for・form・popovertarget なども落ちる。$('agent') などは id で探すので、会話より
+// 後ろの部品と同じ id を書かれると送る宛先や文を差し替えられ、<label for="send"> や <button form="typedForm"> を押させると本物の送る・録音が動く）
+const PURIFY = { ALLOWED_TAGS: ['a', 'b', 'blockquote', 'br', 'code', 'dd', 'del', 'details', 'div', 'dl', 'dt', 'em', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+                                'hr', 'i', 'img', 'input', 'kbd', 'li', 'mark', 'ol', 'p', 'pre', 's', 'small', 'span', 'strong', 'sub', 'summary', 'sup',
+                                'table', 'tbody', 'td', 'th', 'thead', 'tr', 'u', 'ul'],
+                 ALLOWED_ATTR: ['href', 'title', 'alt', 'src', 'align', 'colspan', 'rowspan', 'start', 'type', 'checked', 'disabled', 'lang', 'dir'],
+                 ALLOW_DATA_ATTR: false, ALLOW_ARIA_ATTR: false };
+const ATTR_ON = { src: 'IMG', href: 'A', type: 'INPUT', checked: 'INPUT', disabled: 'INPUT' };
 function bubble(role, text, extra = '') {
   const el = document.createElement('div');
   el.className = 'msg ' + role + (extra ? ' ' + extra : '');
@@ -365,15 +374,6 @@ function markLeads(root) {
 // 返事の中のファイルの場所を拾い、PC の幅では下にサムネイルを並べる（押すと #viewer で大きく見る）。読むのは本体の /api/file で、
 // 本体が、そのセッションのフォルダの中の画像・動画だけを返す（ハブの会話では絶対パスだけ。返さないものは、並べたあとで消す）。
 // 拾う場所: Markdown の画像（その場では読み込まず文字にする。外のサイトの画像は出さない）・リンク・` ` で囲んだ場所・文の中の英数字の場所
-// 返事の HTML の扱い（許可リスト）。要素は Markdown が出すものと、害の無い書式だけ（style・form・SVG・MathML・動画・音声・枠などは入らない）。
-// 属性も Markdown が出すものだけ（id・name・class・style・for・form・popovertarget なども落ちる。$('agent') などは id で探すので、会話より
-// 後ろの部品と同じ id を書かれると送る宛先や文を差し替えられ、<label for="send"> や <button form="typedForm"> を押させると本物の送る・録音が動く）
-const PURIFY = { ALLOWED_TAGS: ['a', 'b', 'blockquote', 'br', 'code', 'dd', 'del', 'details', 'div', 'dl', 'dt', 'em', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-                                'hr', 'i', 'img', 'input', 'kbd', 'li', 'mark', 'ol', 'p', 'pre', 's', 'small', 'span', 'strong', 'sub', 'summary', 'sup',
-                                'table', 'tbody', 'td', 'th', 'thead', 'tr', 'u', 'ul'],
-                 ALLOWED_ATTR: ['href', 'title', 'alt', 'src', 'align', 'colspan', 'rowspan', 'start', 'type', 'checked', 'disabled', 'lang', 'dir'],
-                 ALLOW_DATA_ATTR: false, ALLOW_ARIA_ATTR: false };
-const ATTR_ON = { src: 'IMG', href: 'A', type: 'INPUT', checked: 'INPUT', disabled: 'INPUT' };
 const MEDIA_EXT = /\.(?:png|jpe?g|gif|webp|avif|mp4|m4v|webm|mov)$/i, VIDEO_EXT = /\.(?:mp4|m4v|webm|mov)$/i;
 const MEDIA_IN_TEXT = /(^|[^\w./-])((?:\/|\.{1,2}\/)?[\w.-]+(?:\/[\w.-]+)*\.(?:png|jpe?g|gif|webp|avif|mp4|m4v|webm|mov))(?![\w/-])/gi;
 const isLocal = s => !!s && !/^[a-z][a-z0-9+.-]*:/i.test(s) && !s.startsWith('//');
