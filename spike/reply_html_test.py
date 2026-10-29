@@ -10,7 +10,8 @@
 （form・popovertarget・commandfor）を押させても、本物の送る・録音は動かず、打ちかけの文は残る。返事の HTML に id・name・class・style・for・
 form などが残らず、style・form・SVG の要素も落ちる。Markdown の表示（表の寄せ・番号の始まり・チェックボックス・外へのリンク）は残る。返事の画像
 （<img>・<input type="image">・<svg><image>）は読み込まず説明の文字にし、表示しただけで本体の口（/api/hub/screen）や外のサイトへ要求を出さない。
-本体を指すリンクはリンクにしない（押しても本体の口を呼ばない）。
+本体を指すリンクはリンクにしない（押しても本体の口を呼ばない）。本体の別の名前を指すリンクは、押しても本体が断る（Sec-Fetch-Site）。
+見出し・引用・コードの表示も残る。
 使い方: uv run spike/reply_html_test.py"""
 import json
 import os
@@ -62,7 +63,7 @@ async def nothing(*a, **k):
 
 s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.intake_loop = s.watch_hermes_skills = nothing
 s.list_agents = lambda: [{"pane": "w1:p1", "title": "記事", "cwd": "/x/blog", "kind": "claude", "session": "s1", "status": "idle", "name": "", "hub": False}]
-REPLY = ("確認してください。\n\n| 項目 | 数 |\n|:--|--:|\n| 傷 | 3 |\n\n3. 三つ目から\n4. 四つ目\n\n- [x] 済んだこと\n- [ ] まだのこと\n\n"
+REPLY = ("# 見出し\n\n> 引用の文\n\n`手元のコード` と\n\n```\nブロックのコード\n```\n\n確認してください。\n\n| 項目 | 数 |\n|:--|--:|\n| 傷 | 3 |\n\n3. 三つ目から\n4. 四つ目\n\n- [x] 済んだこと\n- [ ] まだのこと\n\n"
          "[説明](https://example.invalid/doc \"題\") ![図の説明](out/a.png)\n\n"
          # 画面の部品と同じ id を書いて、本物を取り違えさせる（送る宛先と文）
          "<input id=\"agent\" value=\"w9:p9\"><input id=\"typed\" value=\"攻め手の文\"><span id=\"send\" class=\"msg\" style=\"color:red\" name=\"x\">赤</span>"
@@ -73,7 +74,9 @@ REPLY = ("確認してください。\n\n| 項目 | 数 |\n|:--|--:|\n| 傷 | 3 
          # 表示しただけで本体の口（承認の守りに使う記録を書き換える /api/hub/screen）や外へ要求を出させる、本体を指すリンクを押させる
          "<input type=\"image\" src=\"/api/hub/screen?pane=w1:p1\"><svg><image href=\"/api/hub/screen?pane=w1:p2\"></image></svg>"
          "<img src=\"/api/hub/screen?pane=w1:p4\" alt=\"本体の画像\"><img src=\"https://example.invalid/x.png\" alt=\"外の画像\">"
-         "<a href=\"/api/hub/screen?pane=w1:p3\">画面を見る</a>")
+         "<a href=\"/api/hub/screen?pane=w1:p3\">画面を見る</a>\n\n"
+         # 本体の別の名前を指すリンク（画面は 127.0.0.1 で開くので、localhost は別の場所としてリンクのまま残る）
+         "[別名で画面](http://localhost:8791/api/hub/screen?pane=w1:p5)")
 s.hermes_log("ai", REPLY)
 
 srv = uvicorn.Server(uvicorn.Config(s.app, host="127.0.0.1", port=PORT, log_level="warning"))
@@ -104,6 +107,9 @@ def run(page, who, width):
     reply = "#log .msg.ai"
     check(f"{who} 返事の HTML に id・name・class・style・for・form などが残らず、style と form の要素も落ちる",
           page.locator(f"{reply} :is([id], [name], [class]:not(.tw):not(.lead), [style], [for], [form], [popovertarget], [commandfor], [command], style, form)").count(), 0)
+    check(f"{who} 見出し・引用・コードの表示は残る", page.evaluate(f"""(() => {{ const r = document.querySelector('{reply}');
+            return [r.querySelector('h1').textContent, r.querySelector('blockquote').textContent.trim(), r.querySelector('p code').textContent,
+                    r.querySelector('pre code').textContent.trim()]; }})()"""), ["見出し", "引用の文", "手元のコード", "ブロックのコード"])
     check(f"{who} Markdown の表示は残る（表の寄せ・番号の始まり・チェックボックス・外へのリンクと題）",
           page.evaluate(f"""(() => {{ const r = document.querySelector('{reply}');
             return [[...r.querySelectorAll('th')].map(e => e.getAttribute('align')), r.querySelector('ol').getAttribute('start'),
@@ -118,6 +124,14 @@ def run(page, who, width):
     link.click()
     time.sleep(0.4)
     check(f"{who} 本体を指すリンクはリンクにしない（押しても本体の口を呼ばない）", (link.get_attribute("href"), [x for x in asked if "/api/hub/screen" in x]), (None, []))
+    got = []
+    page.context.on("response", lambda r: got.append((r.url.split("?")[0], r.status)) if "/api/hub/screen" in r.url else None)
+    with page.context.expect_page() as tab:
+        page.locator(reply).get_by_text("別名で画面", exact=True).click()
+    tab.value.wait_for_load_state()
+    check(f"{who} 本体の別の名前を指すリンクを押しても、本体が断る（ブラウザが別のサイトからと知らせる）",
+          wait(lambda: page.evaluate("0") == 0 and got != []) and got, [(f"http://localhost:{PORT}/api/hub/screen", 403)])
+    tab.value.close()
     check(f"{who} 画面の部品は本物のまま（id で探して、会話の中の要素を取らない）",
           page.evaluate("['agent', 'typed', 'send', 'talk', 'status'].map(id => document.getElementById(id).closest('#log') === null)"), [True] * 5)
     page.evaluate("(() => { window.__sent = []; const o = ws.send.bind(ws); ws.send = m => { window.__sent.push(m); if (typeof m !== 'string' || JSON.parse(m).type !== 'text') o(m); }; })()")

@@ -5,6 +5,9 @@
   別のドメインを 127.0.0.1 に向ける攻撃（DNS リバインディング）を断つため
 - Origin … 付いていれば、開いている画面と同じ場所（Host か、Tailscale Serve が渡す X-Forwarded-Host）だけ。
   ブラウザは別のサイトからの接続に必ず Origin を付け、ページの側では書き換えられない
+- Sec-Fetch-Site … 本体の口（/api/…）と WebSocket（/ws）は、ブラウザが別のサイトからの要求と知らせてきたら（cross-site・same-site）断る。
+  リンク・画像・ページの移動の GET には Origin が付かないので、別のサイトのページや、別の名前（localhost と 127.0.0.1 など）を指す
+  リンクから、本体の口を呼ばせられないように。画面（/）は、ほかのアプリやサイトのリンクから開けるよう、ここでは断らない
 Origin の無い接続（hubctl、curl、画面そのものの読み込み）は通す。ブラウザの外からここへ届くのは、
 この Mac の上のプログラムと tailnet の端末だけで、そこは信頼する範囲として扱う（README「接続できる範囲」）。
 - コンテナ … Docker（OrbStack など）の中からは host.docker.internal という名前で届く。そこからは、Hermes の hubctl が使う
@@ -131,6 +134,9 @@ def problem(headers: dict[str, str], method: str = "GET", path: str = "", contai
         return None
     if not _allowed_name(name):
         return f"Host {host!r} はこの Mac の名前ではありません"
+    site = headers.get("sec-fetch-site", "").strip().lower()
+    if site and site not in ("same-origin", "none") and (path.startswith("/api/") or path == "/ws"):
+        return f"別のサイトからの {path} は使えません（Sec-Fetch-Site {site}）"
     if origin is None:
         return None
     same = {host, headers.get("x-forwarded-host", "").strip().lower()} - {""}

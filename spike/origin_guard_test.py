@@ -34,6 +34,11 @@ PASS = [
     {"host": "host.docker.internal:8790", "x-vl-key": "k1", "_path": "/api/hub/close", "_method": "POST"},
     # 接続のもとがコンテナの中継（OrbStack など）でも、Host を偽っていても、鍵つきの hubctl の口は通す
     {"host": "127.0.0.1:8790", "x-vl-key": "k1", "_path": "/api/hub/sessions", "_container": True},
+    # ブラウザが知らせる要求のもと（Sec-Fetch-Site）。同じ画面から・あなたが打った URL は口を使える。画面そのものは、ほかのリンクからも開ける
+    {"host": "127.0.0.1:8790", "sec-fetch-site": "same-origin", "_path": "/api/agents"},
+    {"host": TS, "sec-fetch-site": "same-origin", "origin": f"https://{TS}", "_path": "/ws", "_method": ""},
+    {"host": "127.0.0.1:8790", "sec-fetch-site": "none", "_path": "/api/hub/screen"},
+    {"host": "127.0.0.1:8790", "sec-fetch-site": "cross-site", "_path": "/"},
 ]
 BLOCK = [
     {"host": "127.0.0.1:8790", "origin": "https://evil.example"},  # 別のサイトのページ
@@ -58,6 +63,11 @@ BLOCK = [
     {"host": "host.docker.internal:8790", "x-vl-key": "k1", "_path": "/api/agents"},  # 画面用の API
     {"host": "host.docker.internal:8790", "x-vl-key": "k1", "_path": "/api/answer", "_method": "POST"},
     {"host": "host.docker.internal:8790", "x-vl-key": "k1", "_path": "/"},  # 画面
+    # 別のサイトのページや、別の名前（localhost と 127.0.0.1 など）を指すリンク・画像からの、本体の口と WebSocket（Origin が付かない GET も）
+    {"host": "127.0.0.1:8790", "sec-fetch-site": "cross-site", "_path": "/api/hub/screen"},
+    {"host": "localhost:8790", "sec-fetch-site": "cross-site", "_path": "/api/hub/screen"},
+    {"host": TS, "sec-fetch-site": "same-site", "_path": "/api/agents"},
+    {"host": "127.0.0.1:8790", "sec-fetch-site": "cross-site", "_path": "/ws", "_method": ""},
     {"host": "host.docker.internal:8790", "x-vl-key": "k1", "_path": "/ws", "_method": ""},  # WebSocket
     {"host": "host.docker.internal:8790", "x-vl-key": "k1", "_path": "/api/hub/sessions", "origin": "http://host.docker.internal:8790"},  # コンテナ経由のブラウザ
     {"host": "host.docker.internal.evil.example:8790", "_path": "/api/hub/sessions"},
