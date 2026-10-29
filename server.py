@@ -986,7 +986,7 @@ def api_history(pane: str):
 # ---------- 成果物（画像・動画）を画面で見る ----------
 # 会話に出てきたファイルを、PC の画面がサムネイルと大きく見る画面で読む口。返すのは次を全部満たすものだけ。
 #   - そのセッションのフォルダの中（symlink はたどった先で見る）。ハブと Hermes の会話では、どのセッションからの場所か分からないので、
-#     いまあるセッションのどれかのフォルダの中を指す絶対パスだけ
+#     いまあるセッションのどれかのフォルダの中を指す絶対パスか、「フォルダ名/フォルダからの場所」（フォルダ名が一つに決まるときだけ）
 #   - フォルダから先の名前に、. で始まるもの（隠しフォルダ・隠しファイル）が無い
 #   - 画像と動画の拡張子（ARTIFACT_TYPES）。型は拡張子で決め、中身から推し量らせない（nosniff）。SVG・HTML は返さない
 #   - フォルダがホームか / そのもののセッションからは返さない（写真などを丸ごと見せないため）
@@ -1025,9 +1025,14 @@ def artifact_file(pane: str, raw: str) -> tuple[Path | None, str]:
         return None, "見てよいフォルダがありません"
     p = Path(raw)
     if not p.is_absolute():
-        if hub:
-            return None, "ハブの会話では、絶対パスだけを見ます"
-        p = roots[0] / p
+        if hub:  # ハブは各セッションのフォルダ名を知っているので「フォルダ名/フォルダからの場所」で書ける。同じフォルダ名が二つ以上なら決めない
+            name, _, rest = raw.partition("/")
+            hits = {r for r in roots if r.name == name}
+            if len(hits) != 1 or not rest:
+                return None, "ハブの会話では、絶対パスか「フォルダ名/場所」だけを見ます（そのフォルダ名のセッションが無いか、二つ以上あります）"
+            p = hits.pop() / rest
+        else:
+            p = roots[0] / p
     try:
         real = p.resolve(strict=True)
     except (OSError, RuntimeError):

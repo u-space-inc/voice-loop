@@ -263,7 +263,15 @@
   body.reading .topic, body.reading .prop { font-size:14px; } body.reading .topic .now, body.reading .topic .nx, body.reading .sitMeta { font-size:13px; }
   body.reading pre.diff { max-height:none; font-size:13px; line-height:1.55; padding:10px 14px; }
   /* 成果物: 返事に出てきた画像・動画のサムネイル（PC の幅だけ）。押すと #viewer で大きく見る。Markdown の画像は、その場では文字（.mref）にする */
-  .mref { color:var(--mute); }
+  .mref { color:var(--mute); } .mref.inl { display:none; }
+  /* 文の中に出す成果物（Markdown の画像）。押すと大きく見る。下の説明は Markdown の ![説明] の文 */
+  .mfig { display:flex; flex-direction:column; gap:4px; width:min(100%, 360px); margin:6px 0 10px; }
+  .mfig .thumb { display:block; width:100%; padding:0; border:1px solid var(--w-rule); border-radius:8px; background:var(--w-field); overflow:hidden; font:inherit; }
+  .mfig .thumb:hover { border-color:var(--w-line); }
+  .mfig .frame { position:relative; display:block; aspect-ratio:16 / 10; max-height:240px; background:#0b0c0e; }
+  .mfig .frame img, .mfig .frame video { display:block; width:100%; height:100%; object-fit:contain; }
+  .mfig .play { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#fff; font-size:22px; text-shadow:0 1px 4px #000; }
+  .mfig .cap { font-size:12px; line-height:1.5; color:var(--w-t3); }
   .media { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
   body:not(.wide) .media { display:none; }
   .media .thumb { display:flex; flex-direction:column; width:148px; padding:0; border:1px solid var(--w-rule); border-radius:8px; background:var(--w-field); color:var(--w-t3); font:inherit; text-align:left; overflow:hidden; }
@@ -384,7 +392,7 @@ function findMedia(el) {  // 文に出てくる順に拾う（同じ場所は 1 
   for (const im of el.querySelectorAll('img')) {
     const src = unurl(im.dataset.src || ''), alt = im.getAttribute('alt') || '', local = isLocal(src);
     const ref = node('span', 'mref', local ? `🖼 ${alt || src.split('/').pop()}` : `🖼 ${alt ? alt + '（' : '（'}外の画像は出しません）`);
-    if (local) ref.dataset.path = src;
+    if (local) { ref.dataset.path = src; ref.dataset.alt = alt; }  // PC の幅では、ここに画像を出す（mountMedia）
     im.replaceWith(ref);
   }
   const w = document.createTreeWalker(el, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
@@ -401,18 +409,22 @@ function findMedia(el) {  // 文に出てくる順に拾う（同じ場所は 1 
   }
   el._media = found;
 }
+// Markdown の画像（![説明](場所)）は、文の中のその場所に、説明つきで出す（どの項目の根拠かが分かるように）。ほかの場所は返事の下に並べる。
+// 大きく見る画面では、どちらも文に出てくる順に送る
 function mountMedia(el) {
   if (el._mounted || !el._media || !el._media.length) return;
   el._mounted = new AbortController();  // スマホの幅にしたら、読み込みの途中も止める（unmountMedia）
-  const strip = node('div', 'media'), items = [];
+  const strip = node('div', 'media'), items = [], figs = [], refs = [...el.querySelectorAll('.mref')];
   for (const path of el._media) {
     const url = `/api/file?pane=${encodeURIComponent(el.dataset.pane || '')}&path=${encodeURIComponent(path)}`, video = VIDEO_EXT.test(path);
     const b = node('button', 'thumb'), frame = node('span', 'frame'), it = { url, path, video, el: b };
     b.title = path; b.setAttribute('aria-label', `${video ? '動画' : '画像'}を大きく見る: ${path}`);
+    const ref = refs.find(r => r.dataset.path === path), fig = ref && node('span', 'mfig');
     const drop = () => {  // 本体が返さないもの。大きく見る画面がこの並びを開いていれば、位置を直す（開いている項目なら隣へ、無ければ閉じる）
       b.querySelectorAll('video').forEach(stopVideo); b.remove();
+      if (fig) { fig.remove(); ref.classList.remove('inl'); }  // 出せなければ「🖼 説明」の文字に戻す
       const i = items.indexOf(it); if (i < 0) return;
-      items.splice(i, 1); if (!items.length) strip.remove();
+      items.splice(i, 1); if (!strip.children.length) strip.remove();
       if (!viewer || viewer.items !== items) return;
       if (viewer.cur !== it) { viewerPos(); return; }
       const next = items[i] || items[i - 1];
@@ -425,11 +437,15 @@ function mountMedia(el) {
     } else {
       const im = document.createElement('img'); im.alt = ''; im.loading = 'lazy'; im.onerror = drop; im.src = url; frame.appendChild(im);
     }
-    b.append(frame, node('span', 'nm', path.split('/').pop()));
     b.onclick = () => openViewer(items, it, b);
-    items.push(it); strip.appendChild(b);
+    items.push(it);
+    if (fig) {  // 文の中に、説明つきで
+      b.appendChild(frame); fig.append(b, node('span', 'cap', ref.dataset.alt || path.split('/').pop()));
+      ref.after(fig); ref.classList.add('inl'); figs.push([fig, ref]);
+    } else { b.append(frame, node('span', 'nm', path.split('/').pop())); strip.appendChild(b); }
   }
-  el.appendChild(strip); el._strip = strip;  // 外すときはこの参照で（返事が書いた要素を、クラス名などで取り違えない）
+  if (strip.children.length) el.appendChild(strip);
+  el._strip = strip; el._figs = figs;  // 外すときはこの参照で（返事が書いた要素を、クラス名などで取り違えない）
 }
 function clearLog() { $('log').querySelectorAll('.msg.ai').forEach(unmountMedia); $('log').innerHTML = ''; }  // 会話を描き直す・相手を替えるとき（読み込みの途中も止める）
 function stopVideo(v) { v.pause(); v.removeAttribute('src'); v.load(); }  // 外すだけでは読み込みが止まるとは限らないので、src を外して読み込み直させる
@@ -437,6 +453,8 @@ function unmountMedia(el) {  // サムネイルを外す（動画の読み込み
   if (!el._mounted) return;
   el._mounted.abort(); el._mounted = null;
   const m = el._strip; el._strip = null; if (m) { m.querySelectorAll('video').forEach(stopVideo); m.remove(); }
+  for (const [fig, ref] of el._figs || []) { fig.querySelectorAll('video').forEach(stopVideo); fig.remove(); ref.classList.remove('inl'); }
+  el._figs = null;
 }
 function sys(text) { const el = document.createElement('div'); el.className = 'sys'; el.textContent = text; $('log').appendChild(el); $('log').scrollTop = $('log').scrollHeight; }
 const curAgent = () => agents.find(a => a.pane === $('agent').value);
