@@ -9,6 +9,7 @@
 セッションの一覧で話し相手が替わる（文字で送ると選んだ相手に届く）・記憶の一覧（字数・上限・文字として出す）・足す・直す（取り直しても編集の途中が残る）・
 消す（2 段）・当たったか分からないときの赤い案内と次の書き込みを断ること・1099px と 1100px の境・横にはみ出さない・PC でも話す・停止・文字・声・🔇・↻ が出る・
 スマホの幅に戻すと今の形（💡 📋 の相互の開閉、覚えていることの追加と削除）に戻り、もう一度 PC にしても壊れない。
+スマホの幅では、▶ タップして再生・ハブを起動を次の行に全幅で出し、状態の文を細い列に折らない（PC の幅では同じ行のまま）。
 PC の見た目（Chromium）: 頼んだ件を「動いている」「終わった」に分け、状態の色の帯・指示の文は 2 行で切って押すと全文（取り直しても開いたまま）・
 ハブの返事の行頭の【見出し】を太く・記憶の上限との棒・長い項目は 4 行で切って「続きを表示」・直す・消すはマウスを載せた項目と消すの確かめ中だけ出す・
 入力は文字の欄が上で、話す・停止は相手と声と同じ行に小さく。
@@ -568,6 +569,29 @@ def run_phone(page, who):
           (False, False, False, "side,rec,asks,tasks,situation,log,bar,viewer"))
     check(f"{who} スマホでは 💡 📋 が出て、どちらも閉じている", (visible(page, "#sitBtn"), visible(page, "#tasksBtn"), visible(page, "#situation"), visible(page, "#tasks")),
           (True, True, False, False))
+    # ▶ タップして再生・ハブを起動が出ても、状態の文が細い列に折れない（2026-10-29 に iPhone で、文の幅が 36px になり 2〜3 字ずつに折れていた）
+    row = """id => { const r = i => document.getElementById(i).getBoundingClientRect();
+      const t = r('statusText'), b = r(id), s = r('sitBtn'), st = r('status');
+      return {text: Math.round(t.width), lines2: t.height < 44, below: b.top >= t.bottom - 1, full: Math.round(b.width) === Math.round(st.width),
+              sameRow: Math.abs((s.top + s.bottom) / 2 - (t.top + t.bottom) / 2) < 4, h: Math.round(st.height)}; }"""
+    page.evaluate("showTap(true); setStatus('音声の再生にはタップが必要です')")
+    got = page.evaluate(row, "tap")
+    check(f"{who} ▶ タップして再生は次の行に全幅で出て、状態の文は 💡 と同じ行で 2 行までに収まる（文の幅 {got['text']}px）",
+          (got["text"] >= 120, got["lines2"], got["below"], got["full"], got["sameRow"]), (True, True, True, True, True))
+    page.evaluate("showTap(false)")
+    one = page.evaluate(row, "tap")["h"]
+    check(f"{who} 押して消えると、ボタンの行が消える（帯の高さ {one}px）", one <= 48, True)
+    page.evaluate("document.getElementById('hubStart').style.display = 'inline-block'; setStatus('ハブを起動しています…（20秒ほど）')")
+    got = page.evaluate(row, "hubStart")
+    check(f"{who} ハブを起動も同じ（次の行に全幅、状態の文は 💡 と同じ行）", (got["text"] >= 120, got["lines2"], got["below"], got["full"], got["sameRow"]), (True, True, True, True, True))
+    page.set_viewport_size({"width": 1400, "height": 900})
+    wait(lambda: page.evaluate("document.body.classList.contains('wide')"))
+    page.evaluate("showTap(true)")
+    t, b = (page.evaluate(f"(() => {{ const r = document.getElementById('{i}').getBoundingClientRect(); return (r.top + r.bottom) / 2; }})()") for i in ("statusText", "tap"))
+    check(f"{who} PC の幅では、これまでどおり同じ行に出す", abs(t - b) < 4, True)
+    page.evaluate("showTap(false); document.getElementById('hubStart').style.display = 'none'")
+    page.set_viewport_size({"width": 390, "height": 844})
+    wait(lambda: not page.evaluate("document.body.classList.contains('wide')"))
     # PC にして、戻す（行き来）
     for _ in range(2):
         page.set_viewport_size({"width": 1400, "height": 900})
