@@ -274,12 +274,19 @@ if (hasMd) {
   }] });
   DOMPurify.addHook('afterSanitizeAttributes', n => { if (n.tagName === 'A') { n.setAttribute('target', '_blank'); n.setAttribute('rel', 'noopener noreferrer'); } });
 }
+// 返事の HTML の扱い。落とす要素: 読み込みを起こすもの（動画・音声）、外へ通信できる CSS（style。@import・@font-face・url()）、form。
+// 属性は、Markdown が出すものだけを残す（許可リスト）。id・name・class・style・for・form・popovertarget などの、画面の部品を指したり
+// 部品に化けたりする属性は落とす（$('agent') などは id で探すので、会話より後ろの部品と同じ id を書かれると送る宛先や文を差し替えられ、
+// <label for="send"> や <button form="typedForm"> を押させると、本物の送る・録音が動く）。data-・aria- も残さない
+const PURIFY = { FORBID_TAGS: ['video', 'audio', 'source', 'track', 'picture', 'style', 'form'],
+                 ALLOWED_ATTR: ['href', 'title', 'alt', 'src', 'align', 'colspan', 'rowspan', 'start', 'type', 'checked', 'disabled', 'lang', 'dir'],
+                 ALLOW_DATA_ATTR: false, ALLOW_ARIA_ATTR: false };
 function bubble(role, text, extra = '') {
   const el = document.createElement('div');
   el.className = 'msg ' + role + (extra ? ' ' + extra : '');
   if (role === 'ai' && hasMd) {
     el.classList.add('md');
-    el.innerHTML = DOMPurify.sanitize(marked.parse(text));
+    el.innerHTML = DOMPurify.sanitize(marked.parse(text), PURIFY);
     el.querySelectorAll('table').forEach(t => { const w = document.createElement('div'); w.className = 'tw'; t.replaceWith(w); w.appendChild(t); });
     markLeads(el);
   } else el.textContent = text;

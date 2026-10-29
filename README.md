@@ -286,6 +286,7 @@ PC の画面では、セッションと頼んだ件の左に色の帯が付き�
 | Hermes の手順の書き足し（承認待ち）を本体が当てるのは、あなたが画面の 💡 で 2 段で押したときだけ（一覧・差分・採る・捨てるの口はコンテナから使えない）。当てる処理は、コンテナの中で Hermes の利用者として、本体に固定した台本で動く | `spike/hermes_skills_test.py`・`spike/hermes_skills_ui_test.py`・`spike/hermes_skills_container_test.py`（本物のコンテナ）・`spike/container_guard_test.py` |
 | ふつうの使い方（Hermes が乗せられていない）では、当てるのは画面に出した記録と同じ中身のときだけ。同じ書き足しを二度当てず、当たったか分からないもの（失敗・時間切れ・本体の停止）は当て直さない。時間切れのあとは、コンテナの中の台本が終わったと確かめるまで、次の採る・捨てるを断る | `spike/hermes_skills_test.py`・`spike/hermes_skills_container_test.py` |
 | Hermes の記憶を本体が書くのは、あなたが PC の画面の「記憶」で足す・直す・消す（2 段）を押したときだけ（一覧と書き込みの口はコンテナから使えない）。書くのはコンテナの中で Hermes の利用者として、本体に固定した台本が Hermes 自身の記憶の処理で行い、直す・消すは画面に出した項目と本文が同じときだけ。前もって仕込まれた symlink・hardlink、上限を超えた項目、読めない・形の違う設定、managed の環境では書かない。当たったか分からないときは送り直さず、台本が終わったと確かめるまで次を断る | `spike/hermes_memory_test.py`・`spike/hermes_memory_container_test.py`（本物のコンテナ）・`spike/pc_ui_test.py`・`spike/container_guard_test.py` |
+| 返事（Markdown と HTML）に画面の部品と同じ id を書かれても、送る宛先と文は本物の欄から取る。返事の label や button を押させても、本物の送る・録音は動かない（返事の HTML の属性は Markdown が出すものだけを残し、id・name・class・style・for・form なども落とす。style・form・動画と音声の要素も落とす） | `spike/reply_html_test.py` |
 | 本体は Hermes の置き場（`~/.hermes`）で何も動かさず、書かない（git も動かさない）。読むのは承認待ちの記録と記憶のファイルだけで、symlink・通常でないファイル・ほかの名前からも指されるファイル・大きすぎるファイルは読まない（置き場を通して Mac のほかのファイルを読まされない） | `spike/hermes_skills_test.py` |
 
 この表に書いた試験のファイルが実在することは、`spike/claims_test.py` が確かめます。
