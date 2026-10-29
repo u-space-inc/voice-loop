@@ -82,7 +82,12 @@ TEXT = ("検証の結果です。\n\n- 差分の画像は `out/a.png` です\n- 
         "<form action=\"https://example.invalid/f\"><button>送る</button></form>"
         # 本物の部品を押させる（label の for・button の form・popovertarget・commandfor）
         "<label for=\"send\">画像を大きく見る</label> <label for=\"talk\">録音を見る</label> <button form=\"typedForm\">図を開く</button>"
-        "<button popovertarget=\"viewer\" commandfor=\"viewer\" command=\"--x\">開く</button>")
+        "<button popovertarget=\"viewer\" commandfor=\"viewer\" command=\"--x\">開く</button>"
+        # 表示しただけで本体の口（承認の守りに使う記録を書き換える /api/hub/screen）へ要求を出させる、本体を指すリンクを押させる
+        "<input type=\"image\" src=\"/api/hub/screen?pane=w1:p1\"><svg><image href=\"/api/hub/screen?pane=w1:p2\"></image></svg>"
+        "<a href=\"/api/hub/screen?pane=w1:p3\">画面を見る</a>\n\n"
+        # Markdown の表示（残るもの）
+        "| 項目 | 数 |\n|:--|--:|\n| 傷 | 3 |\n\n3. 三つ目から\n4. 四つ目\n\n- [x] 済んだこと\n- [ ] まだのこと\n\n[説明](https://example.invalid/doc \"題\")")
 TEXT2 = "動画は out/missing.mp4、画像は out/a.png と out/b.webp です。"  # 無い動画は、有無の確かめ（HEAD）が遅れて返る
 TEXT3 = "動画は out/gone.mp4 だけです。"
 # 読み込みの途中で止めることを見る会話（段ごとに別の無い動画にして、ブラウザが前の結果を使わず、必ず新しく要求するようにする）
@@ -127,7 +132,8 @@ EXPECT = ["a.png", "b.webp", "clip.webm", "c.png"]  # 文に出てくる順。�
 
 
 def run(page, who):
-    done, failed = [], []  # 外のサイトへの要求の、終わり方（CSP で止まった要求も request には出るので、失敗の理由で見る）
+    done, failed, asked = [], [], []  # 外のサイトへの要求の、終わり方（CSP で止まった要求も request には出るので、失敗の理由で見る）と、出た要求
+    page.on("request", lambda r: asked.append(r.url))
     page.on("requestfinished", lambda r: done.append(r.url))
     page.on("requestfailed", lambda r: failed.append((r.url, r.failure)))
     failed_reqs = []  # 失敗した要求そのもの（同じ URL の GET と HEAD を分けて見るため）
@@ -151,14 +157,28 @@ def run(page, who):
     check(f"{who} 返事に画面の部品と同じ id を書かれても、送る宛先と文は本物の欄から取る（返事の id・class・name と form は落とす）",
           (sent, page.locator("#log .msg.ai :is([id], [name], form)").count(), page.locator("#log .msg.ai .media").count()), ([["w1:p1", "本物の文"]], 0, 1))
     page.fill("#bar #typed", "まだ送らない文")
-    for text in ("画像を大きく見る", "録音を見る", "図を開く", "開く"):
-        page.locator("#log .msg.ai", has_text=text).get_by_text(text, exact=True).click()
+    for text in ("画像を大きく見る", "録音を見る", "図を開く", "開く"):  # label・button は落ちて文字だけが残る。その文字を押す
+        loc = page.locator("#log .msg.ai").get_by_text(text)
+        if loc.count():
+            loc.first.click()
     time.sleep(0.4)
     after = page.evaluate("window.__sent.map(m => JSON.parse(m)).filter(m => m.type === 'text').length")
-    check(f"{who} 返事の label・button を押させても、本物の送る・録音は動かない（for・form・popovertarget・commandfor を落とす）",
-          (after, page.input_value("#bar #typed"), page.locator("#talk.rec").count(), page.locator("#viewer").is_visible(),
-           page.locator("#log .msg.ai :is([for], [form], [popovertarget], [commandfor], [command])").count()), (1, "まだ送らない文", 0, False, 0))
+    check(f"{who} 返事の label・button は落ち、残った文字を押しても、本物の送る・録音は動かない（for・form・popovertarget・commandfor も残らない）",
+          (page.locator("#log .msg.ai :is(label, button):not(.thumb)").count(), after, page.input_value("#bar #typed"), page.locator("#talk.rec").count(),
+           page.locator("#viewer").is_visible(), page.locator("#log .msg.ai :is([for], [form], [popovertarget], [commandfor], [command])").count()),
+          (0, 1, "まだ送らない文", 0, False, 0))
     page.fill("#bar #typed", "")
+    link = page.locator("#log .msg.ai").get_by_text("画面を見る", exact=True)
+    link.click()
+    time.sleep(0.4)
+    check(f"{who} 返事の input type=image・SVG の image を表示しても、本体を指すリンクを押しても、本体の口を呼ばない（SVG は落ち、リンクにしない）",
+          (page.locator("#log .msg.ai :is(svg, image, input[src])").count(), link.get_attribute("href"), [x for x in asked if "/api/hub/screen" in x]), (0, None, []))
+    check(f"{who} Markdown の表示は残る（表の寄せ・番号の始まり・チェックボックス・外へのリンクと題）",
+          page.evaluate("""(() => { const r = document.querySelector('#log .msg.ai');
+            const a = [...r.querySelectorAll('a[href]')].find(e => e.textContent === '説明');
+            return [[...r.querySelectorAll('th')].map(e => e.getAttribute('align')), r.querySelector('ol[start]').getAttribute('start'),
+                    [...r.querySelectorAll('li > input')].map(e => [e.type, e.checked, e.disabled]), [a.getAttribute('href'), a.getAttribute('title'), a.getAttribute('target')]]; })()"""),
+          [["left", "right"], "3", [["checkbox", True, True], ["checkbox", False, True]], ["https://example.invalid/doc", "題", "_blank"]])
     # 画面の CSP そのもの（返事の HTML を落とす働きを抜けた場合の守り）: 外のサイトの画像・CSS・フォントは、ブラウザが止める
     page.evaluate("""(() => { const d = document.createElement('div');
       d.innerHTML = '<img src="https://example.invalid/z.png"><link rel="stylesheet" href="https://example.invalid/s.css">'
