@@ -272,21 +272,34 @@ if (hasMd) {
       if (m) return { type: 'strong', raw: m[0], text: m[1], tokens: this.lexer.inlineTokens(m[1]) };
     },
   }] });
-  DOMPurify.addHook('afterSanitizeAttributes', n => { if (n.tagName === 'A') { n.setAttribute('target', '_blank'); n.setAttribute('rel', 'noopener noreferrer'); } });
+  // 属性は要素ごとに限る（src は画像、href はリンク、type・checked・disabled はチェックボックス）。ほかの要素の src・href は、表示しただけで
+  // 本体の口（/api/…）や外のサイトへ要求を出せる（<input type="image" src>・<svg><image href>）
+  DOMPurify.addHook('uponSanitizeAttribute', (n, d) => { const only = ATTR_ON[d.attrName]; if (only && n.tagName !== only) d.keepAttr = false; });
+  DOMPurify.addHook('afterSanitizeAttributes', n => {
+    if (n.tagName === 'A' && n.hasAttribute('href')) {  // 本体と同じ場所を指すリンクは、リンクにしない（押させて本体の口を呼ばせない）
+      let same = true; try { same = new URL(n.getAttribute('href'), location.href).origin === location.origin; } catch {}
+      if (same) n.removeAttribute('href'); else { n.setAttribute('target', '_blank'); n.setAttribute('rel', 'noopener noreferrer'); }
+    }
+    if (n.tagName === 'IMG') { n.removeAttribute('src'); n.removeAttribute('srcset'); }  // 返事の画像は読み込まない（差し込む前に外す）
+    if (n.tagName === 'INPUT') { if (n.getAttribute('type') !== 'checkbox') n.setAttribute('type', 'checkbox'); n.setAttribute('disabled', ''); }
+  });
 }
-// 返事の HTML の扱い。落とす要素: 読み込みを起こすもの（動画・音声）、外へ通信できる CSS（style。@import・@font-face・url()）、form。
-// 属性は、Markdown が出すものだけを残す（許可リスト）。id・name・class・style・for・form・popovertarget などの、画面の部品を指したり
-// 部品に化けたりする属性は落とす（$('agent') などは id で探すので、会話より後ろの部品と同じ id を書かれると送る宛先や文を差し替えられ、
-// <label for="send"> や <button form="typedForm"> を押させると、本物の送る・録音が動く）。data-・aria- も残さない
-const PURIFY = { FORBID_TAGS: ['video', 'audio', 'source', 'track', 'picture', 'style', 'form'],
+// 返事の HTML の扱い（許可リスト）。要素は Markdown が出すものと、害の無い書式だけ（style・form・SVG・MathML・動画・音声・枠などは入らない）。
+// 属性も Markdown が出すものだけ（id・name・class・style・for・form・popovertarget なども落ちる。$('agent') などは id で探すので、会話より
+// 後ろの部品と同じ id を書かれると送る宛先や文を差し替えられ、<label for="send"> や <button form="typedForm"> を押させると本物の送る・録音が動く）
+const PURIFY = { ALLOWED_TAGS: ['a', 'b', 'blockquote', 'br', 'code', 'dd', 'del', 'details', 'div', 'dl', 'dt', 'em', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+                                'hr', 'i', 'img', 'input', 'kbd', 'li', 'mark', 'ol', 'p', 'pre', 's', 'small', 'span', 'strong', 'sub', 'summary', 'sup',
+                                'table', 'tbody', 'td', 'th', 'thead', 'tr', 'u', 'ul'],
                  ALLOWED_ATTR: ['href', 'title', 'alt', 'src', 'align', 'colspan', 'rowspan', 'start', 'type', 'checked', 'disabled', 'lang', 'dir'],
                  ALLOW_DATA_ATTR: false, ALLOW_ARIA_ATTR: false };
+const ATTR_ON = { src: 'IMG', href: 'A', type: 'INPUT', checked: 'INPUT', disabled: 'INPUT' };
 function bubble(role, text, extra = '') {
   const el = document.createElement('div');
   el.className = 'msg ' + role + (extra ? ' ' + extra : '');
   if (role === 'ai' && hasMd) {
     el.classList.add('md');
     el.innerHTML = DOMPurify.sanitize(marked.parse(text), PURIFY);
+    el.querySelectorAll('img').forEach(im => im.replaceWith(`🖼 ${im.getAttribute('alt') || '画像'}`));  // 読み込まず、説明の文字にする
     el.querySelectorAll('table').forEach(t => { const w = document.createElement('div'); w.className = 'tw'; t.replaceWith(w); w.appendChild(t); });
     markLeads(el);
   } else el.textContent = text;

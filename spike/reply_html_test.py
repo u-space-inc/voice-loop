@@ -8,7 +8,9 @@
 入力の欄（#bar）があるので、返事に同じ id を書くと本物より先に見つかる。
 見ること: 返事に送る宛先と文の欄と同じ id（agent・typed）を書かれても、あなたが打った文を、選んだ相手へ送る。返事の label（for）・button
 （form・popovertarget・commandfor）を押させても、本物の送る・録音は動かず、打ちかけの文は残る。返事の HTML に id・name・class・style・for・
-form などが残らず、style と form の要素も落ちる。Markdown の表示（表の寄せ・番号の始まり・チェックボックス・リンク・画像の説明）は残る。
+form などが残らず、style・form・SVG の要素も落ちる。Markdown の表示（表の寄せ・番号の始まり・チェックボックス・外へのリンク）は残る。返事の画像
+（<img>・<input type="image">・<svg><image>）は読み込まず説明の文字にし、表示しただけで本体の口（/api/hub/screen）や外のサイトへ要求を出さない。
+本体を指すリンクはリンクにしない（押しても本体の口を呼ばない）。
 使い方: uv run spike/reply_html_test.py"""
 import json
 import os
@@ -67,7 +69,11 @@ REPLY = ("確認してください。\n\n| 項目 | 数 |\n|:--|--:|\n| 傷 | 3 
          # 本物の部品を押させる（label の for・button の form・popovertarget・commandfor）、外へ送らせる form、外の CSS
          "<label for=\"send\">画像を大きく見る</label> <label for=\"talk\">録音を見る</label> <button form=\"typedForm\">図を開く</button>"
          "<button popovertarget=\"status\" commandfor=\"status\" command=\"--x\">開く</button>"
-         "<form action=\"https://example.invalid/f\"><button>外へ送る</button></form><style>.md { color: red }</style>")
+         "<form action=\"https://example.invalid/f\"><button>外へ送る</button></form><style>.md { color: red }</style>"
+         # 表示しただけで本体の口（承認の守りに使う記録を書き換える /api/hub/screen）や外へ要求を出させる、本体を指すリンクを押させる
+         "<input type=\"image\" src=\"/api/hub/screen?pane=w1:p1\"><svg><image href=\"/api/hub/screen?pane=w1:p2\"></image></svg>"
+         "<img src=\"/api/hub/screen?pane=w1:p4\" alt=\"本体の画像\"><img src=\"https://example.invalid/x.png\" alt=\"外の画像\">"
+         "<a href=\"/api/hub/screen?pane=w1:p3\">画面を見る</a>")
 s.hermes_log("ai", REPLY)
 
 srv = uvicorn.Server(uvicorn.Config(s.app, host="127.0.0.1", port=PORT, log_level="warning"))
@@ -89,6 +95,8 @@ def wait(fn, limit=8.0):
 
 
 def run(page, who, width):
+    asked = []
+    page.on("request", lambda r: asked.append(r.url))
     page.set_viewport_size({"width": width, "height": 900 if width >= 1100 else 844})
     page.goto(BASE + "/")
     page.wait_for_function("document.getElementById('conn').classList.contains('on')")
@@ -96,23 +104,32 @@ def run(page, who, width):
     reply = "#log .msg.ai"
     check(f"{who} 返事の HTML に id・name・class・style・for・form などが残らず、style と form の要素も落ちる",
           page.locator(f"{reply} :is([id], [name], [class]:not(.tw):not(.lead), [style], [for], [form], [popovertarget], [commandfor], [command], style, form)").count(), 0)
-    check(f"{who} Markdown の表示は残る（表の寄せ・番号の始まり・チェックボックス・リンクと題・画像の説明）",
+    check(f"{who} Markdown の表示は残る（表の寄せ・番号の始まり・チェックボックス・外へのリンクと題）",
           page.evaluate(f"""(() => {{ const r = document.querySelector('{reply}');
             return [[...r.querySelectorAll('th')].map(e => e.getAttribute('align')), r.querySelector('ol').getAttribute('start'),
-                    [...r.querySelectorAll('input[type=checkbox]')].map(e => [e.checked, e.disabled]),
-                    [r.querySelector('a').getAttribute('href'), r.querySelector('a').getAttribute('title'), r.querySelector('a').getAttribute('target')],
-                    r.querySelector('img').getAttribute('alt')]; }})()"""),
-          [["left", "right"], "3", [[True, True], [False, True]], ["https://example.invalid/doc", "題", "_blank"], "図の説明"])
+                    [...r.querySelectorAll('input')].slice(0, 2).map(e => [e.type, e.checked, e.disabled]),
+                    [r.querySelector('a').getAttribute('href'), r.querySelector('a').getAttribute('title'), r.querySelector('a').getAttribute('target')]]; }})()"""),
+          [["left", "right"], "3", [["checkbox", True, True], ["checkbox", False, True]], ["https://example.invalid/doc", "題", "_blank"]])
+    text = page.text_content(reply)
+    check(f"{who} 返事の画像は読み込まず、説明の文字にする（本体の口や外のサイトへ、表示しただけで要求を出さない。SVG も落ちる）",
+          (page.locator(f"{reply} :is(img, svg, image)").count(), "🖼 図の説明" in text, "🖼 本体の画像" in text, "🖼 外の画像" in text,
+           [x for x in asked if "/api/hub/screen" in x or "example.invalid" in x]), (0, True, True, True, []))
+    link = page.locator(reply).get_by_text("画面を見る", exact=True)
+    link.click()
+    time.sleep(0.4)
+    check(f"{who} 本体を指すリンクはリンクにしない（押しても本体の口を呼ばない）", (link.get_attribute("href"), [x for x in asked if "/api/hub/screen" in x]), (None, []))
     check(f"{who} 画面の部品は本物のまま（id で探して、会話の中の要素を取らない）",
           page.evaluate("['agent', 'typed', 'send', 'talk', 'status'].map(id => document.getElementById(id).closest('#log') === null)"), [True] * 5)
     page.evaluate("(() => { window.__sent = []; const o = ws.send.bind(ws); ws.send = m => { window.__sent.push(m); if (typeof m !== 'string' || JSON.parse(m).type !== 'text') o(m); }; })()")
     sent = lambda: page.evaluate("window.__sent.map(m => JSON.parse(m)).filter(m => m.type === 'text').map(m => [m.pane, m.text])")
     page.fill("#bar #typed", "まだ送らない文")
-    for text in ("画像を大きく見る", "録音を見る", "図を開く", "開く"):
-        page.locator(reply).get_by_text(text, exact=True).click()
+    for text in ("画像を大きく見る", "録音を見る", "図を開く", "開く"):  # label・button は落ちて文字だけが残る。その文字を押す
+        loc = page.locator(reply).get_by_text(text)
+        if loc.count():
+            loc.first.click()
     time.sleep(0.4)
-    check(f"{who} 返事の label・button を押させても、本物の送る・録音は動かず、打ちかけの文は残る",
-          (sent(), page.input_value("#bar #typed"), page.locator("#talk.rec").count()), ([], "まだ送らない文", 0))
+    check(f"{who} 返事の label・button は落ち、残った文字を押しても、本物の送る・録音は動かず、打ちかけの文は残る",
+          (page.locator(f"{reply} :is(label, button)").count(), sent(), page.input_value("#bar #typed"), page.locator("#talk.rec").count()), (0, [], "まだ送らない文", 0))
     wait(lambda: not page.locator("#bar #send").is_disabled())
     page.fill("#bar #typed", "本物の文")
     page.press("#bar #typed", "Enter")
