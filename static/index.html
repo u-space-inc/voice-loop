@@ -57,6 +57,9 @@
   #tasksBtn[aria-pressed="true"] { opacity:1; background:#2a2f45; }
   #sitBtn[aria-pressed="true"] { opacity:1; background:#3a3420; }
   #tap, #hubStart { display:none; margin-left:auto; border:none; border-radius:8px; background:var(--ok); color:#fff; font-size:13px; padding:4px 10px; }
+  /* スマホの幅では、▶ タップして再生・ハブを起動を次の行に全幅で出す（同じ行に置くと、ボタンに幅を取られて、状態の文が 2〜3 字ずつに折れて縦に伸びる） */
+  body:not(.wide) #status { flex-wrap:wrap; row-gap:8px; }
+  body:not(.wide) #tap, body:not(.wide) #hubStart { order:1; flex-basis:100%; margin-left:0; font-size:14px; padding:8px 10px; }
   button:disabled, input:disabled { opacity:.35; }
   .row { display:flex; gap:8px; }
   select { flex:1; min-width:0; font-size:13px; padding:8px; background:var(--btn); color:var(--fg); border:1px solid #333; border-radius:8px; }
