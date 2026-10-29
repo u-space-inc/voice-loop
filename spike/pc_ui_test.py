@@ -565,7 +565,7 @@ def run_phone(page, who):
     order = "[...document.body.children].map(e => e.id).filter(Boolean).join(',')"
     check(f"{who} スマホの幅では今の形（3 列にしない・PC の箱は出さない・並びは今のまま）",
           (page.evaluate("document.body.classList.contains('wide')"), visible(page, "#side"), visible(page, "#rec"), page.evaluate(order)),
-          (False, False, False, "side,rec,asks,tasks,situation,log,bar"))
+          (False, False, False, "side,rec,asks,tasks,situation,log,bar,viewer"))
     check(f"{who} スマホでは 💡 📋 が出て、どちらも閉じている", (visible(page, "#sitBtn"), visible(page, "#tasksBtn"), visible(page, "#situation"), visible(page, "#tasks")),
           (True, True, False, False))
     # PC にして、戻す（行き来）
@@ -575,7 +575,7 @@ def run_phone(page, who):
         page.set_viewport_size({"width": 390, "height": 844})
         wait(lambda: not page.evaluate("document.body.classList.contains('wide')"))
     check(f"{who} PC にして戻すと、元の並びと、閉じた状態に戻る", (page.evaluate(order), visible(page, "#situation"), visible(page, "#tasks")),
-          ("side,rec,asks,tasks,situation,log,bar", False, False))
+          ("side,rec,asks,tasks,situation,log,bar,viewer", False, False))
     page.click("#sitBtn")
     check(f"{who} 💡 で状況が開く", wait(lambda: visible(page, "#situation") and "ひな形を作ってください" in (page.text_content("#sitBody") or "")), True)
     page.click("#tasksBtn")

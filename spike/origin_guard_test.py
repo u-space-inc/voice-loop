@@ -68,6 +68,8 @@ BLOCK = [
     {"host": "localhost:8790", "sec-fetch-site": "cross-site", "_path": "/api/hub/screen"},
     {"host": TS, "sec-fetch-site": "same-site", "_path": "/api/agents"},
     {"host": "127.0.0.1:8790", "sec-fetch-site": "cross-site", "_path": "/ws", "_method": ""},
+    {"host": "127.0.0.1:8790", "sec-fetch-site": "cross-site", "_path": "/api/file"},
+    {"host": "host.docker.internal:8790", "x-vl-key": "k1", "_path": "/api/file"},  # 成果物の画像・動画（画面の口）
     {"host": "host.docker.internal:8790", "x-vl-key": "k1", "_path": "/ws", "_method": ""},  # WebSocket
     {"host": "host.docker.internal:8790", "x-vl-key": "k1", "_path": "/api/hub/sessions", "origin": "http://host.docker.internal:8790"},  # コンテナ経由のブラウザ
     {"host": "host.docker.internal.evil.example:8790", "_path": "/api/hub/sessions"},
@@ -77,6 +79,7 @@ BLOCK = [
     {"host": "127.0.0.1:8790", "_container": True, "_path": "/api/facts", "_method": "POST"},
     {"host": "127.0.0.1:8790", "_container": True, "x-vl-key": "k1", "_path": "/api/hermes/session/new", "_method": "POST"},  # ハブの会話を新しくする（画面の口）
     {"host": "127.0.0.1:8790", "_container": True, "_path": "/"},  # 画面
+    {"host": "127.0.0.1:8790", "_container": True, "x-vl-key": "k1", "_path": "/api/file"},  # 成果物の画像・動画（鍵があっても画面の口）
     {"host": "127.0.0.1:8790", "_container": True, "_path": "/ws", "_method": ""},  # WebSocket
     {"host": "127.0.0.1:8790", "_container": True, "_path": "/api/hub/sessions"},  # hubctl の口でも鍵なし
     {"host": TS, "_container": True, "x-forwarded-host": TS, "_path": "/api/agents"},  # Tailscale の名前を偽る

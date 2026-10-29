@@ -262,6 +262,25 @@
   body.reading .mem > .more { display:none; }
   body.reading .topic, body.reading .prop { font-size:14px; } body.reading .topic .now, body.reading .topic .nx, body.reading .sitMeta { font-size:13px; }
   body.reading pre.diff { max-height:none; font-size:13px; line-height:1.55; padding:10px 14px; }
+  /* 成果物: 返事に出てきた画像・動画のサムネイル（PC の幅だけ）。押すと #viewer で大きく見る。Markdown の画像は、その場では文字（.mref）にする */
+  .mref { color:var(--mute); }
+  .media { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+  body:not(.wide) .media { display:none; }
+  .media .thumb { display:flex; flex-direction:column; width:148px; padding:0; border:1px solid var(--w-rule); border-radius:8px; background:var(--w-field); color:var(--w-t3); font:inherit; text-align:left; overflow:hidden; }
+  .media .thumb:hover { border-color:var(--w-line); color:var(--w-t1); }
+  .media .frame { position:relative; height:96px; background:#0b0c0e; }
+  .media .frame img, .media .frame video { display:block; width:100%; height:100%; object-fit:cover; }
+  .media .play { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#fff; font-size:22px; text-shadow:0 1px 4px #000; }
+  .media .nm { padding:5px 8px 6px; font-size:11px; line-height:1.3; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #viewer { position:fixed; inset:0; z-index:30; display:flex; flex-direction:column; background:#0a0b0d; }
+  #viewer .vhead { display:flex; align-items:center; gap:10px; padding:12px 20px; font-size:13px; color:var(--w-t2); }
+  #vName { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--w-t1); font-weight:600; }
+  #vPos { color:var(--w-t3); font-variant-numeric:tabular-nums; }
+  #viewer button { border:1px solid var(--w-line); border-radius:6px; background:none; color:var(--w-t2); font-size:13px; padding:5px 10px; }
+  #viewer button:hover:not(:disabled) { background:var(--w-hover); color:var(--w-t1); }
+  #vStage { flex:1; min-height:0; display:flex; align-items:center; justify-content:center; padding:0 20px; }
+  #vStage img, #vStage video { max-width:100%; max-height:100%; object-fit:contain; }
+  #vPath { padding:8px 20px 14px; font-size:12px; color:var(--w-t3); overflow-wrap:anywhere; }
 </style>
 </head>
 <body>
@@ -277,6 +296,7 @@
     <div class="row"><button id="talk">タップして話す</button><button id="stop">停止</button></div>
     <form id="typedForm" class="row"><input id="typed" placeholder="文字で送る" autocomplete="off"><button id="send" type="submit">送る</button></form>
   </div>
+  <div id="viewer" hidden role="dialog" aria-modal="true" aria-labelledby="vName"><div class="vhead"><span id="vName"></span><span id="vPos"></span><button id="vPrev" aria-label="前の成果物">←</button><button id="vNext" aria-label="次の成果物">→</button><button id="vClose">✕ 閉じる</button></div><div id="vStage"></div><div id="vPath"></div></div>
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/purify.min.js"></script>
 <script>
@@ -305,11 +325,11 @@ if (hasMd) {
   // 本体の口（/api/…）や外のサイトへ要求を出せる（<input type="image" src>・<svg><image href>）
   DOMPurify.addHook('uponSanitizeAttribute', (n, d) => { const only = ATTR_ON[d.attrName]; if (only && n.tagName !== only) d.keepAttr = false; });
   DOMPurify.addHook('afterSanitizeAttributes', n => {
-    if (n.tagName === 'A' && n.hasAttribute('href')) {  // 本体と同じ場所を指すリンクは、リンクにしない（押させて本体の口を呼ばせない）
+    if (n.tagName === 'A' && n.hasAttribute('href')) {  // 本体と同じ場所を指すリンクは、リンクにしない（押させて本体の口を呼ばせない。場所は成果物を拾うのに使う）
       let same = true; try { same = new URL(n.getAttribute('href'), location.href).origin === location.origin; } catch {}
-      if (same) n.removeAttribute('href'); else { n.setAttribute('target', '_blank'); n.setAttribute('rel', 'noopener noreferrer'); }
+      if (same) { n.setAttribute('data-href', n.getAttribute('href')); n.removeAttribute('href'); } else { n.setAttribute('target', '_blank'); n.setAttribute('rel', 'noopener noreferrer'); }
     }
-    if (n.tagName === 'IMG') { n.removeAttribute('src'); n.removeAttribute('srcset'); }  // 返事の画像は読み込まない（差し込む前に外す）
+    if (n.tagName === 'IMG') { n.setAttribute('data-src', n.getAttribute('src') || ''); n.removeAttribute('src'); n.removeAttribute('srcset'); } // 差し込む前に外す（読み込ませない）
     if (n.tagName === 'INPUT') { if (n.getAttribute('type') !== 'checkbox') n.setAttribute('type', 'checkbox'); n.setAttribute('disabled', ''); }
   });
 }
@@ -328,11 +348,13 @@ function bubble(role, text, extra = '') {
   if (role === 'ai' && hasMd) {
     el.classList.add('md');
     el.innerHTML = DOMPurify.sanitize(marked.parse(text), PURIFY);
-    el.querySelectorAll('img').forEach(im => im.replaceWith(`🖼 ${im.getAttribute('alt') || '画像'}`));  // 読み込まず、説明の文字にする
     el.querySelectorAll('table').forEach(t => { const w = document.createElement('div'); w.className = 'tw'; t.replaceWith(w); w.appendChild(t); });
     markLeads(el);
+    el.dataset.pane = $('agent').value; findMedia(el);
   } else el.textContent = text;
-  $('log').appendChild(el); $('log').scrollTop = $('log').scrollHeight;
+  $('log').appendChild(el);
+  if (document.body.classList.contains('wide')) mountMedia(el);
+  $('log').scrollTop = $('log').scrollHeight;
   return el;
 }
 // 行の頭の【見出し】に印を付ける（PC の幅で太く出す。スマホでは見た目を変えない）。文字の節を分けるだけで、HTML は組み立てない
@@ -348,6 +370,74 @@ function markLeads(root) {
     n.data = n.data.slice(m[0].length); n.before(s);
   }
 }
+// ---------- 成果物（返事に出てきた画像・動画） ----------
+// 返事の中のファイルの場所を拾い、PC の幅では下にサムネイルを並べる（押すと #viewer で大きく見る）。読むのは本体の /api/file で、
+// 本体が、そのセッションのフォルダの中の画像・動画だけを返す（ハブの会話では絶対パスだけ。返さないものは、並べたあとで消す）。
+// 拾う場所: Markdown の画像（その場では読み込まず文字にする。外のサイトの画像は出さない）・リンク・` ` で囲んだ場所・文の中の英数字の場所
+const MEDIA_EXT = /\.(?:png|jpe?g|gif|webp|avif|mp4|m4v|webm|mov)$/i, VIDEO_EXT = /\.(?:mp4|m4v|webm|mov)$/i;
+const MEDIA_IN_TEXT = /(^|[^\w./-])((?:\/|\.{1,2}\/)?[\w.-]+(?:\/[\w.-]+)*\.(?:png|jpe?g|gif|webp|avif|mp4|m4v|webm|mov))(?![\w/-])/gi;
+const isLocal = s => !!s && !/^[a-z][a-z0-9+.-]*:/i.test(s) && !s.startsWith('//');
+const MEDIA_MAX = 12;
+function findMedia(el) {  // 文に出てくる順に拾う（同じ場所は 1 つにまとめ、12 まで）
+  const found = [], add = p => { p = (p || '').trim(); if (isLocal(p) && MEDIA_EXT.test(p) && !found.includes(p) && found.length < MEDIA_MAX) found.push(p); };
+  const unurl = s => { try { return decodeURI(s); } catch { return s; } };
+  for (const im of el.querySelectorAll('img')) {
+    const src = unurl(im.dataset.src || ''), alt = im.getAttribute('alt') || '', local = isLocal(src);
+    const ref = node('span', 'mref', local ? `🖼 ${alt || src.split('/').pop()}` : `🖼 ${alt ? alt + '（' : '（'}外の画像は出しません）`);
+    if (local) ref.dataset.path = src;
+    im.replaceWith(ref);
+  }
+  const w = document.createTreeWalker(el, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+  for (let n = w.nextNode(); n; n = w.nextNode()) {
+    if (n.nodeType === 1) {
+      if (n.classList.contains('mref')) add(n.dataset.path);
+      else if (n.tagName === 'A' && n.dataset.href) add(unurl(n.dataset.href));  // 本体と同じ場所を指すリンク（リンクにはしていない）
+      continue;
+    }
+    if (n.parentElement.closest('pre, a, .mref')) continue;
+    const code = n.parentElement.closest('code'), text = code ? code.textContent.trim() : n.data, hits = [...text.matchAll(MEDIA_IN_TEXT)];
+    if (code && hits.length <= 1 && !text.includes('\n')) add(text);  // ` ` で囲んだ場所は、名前に空白や日本語があってもそのまま
+    else hits.forEach(m => add(m[2]));
+  }
+  el._media = found;
+}
+function mountMedia(el) {
+  if (el._mounted || !el._media || !el._media.length) return;
+  el._mounted = new AbortController();  // スマホの幅にしたら、読み込みの途中も止める（unmountMedia）
+  const strip = node('div', 'media'), items = [];
+  for (const path of el._media) {
+    const url = `/api/file?pane=${encodeURIComponent(el.dataset.pane || '')}&path=${encodeURIComponent(path)}`, video = VIDEO_EXT.test(path);
+    const b = node('button', 'thumb'), frame = node('span', 'frame'), it = { url, path, video, el: b };
+    b.title = path; b.setAttribute('aria-label', `${video ? '動画' : '画像'}を大きく見る: ${path}`);
+    const drop = () => {  // 本体が返さないもの。大きく見る画面がこの並びを開いていれば、位置を直す（開いている項目なら隣へ、無ければ閉じる）
+      b.querySelectorAll('video').forEach(stopVideo); b.remove();
+      const i = items.indexOf(it); if (i < 0) return;
+      items.splice(i, 1); if (!items.length) strip.remove();
+      if (!viewer || viewer.items !== items) return;
+      if (viewer.cur !== it) { viewerPos(); return; }
+      const next = items[i] || items[i - 1];
+      if (next) { viewer.cur = next; showViewerItem(); } else closeViewer();
+    };
+    if (video) {  // ファイルがあるかは HEAD で見る。先頭のコマが読めない形でも、▶ だけで並べる
+      const v = document.createElement('video'); v.muted = true; v.playsInline = true; v.preload = 'metadata'; v.src = url + '#t=0.1'; v.onerror = () => v.remove();
+      frame.append(v, node('span', 'play', '▶'));
+      fetch(url, { method: 'HEAD', signal: el._mounted.signal }).then(r => { if (!r.ok) drop(); }, e => { if (e.name !== 'AbortError') drop(); });
+    } else {
+      const im = document.createElement('img'); im.alt = ''; im.loading = 'lazy'; im.onerror = drop; im.src = url; frame.appendChild(im);
+    }
+    b.append(frame, node('span', 'nm', path.split('/').pop()));
+    b.onclick = () => openViewer(items, it, b);
+    items.push(it); strip.appendChild(b);
+  }
+  el.appendChild(strip); el._strip = strip;  // 外すときはこの参照で（返事が書いた要素を、クラス名などで取り違えない）
+}
+function clearLog() { $('log').querySelectorAll('.msg.ai').forEach(unmountMedia); $('log').innerHTML = ''; }  // 会話を描き直す・相手を替えるとき（読み込みの途中も止める）
+function stopVideo(v) { v.pause(); v.removeAttribute('src'); v.load(); }  // 外すだけでは読み込みが止まるとは限らないので、src を外して読み込み直させる
+function unmountMedia(el) {  // サムネイルを外す（動画の読み込みと、途中の HEAD も止める）。PC の幅に戻すと mountMedia で作り直す
+  if (!el._mounted) return;
+  el._mounted.abort(); el._mounted = null;
+  const m = el._strip; el._strip = null; if (m) { m.querySelectorAll('video').forEach(stopVideo); m.remove(); }
+}
 function sys(text) { const el = document.createElement('div'); el.className = 'sys'; el.textContent = text; $('log').appendChild(el); $('log').scrollTop = $('log').scrollHeight; }
 const curAgent = () => agents.find(a => a.pane === $('agent').value);
 const curKey = () => { const a = curAgent(); return a ? a.key : ''; }; // ハブは "hub"、ほかはセッション ID（サーバーが決める）
@@ -355,7 +445,7 @@ const localKey = () => 'vl.thread.' + curKey();
 function localMsgs() { try { return JSON.parse(localStorage.getItem(localKey()) || '[]'); } catch { return []; } }
 function localPush(role, text) { if (threadSource !== 'none') return; try { localStorage.setItem(localKey(), JSON.stringify([...localMsgs(), { role, text }].slice(-80))); } catch {} }
 function renderThread(msgs) {
-  $('log').innerHTML = '';
+  clearLog();
   if (!msgs.length) sys('このセッションにはまだ会話がありません');
   msgs.forEach(m => m.role === 'note' ? sys('通知: ' + m.text) : m.role === 'error' ? sys('⚠ ' + m.text) : bubble(m.role, m.text)); // note = ハブへの自動通知（頼んだ件が片づいた等）。error = Hermes に届かなかった・返事が無かった
 }
@@ -412,7 +502,7 @@ async function loadAgents() {
     if (!setupChecked) { setupChecked = true; showSetup(loadSeq); } // ハブが居ても、聞き取りや声の準備が残っていることがある
     return;
   }
-  loadSeq++; $('log').innerHTML = '';
+  loadSeq++; clearLog();
   sys(want === 'hub' ? 'ハブが起動していません。「ハブを起動」を押すか、話し相手を選んでください。'
                      : '選んでいた話し相手が見つかりません（閉じられたか、Mac が再起動されました）。選び直してください。');
   if (want === 'hub') { setupChecked = true; showSetup(loadSeq); }
@@ -965,8 +1055,10 @@ function applyWide() {
   if (wide) {
     $('side').appendChild($('tasks')); $('rec').appendChild($('situation'));
     runTasks(true); runSituation(true); setRecTab(recTab); renderSessions();
+    $('log').querySelectorAll('.msg.ai').forEach(mountMedia);  // スマホの幅で描いた返事にも、サムネイルを付ける
   } else {
-    setReading(false);
+    closeViewer(); setReading(false);
+    $('log').querySelectorAll('.msg.ai').forEach(unmountMedia);  // スマホの幅では読み込まない
     homeOf.tasks.after($('tasks')); homeOf.situation.after($('situation'));
     runMemory(false); runTasks(phone.tasks); runSituation(phone.sit);
   }
@@ -978,7 +1070,7 @@ let reading = false;
 function setReading(on) {
   reading = on && wide;
   document.body.classList.toggle('reading', reading);
-  for (const id of ['side', 'asks', 'log', 'bar']) $(id).inert = reading;
+  applyInert();
   const b = $('readBtn'); b.textContent = reading ? '✕ 戻す' : '⤢ 広げる'; b.title = reading ? '3 列に戻す（Esc）' : '記憶と状況を画面いっぱいに広げて読む';
   b.setAttribute('aria-label', b.title); b.setAttribute('aria-pressed', String(reading));
   requestAnimationFrame(measureMore);  // 「続きを表示」が要るかは幅で変わる
@@ -994,8 +1086,49 @@ $('readAsks').onclick = () => {  // 戻って、承認のカードの押せる�
   const x = $('asks').querySelector('button:not(:disabled)') || $('asks').querySelector('.ask');
   if (x) { if (x.tagName !== 'BUTTON') x.tabIndex = -1; x.focus(); }
 };
+// 成果物を大きく見る画面（#viewer）。サムネイルを押すと開き、同じ返事の中の成果物を ← → で送る。✕ か Esc で閉じ、押したサムネイルに戻る。
+// 開いている間は、ほかの列（右の列も）を inert にする。スマホの幅に狭めたら閉じる
+let viewer = null;  // { items, cur（いま出している項目）, back（閉じたら戻る所） }。位置は毎回 items から数える（並べたあとで消えるものがあるため）
+function applyInert() {
+  for (const id of ['side', 'asks', 'log', 'bar']) $(id).inert = reading || !!viewer;
+  $('rec').inert = !!viewer;
+}
+function openViewer(items, cur, back) {
+  if (!items.includes(cur)) return;
+  viewer = { items, cur, back };
+  $('viewer').hidden = false; applyInert(); showViewerItem(); $('vClose').focus();
+}
+function showViewerItem() {
+  const it = viewer.cur, m = document.createElement(it.video ? 'video' : 'img');
+  if (it.video) { m.controls = true; m.playsInline = true; m.preload = 'metadata'; } else m.alt = it.path;
+  m.src = it.url; clearStage(); $('vStage').appendChild(m);
+  $('vName').textContent = it.path.split('/').pop(); $('vPath').textContent = it.path;
+  viewerPos();
+}
+function viewerPos() {
+  const i = viewer.items.indexOf(viewer.cur), n = viewer.items.length;
+  $('vPos').textContent = i < 0 ? `— / ${n}` : `${i + 1} / ${n}`;
+  $('vPrev').disabled = i <= 0; $('vNext').disabled = i < 0 || i >= n - 1;
+}
+function stepViewer(d) { if (!viewer) return; const i = viewer.items.indexOf(viewer.cur), next = viewer.items[i + d]; if (i >= 0 && next) { viewer.cur = next; showViewerItem(); } }
+function clearStage() { $('vStage').querySelectorAll('video').forEach(stopVideo); $('vStage').replaceChildren(); }
+function closeViewer() {  // 押したサムネイルに戻る（消えていれば、最後に出していた項目のサムネイルへ）
+  if (!viewer) return;
+  const back = [viewer.back, viewer.cur.el].find(x => x && x.isConnected); viewer = null;
+  clearStage(); $('viewer').hidden = true; applyInert();
+  if (back) back.focus();
+}
+$('vPrev').onclick = () => stepViewer(-1);
+$('vNext').onclick = () => stepViewer(1);
+$('vClose').onclick = closeViewer;
 document.addEventListener('keydown', e => {
-  if (e.key !== 'Escape' || !reading || e.isComposing || (e.target.closest && e.target.closest('textarea, input'))) return;
+  if (e.isComposing) return;
+  if (viewer) {
+    if (e.key === 'Escape') { e.preventDefault(); closeViewer(); }
+    else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && e.target.tagName !== 'VIDEO') { e.preventDefault(); stepViewer(e.key === 'ArrowLeft' ? -1 : 1); }
+    return;
+  }
+  if (e.key !== 'Escape' || !reading || (e.target.closest && e.target.closest('textarea, input'))) return;
   setReading(false); $('readBtn').focus();
 });
 function setRecTab(t) {

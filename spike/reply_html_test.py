@@ -106,7 +106,7 @@ def run(page, who, width):
     page.wait_for_selector("#log .msg.ai table")
     reply = "#log .msg.ai"
     check(f"{who} 返事の HTML に id・name・class・style・for・form などが残らず、style と form の要素も落ちる",
-          page.locator(f"{reply} :is([id], [name], [class]:not(.tw):not(.lead), [style], [for], [form], [popovertarget], [commandfor], [command], style, form)").count(), 0)
+          page.locator(f"{reply} :is([id], [name], [class]:not(.tw, .lead, .mref, .media, .media *), [style], [for], [form], [popovertarget], [commandfor], [command], style, form)").count(), 0)
     check(f"{who} 見出し・引用・コードの表示は残る", page.evaluate(f"""(() => {{ const r = document.querySelector('{reply}');
             return [r.querySelector('h1').textContent, r.querySelector('blockquote').textContent.trim(), r.querySelector('p code').textContent,
                     r.querySelector('pre code').textContent.trim()]; }})()"""), ["見出し", "引用の文", "手元のコード", "ブロックのコード"])
