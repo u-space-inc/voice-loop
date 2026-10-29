@@ -9,7 +9,8 @@
 nosniff と sandbox を付ける（中身が HTML の .png も画像として返す）。断るもの: フォルダの外（../・絶対パス・外を指す symlink とフォルダの symlink）、
 隠しフォルダと隠しファイル（symlink で指しても・../ で回り込んでも）、画像と動画のほかの拡張子（SVG・HTML・.txt・.env）、フォルダ、無いファイル、
 空や NUL の入った場所、無いセッション、ホームか / をフォルダにしたセッション。ハブ（Claude Code と Hermes）の会話では、いまあるセッションの
-フォルダの中を指す絶対パスか「フォルダ名/場所」だけ（フォルダ名で始まらない相対・同じフォルダ名が二つ・ハブ自身のフォルダは断る）。Sec-Fetch-Site が cross-site・same-site なら断り、same-origin・none・
+フォルダの中を指す絶対パスか「フォルダ名/場所」だけ（フォルダ名で始まらない相対・同じフォルダ名が二つ・ハブ自身のフォルダは断る。
+フォルダ名は symlink をたどる前の名前で照らし、その名前のフォルダの中だけを見る）。Sec-Fetch-Site が cross-site・same-site なら断り、same-origin・none・
 無しは通す。コンテナからは断る。HEAD と Range（動画の早送り）。画面（/）に CSP（画像と動画は自分からだけ）。隠しフォルダの中で動くセッションは、
 そのフォルダから先で見る。
 使い方: uv run spike/artifact_test.py"""
@@ -110,6 +111,9 @@ REFUSE = [
     (s.HERMES_PANE, "proj", "ハブの会話では、絶対パスか「フォルダ名/場所」だけを見ます（そのフォルダ名のセッションが無いか、二つ以上あります）", "Hermes の会話で、フォルダ名だけ（場所が無い）"),
     (s.HERMES_PANE, "proj/.git/x.png", HIDDEN, "Hermes の会話で、フォルダ名からの隠しフォルダ"),
     (s.HERMES_PANE, "proj/../outside/secret.png", OUT, "Hermes の会話で、フォルダ名から ../ で外へ"),
+    (s.HERMES_PANE, "proj/../other/b.png", OUT, "Hermes の会話で、フォルダ名から ../ で別のセッションのフォルダへ（その名前のフォルダの中だけを見る）"),
+    (s.HERMES_PANE, "proj//" + str(OTHER / "b.png"), "ファイルがありません", "Hermes の会話で、フォルダ名のあとに絶対パス（そのフォルダからの場所として読む）"),
+    (s.HERMES_PANE, "proj/out/link_out.png", OUT, "Hermes の会話で、フォルダ名から symlink で外へ"),
     (s.HERMES_PANE, "hubdir/h.png", "ハブの会話では、絶対パスか「フォルダ名/場所」だけを見ます（そのフォルダ名のセッションが無いか、二つ以上あります）", "Hermes の会話で、ハブ自身のフォルダ名"),
     (s.HERMES_PANE, str(PROJ / ".git" / "x.png"), HIDDEN, "Hermes の会話で、セッションの隠しフォルダ"),
     (s.HERMES_PANE, str(OUTSIDE / "secret.png"), OUT, "Hermes の会話で、どのセッションのフォルダでもない場所"),
@@ -138,6 +142,20 @@ s._artifact_agents = (0.0, [])  # 覚えている一覧を捨てる
 r = get(s.HERMES_PANE, "proj/out/a.png")
 check("同じフォルダ名のセッションが二つあると、「フォルダ名/場所」はどちらか決めず返さない（絶対パスなら返す）", (r.status_code, reason(r), get(s.HERMES_PANE, str(PROJ / "out" / "a.png")).status_code), (404, "ハブの会話では、絶対パスか「フォルダ名/場所」だけを見ます（そのフォルダ名のセッションが無いか、二つ以上あります）", 200))
 AGENTS.pop()
+# 「フォルダ名/場所」は、ハブが見ているフォルダ名（cwd の末尾。symlink をたどる前の名前）で照らす。たどった先の名前では照らさない
+LINKS, DATA = TMP / "links", TMP / "data"
+for d in (DATA / "proj" / "out", DATA / "other2" / "out", LINKS):
+    d.mkdir(parents=True)
+(DATA / "proj" / "out" / "w.png").write_bytes(PNG)  # フォルダ名 blog の中身（たどった先の名前は proj）
+(DATA / "other2" / "out" / "w.png").write_bytes(PNG + b"B")  # フォルダ名 proj の中身
+(LINKS / "blog").symlink_to(DATA / "proj")
+(LINKS / "proj").symlink_to(DATA / "other2")
+saved = list(AGENTS)
+AGENTS[:] = [A("w7:p1", LINKS / "blog"), A("w8:p1", LINKS / "proj")]
+s._artifact_agents = (0.0, [])
+r = get(s.HERMES_PANE, "proj/out/w.png")
+check("「フォルダ名/場所」は、ハブが見ているフォルダ名（symlink をたどる前の名前）で照らす", (r.status_code, r.content == PNG + b"B"), (200, True))
+AGENTS[:] = saved
 AGENTS.append(A("w5:p1", PROJ / ".git"))
 s._artifact_agents = (0.0, [])  # 覚えている一覧を捨てる
 check("隠しフォルダの中で動くセッションは、そのフォルダから先で見る", get("w5:p1", "x.png").status_code, 200)

@@ -1011,7 +1011,7 @@ def artifact_file(pane: str, raw: str) -> tuple[Path | None, str]:
     hub = pane == HERMES_PANE or bool(me and me["hub"])
     if me is None and not hub:
         return None, "そのセッションがありません"
-    home, roots = Path.home().resolve(), []
+    home, roots, named = Path.home().resolve(), [], []  # named: (ハブが見ているフォルダ名＝cwd の末尾。hub_sessions の project と同じ, たどった先)
     for a in agents if hub else [me]:
         if a["hub"] or not a.get("cwd"):
             continue
@@ -1021,16 +1021,18 @@ def artifact_file(pane: str, raw: str) -> tuple[Path | None, str]:
             continue
         if r != home and r != Path(r.anchor):
             roots.append(r)
+            named.append((a["cwd"].rstrip("/").rsplit("/", 1)[-1], r))
     if not roots:
         return None, "見てよいフォルダがありません"
     p = Path(raw)
     if not p.is_absolute():
         if hub:  # ハブは各セッションのフォルダ名を知っているので「フォルダ名/フォルダからの場所」で書ける。同じフォルダ名が二つ以上なら決めない
             name, _, rest = raw.partition("/")
-            hits = {r for r in roots if r.name == name}
+            hits = {r for n, r in named if n == name}
             if len(hits) != 1 or not rest:
                 return None, "ハブの会話では、絶対パスか「フォルダ名/場所」だけを見ます（そのフォルダ名のセッションが無いか、二つ以上あります）"
-            p = hits.pop() / rest
+            roots = list(hits)  # その名前のフォルダの中だけを見る（../ や symlink で別のセッションへ回り込ませない）
+            p = roots[0] / rest.lstrip("/")
         else:
             p = roots[0] / p
     try:

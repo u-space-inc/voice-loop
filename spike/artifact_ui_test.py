@@ -67,9 +67,10 @@ Image.new("RGB", (64, 48), (40, 120, 200)).save(PROJ / "out" / "a.png")
 Image.new("RGB", (80, 40), (200, 120, 40)).save(PROJ / "out" / "b.webp")
 Image.new("RGB", (30, 30), (40, 200, 120)).save(PROJ / "out" / "c.png")
 Image.new("RGB", (30, 30), (0, 0, 0)).save(PROJ / ".git" / "x.png")
+Image.new("RGB", (40, 20), (90, 90, 200)).save(PROJ / "out" / "slow.png")
 (PROJ / "out" / "clip.webm").write_bytes(b"\x1a\x45\xdf\xa3" + b"0" * 2000)  # 再生はできない中身（並べるのは HEAD で見て、▶ だけ出す）
 A = lambda pane: {"pane": pane, "title": "検証", "cwd": str(PROJ), "kind": "claude", "session": pane, "status": "idle", "name": "", "hub": False}
-s.list_agents = lambda: [A(p) for p in ("w1:p1", "w2:p1", "w3:p1", "w4:p1", "w5:p1", "w6:p1")]
+s.list_agents = lambda: [A(p) for p in ("w1:p1", "w2:p1", "w3:p1", "w4:p1", "w5:p1", "w6:p1", "w7:p1")]
 # 乗せられたセッションが書きうる、外へ通信する HTML（外のサイトの画像・CSS の @import・@font-face・style の url()）も混ぜる
 TEXT = ("検証の結果です。\n\n- 差分の画像は `out/a.png` です\n- 二つ目は out/b.webp を見てください\n- 動画は [ここ](out/clip.webm) にあります\n"
         "- 無い out/none.png と、隠しの .git/x.png\n\n![図の説明](out/c.png)\n\n![無い図](out/nofile.png)\n\n![外](https://example.invalid/x.png)\n\n"
@@ -92,7 +93,8 @@ TEXT2 = "動画は out/missing.mp4、画像は out/a.png と out/b.webp です�
 TEXT3 = "動画は out/gone.mp4 だけです。"
 # 読み込みの途中で止めることを見る会話（段ごとに別の無い動画にして、ブラウザが前の結果を使わず、必ず新しく要求するようにする）
 SLOW = {"w4:p1": "m4.mp4", "w5:p1": "m5.mp4", "w6:p1": "m6.mp4"}
-TEXTS = {"w1:p1": TEXT, "w2:p1": TEXT2, "w3:p1": TEXT3, **{p: f"動画は out/{n} 、画像は out/a.png です。" for p, n in SLOW.items()}}
+TEXTS = {"w1:p1": TEXT, "w2:p1": TEXT2, "w3:p1": TEXT3, **{p: f"動画は out/{n} 、画像は out/a.png です。" for p, n in SLOW.items()},
+         "w7:p1": "差分はこれです。\n\n![遅い図](out/slow.png)"}  # 文の中の画像の読み込みを止めておく
 JSONL = {p: TMP / f"{p.replace(':', '_')}.jsonl" for p in TEXTS}
 for pane, text in TEXTS.items():
     JSONL[pane].write_text(json.dumps({"type": "user", "message": {"content": "検証の画像を見せて"}}, ensure_ascii=False) + "\n"
@@ -296,6 +298,22 @@ def run(page, who):
     check(f"{who} ハブ（Hermes）の会話では、絶対パスと「フォルダ名/場所」のものだけを出す（フォルダ名で始まらない相対の場所は本体が返さない）",
           (wait(lambda: names(page) == ["a.png"]), wait(lambda: page.evaluate("[...document.querySelectorAll('#log .mfig .cap')].map(e => e.textContent)") == ["検証の差分"])), (True, True))
 
+    # 文の中の画像の読み込みの途中でスマホの幅にすると、ブラウザが取りやめ、PC の幅に戻すと出し直す（古い知らせで表示を崩さない）
+    slowimg = []
+    page.route("**/*slow.png*", lambda route: slowimg.append(route))
+    page.select_option("#agent", "w7:p1")
+    wait(lambda: page.evaluate("0") == 0 and len(slowimg) >= 1)
+    first = slowimg[0].request
+    page.set_viewport_size({"width": 390, "height": 844})
+    check(f"{who} 文の中の画像の読み込みの途中でスマホの幅にすると、ブラウザが取りやめ、文字に戻す",
+          (wait(lambda: page.evaluate("0") == 0 and (first.failure or "").endswith("ERR_ABORTED")), page.locator("#log .mfig").count(),
+           page.evaluate("[...document.querySelectorAll('#log .mref')].map(e => [e.textContent, e.classList.contains('inl')])")),
+          (True, 0, [["🖼 遅い図", False]]))
+    page.unroute("**/*slow.png*")  # ここからは止めない
+    page.set_viewport_size({"width": 1400, "height": 900})
+    check(f"{who} PC の幅に戻すと、文の中の画像を出し直す（前の読み込みの知らせで崩れない）",
+          wait(lambda: page.evaluate("[...document.querySelectorAll('#log .mfig img')].map(i => i.naturalWidth)") == [40]
+               and page.locator("#log .mref.inl").count() == 1), True)
     page.select_option("#agent", "w1:p1")
     wait(lambda: names(page) == EXPECT)
     page.set_viewport_size({"width": 390, "height": 844})

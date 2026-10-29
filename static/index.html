@@ -413,7 +413,7 @@ function findMedia(el) {  // 文に出てくる順に拾う（同じ場所は 1 
 // 大きく見る画面では、どちらも文に出てくる順に送る
 function mountMedia(el) {
   if (el._mounted || !el._media || !el._media.length) return;
-  el._mounted = new AbortController();  // スマホの幅にしたら、読み込みの途中も止める（unmountMedia）
+  const ctrl = el._mounted = new AbortController();  // スマホの幅にしたら、読み込みの途中も止める（unmountMedia）
   const strip = node('div', 'media'), items = [], figs = [], refs = [...el.querySelectorAll('.mref')];
   for (const path of el._media) {
     const url = `/api/file?pane=${encodeURIComponent(el.dataset.pane || '')}&path=${encodeURIComponent(path)}`, video = VIDEO_EXT.test(path);
@@ -421,7 +421,8 @@ function mountMedia(el) {
     b.title = path; b.setAttribute('aria-label', `${video ? '動画' : '画像'}を大きく見る: ${path}`);
     const ref = refs.find(r => r.dataset.path === path), fig = ref && node('span', 'mfig');
     const drop = () => {  // 本体が返さないもの。大きく見る画面がこの並びを開いていれば、位置を直す（開いている項目なら隣へ、無ければ閉じる）
-      b.querySelectorAll('video').forEach(stopVideo); b.remove();
+      if (ctrl.signal.aborted) return;  // 外したあとの古い知らせ（描き直したあとの表示を崩さない）
+      b.querySelectorAll('video').forEach(stopVideo); b.querySelectorAll('img').forEach(stopImage); b.remove();
       if (fig) { fig.remove(); ref.classList.remove('inl'); }  // 出せなければ「🖼 説明」の文字に戻す
       const i = items.indexOf(it); if (i < 0) return;
       items.splice(i, 1); if (!strip.children.length) strip.remove();
@@ -449,11 +450,12 @@ function mountMedia(el) {
 }
 function clearLog() { $('log').querySelectorAll('.msg.ai').forEach(unmountMedia); $('log').innerHTML = ''; }  // 会話を描き直す・相手を替えるとき（読み込みの途中も止める）
 function stopVideo(v) { v.pause(); v.removeAttribute('src'); v.load(); }  // 外すだけでは読み込みが止まるとは限らないので、src を外して読み込み直させる
+function stopImage(im) { im.onerror = null; im.removeAttribute('src'); }  // 画像も、src を外して読み込みを止める（知らせも受けない）
 function unmountMedia(el) {  // サムネイルを外す（動画の読み込みと、途中の HEAD も止める）。PC の幅に戻すと mountMedia で作り直す
   if (!el._mounted) return;
   el._mounted.abort(); el._mounted = null;
-  const m = el._strip; el._strip = null; if (m) { m.querySelectorAll('video').forEach(stopVideo); m.remove(); }
-  for (const [fig, ref] of el._figs || []) { fig.querySelectorAll('video').forEach(stopVideo); fig.remove(); ref.classList.remove('inl'); }
+  const m = el._strip; el._strip = null; if (m) { m.querySelectorAll('video').forEach(stopVideo); m.querySelectorAll('img').forEach(stopImage); m.remove(); }
+  for (const [fig, ref] of el._figs || []) { fig.querySelectorAll('video').forEach(stopVideo); fig.querySelectorAll('img').forEach(stopImage); fig.remove(); ref.classList.remove('inl'); }
   el._figs = null;
 }
 function sys(text) { const el = document.createElement('div'); el.className = 'sys'; el.textContent = text; $('log').appendChild(el); $('log').scrollTop = $('log').scrollHeight; }
