@@ -36,8 +36,8 @@ def fake(container, mode, req=None, wait=90, env=None):
     return dict(OUT.get(mode, {"result": "applied", "shape": ""}))
 
 
-s.hermes_memory.run_script = fake
-s.hermes_memory.still_running = lambda container: STILL["v"]
+s.hermes.hermes_memory.run_script = fake
+s.hermes.hermes_memory.still_running = lambda container: STILL["v"]
 
 
 def view():
@@ -48,9 +48,9 @@ def reset():
     CALLS.clear()
     OUT.clear()
     STILL["v"] = False
-    s.HMEM_SHOWN.clear()
-    s.HMEM_FILE.unlink(missing_ok=True)
-    s.HMEM_LIMITS.update(at=0.0, value=None, why="")
+    s.hermes.HMEM_SHOWN.clear()
+    s.hermes.HMEM_FILE.unlink(missing_ok=True)
+    s.hermes.HMEM_LIMITS.update(at=0.0, value=None, why="")
 
 
 # ---------- ホストの読み方 ----------
@@ -100,12 +100,12 @@ check("「§」だけの行を含む文は断る（台本を動かさない）",
 for res in ("changed", "refused", "invalid"):
     OUT["add"] = {"result": res, "why": "理由"}
     r = c.post("/api/hermes/memory/add", json={"target": "user", "content": "x"}).json()
-    check(f"決着した結果（{res}）は、そのまま返し、終わり未確認の印は残さない", (r, s.hmem_state()), ({"ok": False, "reason": res, "why": "理由"}, {"verify": False}))
+    check(f"決着した結果（{res}）は、そのまま返し、終わり未確認の印は残さない", (r, s.hermes.hmem_state()), ({"ok": False, "reason": res, "why": "理由"}, {"verify": False}))
 for res in ("timeout", "error", "failed"):
-    s.HMEM_FILE.unlink(missing_ok=True)
+    s.hermes.HMEM_FILE.unlink(missing_ok=True)
     OUT["add"] = {"result": res, "why": "分からない"}
     r = c.post("/api/hermes/memory/add", json={"target": "user", "content": "x"}).json()
-    check(f"当たったか分からない（{res}）は unknown で返し、印を残す（自動で送り直さない）", (r["reason"], s.hmem_state(), view()["verify"]), ("unknown", {"verify": True}, True))
+    check(f"当たったか分からない（{res}）は unknown で返し、印を残す（自動で送り直さない）", (r["reason"], s.hermes.hmem_state(), view()["verify"]), ("unknown", {"verify": True}, True))
 OUT.pop("add")
 n = len(CALLS)
 STILL["v"] = True
@@ -115,16 +115,16 @@ STILL["v"] = None
 check("確かめられなければ unverifiable（動かさない）", (c.post("/api/hermes/memory/add", json={"target": "user", "content": "x"}).json(), len(CALLS) == n),
       ({"ok": False, "reason": "unverifiable"}, True))
 STILL["v"] = False
-check("いないと確かめられれば、印を外して書く", (c.post("/api/hermes/memory/add", json={"target": "user", "content": "x"}).json()["ok"], s.hmem_state()), (True, {"verify": False}))
-s.HMEM_FILE.write_text("壊れた")
+check("いないと確かめられれば、印を外して書く", (c.post("/api/hermes/memory/add", json={"target": "user", "content": "x"}).json()["ok"], s.hermes.hmem_state()), (True, {"verify": False}))
+s.hermes.HMEM_FILE.write_text("壊れた")
 n = len(CALLS)
 check("状態のファイルが読めなければ書かない", (c.post("/api/hermes/memory/add", json={"target": "user", "content": "x"}).json(), len(CALLS) == n, view()["state_ok"]),
       ({"ok": False, "reason": "state"}, True, False))
-s.HMEM_FILE.unlink()
-s.HMEM_FILE.mkdir()
+s.hermes.HMEM_FILE.unlink()
+s.hermes.HMEM_FILE.mkdir()
 check("状態のファイルを書けなければ、台本を動かさない", (c.post("/api/hermes/memory/add", json={"target": "user", "content": "x"}).json(), len(CALLS) == n),
       ({"ok": False, "reason": "state"}, True))
-s.HMEM_FILE.rmdir()
+s.hermes.HMEM_FILE.rmdir()
 
 # ---------- 守り ----------
 check("記憶の口は、どれもコンテナ（ハブ）から使えない（鍵があっても）",
@@ -134,11 +134,11 @@ check("記憶の口は、どれもコンテナ（ハブ）から使えない（�
 check("足す・直す・消すの台本の命令にだけ目印が入る（上限を読む台本と、台本の本文には入らない）",
       (hm.WRITE_MARK in (hm.command("hermes", "add") or [hm.WRITE_MARK]), any(hm.WRITE_MARK in x for x in (hm.command("hermes", "limits") or [])), hm.WRITE_MARK in hm.SCRIPT),
       (True, False, False))
-hub = s.HERMES_HUB
-s.HERMES_HUB = False
+hub = s.hermes.HERMES_HUB
+s.hermes.HERMES_HUB = False
 check("Hermes がハブでなければ、一覧も書き込みも off", (view(), c.post("/api/hermes/memory/add", json={"target": "user", "content": "x"}).json()),
       ({"on": False}, {"ok": False, "reason": "off"}))
-s.HERMES_HUB = hub
+s.hermes.HERMES_HUB = hub
 
 ok = sum(r[1] for r in results)
 for name, passed, got, want in results:

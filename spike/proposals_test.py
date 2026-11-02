@@ -333,9 +333,9 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
 
     # Hermes への案内には、数と決まりだけ（提案の文は入れない）
     reset()
-    s.HERMES_DIR.mkdir(parents=True, exist_ok=True)
-    (s.HERMES_DIR / "hub.md").write_text("ハブへの指示（試験）")
-    msgs = s.hermes_messages("こんにちは")
+    s.hermes.HERMES_DIR.mkdir(parents=True, exist_ok=True)
+    (s.hermes.HERMES_DIR / "hub.md").write_text("ハブへの指示（試験）")
+    msgs = s.hermes.hermes_messages("こんにちは")
     sysmsg, usermsg = msgs[0]["content"], msgs[-1]["content"]
     check("Hermes への案内: 提案の数は発言の後ろの案内に、「送るのはユーザーが 💡 から」は指示に入り、提案の文はどちらにも入らない",
           ("開いている提案 1 件" in usermsg, "画面の 💡 から送ります" in sysmsg, "Excel" in sysmsg + usermsg), (True, True, False))

@@ -38,7 +38,7 @@ async def nothing(*a, **k):
     return None
 
 
-s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.intake_loop = s.watch_hermes_skills = nothing
+s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.intake_loop = s.hermes.watch_hermes_skills = nothing
 s.list_agents = lambda: []
 CALLS = []
 OUT = {}
@@ -55,8 +55,8 @@ def fake_run(container, mode, pid, raw, wait=90, env=None):
     return dict(r)
 
 
-s.hermes_skills.run_script = fake_run
-s.hermes_skills.still_running = lambda c: False
+s.hermes.hermes_skills.run_script = fake_run
+s.hermes.hermes_skills.still_running = lambda c: False
 
 
 def record(pid, payload, summary, origin="background_review"):
@@ -70,9 +70,9 @@ PATCH = {"action": "batch", "operations": [{"action": "patch", "name": "voice-lo
 def seed():
     for p in PEND.iterdir():
         p.unlink()
-    s.HSK_FILE.unlink(missing_ok=True)
-    s.HSK_SHOWN.clear()
-    s.HSK_DIFFS.clear()
+    s.hermes.HSK_FILE.unlink(missing_ok=True)
+    s.hermes.HSK_SHOWN.clear()
+    s.hermes.HSK_DIFFS.clear()
     s._probes.pop("hermes-skills", None)
     CALLS.clear()
     OUT.clear()
@@ -187,15 +187,15 @@ def run(page, who):
     page.click("#sitBtn")
     page.wait_for_selector("#sitBody .sitHead")
     row = lambda: page.locator("#sitBody .sitHead").nth(1)
-    before = s.hermes_session()
+    before = s.hermes.hermes_session()
     check(f"{who} ハブの会話の欄に、いまの会話の名前と、毎朝4時に新しくなることが出る",
           wait(lambda: before in (row().text_content() or "") and "毎朝4時に新しくなります" in (row().text_content() or "")), True)
     row().locator("button").click()
-    check(f"{who} 「ハブの会話を新しくする」の1回目は確かめを出すだけ（新しくしない）", (row().locator("button").text_content(), s.hermes_session()),
+    check(f"{who} 「ハブの会話を新しくする」の1回目は確かめを出すだけ（新しくしない）", (row().locator("button").text_content(), s.hermes.hermes_session()),
           ("前の会話を持ち越さずに始める", before))
     row().locator("button").click()
     check(f"{who} 2回目で新しくし、案内と新しい会話の名前を出す",
-          (wait(lambda: "ハブの会話を新しくしました" in body(page)), wait(lambda: s.hermes_session() != before and s.hermes_session() in (row().text_content() or ""))),
+          (wait(lambda: "ハブの会話を新しくしました" in body(page)), wait(lambda: s.hermes.hermes_session() != before and s.hermes.hermes_session() in (row().text_content() or ""))),
           (True, True))
     page.click("#sitClose")
 

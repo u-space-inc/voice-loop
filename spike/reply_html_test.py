@@ -57,7 +57,7 @@ async def nothing(*a, **k):
     return None
 
 
-s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.intake_loop = s.watch_hermes_skills = nothing
+s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.intake_loop = s.hermes.watch_hermes_skills = nothing
 s.list_agents = lambda: [{"pane": "w1:p1", "title": "記事", "cwd": "/x/blog", "kind": "claude", "session": "s1", "status": "idle", "name": "", "hub": False}]
 REPLY = ("# 見出し\n\n> 引用の文\n\n`手元のコード` と\n\n```\nブロックのコード\n```\n\n確認してください。\n\n| 項目 | 数 |\n|:--|--:|\n| 傷 | 3 |\n\n3. 三つ目から\n4. 四つ目\n\n- [x] 済んだこと\n- [ ] まだのこと\n\n"
          "[説明](https://example.invalid/doc \"題\") ![図の説明](out/a.png)\n\n"
@@ -73,7 +73,7 @@ REPLY = ("# 見出し\n\n> 引用の文\n\n`手元のコード` と\n\n```\nブ�
          "<a href=\"/api/hub/screen?pane=w1:p3\">画面を見る</a>\n\n"
          # 本体の別の名前を指すリンク（画面は 127.0.0.1 で開くので、localhost は別の場所としてリンクのまま残る）
          "[別名で画面](http://localhost:8791/api/hub/screen?pane=w1:p5)")
-s.hermes_log("ai", REPLY)
+s.hermes.hermes_log("ai", REPLY)
 
 srv = uvicorn.Server(uvicorn.Config(s.app, host="127.0.0.1", port=PORT, log_level="warning"))
 th = threading.Thread(target=srv.run, daemon=True)
@@ -144,7 +144,7 @@ def run(page, who, width):
     page.fill("#bar #typed", "本物の文")
     page.press("#bar #typed", "Enter")
     check(f"{who} 返事に送る宛先と文の欄と同じ id を書かれても、あなたが打った文を、選んだ相手へ送る",
-          wait(lambda: sent() != []) and sent(), [[s.HERMES_PANE, "本物の文"]])
+          wait(lambda: sent() != []) and sent(), [[s.hermes.HERMES_PANE, "本物の文"]])
 
 
 with sync_playwright() as pw:

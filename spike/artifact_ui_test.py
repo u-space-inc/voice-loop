@@ -55,7 +55,7 @@ async def nothing(*a, **k):
     return None
 
 
-s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.intake_loop = s.watch_hermes_skills = nothing
+s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.intake_loop = s.hermes.watch_hermes_skills = nothing
 PROJ = TMP / "proj"
 (PROJ / "out").mkdir(parents=True)
 (PROJ / ".git").mkdir()
@@ -96,7 +96,7 @@ for pane, text in TEXTS.items():
     JSONL[pane].write_text(json.dumps({"type": "user", "message": {"content": "検証の画像を見せて"}}, ensure_ascii=False) + "\n"
                            + json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}, ensure_ascii=False) + "\n")
 s.jsonl_path = lambda a: JSONL.get(a["pane"]) if a else None
-s.hermes_log("ai", f"api の画像は {PROJ}/out/a.png です。相対の out/c.png は見せません。\n\n![検証の差分](proj/out/b.webp)")
+s.hermes.hermes_log("ai", f"api の画像は {PROJ}/out/a.png です。相対の out/c.png は見せません。\n\n![検証の差分](proj/out/b.webp)")
 
 srv = uvicorn.Server(uvicorn.Config(s.app, host="127.0.0.1", port=PORT, log_level="warning"))
 th = threading.Thread(target=srv.run, daemon=True)
@@ -290,7 +290,7 @@ def run(page, who):
     for pat in ["**/*missing.mp4*", "**/*gone.mp4*"] + [f"**/*{n}*" for n in SLOW.values()]:
         page.unroute(pat)
 
-    page.select_option("#agent", s.HERMES_PANE)
+    page.select_option("#agent", s.hermes.HERMES_PANE)
     check(f"{who} ハブ（Hermes）の会話では、絶対パスと「フォルダ名/場所」のものだけを出す（フォルダ名で始まらない相対の場所は本体が返さない）",
           (wait(lambda: names(page) == ["a.png"]), wait(lambda: page.evaluate("[...document.querySelectorAll('#log .mfig .cap')].map(e => e.textContent)") == ["検証の差分"])), (True, True))
 
@@ -316,7 +316,7 @@ def run(page, who):
     check(f"{who} スマホの幅に狭めると、サムネイルを外す（画像・動画の要素を残さない。読み込みの途中を止めることは、上の無い動画で見た）",
           wait(lambda: page.locator("#log .media, #log .mfig").count() == 0 and page.locator("#log video, #log .media img").count() == 0
                and page.locator("#log .mref.inl").count() == 0), True)
-    page.select_option("#agent", s.HERMES_PANE)
+    page.select_option("#agent", s.hermes.HERMES_PANE)
     page.select_option("#agent", "w1:p1")
     page.wait_for_selector("#log .msg.ai .mref")
     check(f"{who} スマホの幅で描いた返事は、サムネイルをまだ作らない（読み込まない）", page.locator("#log .media").count(), 0)

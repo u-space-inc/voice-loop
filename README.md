@@ -365,6 +365,8 @@ Claude Code のハブと違うのは、Hermes が自分の記憶とスキルを�
 
 `VL_HUB` を書かなければ、これまでどおり Claude Code がハブで、Hermes は話し相手の 1 人として一覧に出るだけです（`VL_HERMES_KEY` を書いたとき）。
 
+本体とハブの頭の線引きは次のとおりです。本体（`server.py`）は、声・画面・通知・セッションの読み書き・見張り・関門を持ちます。判断・記憶・手順・振り返りは頭の側に置きます。本体が頭に求める形（話す・道具・知らせる・確かめる・提案を見せる）は `scripts/hub_brain.py` に書いてあり、Hermes の固有の部分は `scripts/hub_hermes.py` にまとめています。線が崩れないことは `spike/brain_boundary_test.py` が確かめます。
+
 ### 用意
 
 Hermes は公式の Docker イメージで動かします（Docker を動かすものが要ります）。設定は `~/.hermes` に残ります。

@@ -65,7 +65,7 @@ async def nothing(*a, **k):
     return None
 
 
-s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.intake_loop = s.watch_hermes_skills = nothing
+s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.intake_loop = s.hermes.watch_hermes_skills = nothing
 AGENTS = [{"pane": "w1:p1", "title": "記事", "cwd": "/x/blog", "kind": "claude", "session": "s1", "status": "idle", "name": "", "hub": False},
           {"pane": "w2:p1", "title": "受注", "cwd": "/x/shop", "kind": "claude", "session": "s2", "status": "blocked", "name": "", "hub": False}]
 s.list_agents = lambda: [dict(a) for a in AGENTS]
@@ -75,8 +75,8 @@ CALLS, OUT, STILL = [], {}, {"v": False}
 
 
 def entries(t):
-    p = MEM / s.hermes_memory.TARGETS[t]
-    return s.hermes_memory.parse(p.read_bytes()) if p.exists() else []
+    p = MEM / s.hermes.hermes_memory.TARGETS[t]
+    return s.hermes.hermes_memory.parse(p.read_bytes()) if p.exists() else []
 
 
 def fake_mem(container, mode, req=None, wait=90, env=None):
@@ -96,21 +96,21 @@ def fake_mem(container, mode, req=None, wait=90, env=None):
         es[es.index(req["entry"])] = req["content"].strip()
     else:
         es.remove(req["entry"])
-    (MEM / s.hermes_memory.TARGETS[t]).write_text(s.hermes_memory.DELIM.join(es))
+    (MEM / s.hermes.hermes_memory.TARGETS[t]).write_text(s.hermes.hermes_memory.DELIM.join(es))
     return {"result": "applied", "shape": ""}
 
 
-s.hermes_memory.run_script = fake_mem
-s.hermes_memory.still_running = lambda c: STILL["v"]
+s.hermes.hermes_memory.run_script = fake_mem
+s.hermes.hermes_memory.still_running = lambda c: STILL["v"]
 XSS = "<img src=x onerror=\"window.__xss=1\">タグは文字のまま"
 
 
 def seed():
-    (MEM / "USER.md").write_text(s.hermes_memory.DELIM.join(["利用者の名前は山田", XSS]))
+    (MEM / "USER.md").write_text(s.hermes.hermes_memory.DELIM.join(["利用者の名前は山田", XSS]))
     (MEM / "MEMORY.md").write_text("週次定例は情報交換の場")
-    s.HMEM_FILE.unlink(missing_ok=True)
-    s.HMEM_SHOWN.clear()
-    s.HMEM_LIMITS.update(at=0.0, value=None, why="")
+    s.hermes.HMEM_FILE.unlink(missing_ok=True)
+    s.hermes.HMEM_SHOWN.clear()
+    s.hermes.HMEM_LIMITS.update(at=0.0, value=None, why="")
     CALLS.clear()
     OUT.clear()
     STILL["v"] = False
@@ -199,7 +199,7 @@ def run_wide(page, who):
     # 記憶の一覧
     text = mem_text(page)
     check(f"{who} 記憶: ユーザーについて・メモの 2 つと、字数／上限", ("ユーザーについて（USER.md）" in text, "メモ（MEMORY.md）" in text,
-                                                      f"{len(s.hermes_memory.DELIM.join(['利用者の名前は山田', XSS]))} / 1375 字" in text, "利用者の名前は山田" in text),
+                                                      f"{len(s.hermes.hermes_memory.DELIM.join(['利用者の名前は山田', XSS]))} / 1375 字" in text, "利用者の名前は山田" in text),
           (True, True, True, True))
     check(f"{who} 記憶の文は文字として出す（タグを解釈しない）", (XSS in text, page.evaluate("window.__xss || 0")), (True, 0))
     check(f"{who} 記憶のタブにも「ハブの会話を新しくする」がある", "ハブの会話を新しくする" in text, True)
@@ -314,7 +314,7 @@ LONG = "長い記憶の項目です。" * 40
 def run_design(page, who):
     """PC の見た目の作り（色の帯・切り方・開いたままにすること・直す・消すの出し方）"""
     seed()
-    (MEM / "USER.md").write_text(s.hermes_memory.DELIM.join(["利用者の名前は山田", LONG]))
+    (MEM / "USER.md").write_text(s.hermes.hermes_memory.DELIM.join(["利用者の名前は山田", LONG]))
     now = time.time()
     s.TASKS.clear()
     short = "更新内容と影響範囲を確認してからレビューの結果を報告してください。"  # 文は短いが、種別と時刻が付くと 2 行からはみ出す
@@ -322,7 +322,7 @@ def run_design(page, who):
                                                ("done", short, 70, "answer"), ("done", "漢" * 25, 80, "answer"), ("lost", "切れた指示", 90, "send")]):
         s.TASKS[f"d{i}"] = {"id": f"d{i}", "kind": kind, "pane": "w1:p1", "project": "blog", "title": "記事", "text": text,
                             "started": now - age * 60, "updated": now - age * 60, "status": st, "note": ""}
-    s.hermes_log("ai", "【全体】本文の一行目\n【次】二行目\nふつうの行【途中】")
+    s.hermes.hermes_log("ai", "【全体】本文の一行目\n【次】二行目\nふつうの行【途中】")
     open_page(page, 1400)
     page.wait_for_selector("#taskList .task")
     groups = page.eval_on_selector_all("#taskList .tgh, #taskList .tgs", "els => els.map(e => e.textContent)")
@@ -488,7 +488,7 @@ def run_reading(page, who):
     """⤢ で右の列（記憶・状況）を画面いっぱいに広げて読む。CSS で広げるだけなので、直す途中の文はそのまま。ほかの列は押せない（inert）。
     ✕・Esc・スマホの幅へ狭めると戻る（文の欄・一行の欄を打っている間と、変換の途中の Esc では戻らない）。広げている間だけ、承認・入力待ちの数を見出しに出す"""
     seed()
-    (MEM / "USER.md").write_text(s.hermes_memory.DELIM.join(["利用者の名前は山田", LONG]))
+    (MEM / "USER.md").write_text(s.hermes.hermes_memory.DELIM.join(["利用者の名前は山田", LONG]))
     open_page(page, 1400)
     page.wait_for_selector("#memPanel .mem")
     more = lambda: page.eval_on_selector_all("#memPanel .mem > .more", "els => els.map(e => e.offsetParent !== null)")
