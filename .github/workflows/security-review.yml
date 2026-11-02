@@ -23,7 +23,16 @@ jobs:
         with:
           fetch-depth: 0          # 組み込み command は origin/HEAD との merge-base 比較をする
       - run: git remote set-head origin -a
-      - uses: anthropics/claude-code-action@v1
+      - name: 比較の対象（試験の枝だけ）
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          echo "pr_head=$PR_HEAD"
+          echo "merge_commit=$(git rev-parse HEAD)"
+          echo "merge_base=$(git merge-base origin/HEAD HEAD)"
+          git diff --merge-base origin/HEAD --stat
+      - id: claude
+        uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # GitHub の操作はこのジョブの権限に絞る。Claude の App のトークンは contents: write を持つので使わない
@@ -34,3 +43,27 @@ jobs:
           claude_args: >-
             --allowedTools "Bash(gh pr comment ${{ github.event.pull_request.number }} --body-file - --:*),Bash(gh pr diff:*),Bash(git diff:*),Bash(git log:*),Bash(git status:*)"
             --max-turns 30
+      - name: 実行の構造（試験の枝だけ。本文・結果・command は出さない）
+        if: always()
+        env:
+          EXEC: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          [ -f "$EXEC" ] || { echo "execution_file なし"; exit 0; }
+          jq -r '
+            def cls:
+              if startswith("git diff") then "git_diff"
+              elif startswith("git log") then "git_log"
+              elif startswith("git status") then "git_status"
+              elif startswith("gh pr comment") then "pr_comment"
+              elif startswith("gh pr diff") then "pr_diff"
+              else "other" end;
+            def tally: group_by(.) | map("\(.[0])=\(length)") | join(" ");
+            ([.[] | select(.type == "system" and .subtype == "init")][0] // {}) as $init
+            | ([.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use")]) as $uses
+            | ([.[] | select(.type == "result") | .permission_denials[]?]) as $denied
+            | "command_listed=\(($init.slash_commands // []) | map(tostring) | any(. == "security-review"))",
+              "template_in_prompt=\([.[] | select(.type == "user") | .message.content | tostring | contains("senior security engineer")] | any)",
+              "tools: \($uses | map(.name) | tally)",
+              "bash: \($uses | map(select(.name == "Bash") | .input.command // "" | tostring | cls) | tally)",
+              "denied: \($denied | map(if .tool_name == "Bash" then "Bash:" + (.tool_input.command // "" | tostring | cls) else (.tool_name // "unknown" | tostring) end) | tally)"
+          ' "$EXEC"
