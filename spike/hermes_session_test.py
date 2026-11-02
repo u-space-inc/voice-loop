@@ -33,10 +33,10 @@ import re  # noqa: E402
 
 def restart():
     """本体を起動し直したことにする（覚えている印を忘れる。状態のファイルは残る）。"""
-    s._session_mem.clear()
+    s.hermes._session_mem.clear()
 
 
-name = lambda t: s.hermes_session(at(t))
+name = lambda t: s.hermes.hermes_session(at(t))
 shape = lambda n, day: bool(re.fullmatch(f"hub-{day}-[0-9a-f]{{6}}", n))
 a1, a2 = name("2026-10-26 03:59"), name("2026-10-26 04:00")
 check("4時より前は前の日の会話、4時からはその日の会話（名前は 元-日付-印）", (shape(a1, "20261025"), shape(a2, "20261026"), a1 != a2), (True, True, True))
@@ -44,55 +44,55 @@ check("同じ日のうちは同じ名前で続く", name("2026-10-26 23:59"), a2
 restart()
 check("本体を起動し直しても、状態のファイルがあれば同じ会話で続ける", name("2026-10-26 12:00"), a2)
 used = {a1, a2}
-b1 = s.hermes_session_new(at("2026-10-26 10:00"))
-b2 = s.hermes_session_new(at("2026-10-26 11:00"))
+b1 = s.hermes.hermes_session_new(at("2026-10-26 10:00"))
+b2 = s.hermes.hermes_session_new(at("2026-10-26 11:00"))
 check("新しくするたびに、前に使っていない名前になる", (shape(b1, "20261026"), shape(b2, "20261026"), len(used | {b1, b2})), (True, True, 4))
 used |= {b1, b2}
 check("新しくしたあとは、その名前で続く（起動し直しても）", (name("2026-10-26 12:00"), (restart(), name("2026-10-26 12:00"))[1]), (b2, b2))
 for bad in ('{"day": "20261026", "token": "zzzzzz"}', '{"day": "20261026", "n": 2}', '{"day": "20261026", "token": ""}', "[1, 2]", "壊れた"):
-    s.HERMES_SESSION_FILE.write_text(bad)
+    s.hermes.HERMES_SESSION_FILE.write_text(bad)
     restart()
     n = name("2026-10-26 12:00")
     check(f"状態のファイルが壊れていたら、前に使った名前へ戻らず新しい会話にする（{bad}）", (shape(n, "20261026"), n in used), (True, False))
     used.add(n)
-s.HERMES_SESSION_FILE.unlink()
+s.hermes.HERMES_SESSION_FILE.unlink()
 restart()
 n = name("2026-10-26 12:00")
 check("状態のファイルが消えても、前に使った名前（その日の最初の会話も）へは戻らない", (shape(n, "20261026"), n in used), (True, False))
 used.add(n)
 c1 = name("2026-10-27 04:00")
 check("次の日の4時には、新しい印の会話", (shape(c1, "20261027"), c1 in used), (True, False))
-s.HERMES_SESSION_FILE.unlink()
-s.HERMES_SESSION_FILE.mkdir()
+s.hermes.HERMES_SESSION_FILE.unlink()
+s.hermes.HERMES_SESSION_FILE.mkdir()
 restart()
 d1 = name("2026-10-28 04:00")
 check("状態を書けないときも、動いている間は同じ名前で続ける", (shape(d1, "20261028"), name("2026-10-28 09:00")), (True, d1))
-s.HERMES_SESSION_FILE.rmdir()
+s.hermes.HERMES_SESSION_FILE.rmdir()
 restart()
-hour = s.HERMES_RESET_HOUR
-s.HERMES_RESET_HOUR = None
+hour = s.hermes.HERMES_RESET_HOUR
+s.hermes.HERMES_RESET_HOUR = None
 offshape = lambda n: bool(re.fullmatch("hub-[0-9a-f]{6}", n))
 o1 = name("2026-10-26 12:00")
 check("日ごとに変えない設定（off）でも、名前は 元-印（元の名前だけの会話は使わない）", offshape(o1), True)
-o2 = s.hermes_session_new(at("2026-10-26 12:00"))
+o2 = s.hermes.hermes_session_new(at("2026-10-26 12:00"))
 restart()
 check("off で新しくすると新しい印になり、日をまたいでも、起動し直しても続く", (offshape(o2), o2 != o1, name("2026-10-30 12:00")), (True, True, o2))
-s.HERMES_SESSION_FILE.unlink()
+s.hermes.HERMES_SESSION_FILE.unlink()
 restart()
 o3 = name("2026-10-30 12:00")
 check("off で新しくしたあと状態が消えて起動し直しても、捨てた会話（前の名前）へ戻らない", (offshape(o3), o3 in (o1, o2)), (True, False))
-s.HERMES_SESSION_FILE.write_text("壊れた")
+s.hermes.HERMES_SESSION_FILE.write_text("壊れた")
 restart()
 check("off で状態が壊れていても、前の名前へ戻らない", name("2026-10-30 12:00") in (o1, o2, o3), False)
-s.HERMES_SESSION_FILE.unlink()
+s.hermes.HERMES_SESSION_FILE.unlink()
 restart()
-s.HERMES_RESET_HOUR = hour
+s.hermes.HERMES_RESET_HOUR = hour
 
 # 状態を読めず書けもしない間は、仮の印で続け（ハブを止めない）、その間は「新しくする」を断る。直ってから起動し直すと、
 # 保存されている会話（利用者が最後に選んだ会話）に戻る。利用者が捨てた会話（新しくする前の会話・前の日の会話）へは戻らない
-f = s.HERMES_SESSION_FILE
+f = s.hermes.HERMES_SESSION_FILE
 before_reset = name("2026-10-26 12:00")
-chosen = s.hermes_session_new(at("2026-10-26 12:00"))  # 利用者が新しくした（before_reset は捨てた会話）
+chosen = s.hermes.hermes_session_new(at("2026-10-26 12:00"))  # 利用者が新しくした（before_reset は捨てた会話）
 restart()
 f.chmod(0)
 f.parent.chmod(0o500)
@@ -113,7 +113,7 @@ restart()
 # 一覧の読み出し（別のスレッド）が古い印を読んだところで止まり、そのあいだに「新しくする」が済んでも、古い印で上書きしない
 import threading  # noqa: E402
 
-real_file = s.HERMES_SESSION_FILE
+real_file = s.hermes.HERMES_SESSION_FILE
 s.write_json(real_file, {"day": "20261026", "token": "aaaaaa"})
 restart()
 read_done, release = threading.Event(), threading.Event()
@@ -127,18 +127,18 @@ class SlowPath(type(real_file)):
         return text
 
 
-s.HERMES_SESSION_FILE = SlowPath(str(real_file))
+s.hermes.HERMES_SESSION_FILE = SlowPath(str(real_file))
 seen = {}
-reader = threading.Thread(target=lambda: seen.update(old=s.hermes_session(at("2026-10-26 12:00"))))
+reader = threading.Thread(target=lambda: seen.update(old=s.hermes.hermes_session(at("2026-10-26 12:00"))))
 reader.start()
 read_done.wait(5)
-resetter = threading.Thread(target=lambda: seen.update(new=s.hermes_session_new(at("2026-10-26 12:00"))))
+resetter = threading.Thread(target=lambda: seen.update(new=s.hermes.hermes_session_new(at("2026-10-26 12:00"))))
 resetter.start()
 time.sleep(0.3)
 release.set()
 reader.join(5)
 resetter.join(5)
-s.HERMES_SESSION_FILE = real_file
+s.hermes.HERMES_SESSION_FILE = real_file
 check("一覧の読み出しと「新しくする」が重なっても、新しくした印で続ける（古い印で上書きしない）",
       (seen.get("old"), name("2026-10-26 12:00") == seen.get("new"), json.loads(real_file.read_text())["token"] == seen.get("new", "")[-6:]),
       ("hub-20261026-aaaaaa", True, True))
@@ -171,41 +171,41 @@ def fake_urlopen(req, timeout=None):
 
 
 s.urllib.request.urlopen = fake_urlopen
-s.ask_hermes("こんにちは")
-check("Hermes に送るときは、いまの会話の名前（元の名前＋日付）を付ける", sent[-1]["session"], s.hermes_session())
+s.hermes.ask_hermes("こんにちは")
+check("Hermes に送るときは、いまの会話の名前（元の名前＋日付）を付ける", sent[-1]["session"], s.hermes.hermes_session())
 r = c.post("/api/hermes/session/new").json()
-s.ask_hermes("もう一度")
+s.hermes.ask_hermes("もう一度")
 check("画面で新しくすると、次の発言から新しい会話の名前で送る", (r["ok"], sent[-1]["session"], r["session"] != sent[-2]["session"]), (True, r["session"], True))
-check("新しくしたことは、画面の履歴に知らせとして残る", s.hermes_history()[-1], {"role": "note", "text": "ハブの会話を新しくしました（Hermes の記憶と手順書は残ります）"})
+check("新しくしたことは、画面の履歴に知らせとして残る", s.hermes.hermes_history()[-1], {"role": "note", "text": "ハブの会話を新しくしました（Hermes の記憶と手順書は残ります）"})
 check("話し相手の一覧の Hermes の項目に、いまの会話の名前が出る", next(a for a in c.get("/api/agents").json() if a.get("hermes"))["session"], r["session"])
-s.HERMES_SESSION_FILE.unlink()
-s.HERMES_SESSION_FILE.mkdir()
-before = s.hermes_session()  # 覚えている印で続く
-check("状態を書けないときは新しくせず、そう返す", (c.post("/api/hermes/session/new").json(), s.hermes_session()), ({"ok": False, "reason": "state"}, before))
-s.HERMES_SESSION_FILE.rmdir()
-key = s.HERMES_KEY
-s.HERMES_KEY = ""
+s.hermes.HERMES_SESSION_FILE.unlink()
+s.hermes.HERMES_SESSION_FILE.mkdir()
+before = s.hermes.hermes_session()  # 覚えている印で続く
+check("状態を書けないときは新しくせず、そう返す", (c.post("/api/hermes/session/new").json(), s.hermes.hermes_session()), ({"ok": False, "reason": "state"}, before))
+s.hermes.HERMES_SESSION_FILE.rmdir()
+key = s.hermes.HERMES_KEY
+s.hermes.HERMES_KEY = ""
 check("Hermes がつながっていなければ断る", c.post("/api/hermes/session/new").json(), {"ok": False, "reason": "off"})
-s.HERMES_KEY = key
+s.hermes.HERMES_KEY = key
 check("ハブ（コンテナ）からは、鍵があっても新しくする口を使えない",
       problem({"host": "127.0.0.1:8790", "x-vl-key": "k1"}, "POST", "/api/hermes/session/new", container=True) is not None, True)
 
 # ---------- Hermes に渡す指示は毎回同じ文（件数や時刻は発言の後ろに） ----------
-s.HERMES_DIR.mkdir(parents=True, exist_ok=True)
-(s.HERMES_DIR / "hub.md").write_text("ハブへの指示（試験）")
+s.hermes.HERMES_DIR.mkdir(parents=True, exist_ok=True)
+(s.hermes.HERMES_DIR / "hub.md").write_text("ハブへの指示（試験）")
 s.INTAKE = True
 sit = s.situation()
 sit["topics"] = [{"id": "t1", "title": "ブログ", "now": "初稿を書いている", "next": "", "folder": "", "until": "", "moved": "2026-10-20", "sources": []}]
 sit["last_ok"] = time.time() - 60
 s.write_json(s.SITUATION_FILE, sit)
 s.write_json(s.FACTS_FILE, {"next": 2, "facts": [{"n": 1, "text": "週次定例は情報交換の場", "at": time.time(), "via": "screen"}]})
-first = s.hermes_messages("こんにちは")
+first = s.hermes.hermes_messages("こんにちは")
 sit["last_ok"] = time.time() - 3600  # 「何分前」が変わる
 sit["topics"].append({**sit["topics"][0], "id": "t2", "title": "ネットショップ"})  # 件数が変わる
 s.write_json(s.SITUATION_FILE, sit)
 s.write_json(s.FACTS_FILE, {"next": 3, "facts": [{"n": 1, "text": "週次定例は情報交換の場", "at": time.time(), "via": "screen"},
                                                  {"n": 2, "text": "blog は個人の案件", "at": time.time(), "via": "screen"}]})
-second = s.hermes_messages("こんにちは")
+second = s.hermes.hermes_messages("こんにちは")
 check("件数や「何分前」が変わっても、指示（system）は1字も変わらない（キャッシュを書き直させない）", first[0] == second[0], True)
 check("件数と時刻は、発言の後ろの案内で変わる", (first[-1]["content"] != second[-1]["content"], "話題 2 件" in second[-1]["content"], "覚えていること 2 件" in second[-1]["content"]),
       (True, True, True))
@@ -215,11 +215,11 @@ check("指示には、件数・時刻・話題の本文が入らない", any(w i
 s.INTAKE = False
 for p in (s.SITUATION_FILE, s.FACTS_FILE):
     p.unlink()
-none = s.hermes_messages("やあ")
+none = s.hermes.hermes_messages("やあ")
 check("話題も覚えていることも無く、拾う役も切ってあれば、発言の後ろの案内は足さない", none[-1], {"role": "user", "content": "やあ"})
 check("…そのときも、指示（system）は件数があるときと同じ（0件と1件の境で変わらない）", none[0] == second[0], True)
 s.write_json(s.FACTS_FILE, {"next": 2, "facts": [{"n": 1, "text": "はじめての覚えごと", "at": time.time(), "via": "screen"}]})
-one = s.hermes_messages("やあ")
+one = s.hermes.hermes_messages("やあ")
 check("最初の1件を覚えても、指示（system）は変わらず、案内だけが付く", (one[0] == none[0], "覚えていること 1 件" in one[-1]["content"]), (True, True))
 s.FACTS_FILE.unlink()
 

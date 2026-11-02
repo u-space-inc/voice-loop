@@ -44,7 +44,7 @@ async def nothing(*a, **k):
     return None
 
 
-s.ask_hermes = fake_ask_hermes
+s.hermes.ask_hermes = fake_ask_hermes
 s.list_agents = lambda: []
 s.speak_to = nothing  # 読み上げは関係ない
 s.boot_ensure_hub = nothing  # 起動時に本物の Hermes やトークンを見に行かない
@@ -60,7 +60,7 @@ def check(name, got, want):
 
 
 def records():
-    return [(d["role"], d["text"]) for d in s.hermes_records()]
+    return [(d["role"], d["text"]) for d in s.hermes.hermes_records()]
 
 
 def wait_until(fn, limit=5.0):
@@ -73,7 +73,7 @@ def wait_until(fn, limit=5.0):
 
 
 def say(w, text):
-    w.send_json({"type": "text", "text": text, "pane": s.HERMES_PANE, "speaker": 0})
+    w.send_json({"type": "text", "text": text, "pane": s.hermes.HERMES_PANE, "speaker": 0})
 
 
 def drain(w):
@@ -96,7 +96,7 @@ def until(w, kind):
 
 with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     def history():
-        return c.get("/api/history", params={"pane": s.HERMES_PANE}).json()
+        return c.get("/api/history", params={"pane": s.hermes.HERMES_PANE}).json()
 
     check("記録が無いうちは、履歴は空（記録の側から）", history(), {"source": "hermes", "messages": []})
 
@@ -142,7 +142,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     check("Hermes に届いた順は、発言 → 通知", [t.startswith(s.NOTE_PREFIX) for t in calls], [False, True])
     check("記録の順: 発言・返事・通知の見出し・報告", records()[-4:], [
         ("me", "テストを頼んで"), ("ai", "テストを頼みました"), ("note", "proj｜テスト が完了しました"), ("ai", "テストの件が終わりました。全部通っています")])
-    rec = s.hermes_records()[-1]
+    rec = s.hermes.hermes_records()[-1]
     check("報告の記録には印と件名", (rec.get("report"), rec.get("about")), (True, "proj｜テスト"))
     check("通知は台帳（ユーザーの発言）に載らない", s.hub_turns(1)[0][1], "テストを頼んで")
     check("画面に出す履歴では、通知は note", history()["messages"][-2], {"role": "note", "text": "proj｜テスト が完了しました"})
@@ -195,26 +195,27 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     check("返事が空の発言は、台帳の返事も空", s.hub_reply_to(s.hub_human_turn()), "")
 
     # ---- 再起動: 台帳は記録から戻る。発言の ID は再起動をまたいでも重ならない
-    before = [list(r) for r in s.HERMES_TURNS]
-    s.HERMES_TURNS.clear()
-    s._load_hermes_turns()
-    check("台帳が記録から戻る（発言・返事とも）", [list(r)[:3] for r in s.HERMES_TURNS], [r[:3] for r in before])
-    check("記録から戻した行には、直前に聞いた返答の写しを作らない（承認に答えるときは聞き直してもらう）", {r[3] for r in s.HERMES_TURNS}, {None})
+    before = [list(r) for r in s.hermes.HERMES_TURNS]
+    s.hermes.HERMES_TURNS.clear()
+    s.hermes._load_hermes_turns()
+    check("台帳が記録から戻る（発言・返事とも）", [list(r)[:3] for r in s.hermes.HERMES_TURNS], [r[:3] for r in before])
+    check("記録から戻した行には、直前に聞いた返答の写しを作らない（承認に答えるときは聞き直してもらう）", {r[3] for r in s.hermes.HERMES_TURNS}, {None})
     check("戻した台帳で、前の発言への返事が読める", s.hub_reply_to(before[1][0]), "brew の件を送りました")
-    new = s.hermes_turn_begin("再起動のあと")
+    new = s.hermes.hermes_turn_begin("再起動のあと")
     check("新しい発言の ID は前のどれとも違う", new in {r[0] for r in before}, False)
-    s.hermes_turn_end(new, "はい")
+    s.hermes.hermes_turn_end(new, "はい")
 
     # ---- 壊れた行は飛ばす
-    with s.HERMES_LOG.open("a") as f:
+    with s.hermes.HERMES_LOG.open("a") as f:
         f.write("壊れた行\n[1, 2]\n" + json.dumps({"role": "ai", "text": 3}) + "\n" + json.dumps({"role": "me"}) + "\n")
     check("壊れた行があっても履歴は読める", history()["messages"][-2:], [{"role": "me", "text": "再起動のあと"}, {"role": "ai", "text": "はい"}])
-    s.HERMES_TURNS.clear()
-    s._load_hermes_turns()
+    s.hermes.HERMES_TURNS.clear()
+    s.hermes._load_hermes_turns()
     check("壊れた行があっても台帳は戻る", s.hub_turns(1)[0][1], "再起動のあと")
 
     # ---- ハブが Claude Code のとき: Hermes は話し相手の1人。会話は同じように記録し、ハブの報告は Hermes の記録に入れない
-    s.HERMES_HUB = False
+    s.hermes.HERMES_HUB, hermes_hub = False, s.HUB
+    s.HUB = s.ClaudeBrain()
     plan.append((0, "Hermes です"))
     with c.websocket_connect(WS) as w:
         say(w, "こんにちは")
@@ -233,21 +234,21 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     s.ask = real_ask
     s.list_agents = lambda: []
     check("Claude Code のハブへの報告は Hermes の記録に入らない", len(records()), n)
-    s.HERMES_HUB = True
+    s.hermes.HERMES_HUB, s.HUB = True, hermes_hub
 
     # ---- 前の書き込みが途中で切れていた（末尾に改行が無い）: 次の発言をつなげずに書く
-    with s.HERMES_LOG.open("a") as f:
+    with s.hermes.HERMES_LOG.open("a") as f:
         f.write('{"role": "ai", "text": "途中で切れた')
     plan.append((0, "切れたあとの返事"))
     with c.websocket_connect(WS) as w:
         say(w, "切れたあとの発言")
         until(w, "reply")
     check("切れた行のあとも、発言と返事が履歴に出る", history()["messages"][-2:], [{"role": "me", "text": "切れたあとの発言"}, {"role": "ai", "text": "切れたあとの返事"}])
-    check("切れた行は1行のまま残り、次の行とつながらない", s.HERMES_LOG.read_text().splitlines()[-3], '{"role": "ai", "text": "途中で切れた')
+    check("切れた行は1行のまま残り、次の行とつながらない", s.hermes.HERMES_LOG.read_text().splitlines()[-3], '{"role": "ai", "text": "途中で切れた')
 
     # ---- 記録に書けない（ディスクがいっぱい・権限など）: 会話は止めず、画面に「記録に書けなかった」と伝える
     n = len(records())
-    s.HERMES_LOG.chmod(0o444)
+    s.hermes.HERMES_LOG.chmod(0o444)
     plan.extend([(0, "書けないときの返事"), (0, RuntimeError("Hermes が 502 を返しました")), (0, "書けないときの報告")])
     with c.websocket_connect(WS) as w:
         say(w, "書けないとき")
@@ -264,24 +265,24 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         m = first(drain(w), "notice")
         check("報告を受け取れず、その失敗も書けなかったら、画面に saved=False で知らせる", (m.get("text"), m.get("saved")), (
             "proj｜テスト: ハブから報告を受け取れませんでした: Hermes に接続できません（down）", False))
-    s.HERMES_LOG.chmod(0o644)
+    s.hermes.HERMES_LOG.chmod(0o644)
     check("書けない間、記録は増えない", len(records()), n)
     check("書けなくても台帳には入る（守りは会話どおりに働く）", s.hub_turns(2), [(s.hub_turns(2)[0][0], "書けないときの失敗"), (s.hub_turns(2)[1][0], "書けないとき")])
-    check("書けなかった印は持ち越さない", s._unsaved, set())
-    real_log = s.hermes_log
-    s.hermes_log = lambda role, text, **k: False if role == "me" else real_log(role, text, **k)  # 発言だけ書けなかった
+    check("書けなかった印は持ち越さない", s.hermes._unsaved, set())
+    real_log = s.hermes.hermes_log
+    s.hermes.hermes_log = lambda role, text, **k: False if role == "me" else real_log(role, text, **k)  # 発言だけ書けなかった
     plan.append((0, "発言だけ書けなかった返事"))
     with c.websocket_connect(WS) as w:
         say(w, "発言だけ書けない")
         m = until(w, "reply")[-1]
-    s.hermes_log = real_log
+    s.hermes.hermes_log = real_log
     check("発言だけ書けなくても saved=False（履歴から発言が欠ける）", (m["saved"], records()[-1]), (False, ("ai", "発言だけ書けなかった返事")))
-    s.hermes_log = lambda role, text, **k: False if role == "error" else real_log(role, text, **k)  # 見出しは書けて、失敗だけ書けなかった
+    s.hermes.hermes_log = lambda role, text, **k: False if role == "error" else real_log(role, text, **k)  # 見出しは書けて、失敗だけ書けなかった
     plan.append((0, RuntimeError("Hermes に接続できません（late）")))
     with c.websocket_connect(WS) as w:
         c.portal.call(s.report, D, "done")
         m = first(drain(w), "notice")
-    s.hermes_log = real_log
+    s.hermes.hermes_log = real_log
     check("報告の失敗だけ書けなかったときも saved=False", m.get("saved"), False)
     plan.append((0, "戻ったあとの返事"))
     with c.websocket_connect(WS) as w:
@@ -290,20 +291,20 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     check("書けるようになれば saved=True", m["saved"], True)
 
     # ---- 本当に起動し直す（別のプロセスで本体を読み込む）: 台帳が記録から戻り、新しい発言の ID は前と重ならない
-    probe = subprocess.run([sys.executable, "-c", "import json, server as s; n = len(s.HERMES_TURNS); t = s.hermes_turn_begin('起動し直したあと');"
-                            " print(json.dumps({'turns': [list(r)[:3] for r in s.HERMES_TURNS][:n], 'new': t}))"],
+    probe = subprocess.run([sys.executable, "-c", "import json, server as s; n = len(s.hermes.HERMES_TURNS); t = s.hermes.hermes_turn_begin('起動し直したあと');"
+                            " print(json.dumps({'turns': [list(r)[:3] for r in s.hermes.HERMES_TURNS][:n], 'new': t}))"],
                            cwd=ROOT, capture_output=True, text=True, timeout=120)
     after = json.loads(probe.stdout.strip().splitlines()[-1]) if probe.returncode == 0 else {"turns": None, "new": None}
-    check("起動し直すと、台帳が記録から戻る（記録に書けなかった発言は戻らない）", after["turns"], [list(r)[:3] for r in s.HERMES_TURNS if not r[1].startswith(("書けないとき", "発言だけ書けない"))])
-    check("起動し直したあとの発言の ID は、前のどれとも違う", after["new"] in {r[0] for r in s.HERMES_TURNS}, False)
+    check("起動し直すと、台帳が記録から戻る（記録に書けなかった発言は戻らない）", after["turns"], [list(r)[:3] for r in s.hermes.HERMES_TURNS if not r[1].startswith(("書けないとき", "発言だけ書けない"))])
+    check("起動し直したあとの発言の ID は、前のどれとも違う", after["new"] in {r[0] for r in s.hermes.HERMES_TURNS}, False)
 
     # ---- 記録を読めなくても、本体は起動する（守りの台帳は空から。履歴は「読めなかった」と出す）
     def start_with(prepare, hub="hermes"):
         state = Path(tempfile.mkdtemp())
         prepare(state / "hermes-log.jsonl")
         env = {**os.environ, "VL_STATE_DIR": str(state), "VL_HUB": hub, "VL_HERMES_KEY": "k1" if hub == "hermes" else ""}
-        code = ("import json, server as s; h = s.hermes_history(); ok = s.hermes_log('me', 'x');"
-                " print(json.dumps({'turns': len(s.HERMES_TURNS), 'history': [m['role'] for m in h], 'last': h[-1]['text'] if h else '', 'write': ok}))")
+        code = ("import json, server as s; h = s.hermes.hermes_history(); ok = s.hermes.hermes_log('me', 'x');"
+                " print(json.dumps({'turns': len(s.hermes.HERMES_TURNS), 'history': [m['role'] for m in h], 'last': h[-1]['text'] if h else '', 'write': ok}))")
         r = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
         return json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 else {"exit": r.returncode, "err": r.stderr.strip().splitlines()[-1:]}
 
@@ -327,11 +328,11 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     check("入れ子が深すぎる行は飛ばし、ほかの行は戻る", (got.get("turns"), got.get("history")), (1, ["me"]))
 
     # ---- 記録が大きくなったら、一つ前の分だけ残して回す
-    real_max = s.HERMES_LOG_MAX
-    s.HERMES_LOG_MAX = 200
-    s.hermes_log("me", "回したあと")  # ここまでの記録は 200 バイトを超えているので、書く前に回る
-    s.HERMES_LOG_MAX = real_max
-    old = s.HERMES_LOG.with_name("hermes-log.1.jsonl")
+    real_max = s.hermes.HERMES_LOG_MAX
+    s.hermes.HERMES_LOG_MAX = 200
+    s.hermes.hermes_log("me", "回したあと")  # ここまでの記録は 200 バイトを超えているので、書く前に回る
+    s.hermes.HERMES_LOG_MAX = real_max
+    old = s.hermes.HERMES_LOG.with_name("hermes-log.1.jsonl")
     check("回した分は hermes-log.1.jsonl に", "こんにちは" in old.read_text() if old.exists() else None, True)
     check("回したあとの履歴は新しい記録から", history()["messages"], [{"role": "me", "text": "回したあと"}])
 

@@ -43,19 +43,19 @@ def fake_herdr(*a, **k):
 
 
 s.herdr = fake_herdr
-s.ask_hermes = lambda text: state["hermes_said"]
+s.hermes.ask_hermes = lambda text: state["hermes_said"]
 
 
 def say(text: str, reply: str = "わかりました") -> str:
     """ユーザーが声で text と言い、Hermes が reply と答えた（本体の台帳に載る）。"""
-    turn = s.hermes_turn_begin(text)
-    s.hermes_turn_end(turn, reply)
+    turn = s.hermes.hermes_turn_begin(text)
+    s.hermes.hermes_turn_end(turn, reply)
     return turn
 
 
 def begin(text: str) -> str:
     """ユーザーが text と言い、Hermes がまだ答えていない（道具を打っている最中）。"""
-    return s.hermes_turn_begin(text)
+    return s.hermes.hermes_turn_begin(text)
 
 
 def screen():
@@ -85,21 +85,21 @@ def check(name, got, want):
 agents = json.loads(s.api_agents().body)
 check("一覧の先頭が Hermes で、ハブ扱い・鍵は hub", (agents[0]["pane"], agents[0]["hub"], agents[0]["key"], agents[0]["hermes"]), ("hermes", True, "hub", True))
 check("herdr のセッションはハブ扱いでない", [a["hub"] for a in agents[1:]], [False])
-s.hermes_problem = lambda: ""
+s.hermes.hermes_problem = lambda: ""
 check("ハブの起動は、立てずに使える判定", s.ensure_hub(), {"ok": True, "pane": "hermes", "started": False})
-s.hermes_problem = lambda: "止まっています"
+s.hermes.hermes_problem = lambda: "止まっています"
 check("Hermes が居ないときは理由を返す", s.ensure_hub(), {"ok": False, "reason": "hermes", "detail": "止まっています"})
 
 # ---- 指示文は発言のたびに system として付く（書き換えが次の発言から効く）
-s.HERMES_DIR.mkdir(parents=True, exist_ok=True)
-(s.HERMES_DIR / "hub.md").write_text("ハブの決まり v1")
+s.hermes.HERMES_DIR.mkdir(parents=True, exist_ok=True)
+(s.hermes.HERMES_DIR / "hub.md").write_text("ハブの決まり v1")
 RULES = s.situation_rules("/opt/voice-loop/hubctl").strip()  # いまの状況の使い方（件数によらず毎回同じ文）
-check("指示文が system で先頭に付き、そのあとに状況の使い方が付く", s.hermes_messages("やあ"),
+check("指示文が system で先頭に付き、そのあとに状況の使い方が付く", s.hermes.hermes_messages("やあ"),
       [{"role": "system", "content": "ハブの決まり v1\n\n" + RULES}, {"role": "user", "content": "やあ"}])
-(s.HERMES_DIR / "hub.md").write_text("ハブの決まり v2")
-check("書き換えは次の発言から効く", s.hermes_messages("やあ")[0]["content"].startswith("ハブの決まり v2\n\n## いまの状況"), True)
-(s.HERMES_DIR / "hub.md").unlink()
-check("指示文が無ければ、状況の使い方と発言だけ", s.hermes_messages("やあ"), [{"role": "system", "content": RULES}, {"role": "user", "content": "やあ"}])
+(s.hermes.HERMES_DIR / "hub.md").write_text("ハブの決まり v2")
+check("書き換えは次の発言から効く", s.hermes.hermes_messages("やあ")[0]["content"].startswith("ハブの決まり v2\n\n## いまの状況"), True)
+(s.hermes.HERMES_DIR / "hub.md").unlink()
+check("指示文が無ければ、状況の使い方と発言だけ", s.hermes.hermes_messages("やあ"), [{"role": "system", "content": RULES}, {"role": "user", "content": "やあ"}])
 
 # ---- 台帳
 check("発言が無いうちは最後の発言も無い", s.hub_human_turn(), None)
@@ -114,7 +114,7 @@ Q = "proj の「テスト」が、フォルダの中身を見る（ls）許可�
 
 def asked_then(reply: str, utter: str) -> str:
     """いまの発言に Hermes が reply と答え、ユーザーが次に utter と言った（Hermes はまだ答えていない）。"""
-    s.hermes_turn_end(s.hub_human_turn(), reply)
+    s.hermes.hermes_turn_end(s.hub_human_turn(), reply)
     return begin(utter)
 
 
@@ -135,7 +135,7 @@ for utter in ("いいえ、だめ", "はい、承認はしません", "うん、
     check(f"発言が「{utter}」なら「はい」を送らない", answer(), ("not_said", []))
 asked_then(Q, "はい、許可して")
 check("次の発言で「はい」→ 1 を送る", answer(), ("ok", ["1"]))
-s.hermes_turn_end(s.hub_human_turn(), "許可しました")
+s.hermes.hermes_turn_end(s.hub_human_turn(), "許可しました")
 
 state.update(screen=RISKY)
 begin("承認見て")
@@ -150,7 +150,7 @@ asked_then("proj で、本当に build のフォルダを消していいです�
 check("聞き返しのあとの発言が断りなら、--confirmed でも通らない", answer(confirmed=True), ("not_said", []))
 asked_then("proj で、本当に build のフォルダを消していいですか？", "はい、許可していい")
 check("次の発言の --confirmed で通る", answer(confirmed=True), ("ok", ["1"]))
-s.hermes_turn_end(s.hub_human_turn(), "許可しました")
+s.hermes.hermes_turn_end(s.hub_human_turn(), "許可しました")
 begin("見て")
 screen()
 begin("だめ")
@@ -177,63 +177,63 @@ for utter, want in (("2時間かかるかな", "not_said"), ("一番いい天気
     check(f"発言が「{utter}」なら 2 番は送らない", answer(answer="2"), (want, []))
 asked_then(CQ, "じゃあ2番で")
 check("「じゃあ2番で」なら 2 を送る", answer(answer="2"), ("ok", ["2"]))
-s.hermes_turn_end(s.hub_human_turn(), "2番と伝えました")
+s.hermes.hermes_turn_end(s.hub_human_turn(), "2番と伝えました")
 begin("質問もう一度")
 screen()
 asked_then(CQ, "HTML にして")
 check("選択肢の文言で選んでも、その番号だけ", (answer(answer="1"), answer(answer="2")), (("not_said", []), ("ok", ["2"])))
-s.hermes_turn_end(s.hub_human_turn(), "2番と伝えました")
+s.hermes.hermes_turn_end(s.hub_human_turn(), "2番と伝えました")
 
 # ---- 直前に聞いた返答（heard）は、本体が受け取ったハブの最後の出力。記録からは取らない
 state.update(screen=PERMISSION)
 s.SEEN_PROMPT.clear()
 begin("承認の件")
 screen()
-s.hermes_turn_end(s.hub_human_turn(), Q)
+s.hermes.hermes_turn_end(s.hub_human_turn(), Q)
 
 
 async def report_reply(text):
     return "blog の件が終わりました"
 
 
-s.ask_hermes = lambda text: "blog の件が終わりました"
+s.hermes.ask_hermes = lambda text: "blog の件が終わりました"
 asyncio.run(s.report({"pane": "w8:p1", "cwd": "/x/blog", "project": "blog", "title": "記事", "text": "書いて", "offset": 0, "was_working": False, "gen": 1}, "done"))
 begin("はい")
 check("問いのあとに別件の報告をはさむと、その報告が直前に聞いた文になり、「はい」は送らない", answer(), ("not_asked", []))
-s.hermes_turn_end(s.hub_human_turn(), Q)
-real_log = s.hermes_log
-s.hermes_log = lambda role, text, **extra: False if role == "ai" and extra.get("report") else real_log(role, text, **extra)
+s.hermes.hermes_turn_end(s.hub_human_turn(), Q)
+real_log = s.hermes.hermes_log
+s.hermes.hermes_log = lambda role, text, **extra: False if role == "ai" and extra.get("report") else real_log(role, text, **extra)
 asyncio.run(s.report({"pane": "w8:p1", "cwd": "/x/blog", "project": "blog", "title": "記事", "text": "書いて", "offset": 0, "was_working": False, "gen": 1}, "done"))
-s.hermes_log = real_log
+s.hermes.hermes_log = real_log
 begin("はい")
 check("報告を記録に書けなかったときも、その報告が直前に聞いた文（古い問いを拾わない）", answer(), ("not_asked", []))
-s.hermes_turn_end(s.hub_human_turn(), Q)
-s.ask_hermes = lambda text: ""
+s.hermes.hermes_turn_end(s.hub_human_turn(), Q)
+s.hermes.ask_hermes = lambda text: ""
 asyncio.run(s.report({"pane": "w8:p1", "cwd": "/x/blog", "project": "blog", "title": "記事", "text": "書いて", "offset": 0, "was_working": False, "gen": 1}, "done"))
 begin("はい")
 check("報告を受け取れなかったとき（本体の失敗の知らせを聞いた）は、古い問いを拾わない", answer(), ("not_asked", []))
-s.hermes_turn_end(s.hub_human_turn(), Q)
+s.hermes.hermes_turn_end(s.hub_human_turn(), Q)
 
 
 def broken(text):
     raise RuntimeError("Hermes に届きません")
 
 
-s.ask_hermes = broken
-asyncio.run(s.hermes_exchange("ほかの話"))
+s.hermes.ask_hermes = broken
+asyncio.run(s.hermes.hermes_exchange("ほかの話"))
 begin("はい")
 check("返事を受け取れなかった発言のあと（失敗の知らせを聞いた）は、古い問いを拾わない", answer(), ("not_asked", []))
-s.ask_hermes = lambda text: state["hermes_said"]
-s.hermes_turn_end(s.hub_human_turn(), Q)
-s.HERMES_HEARD["text"] = ""  # 本体を起動し直した直後にあたる（記録から戻した行には写しが無い）
-for row in s.HERMES_TURNS:
+s.hermes.ask_hermes = lambda text: state["hermes_said"]
+s.hermes.hermes_turn_end(s.hub_human_turn(), Q)
+s.hermes.HERMES_HEARD["text"] = ""  # 本体を起動し直した直後にあたる（記録から戻した行には写しが無い）
+for row in s.hermes.HERMES_TURNS:
     row[3] = None
 begin("はい")
 check("起動し直した直後の発言では答えない（聞き直してもらう）", answer(), ("not_asked", []))
-s.hermes_turn_end(s.hub_human_turn(), Q)
+s.hermes.hermes_turn_end(s.hub_human_turn(), Q)
 begin("はい、許可して")
 check("聞き直したあとの発言なら送る", answer(), ("ok", ["1"]))
-s.hermes_turn_end(s.hub_human_turn(), "許可しました")
+s.hermes.hermes_turn_end(s.hub_human_turn(), "許可しました")
 
 # ---- 閉じる（聞いた発言の、すぐ次の発言のはっきりした許可でだけ）
 state.update(status="idle")
@@ -241,28 +241,28 @@ s.CLOSING.clear()
 begin("テストのセッションを閉じて")
 check("1回目は閉じない", close(), ("confirm", []))
 check("同じ発言の中の --confirmed は閉じない", close(confirmed=True), ("same_turn", []))
-s.hermes_turn_end(s.hub_human_turn(), "proj の「テスト」のセッションを閉じていいですか。")
+s.hermes.hermes_turn_end(s.hub_human_turn(), "proj の「テスト」のセッションを閉じていいですか。")
 say("はい、お願い")  # 返答はまだ（Hermes が --confirmed を打つ前）
 check("次の発言の許可で閉じる", close(confirmed=True), ("ok", ["w9:p1"]))
 
 s.CLOSING.clear()
 begin("閉じて")
 close()
-s.hermes_turn_end(s.hub_human_turn(), "proj の「テスト」のセッションを閉じていいですか。")
+s.hermes.hermes_turn_end(s.hub_human_turn(), "proj の「テスト」のセッションを閉じていいですか。")
 begin("閉じないで")
 check("断りの語があれば閉じない", close(confirmed=True), ("not_yes", []))
 
 s.CLOSING.clear()
 begin("閉じて")
 close()
-s.hermes_turn_end(s.hub_human_turn(), "閉じると何が起きるか説明しましょうか。")
+s.hermes.hermes_turn_end(s.hub_human_turn(), "閉じると何が起きるか説明しましょうか。")
 begin("はい")
 check("聞いたときの返答に問いが無ければ閉じない", close(confirmed=True), ("not_asked", []))
 
 s.CLOSING.clear()
 begin("閉じて")
 close()
-s.hermes_turn_end(s.hub_human_turn(), "proj の「テスト」のセッションを閉じていいですか。")
+s.hermes.hermes_turn_end(s.hub_human_turn(), "proj の「テスト」のセッションを閉じていいですか。")
 say("ところで blog はどう？", "順調です")
 begin("はい")
 check("あいだに別の発言をはさんだら聞き直し", close(confirmed=True), ("confirm", []))
@@ -278,12 +278,12 @@ async def fake_ask_hermes_report(text):
     return "テストの件が終わりました"
 
 
-s.ask_hermes = lambda text: asyncio.run(fake_ask_hermes_report(text))
-before = len(s.HERMES_TURNS)
+s.hermes.ask_hermes = lambda text: asyncio.run(fake_ask_hermes_report(text))
+before = len(s.hermes.HERMES_TURNS)
 asyncio.run(s.report({"pane": "w9:p1", "cwd": "/x/proj", "project": "proj", "title": "テスト", "text": "テストして", "offset": 0, "was_working": False, "gen": 1}, "done"))
 check("通知は Hermes に届き、自動通知の目印が付く", seen.get("note", "").startswith(s.NOTE_PREFIX), True)
 check("応答中は REPORTING で、閉じるは働かない", (seen.get("reporting"), seen.get("close_during")), (True, "reporting"))
-check("通知は台帳（ユーザーの発言）に載らない", len(s.HERMES_TURNS), before)
+check("通知は台帳（ユーザーの発言）に載らない", len(s.hermes.HERMES_TURNS), before)
 check("応答が終わると REPORTING は戻る", s.REPORTING, False)
 
 bad = [f"{n}: {g!r}（期待 {w!r}）" for n, ok, g, w in results if not ok]

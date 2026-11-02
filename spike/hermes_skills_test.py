@@ -55,7 +55,7 @@ async def fake_push(title, body, tag, urgency="normal", only=None):
 
 
 s.push_all = fake_push
-s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.intake_loop = s.watch_hermes_skills = nothing
+s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.intake_loop = s.hermes.watch_hermes_skills = nothing
 s.list_agents = lambda: []
 
 # ---------- コンテナの台本の差し替え ----------
@@ -72,8 +72,8 @@ def fake_run(container, mode, pid, raw, wait=90, env=None):
 
 
 REAL_RUN, REAL_STILL = hs.run_script, hs.still_running  # 命令の形の試験で使う本物
-s.hermes_skills.run_script = fake_run
-s.hermes_skills.still_running = lambda container: RUNNING["v"]
+s.hermes.hermes_skills.run_script = fake_run
+s.hermes.hermes_skills.still_running = lambda container: RUNNING["v"]
 
 
 def modes(kind):
@@ -97,9 +97,9 @@ def reset():
             p.rmdir()
         else:
             p.unlink()
-    s.HSK_FILE.unlink(missing_ok=True)
-    s.HSK_SHOWN.clear()
-    s.HSK_DIFFS.clear()
+    s.hermes.HSK_FILE.unlink(missing_ok=True)
+    s.hermes.HSK_SHOWN.clear()
+    s.hermes.HSK_DIFFS.clear()
     s._probes.pop("hermes-skills", None)
     CALLS.clear()
     OUT.clear()
@@ -254,15 +254,15 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     check("採る: 扱えない形は断り、台本を呼ばない", (r.get("reason"), modes("approve")), ("unsupported", []))
 
     r = post("/api/hermes/skills/approve", id="aaaaaaaa", v=va)
-    st = s.hsk_state()["items"]["aaaaaaaa"]
-    arch = s.HSK_DIR / "approved" / "aaaaaaaa.json"
+    st = s.hermes.hsk_state()["items"]["aaaaaaaa"]
+    arch = s.hermes.HSK_DIR / "approved" / "aaaaaaaa.json"
     check("採る: 控えの中身を台本に渡して当てる（当てる前にコンテナを確かめ直す）",
           (r, [c_[0] for c_ in CALLS[-2:]], modes("approve")[0][2] == raw_a), ({"ok": True, "discarded": True}, ["check", "approve"], True))
     check("採る: 当てた印・控え（0600・中身つき）・操作の記録が残る",
           (st["state"], oct(arch.stat().st_mode & 0o777), json.loads(arch.read_text())["record"] == raw_a.decode(),
-           [(l["act"], l["result"]) for l in map(json.loads, s.HSK_LOG.read_text().splitlines())][-1]),
+           [(l["act"], l["result"]) for l in map(json.loads, s.hermes.HSK_LOG.read_text().splitlines())][-1]),
           ("applied", "0o600", True, ("approve", "applied")))
-    check("操作の記録に記録の中身（差分の文）は書かない", "new_string" in s.HSK_LOG.read_text(), False)
+    check("操作の記録に記録の中身（差分の文）は書かない", "new_string" in s.hermes.HSK_LOG.read_text(), False)
     n = len(modes("approve"))
     check("採る: 当てた id は二度採れない（記録が残っていても）", (post("/api/hermes/skills/approve", id="aaaaaaaa", v=va).get("reason"), len(modes("approve"))), ("applied", n))
 
@@ -274,7 +274,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     it = view()["items"][0]
     check("当てたが承認待ちを消せなかったとき: 残り、採れず、案内が出る", (it["state"], it["can_apply"], "捨てるで消せます" in it["note"]), ("applied", False, True))
     r = post("/api/hermes/skills/reject", id="aaaaaaaa", v=va)
-    check("…捨てると、承認待ちは消すが、当てた印は消さない", (r["ok"], s.hsk_state()["items"]["aaaaaaaa"]["state"], "dropped" in s.hsk_state()["items"]["aaaaaaaa"]),
+    check("…捨てると、承認待ちは消すが、当てた印は消さない", (r["ok"], s.hermes.hsk_state()["items"]["aaaaaaaa"]["state"], "dropped" in s.hermes.hsk_state()["items"]["aaaaaaaa"]),
           (True, "applied", True))
 
     for res, want_state in (("changed", None), ("unsupported", None)):
@@ -284,7 +284,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         va = view()["items"][0]["v"]
         r = post("/api/hermes/skills/approve", id="aaaaaaaa", v=va)
         check(f"台本が {res}: 当てていないので承認待ちに戻る（印も控えも残さない）",
-              (r.get("reason"), s.hsk_state()["items"].get("aaaaaaaa"), (s.HSK_DIR / "approved" / "aaaaaaaa.json").exists()), (res, want_state, False))
+              (r.get("reason"), s.hermes.hsk_state()["items"].get("aaaaaaaa"), (s.hermes.HSK_DIR / "approved" / "aaaaaaaa.json").exists()), (res, want_state, False))
     check("…当てていないと分かったあとは、画面の取り直しが要る（同じ版では押せない）", post("/api/hermes/skills/approve", id="aaaaaaaa", v=va).get("reason"), "stale")
 
     for res in ({"result": "failed", "why": "patch would fail"}, {"result": "error", "why": "ImportError"}, lambda: 1 / 0):
@@ -300,7 +300,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         n = len(modes("approve"))
         check(f"…{name} の id は二度採らない", (post("/api/hermes/skills/approve", id="aaaaaaaa", v=va).get("reason"), len(modes("approve"))), ("unknown", n))
     r = post("/api/hermes/skills/reject", id="aaaaaaaa", v=va)
-    check("分からない id も捨てられ、捨てても分からない印は残る", (r["ok"], s.hsk_state()["items"]["aaaaaaaa"]["state"]), (True, "unknown"))
+    check("分からない id も捨てられ、捨てても分からない印は残る", (r["ok"], s.hermes.hsk_state()["items"]["aaaaaaaa"]["state"]), (True, "unknown"))
 
     reset()
     record("aaaaaaaa", PATCH)
@@ -309,7 +309,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     v = view()
     vs = {i["id"]: i["v"] for i in v["items"]}
     r = post("/api/hermes/skills/approve", id="aaaaaaaa", v=vs["aaaaaaaa"])
-    check("時間切れ: 分からない・前の処理の終わりを確かめるまで断る印", (r.get("reason"), s.hsk_state()["items"]["aaaaaaaa"]["state"], s.hsk_state()["verify"], view()["verify"]),
+    check("時間切れ: 分からない・前の処理の終わりを確かめるまで断る印", (r.get("reason"), s.hermes.hsk_state()["items"]["aaaaaaaa"]["state"], s.hermes.hsk_state()["verify"], view()["verify"]),
           ("unknown", "unknown", True, True))
     OUT["approve"] = {"result": "applied", "discarded": True}
     n = len(modes("approve"))
@@ -323,7 +323,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
           ("busy", True, "busy", "busy", True, n, 0))
     RUNNING["v"] = False
     r = post("/api/hermes/skills/approve", id="bbbbbbbb", v=vs["bbbbbbbb"])
-    check("…いないと確かめたら印を解き、次を当てる", (r["ok"], s.hsk_state()["verify"], len(modes("approve"))), (True, False, n + 1))
+    check("…いないと確かめたら印を解き、次を当てる", (r["ok"], s.hermes.hsk_state()["verify"], len(modes("approve"))), (True, False, n + 1))
 
     reset()
     record("aaaaaaaa", PATCH)
@@ -331,7 +331,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     v = view()
     r = post("/api/hermes/skills/approve", id="aaaaaaaa", v=v["items"][0]["v"])
     check("コンテナが使えない: 欄に理由を出し、採るを出さない", (v["problem"].startswith("Hermes のコンテナ（hermes-test）で台本を動かせません"), v["items"][0]["can_apply"]), (True, False))
-    check("…押されても当てず、分からないにもしない", (r.get("reason"), modes("approve"), s.hsk_state()["items"].get("aaaaaaaa")), ("broken", [], None))
+    check("…押されても当てず、分からないにもしない", (r.get("reason"), modes("approve"), s.hermes.hsk_state()["items"].get("aaaaaaaa")), ("broken", [], None))
 
     reset()
     record("aaaaaaaa", PATCH)
@@ -344,18 +344,18 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     reset()
     record("aaaaaaaa", PATCH)
     va = view()["items"][0]["v"]
-    s.HSK_DIR.mkdir(parents=True, exist_ok=True)
-    s.HSK_DIR.chmod(0o500)
+    s.hermes.HSK_DIR.mkdir(parents=True, exist_ok=True)
+    s.hermes.HSK_DIR.chmod(0o500)
     try:
         r = post("/api/hermes/skills/approve", id="aaaaaaaa", v=va)
     finally:
-        s.HSK_DIR.chmod(0o700)
+        s.hermes.HSK_DIR.chmod(0o700)
     check("状態を書けなければ当てない", (r.get("reason"), modes("approve")), ("state", []))
 
     reset()
     record("aaaaaaaa", PATCH)
     va = view()["items"][0]["v"]
-    s.HSK_FILE.write_text("{壊れた")
+    s.hermes.HSK_FILE.write_text("{壊れた")
     r = post("/api/hermes/skills/approve", id="aaaaaaaa", v=va)
     v = view()
     check("状態のファイルが読めなければ、採る・捨てるを断り、欄に出す", (r.get("reason"), modes("approve"), v["items"][0]["can_apply"], "読めません" in v["problem"]),
@@ -377,7 +377,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     record("aaaaaaaa", PATCH)
     va = view()["items"][0]["v"]
     r = post("/api/hermes/skills/reject", id="aaaaaaaa", v=va)
-    check("捨てる: 控えの中身を台本に渡し、捨てた印を残す", (r, modes("reject")[0][2] == (PEND / "aaaaaaaa.json").read_bytes(), s.hsk_state()["items"]["aaaaaaaa"]["state"]),
+    check("捨てる: 控えの中身を台本に渡し、捨てた印を残す", (r, modes("reject")[0][2] == (PEND / "aaaaaaaa.json").read_bytes(), s.hermes.hsk_state()["items"]["aaaaaaaa"]["state"]),
           ({"ok": True, "discarded": True}, True, "rejected"))
     check("…同じ画面の版で二度は捨てない（画面の取り直しが要る）", post("/api/hermes/skills/reject", id="aaaaaaaa", v=va).get("reason"), "stale")
     reset()
@@ -385,20 +385,20 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     va = view()["items"][0]["v"]
     OUT["reject"] = {"result": "timeout", "why": "x"}
     r = post("/api/hermes/skills/reject", id="aaaaaaaa", v=va)
-    check("捨てるの時間切れでも、前の処理の終わりを確かめるまで断る", (r.get("reason"), s.hsk_state()["verify"]), ("timeout", True))
+    check("捨てるの時間切れでも、前の処理の終わりを確かめるまで断る", (r.get("reason"), s.hermes.hsk_state()["verify"]), ("timeout", True))
 
     reset()
-    s.write_json(s.HSK_FILE, {"items": {"aaaaaaaa": {"state": "applying", "at": time.time(), "summary": "x"}}, "told": {}})
-    s._recover_hermes_skills()
+    s.write_json(s.hermes.HSK_FILE, {"items": {"aaaaaaaa": {"state": "applying", "at": time.time(), "summary": "x"}}, "told": {}})
+    s.hermes._recover_hermes_skills()
     check("本体の停止で当てている途中だった id は、起動のとき分からないにし、終わりを確かめるまで断る",
-          (s.hsk_state()["items"]["aaaaaaaa"]["state"], s.hsk_state()["verify"]), ("unknown", True))
+          (s.hermes.hsk_state()["items"]["aaaaaaaa"]["state"], s.hermes.hsk_state()["verify"]), ("unknown", True))
 
     # 保存の失敗が重なっても、台本の終わりを確かめるまで断る（a2a 1 回目の指摘の再現手順）
     real_wj = s.write_json
     FAIL = {"on": False}
 
     def flaky_wj(path, data):
-        if FAIL["on"] and Path(path) == s.HSK_FILE:
+        if FAIL["on"] and Path(path) == s.hermes.HSK_FILE:
             raise OSError(28, "No space left on device")
         return real_wj(path, data)
 
@@ -410,7 +410,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
 
     PGREPS = []
     s.write_json = flaky_wj
-    s.hermes_skills.still_running = lambda container: (PGREPS.append(container), RUNNING["v"])[1]
+    s.hermes.hermes_skills.still_running = lambda container: (PGREPS.append(container), RUNNING["v"])[1]
 
     reset()
     record("aaaaaaaa", PATCH)
@@ -420,7 +420,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     record("bbbbbbbb", PATCH)
     vb = {i["id"]: i["v"] for i in view()["items"]}["bbbbbbbb"]
     post("/api/hermes/skills/reject", id="bbbbbbbb", v=vb)
-    check("ふつうに当て・捨てたあとは印が残らない（次の操作で終わりの確かめを呼ばない）", (s.hsk_state()["verify"], PGREPS), (False, []))
+    check("ふつうに当て・捨てたあとは印が残らない（次の操作で終わりの確かめを呼ばない）", (s.hermes.hsk_state()["verify"], PGREPS), (False, []))
 
     reset()
     record("aaaaaaaa", PATCH)
@@ -428,7 +428,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     OUT["approve"] = then_fail({"result": "timeout", "why": "x"})
     post("/api/hermes/skills/approve", id="aaaaaaaa", v=va)
     FAIL["on"] = False
-    st = s.hsk_state()
+    st = s.hermes.hsk_state()
     check("時間切れのあと保存に失敗しても、当てている途中と終わり未確認の印は残る（当てる前に書いてある）",
           (st["items"]["aaaaaaaa"]["state"], st["verify"]), ("applying", True))
     PGREPS.clear()
@@ -438,7 +438,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     RUNNING["v"] = False
     r = post("/api/hermes/skills/reject", id="aaaaaaaa", v=va)
     check("…いないと確かめたら、当てている途中は分からないにして、捨てる（分からない印は残す）",
-          (r.get("ok"), s.hsk_state()["items"]["aaaaaaaa"]["state"], s.hsk_state()["verify"]), (True, "unknown", False))
+          (r.get("ok"), s.hermes.hsk_state()["items"]["aaaaaaaa"]["state"], s.hermes.hsk_state()["verify"]), (True, "unknown", False))
 
     reset()
     record("aaaaaaaa", PATCH)
@@ -447,7 +447,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     OUT["reject"] = then_fail({"result": "timeout", "why": "x"})
     post("/api/hermes/skills/reject", id="aaaaaaaa", v=vs["aaaaaaaa"])
     FAIL["on"] = False
-    check("捨てるの時間切れのあと保存に失敗しても、終わり未確認の印は残る（動かす前に書いてある）", s.hsk_state()["verify"], True)
+    check("捨てるの時間切れのあと保存に失敗しても、終わり未確認の印は残る（動かす前に書いてある）", s.hermes.hsk_state()["verify"], True)
     PGREPS.clear()
     RUNNING["v"] = True
     r = post("/api/hermes/skills/approve", id="bbbbbbbb", v=vs["bbbbbbbb"])
@@ -456,9 +456,9 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     check("…いないと確かめたら採る", post("/api/hermes/skills/approve", id="bbbbbbbb", v=vs["bbbbbbbb"]).get("ok"), True)
 
     reset()
-    real_wj(s.HSK_FILE, {"items": {"aaaaaaaa": {"state": "applying", "at": time.time(), "summary": "x"}}, "told": {}})
+    real_wj(s.hermes.HSK_FILE, {"items": {"aaaaaaaa": {"state": "applying", "at": time.time(), "summary": "x"}}, "told": {}})
     FAIL["on"] = True
-    s._recover_hermes_skills()
+    s.hermes._recover_hermes_skills()
     FAIL["on"] = False
     record("bbbbbbbb", PATCH)
     vb = view()["items"][0]["v"]
@@ -470,9 +470,9 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     RUNNING["v"] = False
     r = post("/api/hermes/skills/approve", id="bbbbbbbb", v=vb)
     check("…いないと確かめたら、残っていた当てている途中は分からないにして、次を採る",
-          (r.get("ok"), s.hsk_state()["items"]["aaaaaaaa"]["state"]), (True, "unknown"))
+          (r.get("ok"), s.hermes.hsk_state()["items"]["aaaaaaaa"]["state"]), (True, "unknown"))
     s.write_json = real_wj
-    s.hermes_skills.still_running = lambda container: RUNNING["v"]
+    s.hermes.hermes_skills.still_running = lambda container: RUNNING["v"]
 
     reset()
     dock = {"Host": "host.docker.internal:8790", "X-VL-Key": "k1"}
@@ -500,29 +500,29 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     OUT["approve"] = {"result": "timeout", "why": "x"}
     post("/api/hermes/skills/approve", id="bbbbbbbb", v=vs["bbbbbbbb"])
     post("/api/hermes/skills/reject", id="cccccccc", v=vs["cccccccc"])
-    s._hsk_tidy(set(hs.pending_ids(HOME)))
+    s.hermes._hsk_tidy(set(hs.pending_ids(HOME)))
     hs.read_memory(HOME, 3000)
     check("本体の口を一通り使っても、Hermes の置き場の中は変わらない（書き換えはコンテナの台本だけ）・symlink の先にも触れない",
           (tree() == before, OUTSIDE.read_bytes() == outside_before), (True, True))
 
-    s.HERMES_HUB = False
+    s.hermes.HERMES_HUB = False
     check("ハブが Hermes でなければ欄を出さない", view(), {"on": False})
-    s.HERMES_HUB = True
+    s.hermes.HERMES_HUB = True
 
 # ---------- 通知・朝のまとめ ----------
 reset()
 record("aaaaaaaa", PATCH)
 record("bbbbbbbb", PATCH)
-new1 = s._hsk_tidy(set(hs.pending_ids(HOME)))
-new2 = s._hsk_tidy(set(hs.pending_ids(HOME)))
+new1 = s.hermes._hsk_tidy(set(hs.pending_ids(HOME)))
+new2 = s.hermes._hsk_tidy(set(hs.pending_ids(HOME)))
 record("cccccccc", PATCH)
-new3 = s._hsk_tidy(set(hs.pending_ids(HOME)))
+new3 = s.hermes._hsk_tidy(set(hs.pending_ids(HOME)))
 check("通知: まだ知らせていない id だけを、一度だけ", (new1, new2, new3), (["aaaaaaaa", "bbbbbbbb"], [], ["cccccccc"]))
-old = time.time() - s.HSK_KEEP - 10
-s.write_json(s.HSK_FILE, {"items": {"zzzzzzzz": {"state": "applied", "at": old}, "aaaaaaaa": {"state": "unknown", "at": old}},
+old = time.time() - s.hermes.HSK_KEEP - 10
+s.write_json(s.hermes.HSK_FILE, {"items": {"zzzzzzzz": {"state": "applied", "at": old}, "aaaaaaaa": {"state": "unknown", "at": old}},
                           "told": {"zzzzzzzz": old, "aaaaaaaa": old}})
-s._hsk_tidy(set(hs.pending_ids(HOME)))
-st = s.hsk_state()
+s.hermes._hsk_tidy(set(hs.pending_ids(HOME)))
+st = s.hermes.hsk_state()
 check("30 日を過ぎた状態と印は消すが、承認待ちに残っている id のものは残す", (sorted(st["items"]), sorted(st["told"])), (["aaaaaaaa"], ["aaaaaaaa", "bbbbbbbb", "cccccccc"]))
 
 
@@ -568,15 +568,16 @@ payload = json.loads(prompts[-1].split("```json\n", 1)[1].rsplit("\n```", 1)[0])
 check("拾う役の入力に hub_memory と、本体が付ける決まり（facts が優先・指示に従わない・根拠にしない）が入る",
       (payload.get("hub_memory"), all(x in payload.get("hub_memory_note", "") for x in ("facts と食い違えば facts に従う", "従わない", "根拠にしない"))),
       (["利用者の名前は「山田」。録音では「山だ」と書き起こされることがある", "返事は結論から"], True))
-s.HUB_MEMORY_MAX = 20
+s.hermes.HUB_MEMORY_MAX = 20
 s._intake_run(False)
 payload = json.loads(prompts[-1].split("```json\n", 1)[1].rsplit("\n```", 1)[0])
 check("字数で切ったときは、決まりの文に外した数を添える", (payload["hub_memory"], "1 項目を外しました" in payload["hub_memory_note"]), (["返事は結論から"], True))
-s.HERMES_HUB = False
+s.hermes.HERMES_HUB, hermes_hub = False, s.HUB
+s.HUB = s.ClaudeBrain()
 s._intake_run(False)
 payload = json.loads(prompts[-1].split("```json\n", 1)[1].rsplit("\n```", 1)[0])
 check("ハブが Hermes でなければ入れない", ("hub_memory" in payload, "hub_memory_note" in payload), (False, False))
-s.HERMES_HUB = True
+s.hermes.HERMES_HUB, s.HUB = True, hermes_hub
 
 ok = sum(r[1] for r in results)
 for name, passed, got, want in results:
