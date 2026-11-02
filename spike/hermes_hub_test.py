@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "anthropic>=1.0", "openai>=1.40"]
-# ///
 """Hermes がハブ（VL_HUB=hermes）のときの守りの試験。
 ユーザーの発言と Hermes の返答は本体の台帳（HERMES_TURNS）に載り、承認に答える・閉じるの守りはそれで確かめる。
 Hermes の API と herdr には触れない（差し替える）。使い方: uv run spike/hermes_hub_test.py"""

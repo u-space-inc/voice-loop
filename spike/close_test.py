@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "anthropic>=1.0", "openai>=1.40"]
-# ///
 """ハブがセッションを閉じる（/api/hub/close）と、立てる数に上限が無いこと（/api/hub/spawn）の試験。
 ハブの記録は作り物の JSONL に発言と返答を書き足して進め、閉じてよい時だけ herdr に閉じる命令が出るかを確かめる。
 herdr には触れない（一覧・閉じる命令・起動を差し替える）。使い方: uv run spike/close_test.py"""

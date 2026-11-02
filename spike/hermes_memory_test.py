@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "anthropic>=1.0", "openai>=1.40", "httpx>=0.27"]
-# ///
 """Hermes の記憶を画面（PC の「記憶」）から足す・直す・消す口の試験（server.py と scripts/hermes_memory.py のホストの側）。
 コンテナの台本は差し替える（本物のコンテナでの確かめは spike/hermes_memory_container_test.py）。使い方: uv run spike/hermes_memory_test.py"""
 import os

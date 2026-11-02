@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "anthropic>=1.0", "openai>=1.40", "httpx>=0.27"]
-# ///
 """ハブ（Hermes）の会話を日ごとに新しくすること・Hermes に渡す指示を毎回同じ文にすること・hubctl sessions と read の試験。
 Hermes の API と herdr には触れない（差し替える）。使い方: uv run spike/hermes_session_test.py"""
 import json

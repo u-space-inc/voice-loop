@@ -1,6 +1,3 @@
-# /// script
-# dependencies = ["playwright>=1.48"]
-# ///
 """画面の通し検証（スマホ幅）。セッション切り替え・Markdown 表示・音声再生・停止・タップ再生の予備経路。
 
 使い方: uv run spike/ui_test.py <chromium|webkit> <試験用ペイン> <比較用ペインA> <比較用ペインB>

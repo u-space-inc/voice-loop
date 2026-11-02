@@ -1,6 +1,3 @@
-# /// script
-# dependencies = ["playwright>=1.48"]
-# ///
 """画面でハブに頼み、あとから届く報告が履歴に出て、操作なしで再生されることを確かめる（WebKit・スマホ幅）。"""
 import sys, time
 from playwright.sync_api import sync_playwright

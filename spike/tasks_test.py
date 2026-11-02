@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "anthropic>=1.0", "openai>=1.40", "pywebpush>=2.0", "httpx>=0.27"]
-# ///
 """頼んだ件の台帳（画面の 📋 と hubctl tasks）の試験。見張りの一生に合わせて状態が進むこと、状態フォルダに残り、
 本体が止まった件は次の起動で「見張りが切れた」になること、残す範囲、/api/hub/tasks と hubctl tasks の表示、コンテナからの読み取り。
 herdr・ハブ・語り手には触れない（差し替える）。hubctl の確かめには、この試験の中で 127.0.0.1:8792 に本体の写しを立てる（常駐の 8790 には触れない）。

@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "anthropic>=1.0", "openai>=1.40", "pywebpush>=2.0"]
-# ///
 """コンテナから Host を偽っても、画面の口に届かないことを、本物のコンテナで確かめる。
 本体の口は app.routes から全部たどる（口を足すと、試験を書き足さなくても確かめの対象に入る）。コンテナに開くのは
 origin_guard.DOCKER_ALLOWED の口だけで、それも鍵があるときだけ。

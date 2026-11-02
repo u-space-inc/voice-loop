@@ -1,6 +1,3 @@
-# /// script
-# dependencies = ["playwright>=1.48"]
-# ///
 """初回表示でハブが既定になり、ハブの履歴が出ることを確かめて画面を保存する。"""
 import sys
 from playwright.sync_api import sync_playwright

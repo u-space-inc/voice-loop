@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "anthropic>=1.0", "openai>=1.40", "pywebpush>=2.0", "playwright==1.63.0"]  # 手元に入っているブラウザ（chromium 1243・webkit 2359）に合わせる
-# ///
 """画面の 🔔（通知）と 📋（頼んだ件）の通し。本体の写しをこの試験の中で 127.0.0.1:8791 に立て、本物のブラウザで開く（常駐の 8790 には触れない）。
 - Chromium: ブラウザの購読の部品（PushManager）を差し替えて、🔔 の入・切・送り直し・断られたとき、見えているかの知らせ、
   sw.js が通知を出すこと、📋 の一覧。配送サービスには送らない（requests.post を差し替える）

@@ -6,6 +6,7 @@ gateway/
 qr.png
 .claude/
 __pycache__/
+.venv/
 .env*
 .vercel/
 # 試作の大きな生成物

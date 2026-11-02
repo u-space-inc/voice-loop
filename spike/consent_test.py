@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "anthropic>=1.0", "openai>=1.40"]
-# ///
 """承認に答える・閉じるの守りの、利用者の発言の文法（scripts/consent.py）と、Claude Code のハブのときの「直前に聞いた返答」（heard）の試験。
 Hermes のハブのときは spike/hermes_hub_test.py。herdr には触れない（差し替える）。使い方: uv run spike/consent_test.py"""
 import asyncio

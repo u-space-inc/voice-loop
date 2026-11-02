@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "anthropic>=1.0", "openai>=1.40", "pywebpush>=2.0", "playwright==1.63.0"]  # 手元に入っているブラウザ（chromium 1243・webkit 2359）に合わせる
-# ///
 """画面の 💡 の「ハブが手順に書き足したいこと（Hermes）」の通し。本体の写しをこの試験の中で 127.0.0.1:8791 に立て、本物のブラウザ（Chromium と、
 iPhone を名乗る WebKit）で開く。Hermes の置き場は一時のフォルダ、コンテナの台本は差し替える（docker・常駐の 8790 には触れない）。
 見ること: 欄が提案より上に出る（要約・いつ・どこから）、扱えない形は採るを出さない、差分は開いたときに取り、描き直しても開いたまま、

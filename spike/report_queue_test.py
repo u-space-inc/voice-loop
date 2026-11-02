@@ -1,6 +1,3 @@
-# /// script
-# dependencies = ["websockets>=12"]
-# ///
 """相手が作業中のうちに2つ目を頼む。相手が1つの返答にまとめたら、報告も1回で済むことを見る（音は鳴らさない）。"""
 import asyncio, json, time, urllib.request
 import websockets

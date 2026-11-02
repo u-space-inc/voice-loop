@@ -1,6 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# ///
 """接続元の確かめ（scripts/origin_guard.py）の判定の試験。通すべき接続と、断るべき接続を並べて確かめる。
 使い方: uv run spike/origin_guard_test.py"""
 import os
