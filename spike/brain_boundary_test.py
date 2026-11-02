@@ -48,8 +48,23 @@ for n in ast.walk(tree):
     elif isinstance(n, ast.Constant) and isinstance(n.value, str) and WORD.search(n.value):
         found.add(n.value[:40])
 check("本体のコードに頭の固有の名前が無い", sorted(found), [])
-wired = [i + 1 for i, line in enumerate(src.splitlines()) if re.search(r"\bhermes\.", line.split("#")[0])]
-check("部品に触るのは配線の 4 行だけ", len(wired), 4)
+WIRED = {  # 本体が部品に触ってよい文（完全一致）。関数の中から部品を呼ぶと、その関数全体がここに無いので落ちる
+    "hermes.mount(app)",
+    "TALKERS = {hermes.TALKER.pane: hermes.TALKER}",
+    "HUB = hermes.TALKER if hermes.HERMES_HUB else ClaudeBrain()",
+    "hermes.setup(sys.modules[__name__])",
+}
+
+
+def wiring(source: str) -> set[str]:
+    """本体の上の階の文のうち、部品の名前 hermes を使うもの。"""
+    return {ast.unparse(stmt) for stmt in ast.parse(source).body
+            if any(isinstance(n, ast.Name) and n.id == "hermes" for n in ast.walk(stmt))}
+
+
+check("部品に触るのは配線の文だけ", wiring(src), WIRED)
+check("配線の検査は、配線の外で部品を呼ぶ文を見つける", wiring(src + "\nhermes.TALKER.history()\n") - WIRED, {"hermes.TALKER.history()"})
+check("配線の検査は、関数の中で部品を呼ぶ文を見つける", len(wiring(src + "\ndef f():\n    return hermes.ask_hermes('x')\n") - WIRED), 1)
 check("本体の /api/hermes の口はコードに書いていない", any(isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value.startswith("/api/hermes") for n in ast.walk(tree)), False)
 
 part = (ROOT / "scripts" / "hub_hermes.py").read_text()
