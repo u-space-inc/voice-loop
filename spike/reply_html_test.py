@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "anthropic>=1.0", "openai>=1.40", "pywebpush>=2.0", "playwright==1.63.0"]  # 手元に入っているブラウザ（chromium 1243）に合わせる
-# ///
 """返事の HTML の守りの通し。本体の写しを 127.0.0.1:8791 に立て、本物のブラウザ（Chromium）で、PC の幅とスマホの幅で開く
 （常駐の 8790・herdr・docker には触れない。Hermes には送らない。声の一覧は、この試験の中の小さな偽物 127.0.0.1:8795 から取る）。
 相手は、乗せられたハブやセッション（返事に好きな Markdown と HTML を書ける）。画面の部品は id で探し（$('agent') など）、会話（#log）より後ろに

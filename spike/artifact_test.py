@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "anthropic>=1.0", "openai>=1.40", "pywebpush>=2.0", "httpx>=0.27"]
-# ///
 """成果物の画像・動画を返す口（/api/file）の試験。相手の位置から、返してはいけないものを頼んで断られることを確かめる。
 相手は、乗せられたハブやセッション（会話に好きな場所を書ける）、ブラウザで開いた別のサイトのページ（<img> で本体を読ませられる）、コンテナ。
 本体は TestClient で読み込むだけ（常駐の 8790・herdr・docker には触れない）。
