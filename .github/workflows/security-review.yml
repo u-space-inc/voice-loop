@@ -19,6 +19,13 @@ jobs:
       # Claude が動かすコマンドの環境から Anthropic などの鍵を外す（最善努力）
       CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
     steps:
+      - name: Claude の子プロセスを隔離する道具を入れる
+        run: |
+          # 鍵を外す設定（上の env）は bubblewrap が無いと起動を拒否する
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bubblewrap socat
+          # Ubuntu 24.04 以降は AppArmor が非特権の user namespace を制限する
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0          # 組み込み command は origin/HEAD との merge-base 比較をする
