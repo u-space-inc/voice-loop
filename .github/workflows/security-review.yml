@@ -30,14 +30,71 @@ jobs:
         with:
           fetch-depth: 0          # 組み込み command は origin/HEAD との merge-base 比較をする
       - run: git remote set-head origin -a
+      # ---- 試験（マージしない）: ここから ----
+      - name: 試験 鍵の形を確かめる（値は出さない）
+        env:
+          T_OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          case "$T_OAUTH" in sk-ant-oat[0-9][0-9]-*) a=1 ;; *) a=0 ;; esac
+          printf 'oauth_value_has_expected_form=%d\n' "$a"
+      - name: 試験 箱の外で見張りを始める
+        env:
+          VL_PROBE_CANARY: "1"
+        run: |
+          nohup bash probe/sandbox_probe.sh watch "$RUNNER_TEMP/probe-outside.txt" "$RUNNER_TEMP/probe-stop" >/dev/null 2>&1 &
+          sleep 5
+          grep -E '^outside_[a-z0-9_]{1,40}=[0-9]{1,7}$' "$RUNNER_TEMP/probe-outside.txt" || echo "outside_missing=1"
+      # ---- 試験: ここまで ----
       - uses: anthropics/claude-code-action@v1
+        id: claude
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # GitHub の操作はこのジョブの権限に絞る。Claude の App のトークンは contents: write を持つので使わない
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # 試験: 本番の /security-review の代わりに、箱の中から探りを 1 回動かす
           prompt: |
-            /security-review
-            上のレビュー結果を、そのまま here-document で標準入力に渡し、`gh pr comment ${{ github.event.pull_request.number }} --body-file - --` で PR にコメントとして投稿してください。指摘が無ければ「指摘なし」と投稿してください。
+            次のコマンドを、そのまま 1 回だけ実行してください。前後に何も付けないでください。
+
+            bash probe/sandbox_probe.sh
+
+            ほかのコマンドは実行しないでください。結果の要約や投稿は不要です。
           claude_args: >-
-            --allowedTools "Bash(gh pr comment ${{ github.event.pull_request.number }} --body-file - --:*),Bash(gh pr diff:*),Bash(git diff:*),Bash(git log:*),Bash(git status:*)"
-            --max-turns 30
+            --allowedTools "Bash(bash probe/sandbox_probe.sh)"
+            --max-turns 4
+      # ---- 試験: ここから ----
+      - name: 試験 見張りを止める
+        if: always()
+        run: |
+          touch "$RUNNER_TEMP/probe-stop"
+          for i in $(seq 1 20); do pgrep -f 'sandbox_probe.sh watch' >/dev/null || break; sleep 1; done
+          printf 'watcher_still_running=%d\n' "$(pgrep -f 'sandbox_probe.sh watch' >/dev/null && echo 1 || echo 0)"
+      - name: 試験 結果（数だけ）
+        if: always()
+        env:
+          EXEC: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          ok='^[a-z0-9_]{1,48}=-?[0-9]{1,7}$'
+          echo "== 箱の外（見張り。Claude の実行中の最大）"
+          grep -E "$ok" "$RUNNER_TEMP/probe-outside.txt" || echo "outside_missing=1"
+          echo "== 箱の中（Claude の Bash）"
+          if [ -n "${EXEC:-}" ] && [ -f "$EXEC" ]; then
+            jq -r -f probe/extract.jq "$EXEC" > "$RUNNER_TEMP/inside-raw.txt" || echo "jq_failed=1"
+            grep -E '^meta_claude_code_version=[0-9]+\.[0-9]+\.[0-9]+$' "$RUNNER_TEMP/inside-raw.txt" || true
+            grep -E "$ok" "$RUNNER_TEMP/inside-raw.txt" || echo "inside_missing=1"
+            printf 'inside_lines_not_shown=%d\n' "$(grep -c -v -E "$ok|^meta_claude_code_version=[0-9.]+$" "$RUNNER_TEMP/inside-raw.txt")"
+          else
+            echo "exec_missing=1"
+          fi
+      - name: 試験 実行後のファイル（本物の値と完全一致で数える。値は出さない）
+        if: always()
+        env:
+          T_OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -z "$T_OAUTH" ]; then echo "oauth_empty=1"; exit 0; fi
+          count() { timeout 90 grep -r -l -s -a -D skip -F -f <(printf '%s\n' "$T_OAUTH") "$1" 2>/dev/null | wc -l; }
+          printf 'after_files_oauth_value_tmp=%d\n' "$(count /tmp)"
+          printf 'after_files_oauth_value_runner_temp=%d\n' "$(count "$RUNNER_TEMP")"
+          printf 'after_files_oauth_value_home_claude=%d\n' "$(count "$HOME/.claude")"
+          printf 'after_files_oauth_value_home_config=%d\n' "$(count "$HOME/.config")"
+          printf 'after_files_oauth_value_workspace=%d\n' "$(count "$GITHUB_WORKSPACE")"
+      # ---- 試験: ここまで ----
