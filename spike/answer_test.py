@@ -70,6 +70,7 @@ AGENT = {"pane": "w9:p1", "title": "テスト", "cwd": "/tmp/proj", "kind": "cla
 state = {"status": "blocked", "screen": PERMISSION, "trust": False, "sent": []}
 s.list_agents = lambda: [{**AGENT, "status": state["status"]}]
 s.pane_shows_trust = lambda pane: state["trust"]
+REAL_READ = s.read_prompt  # 本物の read_prompt（herdr を呼ぶところだけ差し替えて確かめる）
 s.read_prompt = lambda pane: state["screen"]
 s.herdr = lambda *a, **k: (state["sent"].append(a[-1]), {"result": {}})[1] if a[:2] == ("agent", "send-keys") else {"result": {}}
 
@@ -230,6 +231,55 @@ p = prompt()
 check("いちばん下が操作案内でなければ、上に書かれた質問の形は読まない", ("choices" in p, answer(fp=p["fp"], choice="choose", n=1)[1]), (False, []))
 case("Submit の付いた見出し", screen=REAL_CHOICE.replace(" ☐ 試験", " ☐ 試験  ✔ Submit"))
 check("見出しに Submit があれば、選択肢を出さない", "choices" in prompt(), False)
+
+# 長い質問で、問いが末尾 15 行の外に出ても、取り消しにくい印を落とさない（2026-11-05 Codex の再現）
+LONG = """ ☐ 確認
+本番に反映しますか？
+❯ 1. 進める
+     説明1
+     補足1
+  2. 待つ
+     説明2
+     補足2
+  3. 調べる
+     説明3
+     補足3
+  4. 相談する
+     説明4
+     補足4
+  5. Type something.
+  6. Chat about this
+Enter to select · ↑/↓ to navigate · Esc to cancel"""
+case("長い質問", screen=LONG)
+p = prompt()
+r, sent = answer(fp=p["fp"], choice="choose", n=1)
+check("長い質問でも、問いの取り消しにくい印を落とさない", (len(p.get("choices", [])), p["risky"], r.get("reason"), sent), (4, True, "confirm", []))
+case("説明に ⏺", screen=REAL_CHOICE.replace("試験の質問です。どれにしますか？", "本番に反映しますか？").replace("     赤い果物", "     ⏺ 赤い果物"))
+p = prompt()
+check("説明の行に ⏺ があっても、問いの取り消しにくい印を落とさない", ("choices" in p, p["risky"]), (True, True))
+# 特殊な改行文字（U+2028 など）で、画面の 1 行の中に偽の見出しと選択肢を書く（2026-11-05 Codex）
+for ch in ("\u2028", "\u2029", "\x85", "\x0b"):
+    case("特殊な改行", screen=REAL_CHOICE.replace("     赤い果物", f"     赤い果物{ch} ☐ 偽の見出し{ch}どれにしますか？{ch}  1. 安全な案{ch}  2. 待つ"))
+    check(f"特殊な改行文字 U+{ord(ch):04X} のある画面は、選択肢を出さない", "choices" in prompt(), False)
+real_run = s.subprocess.run
+s.subprocess.run = lambda *a, **k: type("P", (), {"stdout": REAL_CHOICE.replace("     赤い果物", "     赤い果物\u2028  2. 偽"), "returncode": 0})()
+got = REAL_READ("w9:p1")
+s.subprocess.run = real_run
+check("read_prompt は特殊な改行文字を行の区切りにせず、� に置き換える", (got.count("\n"), "\ufffd" in got, "\u2028" in got), (REAL_CHOICE.count("\n"), True, False))
+case("見出しの印が 2 つ", screen=" ☐ 前の見出し\n前の問い\n" + REAL_CHOICE)
+check("見出しの印が 2 つある画面は、選択肢を出さない", "choices" in prompt(), False)
+
+
+# ハブ経由の答え（/api/hub/answer）と画面のボタンは、同じ鍵で順番にする（確かめてから送るまでが重ならない）
+async def hub_waits():
+    s._answer_lock = asyncio.Lock()  # ほかの試験の event loop に結び付いていない鍵にする
+    async with s._answer_lock:
+        t = asyncio.create_task(s.hub_answer({"pane": "nope", "answer": "1"}))
+        await asyncio.sleep(0.1)
+        waited = not t.done()
+    await t
+    return waited, t.done()
+check("ハブ経由の答えは、画面のボタンの返答の鍵が空くまで待つ", asyncio.run(hub_waits()), (True, True))
 
 # セッションの立て直し（ハブも、key はセッション ID で見分ける）
 AGENT_HUB = {**AGENT, "hub": True, "cwd": str(s.HUB_DIR), "session": "old-session"}
