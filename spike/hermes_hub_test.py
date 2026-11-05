@@ -64,6 +64,7 @@ def screen():
 
 def answer(**body):
     state["keys"].clear()
+    s.ANSWERED.clear()  # 答えたあと画面が変わった、の代わり（同じ作り物の画面に続けて答えるため。答えた問いの記録は画面のボタンと共有）
     r = json.loads(asyncio.run(s.hub_answer({"pane": "w9:p1", "answer": "yes", **body})).body)
     return r.get("reason", "ok"), list(state["keys"])
 
