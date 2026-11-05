@@ -2167,10 +2167,14 @@ async def _hub_answer(body: dict):
         else:
             n = int(answer)
             key, said = str(n), f"{n}番「{prompt['options'][n]}」"
+    done = ANSWERED.get(pane)  # 画面のボタンと共有する「答えた問い」。答えたあと画面が書き換わるまでに、同じ問いへもう一度送らない
+    if done and done[0] == fp and time.time() - done[1] < ANSWERED_HOLD:
+        return JSONResponse({"ok": False, "reason": "answered"})
     r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, key)
     hlog(f"answer → {pane} ({project}): {said} {'ok' if 'result' in r else 'ERR'}", flush=True)
     if "result" not in r:
         return JSONResponse({"ok": False, "reason": "herdr が応答しません"})
+    ANSWERED[pane] = (fp, time.time())
     SEEN_PROMPT.pop(pane, None)
     CONFIRMING.pop(pane, None)
     if not WATCHING.get(pane):  # ハブ経由で頼んだ件でなければ見張りが無いので、答えたあとの結果を知らせるために付ける
@@ -2310,7 +2314,7 @@ def api_prompts():
 
 
 _answer_lock = asyncio.Lock()  # 確かめてからキーを送るまでを、一度にひとつだけにする
-ANSWERED: dict[str, tuple[str, float]] = {}  # 画面のボタンで答えた問い: pane → (指紋, 時刻)
+ANSWERED: dict[str, tuple[str, float]] = {}  # 画面のボタンとハブ経由で答えた問い: pane → (指紋, 時刻)。2 つの経路で共有する
 ANSWERED_HOLD = 15  # 答えたあと、相手の状態が変わるまでのあいだ、同じ問いへの重ねた答えを断る秒数
 
 
