@@ -281,6 +281,30 @@ async def hub_waits():
     return waited, t.done()
 check("ハブ経由の答えは、画面のボタンの返答の鍵が空くまで待つ", asyncio.run(hub_waits()), (True, True))
 
+# ハブ経由の答えと画面のボタンは、答えた問いの記録を共有する。答えたあと画面が書き換わるまでの間に、同じ問いへもう一度送らない
+# （2 つ目の番号が、次に出た承認の「今後は聞かずに許可」に届かないように。2026-11-05 Codex の再現: 順にどちらから送っても 2 回送れた）
+s.hub_turns = lambda n: [("t2", "2番で")]  # 利用者の最後の発言
+s.hub_heard = lambda turn: "proj の質問は何番にしますか？"  # その直前に利用者が聞いたハブの返答
+s.jsonl_path = lambda a: None
+s.start_watch = lambda *a, **k: None
+
+
+def hub(ans):
+    return json.loads(asyncio.run(s.hub_answer({"pane": "w9:p1", "answer": ans})).body)
+
+
+for order in ("ハブ → ボタン", "ボタン → ハブ"):
+    case(order, screen=REAL_CHOICE)
+    fp = prompt()["fp"]
+    s.ANSWERED.clear(); s._answer_lock = asyncio.Lock(); state["sent"].clear()
+    s.SEEN_PROMPT["w9:p1"] = (fp, "t1")  # ハブは前の発言で問いを見て、利用者に伝えた
+    page = lambda: json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "sess-1", "fp": fp, "choice": "choose", "n": 2})).body)
+    first, second = (hub("2"), page()) if order == "ハブ → ボタン" else (page(), hub("2"))
+    check(f"{order}: 画面が古い問いのままでも、送るのは 1 回だけ", (first.get("ok"), second.get("reason"), state["sent"]), (True, "answered", ["2"]))
+    s.SEEN_PROMPT["w9:p1"] = (fp, "t1")
+    check(f"{order}: そのあとハブが断る（いいえ）も、同じ問いには送らない", (hub("no").get("reason"), state["sent"]), ("answered", ["2"]))
+s.ANSWERED.clear()
+
 # セッションの立て直し（ハブも、key はセッション ID で見分ける）
 AGENT_HUB = {**AGENT, "hub": True, "cwd": str(s.HUB_DIR), "session": "old-session"}
 s.list_agents = lambda: [{**AGENT_HUB, "status": "blocked"}]
