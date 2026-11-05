@@ -8,7 +8,7 @@ nosniff と sandbox を付ける（中身が HTML の .png も画像として返
 フォルダの中を指す絶対パスか「フォルダ名/場所」だけ（フォルダ名で始まらない相対・同じフォルダ名が二つ・ハブ自身のフォルダは断る。
 フォルダ名は symlink をたどる前の名前で照らし、その名前のフォルダの中だけを見る）。Sec-Fetch-Site が cross-site・same-site なら断り、same-origin・none・
 無しは通す。コンテナからは断る。HEAD と Range（動画の早送り）。画面（/ と /static/index.html）に CSP（画像と動画は自分からだけ）と、
-ほかのページの枠に入れさせないヘッダー。隠しフォルダの中で動くセッションは、そのフォルダから先で見る。
+ほかのページの枠に入れさせないヘッダー（再検証の 304 と複数範囲の 206 にも）。隠しフォルダの中で動くセッションは、そのフォルダから先で見る。
 使い方: uv run spike/artifact_test.py"""
 import base64
 import os
@@ -124,6 +124,11 @@ check("ハブの会話では「フォルダ名/フォルダからの場所」も
 for site, want in (("cross-site", 403), ("same-site", 403), ("same-origin", 200), ("none", 200)):
     check(f"Sec-Fetch-Site が {site} なら {want}", get("w1:p1", "out/a.png", **{"sec-fetch-site": site}).status_code, want)
 check("コンテナからは、鍵があっても断る（画面の口）", get("w1:p1", "out/a.png", host="host.docker.internal:8790", **{"x-vl-key": "k1"}).status_code, 403)
+def no_frame(r):  # 枠に入れさせない 2 つのヘッダー（CSP の frame-ancestors 'none' と X-Frame-Options: DENY）が、それぞれ 1 つだけ付いているか
+    csp = r.headers.get_list("content-security-policy")
+    return len(csp) == 1 and "frame-ancestors 'none'" in csp[0] and r.headers.get_list("x-frame-options") == ["DENY"]
+
+
 for page in ("/", "/static/index.html"):  # 同じ画面を開ける場所のどちらにも
     r = c.get(page)
     csp = r.headers.get("content-security-policy", "")
@@ -131,8 +136,13 @@ for page in ("/", "/static/index.html"):  # 同じ画面を開ける場所のど
           [x in csp for x in ("img-src 'self' data: blob:", "media-src 'self' blob:", "style-src 'self' 'unsafe-inline'", "font-src 'self' data:",
                               "connect-src 'self'", "frame-src 'none'", "object-src 'none'", "form-action 'self'")], [True] * 8)
     check(f"画面（{page}）は、ほかのページの枠に入れさせない（CSP の frame-ancestors 'none' と X-Frame-Options: DENY を、それぞれ 1 つだけ付ける）",
-          (r.status_code, "frame-ancestors 'none'" in csp, len(r.headers.get_list("content-security-policy")),r.headers.get_list("x-frame-options")),
-          (200, True, 1, ["DENY"]))
+          (r.status_code, no_frame(r)), (200, True))
+    r = c.get(page, headers={"range": "bytes=0-1,5-6"})
+    check(f"画面（{page}）の複数範囲の 206（text/html を名乗らない）にも、枠に入れさせない 2 つのヘッダーを付ける",
+          (r.status_code, r.headers.get("content-type", "").startswith("multipart/byteranges"), no_frame(r)), (206, True, True))
+r = c.get("/static/index.html", headers={"if-none-match": c.get("/static/index.html").headers.get("etag", "")})
+check("画面の再検証の 304（/static/index.html。型が無い）にも、枠に入れさせない 2 つのヘッダーを付ける（ブラウザは 304 のヘッダーで手元の写しを書き換える）",
+      (r.status_code, no_frame(r)), (304, True))
 
 DUP = TMP / "dup" / "proj"  # 別の場所の、同じフォルダ名「proj」
 DUP.mkdir(parents=True)

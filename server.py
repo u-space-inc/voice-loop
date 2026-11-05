@@ -654,7 +654,9 @@ INDEX_CSP = ("img-src 'self' data: blob:; media-src 'self' blob:; style-src 'sel
 
 
 class PageCSP:
-    """ASGI のミドルウェア。HTML を返すすべての応答に INDEX_CSP と X-Frame-Options: DENY を付ける（/ のほかに /static/index.html でも同じ画面が開けるため）。"""
+    """ASGI のミドルウェア。HTML を返すすべての応答に INDEX_CSP と X-Frame-Options: DENY を付ける（/ のほかに /static/index.html でも同じ画面が開けるため）。
+    HTML のファイルの場所（/ と .html）への応答は、型を問わず付ける。再検証の 304 や複数範囲の 206 は text/html を名乗らないが、
+    ブラウザは 304 のヘッダーで手元の写しのヘッダーを書き換えるため（付けないと、前の版で取っておいた写しのヘッダーのまま使われる）。"""
 
     def __init__(self, app):
         self.app = app
@@ -662,12 +664,14 @@ class PageCSP:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
+        path = scope.get("path", "").lower()
+        page = path == "/" or path.endswith((".html", ".htm"))
 
         async def send_csp(m):
             if m["type"] == "http.response.start":
                 h = list(m.get("headers", []))
                 names = {k.lower() for k, _ in h}
-                if any(k.lower() == b"content-type" and v.lower().startswith(b"text/html") for k, v in h):
+                if page or any(k.lower() == b"content-type" and v.lower().startswith(b"text/html") for k, v in h):
                     if b"content-security-policy" not in names:
                         h.append((b"content-security-policy", INDEX_CSP.encode()))
                     if b"x-frame-options" not in names:
