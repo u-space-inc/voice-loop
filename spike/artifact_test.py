@@ -7,8 +7,8 @@ nosniff と sandbox を付ける（中身が HTML の .png も画像として返
 空や NUL の入った場所、無いセッション、ホームか / をフォルダにしたセッション。ハブ（Claude Code と Hermes）の会話では、いまあるセッションの
 フォルダの中を指す絶対パスか「フォルダ名/場所」だけ（フォルダ名で始まらない相対・同じフォルダ名が二つ・ハブ自身のフォルダは断る。
 フォルダ名は symlink をたどる前の名前で照らし、その名前のフォルダの中だけを見る）。Sec-Fetch-Site が cross-site・same-site なら断り、same-origin・none・
-無しは通す。コンテナからは断る。HEAD と Range（動画の早送り）。画面（/）に CSP（画像と動画は自分からだけ）。隠しフォルダの中で動くセッションは、
-そのフォルダから先で見る。
+無しは通す。コンテナからは断る。HEAD と Range（動画の早送り）。画面（/ と /static/index.html）に CSP（画像と動画は自分からだけ）と、
+ほかのページの枠に入れさせないヘッダー。隠しフォルダの中で動くセッションは、そのフォルダから先で見る。
 使い方: uv run spike/artifact_test.py"""
 import base64
 import os
@@ -125,10 +125,14 @@ for site, want in (("cross-site", 403), ("same-site", 403), ("same-origin", 200)
     check(f"Sec-Fetch-Site が {site} なら {want}", get("w1:p1", "out/a.png", **{"sec-fetch-site": site}).status_code, want)
 check("コンテナからは、鍵があっても断る（画面の口）", get("w1:p1", "out/a.png", host="host.docker.internal:8790", **{"x-vl-key": "k1"}).status_code, 403)
 for page in ("/", "/static/index.html"):  # 同じ画面を開ける場所のどちらにも
-    csp = c.get(page).headers.get("content-security-policy", "")
+    r = c.get(page)
+    csp = r.headers.get("content-security-policy", "")
     check(f"画面（{page}）の CSP: 画像・動画と声・CSS・フォント・接続は自分からだけ（画像は data:・blob:、動画と声は blob: も）、枠と object は無し、form は自分へだけ",
           [x in csp for x in ("img-src 'self' data: blob:", "media-src 'self' blob:", "style-src 'self' 'unsafe-inline'", "font-src 'self' data:",
                               "connect-src 'self'", "frame-src 'none'", "object-src 'none'", "form-action 'self'")], [True] * 8)
+    check(f"画面（{page}）は、ほかのページの枠に入れさせない（CSP の frame-ancestors 'none' と X-Frame-Options: DENY を、それぞれ 1 つだけ付ける）",
+          (r.status_code, "frame-ancestors 'none'" in csp, len(r.headers.get_list("content-security-policy")),r.headers.get_list("x-frame-options")),
+          (200, True, 1, ["DENY"]))
 
 DUP = TMP / "dup" / "proj"  # 別の場所の、同じフォルダ名「proj」
 DUP.mkdir(parents=True)

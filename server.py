@@ -647,13 +647,14 @@ app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 # 画面（HTML）の CSP。画面が読み込むものは、この本体からのもの（画像は data:・blob: も。声は blob: で鳴らす）だけにする。
 # 返事の Markdown や HTML に外のサイトの画像・CSS（@import・@font-face・url()）などが混じっても、ブラウザが取りに行かない
 # （乗せられたハブが、URL に情報を載せて外へ出す道を塞ぐ。返事の style は画面でも落とす）。読み込みの種類ごとに書く。
-# script は絞らない: 返事から script を動かさない守りは DOMPurify が受け持ち、画面の script は index.html の中にある
+# script は絞らない: 返事から script を動かさない守りは DOMPurify が受け持ち、画面の script は index.html の中にある。
+# 画面は、ほかのページの枠（iframe など）に入れさせない（frame-ancestors。CSP を見ないブラウザ向けに X-Frame-Options: DENY も付ける）
 INDEX_CSP = ("img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self'; "
-             "frame-src 'none'; object-src 'none'; worker-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'")
+             "frame-src 'none'; frame-ancestors 'none'; object-src 'none'; worker-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'")
 
 
 class PageCSP:
-    """ASGI のミドルウェア。HTML を返すすべての応答に INDEX_CSP を付ける（/ のほかに /static/index.html でも同じ画面が開けるため）。"""
+    """ASGI のミドルウェア。HTML を返すすべての応答に INDEX_CSP と X-Frame-Options: DENY を付ける（/ のほかに /static/index.html でも同じ画面が開けるため）。"""
 
     def __init__(self, app):
         self.app = app
@@ -665,9 +666,13 @@ class PageCSP:
         async def send_csp(m):
             if m["type"] == "http.response.start":
                 h = list(m.get("headers", []))
-                html = any(k.lower() == b"content-type" and v.lower().startswith(b"text/html") for k, v in h)
-                if html and not any(k.lower() == b"content-security-policy" for k, _ in h):
-                    m = {**m, "headers": h + [(b"content-security-policy", INDEX_CSP.encode())]}
+                names = {k.lower() for k, _ in h}
+                if any(k.lower() == b"content-type" and v.lower().startswith(b"text/html") for k, v in h):
+                    if b"content-security-policy" not in names:
+                        h.append((b"content-security-policy", INDEX_CSP.encode()))
+                    if b"x-frame-options" not in names:
+                        h.append((b"x-frame-options", b"DENY"))
+                    m = {**m, "headers": h}
             await send(m)
 
         await self.app(scope, receive, send_csp)
@@ -678,7 +683,8 @@ app.add_middleware(PageCSP)
 
 @app.get("/")
 def index():
-    return FileResponse(HERE / "static" / "index.html", headers={"Cache-Control": "no-cache", "Content-Security-Policy": INDEX_CSP})
+    return FileResponse(HERE / "static" / "index.html",
+                        headers={"Cache-Control": "no-cache", "Content-Security-Policy": INDEX_CSP, "X-Frame-Options": "DENY"})
 
 
 @app.get("/sw.js")

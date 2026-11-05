@@ -64,3 +64,7 @@
 ## 0.17.2（本体とハブの頭の線引き）
 
 - 本体（`server.py`）から Hermes の固有の部分を `scripts/hub_hermes.py` へ分け、本体が頭に求める形を `scripts/hub_brain.py` に書きました。動きは変わりません。設定フォルダのファイルを写す必要はありません。
+
+## 0.17.3（画面を枠に入れさせない）
+
+- 画面（`/` と `/static/index.html`）を、ほかのページの枠（iframe など）に入れて表示させないようにしました（CSP の `frame-ancestors 'none'` と `X-Frame-Options: DENY`）。設定フォルダのファイルを写す必要はありません。
