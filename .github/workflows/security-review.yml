@@ -1,21 +1,26 @@
 name: security-review
+# 正本: 設計ノートの assets/security-workflows/security-review.yml（2026-11-05 v2）
+# 各リポジトリはこのファイルをそのまま写す。許される差分は if の base.ref の行だけ（下の注記）
+# actions は commit SHA で固定（版の札は書き換えられうる。OAuth の鍵を渡す action はとくに）。更新は正本から
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+# 同じ PR で push が続いたら前の run を止める（Actions 分とサブスク枠の節約）
+concurrency:
+  group: security-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 jobs:
   review:
     # 管理者本人（GitHub の数値 ID）が立てた、既定ブランチ宛ての、同一リポジトリの PR だけ。fork・Dependabot・他ブランチ宛ては対象外
+    # 既定ブランチが staging で、main には昇格 PR だけを送るリポジトリは、base.ref の行を次に置き換える（昇格 PR は除外、hotfix は拾う）:
+    #   (github.event.pull_request.base.ref == 'staging' || (github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.ref != 'staging'))
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.actor != 'dependabot[bot]' &&
       github.event.pull_request.user.id == 6554937 &&
       github.event.pull_request.base.ref == github.event.repository.default_branch
     runs-on: ubuntu-latest
-    # 費用と枠の歯止め: 長引いた実行は 15 分で止め、同じ PR に新しい push が来たら前の実行を取り消す
     timeout-minutes: 15
-    concurrency:
-      group: security-review-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
     permissions:
       contents: read
       pull-requests: write
@@ -31,11 +36,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends bubblewrap socat
           # Ubuntu 24.04 以降は AppArmor が非特権の user namespace を制限する
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0          # 組み込み command は origin/HEAD との merge-base 比較をする
       - run: git remote set-head origin -a
-      - uses: anthropics/claude-code-action@v1
+      - uses: anthropics/claude-code-action@c0949c50a78c1ec8ce2647db36629b870e715d0c # v1.0.268
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # GitHub の操作はこのジョブの権限に絞る。Claude の App のトークンは contents: write を持つので使わない
