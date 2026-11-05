@@ -165,13 +165,16 @@ def read_screen(pane: str, lines: int) -> str:
 
 STATUS_LINE = re.compile(r"^\s*(📂|⏵⏵|⏸|✻)")  # 状態表示の行（費用や経過時間で変わる）
 OPTION = re.compile(r"^\s*(?:❯\s*)?(\d+)\.\s+(\S.*)$")
+ODD_BREAKS = re.compile("[\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]")  # 画面の 1 行の中にあっても、Python の splitlines が行の区切りとみなす文字
 
 
 def read_prompt(pane: str) -> str:
     """承認・入力待ちで止まっている画面。対話の枠は visible でしか取れない（recent には出ない）。
     罫線と、内容に関係なく変わる状態表示の行は除く。"""
     p = subprocess.run(["herdr", "agent", "read", pane, "--source", "visible", "--lines", "45"], capture_output=True, text=True, timeout=20)
-    keep = [l.rstrip() for l in p.stdout.splitlines() if l.strip() and not STATUS_LINE.match(l) and not set(l.strip()) <= set("─╌")]
+    # 行は画面の行（\n）だけで分ける。行の中の特殊な改行文字は � にし、あとの読み取りで偽の行を作らせない（選択肢を偽る形。2026-11-05 Codex）
+    rows = [ODD_BREAKS.sub("\ufffd", l) for l in p.stdout.split("\n")]
+    keep = [l.rstrip() for l in rows if l.strip() and not STATUS_LINE.match(l) and not set(l.strip()) <= set("─╌")]
     return "\n".join(keep[-30:])
 
 
@@ -2106,6 +2109,13 @@ def hub_human_turn() -> str | None:
 
 @app.post("/api/hub/answer")
 async def hub_answer(body: dict):
+    """_hub_answer を、画面のボタンの返答（_answer）と同じ鍵の中で動かす。確かめてからキーを送るまでが、2 つの経路で重ならないように
+    （一方が答えて次の画面（承認など）に変わった直後に、もう一方が古い問いのつもりで番号を送らない。2026-11-05 Codex）。"""
+    async with _answer_lock:
+        return await _hub_answer(body)
+
+
+async def _hub_answer(body: dict):
     """止まっているセッションの問いに、ユーザーの答えを伝える。
     守ること: ハブが見てユーザーに伝えた問いにだけ答える（見たのと同じ画面で、かつ見たあとにユーザーが発言している）。
     「はい」と番号は、ユーザーがその発言の直前に聞いたハブの返答が、プロジェクト名を挙げた問いで（not_asked）、
@@ -2191,9 +2201,12 @@ def parse_question(text: str) -> dict | None:
     数字キーはその番号を選んで確定する（2026-11-05 実画面で確認）。言い切る形は、実画面で取ったものと同じ並び:
     いちばん下の行が操作案内（Enter to select · ↑/↓ to navigate · Esc to cancel）、その上に見出しの印・問い・選択肢（1 から順に。
     説明の行は 5 文字下げ）・「Type something.」・「Chat about this」。複数選択（[ ] と Submit）・問いが複数（← → と Tab/Arrow keys）・
-    preview 付き（枠と n to add notes）・番号が飛ぶか重なる・ほかの行が混じる画面は None（ボタンを出さない）。"""
-    lines = text.splitlines()
-    if not lines:
+    preview 付き（枠と n to add notes）・番号が飛ぶか重なる・ほかの行が混じる・特殊な改行文字がある・見出しの印が 2 つ以上ある画面は
+    None（ボタンを出さない）。"""
+    if ODD_BREAKS.search(text) or "\ufffd" in text:
+        return None
+    lines = text.split("\n")
+    if not lines or sum(1 for l in lines if QUESTION_CHIP.match(l)) != 1:
         return None
     foot = lines[-1]
     if not all(w in foot for w in ("Enter to select", "↑/↓ to navigate", "Esc to cancel")) or "Tab/Arrow" in foot or "to add notes" in foot:
@@ -2227,7 +2240,7 @@ def parse_question(text: str) -> dict | None:
 
 def dialog_part(text: str) -> str | None:
     """質問の画面のうち、見出しの印から下。印が無ければ None。"""
-    lines = text.splitlines()
+    lines = text.split("\n")
     head = question_head(lines)
     return None if head is None else "\n".join(lines[head:])
 
@@ -2265,8 +2278,9 @@ def _ask_of(a: dict) -> dict:
     out = {"kind": kind, "text": _clip(asked, 1200), "fp": prompt_fp(text), "risky": bool(RISKY.search(asked))}
     if kind == "question":
         dialog = dialog_part(text)
-        if dialog:  # 質問は見出しの印から見せる（会話の上の部分は出さない）
+        if dialog:  # 質問は見出しの印から見せる（会話の上の部分は出さない）。取り消しにくい印は、省く前の問いと選択肢の全体でも見る
             out["text"] = _clip(dialog, 1200)
+            out["risky"] = out["risky"] or bool(RISKY.search(dialog))
         q = parse_question(text) if a.get("session") else None
         if q:
             out.update(header=_clip(q["header"], 40), question=_clip(q["question"], 600),
