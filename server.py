@@ -2172,9 +2172,64 @@ async def hub_answer(body: dict):
 
 
 # ---------- 画面のボタンからの返答（利用者がタップで答える） ----------
-# ボタンを出して答えられるのは、Claude Code の承認の画面と言い切れるときだけ。画面の文字の読み取りは揺れるので、
-# それ以外（選択式の質問・フォルダの信頼・読めない・わからない・セッション ID が無い）は中身を見せるだけで、キーは送らない
+# ボタンを出して答えられるのは、Claude Code の承認の画面と言い切れるときと、問いが 1 つで 1 つを選ぶ質問と言い切れるときだけ。
+# 画面の文字の読み取りは揺れるので、それ以外（複数選択・問いが複数・preview 付きの質問・フォルダの信頼・読めない・わからない・
+# セッション ID が無い）は中身を見せるだけで、キーは送らない
 QUESTION_ONLY = ("Type something.", "Chat about this")  # 選択式の質問（AskUserQuestion）にだけある選択肢
+QUESTION_CHIP = re.compile(r"^\s*(?:←\s+)?☐ ")  # 質問の見出しの印（複数選択・問いが複数のときは「←  ☐ 朝  ☐ 夜  ✔ Submit  →」）
+QUESTION_OPTION = re.compile(r"^(?:❯ | {2})(\d+)\. (\S.*)$")  # 質問の選択肢の行。説明の行は 5 文字下げて出る
+NOT_PLAIN = re.compile(r"[│┌┐└┘├┤]|^\[[ x✔✓]\]")  # preview の枠・複数選択の印
+
+
+def question_head(lines: list[str]) -> int | None:
+    """末尾の操作案内から上へたどって、いちばん近い質問の見出しの行。"""
+    return next((i for i in range(len(lines) - 2, -1, -1) if QUESTION_CHIP.match(lines[i])), None)
+
+
+def parse_question(text: str) -> dict | None:
+    """問いが 1 つで、選択肢から 1 つを選ぶ質問（AskUserQuestion）の画面なら、見出し・問い・選択肢。言い切れなければ None。
+    数字キーはその番号を選んで確定する（2026-11-05 実画面で確認）。言い切る形は、実画面で取ったものと同じ並び:
+    いちばん下の行が操作案内（Enter to select · ↑/↓ to navigate · Esc to cancel）、その上に見出しの印・問い・選択肢（1 から順に。
+    説明の行は 5 文字下げ）・「Type something.」・「Chat about this」。複数選択（[ ] と Submit）・問いが複数（← → と Tab/Arrow keys）・
+    preview 付き（枠と n to add notes）・番号が飛ぶか重なる・ほかの行が混じる画面は None（ボタンを出さない）。"""
+    lines = text.splitlines()
+    if not lines:
+        return None
+    foot = lines[-1]
+    if not all(w in foot for w in ("Enter to select", "↑/↓ to navigate", "Esc to cancel")) or "Tab/Arrow" in foot or "to add notes" in foot:
+        return None
+    head = question_head(lines)
+    if head is None or any(w in lines[head] for w in ("Submit", "←", "→")):
+        return None
+    body = lines[head + 1:-1]
+    first = next((i for i, l in enumerate(body) if QUESTION_OPTION.match(l)), None)
+    if not first:  # 選択肢が無い、または問いの行が無い
+        return None
+    opts: list[list] = []  # [番号, 見出し, 説明の行]
+    for l in body[first:]:
+        m = QUESTION_OPTION.match(l)
+        if m:
+            opts.append([int(m.group(1)), m.group(2).strip(), []])
+        elif l.startswith(" " * 5):
+            opts[-1][2].append(l.strip())
+        else:
+            return None
+    if [o[0] for o in opts] != list(range(1, len(opts) + 1)) or len(opts) < 3:
+        return None
+    if [o[1] for o in opts[-2:]] != list(QUESTION_ONLY) or opts[-1][2] or opts[-2][2]:
+        return None
+    real = opts[:-2]
+    if any(NOT_PLAIN.search(label) or label in QUESTION_ONLY for _, label, _ in real):
+        return None
+    return {"header": lines[head].strip()[1:].strip(), "question": "\n".join(l.strip() for l in body[:first]),
+            "choices": [{"n": n, "label": label, "desc": " ".join(desc)} for n, label, desc in real]}
+
+
+def dialog_part(text: str) -> str | None:
+    """質問の画面のうち、見出しの印から下。印が無ければ None。"""
+    lines = text.splitlines()
+    head = question_head(lines)
+    return None if head is None else "\n".join(lines[head:])
 
 
 def is_permission(text: str) -> bool:
@@ -2192,7 +2247,8 @@ def is_permission(text: str) -> bool:
 
 
 def _ask_of(a: dict) -> dict:
-    """止まっているセッション a の問い。kind は permission（ボタンを出す）/ question / trust / unknown / none（止まっていない）/ unreadable。"""
+    """止まっているセッション a の問い。kind は permission（ボタンを出す）/ question / trust / unknown / none（止まっていない）/ unreadable。
+    question は、1 つを選ぶ質問と言い切れて、セッション ID もあるときだけ choices（選択肢のボタン）を付ける。"""
     if a["status"] != "blocked":
         return {"kind": "none"}
     trust = pane_shows_trust(a["pane"])
@@ -2206,7 +2262,16 @@ def _ask_of(a: dict) -> dict:
         kind = "question"
     else:  # 言い切れない（選択肢が映りきっていない、セッションを見分けられない、など）。ボタンは出さない
         kind = "unknown"
-    return {"kind": kind, "text": _clip(asked, 1200), "fp": prompt_fp(text), "risky": bool(RISKY.search(asked))}
+    out = {"kind": kind, "text": _clip(asked, 1200), "fp": prompt_fp(text), "risky": bool(RISKY.search(asked))}
+    if kind == "question":
+        dialog = dialog_part(text)
+        if dialog:  # 質問は見出しの印から見せる（会話の上の部分は出さない）
+            out["text"] = _clip(dialog, 1200)
+        q = parse_question(text) if a.get("session") else None
+        if q:
+            out.update(header=_clip(q["header"], 40), question=_clip(q["question"], 600),
+                       choices=[{"n": c["n"], "label": _clip(c["label"], 120), "desc": _clip(c["desc"], 200)} for c in q["choices"]])
+    return out
 
 
 def _asked(pane: str, key: str) -> tuple[dict | None, dict]:
@@ -2251,9 +2316,15 @@ async def _answer(body: dict):
     done = ANSWERED.get(pane)
     if done and done[0] == fp and time.time() - done[1] < ANSWERED_HOLD:  # 二度押し・重ねた送信
         return JSONResponse({"ok": False, "reason": "answered"})
+    if choice not in ("allow", "deny", "choose"):
+        return JSONResponse({"ok": False, "reason": "bad_choice"})
     a, asked = await asyncio.to_thread(_asked, pane, key)
-    if asked["kind"] != "permission":  # 承認の画面と見分けられないときは、何も送らない
-        return JSONResponse({"ok": False, "reason": asked["kind"] if asked["kind"] in ("gone", "none", "unreadable", "trust") else "not_permission"})
+    if asked["kind"] in ("gone", "none", "unreadable", "trust"):
+        return JSONResponse({"ok": False, "reason": asked["kind"]})
+    if choice == "choose" and not asked.get("choices"):  # 1 つを選ぶ質問と言い切れないときは、何も送らない
+        return JSONResponse({"ok": False, "reason": "not_choice"})
+    if choice != "choose" and asked["kind"] != "permission":  # 承認の画面と見分けられないときは、何も送らない
+        return JSONResponse({"ok": False, "reason": "not_permission"})
     if asked["fp"] != fp:  # 画面に出したあとで問いが変わった
         return JSONResponse({"ok": False, "reason": "changed"})
     if choice == "allow":
@@ -2262,8 +2333,14 @@ async def _answer(body: dict):
         keys, said = "1", "許可（今回だけ）"
     elif choice == "deny":
         keys, said = "esc", "断る"
-    else:
-        return JSONResponse({"ok": False, "reason": "bad_choice"})
+    else:  # 画面から読んだ選択肢の番号だけを送る（Type something. と Chat about this は選ばない）
+        n = body.get("n")
+        picked = next((c for c in asked["choices"] if type(n) is int and c["n"] == n), None)
+        if not picked:
+            return JSONResponse({"ok": False, "reason": "bad_choice"})
+        if asked["risky"] and not confirmed:
+            return JSONResponse({"ok": False, "reason": "confirm"})
+        keys, said = str(n), f"{n}番「{_clip(picked['label'], 40)}」"
     r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, keys)
     hlog(f"answer(画面) → {pane} ({a['cwd'].rsplit('/', 1)[-1]}): {said} {'ok' if 'result' in r else 'ERR'}", flush=True)
     if "result" not in r:

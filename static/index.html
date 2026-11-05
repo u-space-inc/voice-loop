@@ -79,6 +79,11 @@
   .ask pre { margin:0; max-height:6em; overflow:auto; font:12px/1.5 ui-monospace, Menlo, monospace; color:#ccc; white-space:pre-wrap; word-break:break-all; }
   .ask button { flex:1; height:44px; font-size:15px; border:none; border-radius:10px; color:#fff; }
   .ask .allow { background:var(--ok); } .ask .allow.warn { background:var(--rec); } .ask .deny { background:var(--btn); }
+  .ask .q { font-size:14px; line-height:1.5; color:#eee; white-space:pre-wrap; word-break:break-word; max-height:9em; overflow:auto; }
+  .ask .choices { display:flex; flex-direction:column; gap:6px; }
+  .ask .choose { flex:none; height:auto; min-height:44px; padding:8px 12px; display:flex; flex-direction:column; align-items:flex-start; gap:2px; text-align:left; background:var(--btn); }
+  .ask .choose .desc { font-size:12px; color:#bbb; }
+  .ask .choose.warn { background:var(--rec); }
   /* 頼んだ件（📋 で開く） */
   #tasks { flex:none; max-height:45dvh; overflow-y:auto; display:flex; flex-direction:column; gap:6px; padding:calc(8px + env(safe-area-inset-top)) 12px 8px; background:#14161d; border-bottom:1px solid #262a38; }
   #tasks .top { display:flex; align-items:center; font-size:13px; color:#aab4d6; }
@@ -185,6 +190,7 @@
   body.wide #asks { grid-area:asks; padding:12px 32px 10px; background:var(--w-bg); border-bottom:1px solid var(--w-rule); }
   body.wide .ask { border:none; border-left:3px solid var(--s-wait); border-radius:6px; background:#1c1910; padding:10px 14px; }
   body.wide .ask button { height:36px; font-size:14px; border-radius:8px; }
+  body.wide .ask .choose { height:auto; min-height:36px; }
   body.wide #log { grid-area:log; min-height:0; padding:24px 32px 12px; gap:20px; }
   body.wide .msg.ai { max-width:46em; background:none; border:none; border-left:2px solid var(--w-rule); border-radius:0; padding:2px 0 2px 18px; font-size:15px; line-height:1.8; color:var(--w-t1); }
   body.wide .msg.ai.speaking { border-left-color:var(--ok); }
@@ -540,10 +546,11 @@ $('agent').onchange = () => { localStorage.setItem(WANT, curKey()); shownPane = 
 
 // ---------- 承認で止まっているセッションへの返答（ボタン） ----------
 // 話し相手（ハブなど）の画面のまま、承認で止まっているセッションをすべて画面の上に並べる（名前・聞かれている中身・許可（今回だけ）・断る）。
-// ボタンを出すのは、本体が承認の画面と見分けたときだけ。それ以外は中身を見せるだけにする（画面の文字の読み取りは揺れるので、出さないほうに倒す）。
-// 押すと、送る直前に本体が同じ問いか（指紋）を確かめる。取り消しにくい操作に見えるときは、もう一度押してから許可する
+// ボタンを出すのは、本体が承認の画面か、1 つを選ぶ質問（選択肢ごとのボタン）と見分けたときだけ。それ以外は中身を見せるだけにする
+// （画面の文字の読み取りは揺れるので、出さないほうに倒す）。
+// 押すと、送る直前に本体が同じ問いか（指紋）を確かめる。取り消しにくい操作に見えるときは、もう一度押してから許可する・選ぶ
 const ASK_HEAD = {
-  permission: '承認を待っています', question: '質問で止まっています。端末かハブで答えてください',
+  permission: '承認を待っています', question: '質問で止まっています。端末かハブで答えてください', choose: '質問で止まっています',
   trust: 'フォルダを信頼するか聞いています。端末で答えてください', unknown: '止まっています。端末で答えてください',
   unreadable: '止まっていますが、画面を読めませんでした',
 };
@@ -551,7 +558,7 @@ const ANSWER_FAIL = {
   changed: '画面が変わっていました。出し直したので、確かめてから押してください', none: 'もう止まっていません',
   gone: 'セッションが入れ替わっていました', not_permission: '承認の画面と見分けられませんでした', trust: 'フォルダの信頼は端末で答えてください',
   unreadable: '画面を読めませんでした', confirm: 'もう一度押してください', unreachable: '接続できません', herdr: 'herdr が応答しません',
-  bad_choice: 'そのボタンでは答えられません', answered: 'もう答えています',
+  bad_choice: 'そのボタンでは答えられません', answered: 'もう答えています', not_choice: '選択肢を読み取れませんでした',
 };
 const asks = new Map(); // pane → 並べている欄 { q: 問い, el, armed, busy }
 const answered = {}; // pane → [指紋, 時刻]。答えたばかりの問いは、一覧の状態が追いつくまで出し直さない
@@ -571,17 +578,31 @@ async function loadAsks() {
     if (item && (item.busy || (item.q.key === q.key && item.q.fp === q.fp && item.q.kind === q.kind))) continue; // 同じ問いはそのまま（「もう一度押すと許可」も残す）
     const el = renderAsk(q);
     if (item) { disarm(item); item.el.replaceWith(el); } else $('asks').appendChild(el);
-    asks.set(q.pane, { q, el, armed: null, busy: false });
+    asks.set(q.pane, { q, el, armed: null, armedFor: null, busy: false });
   }
 }
 function renderAsk(q) {
   const el = document.createElement('div'), head = document.createElement('div');
+  const choosing = q.kind === 'question' && Array.isArray(q.choices) && q.choices.length > 0;
   el.className = 'ask'; el.dataset.pane = q.pane; head.className = 'head';
-  head.textContent = `${q.name}｜` + (q.kind === 'permission' && q.risky ? '⚠ 取り消しにくい操作かもしれません。' : '') + (ASK_HEAD[q.kind] || ASK_HEAD.unknown);
+  head.textContent = `${q.name}｜` + ((q.kind === 'permission' || choosing) && q.risky ? '⚠ 取り消しにくい操作かもしれません。' : '') + (choosing ? ASK_HEAD.choose : (ASK_HEAD[q.kind] || ASK_HEAD.unknown));
   el.appendChild(head);
-  if (q.text) {
+  if (choosing) {  // 問いと、選択肢ごとのボタン（文字はどれも画面から読んだまま、文字として出す）
+    const qt = document.createElement('div'); qt.className = 'q';
+    qt.textContent = (q.header ? `［${q.header}］ ` : '') + (q.question || ''); el.appendChild(qt);
+    const list = document.createElement('div'); list.className = 'choices';
+    for (const c of q.choices) {
+      const b = document.createElement('button'), lbl = document.createElement('span');
+      b.className = 'choose'; b.dataset.n = c.n; b.dataset.label = `${c.n}. ${c.label}`;
+      lbl.className = 'lbl'; lbl.textContent = b.dataset.label; b.appendChild(lbl);
+      if (c.desc) { const d = document.createElement('span'); d.className = 'desc'; d.textContent = c.desc; b.appendChild(d); }
+      b.onclick = () => answer(q.pane, 'choose', c.n); list.appendChild(b);
+    }
+    el.appendChild(list);
+  } else if (q.text) {
     const pre = document.createElement('pre'); pre.textContent = q.text; el.appendChild(pre);
-    if (q.kind !== 'permission') requestAnimationFrame(() => { pre.scrollTop = pre.scrollHeight; }); // 承認はコマンドの見える上から、ほかは問いのある下から見せる
+    // 承認はコマンドの見える上から、質問は見出しの印のある上から、ほかは問いのある下から見せる
+    if (q.kind !== 'permission' && q.kind !== 'question') requestAnimationFrame(() => { pre.scrollTop = pre.scrollHeight; });
   }
   if (q.kind === 'permission') {
     const row = document.createElement('div'); row.className = 'row';
@@ -593,16 +614,24 @@ function renderAsk(q) {
   return el;
 }
 function disarm(item) {
-  clearTimeout(item.armed); item.armed = null;
+  clearTimeout(item.armed); item.armed = null; item.armedFor = null;
   const b = item.el.querySelector('.allow'); if (b) { b.textContent = '許可（今回だけ）'; b.classList.remove('warn'); }
+  item.el.querySelectorAll('.choose.warn').forEach(c => { c.classList.remove('warn'); c.querySelector('.lbl').textContent = c.dataset.label; });
 }
-async function answer(pane, choice) {
+async function answer(pane, choice, n) {
   const item = asks.get(pane); if (!item || item.busy) return;
-  const { q, el } = item, allow = el.querySelector('.allow');
-  if (choice === 'allow' && q.risky && !item.armed) { item.armed = setTimeout(() => disarm(item), 4000); allow.textContent = 'もう一度押すと許可'; allow.classList.add('warn'); return; }
+  const { q, el } = item, what = `${choice}:${n ?? ''}`;
+  // 取り消しにくい操作に見えるときは、同じボタンをもう一度押してから送る（ほかのボタンを押したら、そちらで数え直す）
+  if (q.risky && choice !== 'deny' && item.armedFor !== what) {
+    disarm(item); item.armed = setTimeout(() => disarm(item), 4000); item.armedFor = what;
+    if (choice === 'allow') { const b = el.querySelector('.allow'); b.textContent = 'もう一度押すと許可'; b.classList.add('warn'); }
+    else { const b = el.querySelector(`.choose[data-n="${n}"]`); b.querySelector('.lbl').textContent = `もう一度押すと「${b.dataset.label}」を選ぶ`; b.classList.add('warn'); }
+    return;
+  }
   const confirmed = !!item.armed; disarm(item);
   item.busy = true; el.querySelectorAll('button').forEach(b => { b.disabled = true; }); // 二重に送らない
-  let r; try { r = await (await fetch('/api/answer', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pane: q.pane, key: q.key, fp: q.fp, choice, confirmed }) })).json(); }
+  const sendBody = { pane: q.pane, key: q.key, fp: q.fp, choice, confirmed, ...(choice === 'choose' ? { n } : {}) };
+  let r; try { r = await (await fetch('/api/answer', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sendBody) })).json(); }
   catch { r = { ok: false, reason: 'unreachable' }; }
   item.busy = false; el.remove(); asks.delete(pane);
   if (r.ok) { answered[pane] = [q.fp, Date.now()]; sys(`${q.name} に「${r.said}」を送りました`); }
