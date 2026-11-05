@@ -1,0 +1,40 @@
+name: semgrep
+on:
+  schedule:
+    - cron: "23 0 * * 1"   # 毎週月曜 09:23（日本時間）
+  workflow_dispatch:
+  # この workflow 自身を変えた PR だけで試す（手動の実行は、既定ブランチに入ってからでないと使えないため）
+  pull_request:
+    paths:
+      - .github/workflows/semgrep.yml
+permissions:
+  contents: read
+jobs:
+  scan:
+    # fork と Dependabot の PR では動かさない（結果を上げる権限が無い）
+    if: >-
+      github.actor != 'dependabot[bot]' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: semgrep-${{ github.ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      security-events: write   # 結果を code scanning に上げる
+    container:
+      # Semgrep CE の公式コンテナ。版と中身を固定する（1.183.0、2026-10-29 公開）
+      image: semgrep/semgrep:1.183.0@sha256:2e45517a85e13a9cca14a2a00df6bb48affd66b8ebfae1b0991cd57578362fb0
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      # 規則は Semgrep の公開の一覧（p/ci）から取る。利用状況は送らない（--config auto は送ることが前提なので使わない）。
+      # 指摘があっても失敗にしない（--error を付けない）。指摘の中身は公開の実行記録に出さず、SARIF のファイルにだけ書く
+      - run: semgrep scan --config p/ci --metrics off --sarif --output semgrep.sarif
+      - uses: github/codeql-action/upload-sarif@v4
+        if: always() && hashFiles('semgrep.sarif') != ''
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
