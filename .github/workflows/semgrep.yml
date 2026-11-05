@@ -1,0 +1,65 @@
+name: semgrep
+# 正本: 設計ノートの assets/security-workflows/semgrep.yml（2026-11-05 v3.1）
+# 各リポジトリはこのファイルをそのまま写す（差分なし）。public/private の違いは job の出力で吸収する
+# actions は commit SHA、image は digest で固定（7 日ルール: 公開から 7 日未満の版は使わない）。更新は正本から
+on:
+  schedule:
+    - cron: "0 0 * * 1"      # 毎週月曜 09:00 JST
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/semgrep.yml   # この workflow 自身を変えた PR だけ（マージ前に試すため）
+concurrency:
+  group: semgrep-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  visibility:
+    # schedule の実行では github.event.repository が無いので、API で public/private を引く
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    outputs:
+      private: ${{ steps.repo.outputs.private }}
+    steps:
+      - id: repo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          private="$(gh api "repos/${{ github.repository }}" --jq .private)"
+          case "$private" in true|false) ;; *) echo "可視性が取れません: '$private'"; exit 1 ;; esac
+          echo "private=$private" >> "$GITHUB_OUTPUT"
+  scan:
+    needs: visibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: semgrep/semgrep:1.183.0@sha256:2e45517a85e13a9cca14a2a00df6bb48affd66b8ebfae1b0991cd57578362fb0   # 2026-10-29 公開
+    permissions:
+      contents: read
+      security-events: write   # public の upload-sarif 用。private では使われない
+    env:
+      SEMGREP_ENABLE_VERSION_CHECK: "0"   # 版の確認で semgrep.dev に問い合わせない
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false   # push しない job なので token を残さない
+      # LLM を使わない基準線。ソースは送られず、--metrics off で利用統計も送らない（--config auto は metrics を要するので使わない）
+      # 指摘があっても exit 0（--error を付けない）。schedule なので PR も塞がない
+      - run: semgrep scan --config p/ci --sarif --output semgrep.sarif --metrics off
+      # 落ちない代わりに、件数を run の要約に出して目に入るようにする
+      - run: |
+          python3 -c 'import json; r=json.load(open("semgrep.sarif"))["runs"][0]["results"]; print("Semgrep:", len(r), "件")' >> "$GITHUB_STEP_SUMMARY"
+      # private: SARIF を artifact に保存（Code Security 未購入で code scanning に上げられないため）。90 日
+      # public: artifact はログインした誰でも落とせるので残さず、code scanning にだけ上げる（CodeQL と同じ画面で見比べる）
+      - if: needs.visibility.outputs.private == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: semgrep-sarif-${{ github.run_id }}
+          path: semgrep.sarif
+          retention-days: 90
+      - if: needs.visibility.outputs.private == 'false'
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1（7 日ルール: 2026-10-21 公開）
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
