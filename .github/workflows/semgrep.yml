@@ -1,40 +1,41 @@
 name: semgrep
+# 正本: 設計ノートの assets/security-workflows/semgrep.yml（2026-11-05 v2）
+# 各リポジトリはこのファイルをそのまま写す（差分なし）。public/private の違いは if で吸収する
+# actions は commit SHA、image は digest で固定。更新は正本から
 on:
   schedule:
-    - cron: "23 0 * * 1"   # 毎週月曜 09:23（日本時間）
+    - cron: "0 0 * * 1"      # 毎週月曜 09:00 JST
   workflow_dispatch:
-  # この workflow 自身を変えた PR だけで試す（手動の実行は、既定ブランチに入ってからでないと使えないため）
   pull_request:
     paths:
-      - .github/workflows/semgrep.yml
-permissions:
-  contents: read
+      - .github/workflows/semgrep.yml   # この workflow 自身を変えた PR だけ（マージ前に試すため）
+concurrency:
+  group: semgrep-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   scan:
-    # fork と Dependabot の PR では動かさない（結果を上げる権限が無い）
-    if: >-
-      github.actor != 'dependabot[bot]' &&
-      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    concurrency:
-      group: semgrep-${{ github.ref }}
-      cancel-in-progress: true
+    timeout-minutes: 20
+    container:
+      image: semgrep/semgrep:1.183.0@sha256:2e45517a85e13a9cca14a2a00df6bb48affd66b8ebfae1b0991cd57578362fb0   # 2026-10-29 公開
     permissions:
       contents: read
-      security-events: write   # 結果を code scanning に上げる
-    container:
-      # Semgrep CE の公式コンテナ。版と中身を固定する（1.183.0、2026-10-29 公開）
-      image: semgrep/semgrep:1.183.0@sha256:2e45517a85e13a9cca14a2a00df6bb48affd66b8ebfae1b0991cd57578362fb0
+      security-events: write   # public の upload-sarif 用。private では使われない
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # LLM を使わない基準線。ソースは送られず、--metrics off で利用統計も送らない（--config auto は metrics を要するので使わない）
+      # 指摘があっても exit 0（--error を付けない）。schedule なので PR も塞がない
+      - run: semgrep scan --config p/ci --sarif --output semgrep.sarif --metrics off
+      # private: SARIF を artifact に保存（Code Security 未購入で code scanning に上げられないため）。90 日
+      # public: artifact はログインした誰でも落とせるので残さず、code scanning にだけ上げる（CodeQL と同じ画面で見比べる）
+      - if: ${{ github.event.repository.private }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          persist-credentials: false
-      # 規則は Semgrep の公開の一覧（p/ci）から取る。利用状況は送らない（--config auto は送ることが前提なので使わない）。
-      # 指摘があっても失敗にしない（--error を付けない）。指摘の中身は公開の実行記録に出さず、SARIF のファイルにだけ書く
-      - run: semgrep scan --config p/ci --metrics off --sarif --output semgrep.sarif
-      - uses: github/codeql-action/upload-sarif@v4
-        if: always() && hashFiles('semgrep.sarif') != ''
+          name: semgrep-sarif-${{ github.run_id }}
+          path: semgrep.sarif
+          retention-days: 90
+      - if: ${{ !github.event.repository.private }}
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           sarif_file: semgrep.sarif
           category: semgrep
