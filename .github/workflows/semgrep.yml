@@ -1,5 +1,5 @@
 name: semgrep
-# 正本: 設計ノートの assets/security-workflows/semgrep.yml（2026-11-05 v3）
+# 正本: 設計ノートの assets/security-workflows/semgrep.yml（2026-11-05 v3.1）
 # 各リポジトリはこのファイルをそのまま写す（差分なし）。public/private の違いは job の出力で吸収する
 # actions は commit SHA、image は digest で固定（7 日ルール: 公開から 7 日未満の版は使わない）。更新は正本から
 on:
@@ -25,7 +25,10 @@ jobs:
       - id: repo
         env:
           GH_TOKEN: ${{ github.token }}
-        run: echo "private=$(gh api "repos/${{ github.repository }}" --jq .private)" >> "$GITHUB_OUTPUT"
+        run: |
+          private="$(gh api "repos/${{ github.repository }}" --jq .private)"
+          case "$private" in true|false) ;; *) echo "可視性が取れません: '$private'"; exit 1 ;; esac
+          echo "private=$private" >> "$GITHUB_OUTPUT"
   scan:
     needs: visibility
     runs-on: ubuntu-latest
