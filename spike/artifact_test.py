@@ -140,9 +140,13 @@ for page in ("/", "/static/index.html"):  # 同じ画面を開ける場所のど
     r = c.get(page, headers={"range": "bytes=0-1,5-6"})
     check(f"画面（{page}）の複数範囲の 206（text/html を名乗らない）にも、枠に入れさせない 2 つのヘッダーを付ける",
           (r.status_code, r.headers.get("content-type", "").startswith("multipart/byteranges"), no_frame(r)), (206, True, True))
-r = c.get("/static/index.html", headers={"if-none-match": c.get("/static/index.html").headers.get("etag", "")})
-check("画面の再検証の 304（/static/index.html。型が無い）にも、枠に入れさせない 2 つのヘッダーを付ける（ブラウザは 304 のヘッダーで手元の写しを書き換える）",
-      (r.status_code, no_frame(r)), (304, True))
+etag = c.get("/static/index.html").headers.get("etag", "")
+for page in ("/static/index.html", "/static/index.html/", "/static%2Findex.html", "/static/INDEX.HTML"):  # 同じファイルになる別の書き方でも
+    r, rr, rh = (c.get(page, headers={"if-none-match": etag}), c.get(page, headers={"range": "bytes=0-1,5-6"}),
+                 c.head(page, headers={"if-none-match": etag}))
+    check(f"画面のファイル（{page}）の再検証の 304（型が無い）・複数範囲の 206・HEAD の 304 にも、枠に入れさせない 2 つのヘッダーを付ける"
+          "（ブラウザは 304 のヘッダーで手元の写しを書き換える）",
+          [(x.status_code, no_frame(x)) for x in (r, rr, rh)], [(304, True), (206, True), (304, True)])
 
 DUP = TMP / "dup" / "proj"  # 別の場所の、同じフォルダ名「proj」
 DUP.mkdir(parents=True)

@@ -641,9 +641,6 @@ async def narrate(text: str, cancel: asyncio.Event):
 
 
 # ---------- HTTP / WS ----------
-app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
-
-
 # 画面（HTML）の CSP。画面が読み込むものは、この本体からのもの（画像は data:・blob: も。声は blob: で鳴らす）だけにする。
 # 返事の Markdown や HTML に外のサイトの画像・CSS（@import・@font-face・url()）などが混じっても、ブラウザが取りに行かない
 # （乗せられたハブが、URL に情報を載せて外へ出す道を塞ぐ。返事の style は画面でも落とす）。読み込みの種類ごとに書く。
@@ -651,12 +648,27 @@ app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 # 画面は、ほかのページの枠（iframe など）に入れさせない（frame-ancestors。CSP を見ないブラウザ向けに X-Frame-Options: DENY も付ける）
 INDEX_CSP = ("img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self'; "
              "frame-src 'none'; frame-ancestors 'none'; object-src 'none'; worker-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'")
+PAGE_HEADERS = {"Content-Security-Policy": INDEX_CSP, "X-Frame-Options": "DENY"}  # 画面（HTML）の応答に付ける 2 つ
+
+
+class PageStatic(StaticFiles):
+    """/static の配信。HTML のファイル（index.html）を返すときは、200 のほか、再検証の 304 と範囲の 206 にも PAGE_HEADERS を付ける。
+    304 と複数範囲の 206 は text/html を名乗らない（下の PageCSP では拾えない）が、ブラウザは 304 のヘッダーで手元の写しのヘッダーを
+    書き換える（付けないと、前の版で取っておいた写しのヘッダーのまま使われる）。どのファイルかは、URL の書き方（末尾の / など）ではなく、
+    解決したあとのファイルで見る。"""
+
+    def file_response(self, full_path, stat_result, scope, status_code=200):
+        res = super().file_response(full_path, stat_result, scope, status_code)
+        if str(full_path).lower().endswith((".html", ".htm")):
+            res.headers.update(PAGE_HEADERS)
+        return res
+
+
+app.mount("/static", PageStatic(directory=HERE / "static"), name="static")
 
 
 class PageCSP:
-    """ASGI のミドルウェア。HTML を返すすべての応答に INDEX_CSP と X-Frame-Options: DENY を付ける（/ のほかに /static/index.html でも同じ画面が開けるため）。
-    HTML のファイルの場所（/ と .html）への応答は、型を問わず付ける。再検証の 304 や複数範囲の 206 は text/html を名乗らないが、
-    ブラウザは 304 のヘッダーで手元の写しのヘッダーを書き換えるため（付けないと、前の版で取っておいた写しのヘッダーのまま使われる）。"""
+    """ASGI のミドルウェア。HTML を返すすべての応答に INDEX_CSP と X-Frame-Options: DENY を付ける（/ のほかに /static/index.html でも同じ画面が開けるため）。"""
 
     def __init__(self, app):
         self.app = app
@@ -664,14 +676,12 @@ class PageCSP:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
-        path = scope.get("path", "").lower()
-        page = path == "/" or path.endswith((".html", ".htm"))
 
         async def send_csp(m):
             if m["type"] == "http.response.start":
                 h = list(m.get("headers", []))
                 names = {k.lower() for k, _ in h}
-                if page or any(k.lower() == b"content-type" and v.lower().startswith(b"text/html") for k, v in h):
+                if any(k.lower() == b"content-type" and v.lower().startswith(b"text/html") for k, v in h):
                     if b"content-security-policy" not in names:
                         h.append((b"content-security-policy", INDEX_CSP.encode()))
                     if b"x-frame-options" not in names:
@@ -687,8 +697,7 @@ app.add_middleware(PageCSP)
 
 @app.get("/")
 def index():
-    return FileResponse(HERE / "static" / "index.html",
-                        headers={"Cache-Control": "no-cache", "Content-Security-Policy": INDEX_CSP, "X-Frame-Options": "DENY"})
+    return FileResponse(HERE / "static" / "index.html", headers={"Cache-Control": "no-cache", **PAGE_HEADERS})
 
 
 @app.get("/sw.js")

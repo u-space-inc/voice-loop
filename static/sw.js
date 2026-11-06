@@ -4,7 +4,7 @@
 // 取り方: まず Mac に取りに行き、取れたら手元の写しも新しくする。3秒で返ってこないとき（通信が止まって
 // 待たされるとき）、取れなかったとき、502 などのサーバー側のエラーのときだけ、手元の写しで答える。
 // 更新したのに古い画面が出続けることを避けるため。
-// 扱うのは画面（/ を開く操作）と SHELL のファイルだけ。/api と /ws には手を出さない（一覧や会話を古い写しで答えない）。
+// 扱うのは画面（/ を開く操作。枠の中で開くときは除く）と SHELL のファイルだけ。/api と /ws には手を出さない（一覧や会話を古い写しで答えない）。
 // 写しに残すのは、転送されていない 200 だけ（ほかのページへの転送や失敗の応答を、画面として残さない）。
 // プッシュ通知も受け持つ（本体が、どの画面も見えていないときに送る見出し）。押すと voice-loop を前に出す（無ければ開く）。
 const CACHE = 'voice-loop-shell-v1';
@@ -40,6 +40,9 @@ self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET' || url.origin !== self.location.origin) return;
   if (!SHELL.includes(url.pathname)) return; // /api など、画面の部品でないものは素通し（/api を直接開いた場合も）
   const key = url.pathname;
+  // 画面（/）を写しで答えるのは、いちばん外の画面として開くときだけ。ほかのページの枠（iframe など）の中で開かれたときは素通しにして、
+  // 本体の応答のヘッダーでブラウザに枠を断らせる（前の版で取っておいた写しには、枠を断るヘッダーが無いことがあるため）
+  if (key === '/' && e.request.destination !== 'document') return;
   let saved = Promise.resolve();
   const net = fetch(e.request).then(res => {
     if (keepable(res)) {
