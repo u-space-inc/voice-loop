@@ -141,7 +141,8 @@ for page in ("/", "/static/index.html"):  # 同じ画面を開ける場所のど
     check(f"画面（{page}）の複数範囲の 206（text/html を名乗らない）にも、枠に入れさせない 2 つのヘッダーを付ける",
           (r.status_code, r.headers.get("content-type", "").startswith("multipart/byteranges"), no_frame(r)), (206, True, True))
 etag = c.get("/static/index.html").headers.get("etag", "")
-for page in ("/static/index.html", "/static/index.html/", "/static%2Findex.html", "/static/INDEX.HTML"):  # 同じファイルになる別の書き方でも
+upper = ["/static/INDEX.HTML"] if (ROOT / "static" / "INDEX.HTML").exists() else []  # 大文字小文字を区別しないディスク（mac の既定）でだけ、同じファイルになる
+for page in ["/static/index.html", "/static/index.html/", "/static%2Findex.html"] + upper:  # 同じファイルになる別の書き方でも
     r, rr, rh = (c.get(page, headers={"if-none-match": etag}), c.get(page, headers={"range": "bytes=0-1,5-6"}),
                  c.head(page, headers={"if-none-match": etag}))
     check(f"画面のファイル（{page}）の再検証の 304（型が無い）・複数範囲の 206・HEAD の 304 にも、枠に入れさせない 2 つのヘッダーを付ける"
