@@ -821,6 +821,15 @@ def api_file(request: Request, pane: str = "", path: str = ""):
                         headers={"X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox", "Cache-Control": "no-cache"})
 
 
+
+@app.get("/api/thumb")
+def api_thumb(pane: str = "", path: str = ""):
+    """一覧の小さな見本。見せてよいファイルかは /api/file と同じ判定を使う"""
+    if not artifact_file(pane, path):
+        return JSONResponse({"ok": False, "reason": "見せられません"}, status_code=404)
+    return FileResponse(path, headers={"Cache-Control": "max-age=300"})
+
+
 @app.get("/api/speakers")
 def api_speakers():
     data = json.loads(urllib.request.urlopen(f"{TTS_URL}/speakers", timeout=10).read())
@@ -829,8 +838,9 @@ def api_speakers():
 
 
 # ---------- ハブが使う道具（hubctl から呼ばれる） ----------
-def _clip(text: str, n: int) -> str:
-    return text if len(text) <= n else text[:n] + f"…（以下 {len(text) - n} 字省略）"
+def _clip(text: str, n: int, mark: str) -> str:
+    """n 字を超えたら切って mark を足す。mark の {rest} は省いた字数"""
+    return text if len(text) <= n else text[:n] + mark.format(rest=len(text) - n)
 
 
 def _clip_ends(text: str, head: int, tail: int) -> str:
@@ -957,6 +967,18 @@ def _integration_problem() -> str:
     return "" if line and "not installed" not in line else "`herdr integration install claude` を実行してください（Claude Code のセッションを見分けて、返事を読むのに使います）"
 
 
+def _whisper_models_problem() -> str:
+    """聞き取りのサーバーがモデルの一覧を返すか（モデルを入れ忘れると、起動はしていても聞き取れない）"""
+    url = os.environ.get("VL_WHISPER_URL", "http://127.0.0.1:8080/v1/audio/transcriptions")
+    base = url.split("/v1/", 1)[0]
+    try:
+        with urllib.request.urlopen(f"{base}/v1/models", timeout=5) as r:
+            models = json.loads(r.read()).get("data", [])
+    except Exception as e:
+        return f"whisper のモデルの一覧を読めません（{type(e).__name__}: {str(e)[:160]}）"
+    return "" if models else _clip(f"{base} にモデルが入っていません。README の「準備」を見て入れてください", 120, "…")
+
+
 @app.get("/api/doctor")
 def doctor():
     """使い始めるのに要るものが揃っているかの点検。ok でない項目に、次にやることを添える。"""
@@ -972,6 +994,9 @@ def doctor():
         add("herdr の Claude 連携", not problem, problem)
     problem = _probe("whisper", _whisper_problem)
     add("聞き取り（whisper）", not problem, problem)
+    if not problem:
+        problem = _probe("whisper-models", _whisper_models_problem)
+        add("聞き取りのモデル", not problem, problem)
     speakers = []
     try:
         speakers = [st["id"] for s in json.loads(urllib.request.urlopen(f"{TTS_URL}/speakers", timeout=5).read()) for st in s["styles"]]
@@ -997,6 +1022,20 @@ def doctor():
     add("セッションを立てる場所", bool(PROJECTS_DIR and PROJECTS_DIR.is_dir()),
         "ハブに新しいセッションを立てさせるなら、config.env の VL_PROJECTS_DIR にプロジェクトの置き場所を書いてください", optional=True)
     return JSONResponse({"ok": all(c["ok"] or c["optional"] for c in checks), "checks": checks, "config_dir": str(CONFIG_DIR), "narrator": model})
+
+
+@app.get("/api/doctor/detail")
+def doctor_detail(name: str = ""):
+    """診断の 1 項目を、覚えている結果を使わずに確かめ直す。失敗したら、画面で原因を追えるよう詳しい様子を返す"""
+    fns = {"whisper": _whisper_problem, "whisper-models": _whisper_models_problem, "integration": _integration_problem}
+    fn = fns.get(name)
+    if fn is None:
+        return JSONResponse({"ok": False, "reason": "知らない項目です"}, status_code=404)
+    try:
+        problem = fn()
+    except Exception:
+        return JSONResponse({"ok": False, "detail": traceback.format_exc()}, status_code=503)
+    return JSONResponse({"ok": not problem, "todo": problem})
 
 
 @app.post("/api/hub/start")
