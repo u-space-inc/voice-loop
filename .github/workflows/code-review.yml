@@ -45,7 +45,7 @@ jobs:
             - `docs/decisions.md` に記録された判断の範囲内のものは指摘しない。範囲を超えるものは、超えていることを書いて指摘する
             - 公開リポジトリなので、攻撃の具体的な手順は書かない
           claude_args: >-
-            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git blame:*),mcp__github_inline_comment__create_inline_comment"
+            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git blame:*),Bash(grep:*),Bash(rg:*),Read,Grep,Glob,Agent,Task,mcp__github_inline_comment__create_inline_comment"
             --max-turns 60
       - name: 実行の構造（使った道具の種類と、読んだファイルの名前だけ。本文は出さない）
         if: always()
