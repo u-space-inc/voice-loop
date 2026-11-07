@@ -967,6 +967,18 @@ def _integration_problem() -> str:
     return "" if line and "not installed" not in line else "`herdr integration install claude` を実行してください（Claude Code のセッションを見分けて、返事を読むのに使います）"
 
 
+def _whisper_models_problem() -> str:
+    """聞き取りのサーバーがモデルの一覧を返すか（モデルを入れ忘れると、起動はしていても聞き取れない）"""
+    url = os.environ.get("VL_WHISPER_URL", "http://127.0.0.1:8080/v1/audio/transcriptions")
+    base = url.split("/v1/", 1)[0]
+    try:
+        with urllib.request.urlopen(f"{base}/v1/models", timeout=5) as r:
+            models = json.loads(r.read()).get("data", [])
+    except Exception as e:
+        return f"whisper のモデルの一覧を読めません（{type(e).__name__}: {str(e)[:160]}）"
+    return "" if models else _clip(f"{base} にモデルが入っていません。README の「準備」を見て入れてください", 120, "…")
+
+
 @app.get("/api/doctor")
 def doctor():
     """使い始めるのに要るものが揃っているかの点検。ok でない項目に、次にやることを添える。"""
@@ -982,6 +994,9 @@ def doctor():
         add("herdr の Claude 連携", not problem, problem)
     problem = _probe("whisper", _whisper_problem)
     add("聞き取り（whisper）", not problem, problem)
+    if not problem:
+        problem = _probe("whisper-models", _whisper_models_problem)
+        add("聞き取りのモデル", not problem, problem)
     speakers = []
     try:
         speakers = [st["id"] for s in json.loads(urllib.request.urlopen(f"{TTS_URL}/speakers", timeout=5).read()) for st in s["styles"]]
