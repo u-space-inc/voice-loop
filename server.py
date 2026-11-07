@@ -821,6 +821,15 @@ def api_file(request: Request, pane: str = "", path: str = ""):
                         headers={"X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox", "Cache-Control": "no-cache"})
 
 
+
+@app.get("/api/thumb")
+def api_thumb(pane: str = "", path: str = ""):
+    """一覧の小さな見本。見せてよいファイルかは /api/file と同じ判定を使う"""
+    if not artifact_file(pane, path):
+        return JSONResponse({"ok": False, "reason": "見せられません"}, status_code=404)
+    return FileResponse(path, headers={"Cache-Control": "max-age=300"})
+
+
 @app.get("/api/speakers")
 def api_speakers():
     data = json.loads(urllib.request.urlopen(f"{TTS_URL}/speakers", timeout=10).read())
