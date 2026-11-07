@@ -838,8 +838,9 @@ def api_speakers():
 
 
 # ---------- ハブが使う道具（hubctl から呼ばれる） ----------
-def _clip(text: str, n: int) -> str:
-    return text if len(text) <= n else text[:n] + f"…（以下 {len(text) - n} 字省略）"
+def _clip(text: str, n: int, mark: str) -> str:
+    """n 字を超えたら切って mark を足す。mark の {rest} は省いた字数"""
+    return text if len(text) <= n else text[:n] + mark.format(rest=len(text) - n)
 
 
 def _clip_ends(text: str, head: int, tail: int) -> str:
