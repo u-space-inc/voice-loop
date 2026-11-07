@@ -1024,6 +1024,20 @@ def doctor():
     return JSONResponse({"ok": all(c["ok"] or c["optional"] for c in checks), "checks": checks, "config_dir": str(CONFIG_DIR), "narrator": model})
 
 
+@app.get("/api/doctor/detail")
+def doctor_detail(name: str = ""):
+    """診断の 1 項目を、覚えている結果を使わずに確かめ直す。失敗したら、画面で原因を追えるよう詳しい様子を返す"""
+    fns = {"whisper": _whisper_problem, "whisper-models": _whisper_models_problem, "integration": _integration_problem}
+    fn = fns.get(name)
+    if fn is None:
+        return JSONResponse({"ok": False, "reason": "知らない項目です"}, status_code=404)
+    try:
+        problem = fn()
+    except Exception:
+        return JSONResponse({"ok": False, "detail": traceback.format_exc()}, status_code=503)
+    return JSONResponse({"ok": not problem, "todo": problem})
+
+
 @app.post("/api/hub/start")
 def hub_start():
     """ハブが居なければ立てる（画面の「ハブを起動」と hub-start から呼ばれる）。"""
