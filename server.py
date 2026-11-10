@@ -1727,13 +1727,25 @@ CONFIRMING: dict[str, tuple[str, str | None]] = {}  # 取り消しにくい操�
 
 
 def asked_part(text: str) -> str:
-    """画面のうち、いま聞かれている部分（最後のツール呼び出しの行から下）。それより上の会話は判定に使わない。"""
+    """画面のうち、いま聞かれている部分（最後のツール呼び出しの行から下）。それより上の会話は判定に使わない。
+    ツール呼び出しの行は、字下げなしで印（⏺）から始まる行。コマンドの本文や結果の行は字下げされるので、中に印を書かれても区切りにしない。
+    実行を待つ道具の行の印は点滅し、消えている間は見つからない。そのときは 1 つ前の印の行から、印の行が 1 つも映っていなければ
+    映っている全部を返す（広くなることはあっても、狭くはしない。狭くなると、取り消しにくい語を見落とす）。"""
     lines = text.splitlines()
-    start = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].lstrip().startswith("⏺")), max(0, len(lines) - 15))
+    start = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].startswith("⏺")), 0)
     return "\n".join(lines[start:])
 
 
+TOOL_MARK = re.compile(r"^⏺", re.M)  # 字下げなしの行の頭の印（発言と、道具の見出し）
+
+
 def prompt_fp(text: str) -> str:
+    """止まっている画面の指紋。承認の画面では、実行を待つ道具の見出しの行の印（⏺）が点滅し、消えている間は空白になる。
+    印のあるなしで指紋が変わらないよう、承認の画面に限って、字下げなしの行の頭の印だけは数えない（承認の枠の中の行は、必ず字下げされる）。
+    字下げされた行（コマンドの本文など）の印と、印より後ろの文字は、1 字でも違えば別の指紋になる。
+    選択式の質問などの画面は、問いの文が字下げなしで出るので、印も文字として数える。"""
+    if is_permission(text):
+        text = TOOL_MARK.sub("", text)
     return hashlib.sha1(" ".join(text.split()).encode()).hexdigest()
 
 
