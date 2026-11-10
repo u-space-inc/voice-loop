@@ -1733,8 +1733,13 @@ def asked_part(text: str) -> str:
     return "\n".join(lines[start:])
 
 
+TOOL_MARK = re.compile(r"^[ \t]*⏺", re.M)  # 行の頭の、道具と発言の印
+
+
 def prompt_fp(text: str) -> str:
-    return hashlib.sha1(" ".join(text.split()).encode()).hexdigest()
+    """止まっている画面の指紋。実行を待つ道具の行の頭の印（⏺）は点滅し、消えている間は空白になる。
+    印のあるなしで指紋が変わらないよう、行の頭の印は数えない（印より後ろの文字は、1 字でも違えば別の指紋になる）。"""
+    return hashlib.sha1(" ".join(TOOL_MARK.sub("", text).split()).encode()).hexdigest()
 
 
 def hub_log() -> Path | None:
