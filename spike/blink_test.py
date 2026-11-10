@@ -63,6 +63,19 @@ LONG_ON = "\n".join(["⏺ 確認する", " Bash command", " 確認する", " │
                     + [" │ PY", " Do you want to proceed?", " ❯ 1. Yes", "   2. Yes, and don't ask again for python3 commands in /x/proj", "   3. No", " Esc to cancel · Tab to amend"])
 LONG_OFF = LONG_ON.replace("⏺ 確認する", "  確認する")
 
+# 選択式の質問。問いの文は字下げなしで出る（2026-11-05 に本物の画面で確かめた形）。相手は、問いの文を印で始められる
+ASK_A = """⏺ AskUserQuestion
+ ☐ 名前
+⏺ report.txt
+上の 1 行全体を、先頭の記号と空白も含めてファイル名として採用しますか？
+❯ 1. 採用する
+  2. 採用しない
+  3. Type something.
+Enter to select · ↑/↓ to navigate · Esc to cancel"""
+ASK_B = ASK_A.replace("⏺ report.txt", "report.txt")
+# 選択肢が Yes と No の質問（承認ではない）
+ASK_YN = ASK_A.replace("1. 採用する", "1. Yes").replace("2. 採用しない", "2. No")
+
 TARGET = {"pane": "w9:p1", "title": "テスト", "cwd": "/x/proj", "kind": "claude", "session": "sess-1", "status": "blocked", "name": "", "hub": False}
 state = {"screen": ON, "keys": []}
 s.list_agents = lambda: [dict(TARGET)]
@@ -135,6 +148,10 @@ check("承認の枠の中だけ印が違っても別の指紋", fp(REAL_ON) == f
 check("結果の欄の中だけ印が違っても別の指紋", fp(REAL_ON) == fp(REAL_OFF.replace("     alpha", "     ⏺ alpha")), False)
 check("字下げが 1 つでもあれば、行の頭の印は数える", fp(REAL_ON) == fp(REAL_ON.replace(" Bash command", " ⏺ Bash command")), False)
 
+check("質問の画面では、字下げなしの行の頭の印も数える", (fp(ASK_A) == fp(ASK_B), fp(ASK_YN) == fp(ASK_YN.replace("⏺ report.txt", "report.txt"))), (False, False))
+check("質問の画面は、見出しの行の印が違っても別の指紋", fp(ASK_A) == fp(ASK_A.replace("⏺ AskUserQuestion", "  AskUserQuestion")), False)
+check("承認でも質問でもない画面は、印も数える", fp("⏺ 考えています\n  何か入力してください") == fp("  考えています\n  何か入力してください"), False)
+
 # ---- いま聞かれている部分: 本文に印を書かれても区切りにしない。印が消えている間も、狭くはしない
 ap = s.asked_part
 check("本文の印では区切らない（見出しから下が全部入る）", ap(MARKED).splitlines()[0], "⏺ 試験の書き込み")
@@ -201,6 +218,20 @@ for name, now in (("本文に印が足された（見出しの印あり）", MAR
     asked_then("proj の「テスト」が、/tmp/probe.txt に書く（tee）許可を求めています。許可しますか？", "はい、許可して")
     check(f"{name} → 送らない", hub_answer(now), ("unseen", []))
     s.hermes.hermes_turn_end(s.hub_human_turn(), "確かめ直します")
+
+# ---- 選択式の質問: 問いの文の頭の印だけが違う問いに替わったら、番号の答えを送らない
+reset()
+begin("質問どうなってる？")
+screen(ASK_A)
+asked_then("proj の「テスト」が、ファイル名をどうするか聞いています。1 番は採用する、2 番は採用しない。どちらにしますか？", "1番")
+check("質問の文の頭の印が消えた問いに替わったら送らない", hub_answer(ASK_B, answer="1"), ("unseen", []))
+s.hermes.hermes_turn_end(s.hub_human_turn(), "確かめ直します")
+reset()
+begin("質問どうなってる？")
+screen(ASK_A)
+asked_then("proj の「テスト」が、ファイル名をどうするか聞いています。1 番は採用する、2 番は採用しない。どちらにしますか？", "1番")
+check("同じ質問のままなら、番号を送る", hub_answer(ASK_A, answer="1"), ("ok", ["1"]))
+s.hermes.hermes_turn_end(s.hub_human_turn(), "答えました")
 
 # ---- 長い承認: 印ありで見て、印なしのときに答えても、取り消しにくい操作の聞き返しを飛ばさない
 LQ = "proj の「テスト」が、build のフォルダを消す（rm -rf build）Python の実行の許可を求めています。許可しますか？"
