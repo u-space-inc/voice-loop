@@ -84,7 +84,7 @@ def local_addresses() -> set[str] | None:
         r = subprocess.run(["ifconfig"], capture_output=True, text=True, timeout=3)
     except (OSError, subprocess.TimeoutExpired):
         return None  # 古い住所は使わない（住所が変わっていると、この Mac 自身を別の端末と取り違える）
-    found = {a.split("%")[0].lower() for a in re.findall(r"^\s*inet6?\s+([0-9a-fA-F:.%a-z0-9]+)", r.stdout, re.M)}
+    found = {a.split("%")[0].lower() for a in re.findall(r"^\s*inet6?\s+([0-9a-zA-F:.%]+)", r.stdout, re.M)}
     if r.returncode != 0 or not found:
         return None
     _ADDRS = (time.time(), found | {"127.0.0.1", "::1"})
