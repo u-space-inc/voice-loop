@@ -190,10 +190,37 @@ def run_wide(page, who):
     check(f"{who} 一覧で押すと話し相手が替わる（select も同じ相手）", (page.evaluate("document.getElementById('agent').value"), wait(lambda: names()[2][2])), ("w1:p1", True))
     wait(lambda: not page.locator("#send").is_disabled())
     page.evaluate("(() => { window.__sent = []; const o = ws.send.bind(ws); ws.send = m => { window.__sent.push(m); if (typeof m !== 'string' || JSON.parse(m).type !== 'text') o(m); }; })()")
+    texts = lambda: page.evaluate("window.__sent.map(m => JSON.parse(m)).filter(m => m.type === 'text').map(m => [m.pane, m.text])")
+    typed_h = lambda: round(page.locator("#typed").bounding_box()["height"])
+    touch = page.evaluate("matchMedia('(pointer: coarse)').matches")  # 指で使う端末（画面のキーボード）。Enter は改行で、送るのはボタン
     page.fill("#typed", "PC から送る文")
-    page.press("#typed", "Enter")
-    sent = page.evaluate("window.__sent.map(m => JSON.parse(m)).filter(m => m.type === 'text')")
-    check(f"{who} 文字の欄で Enter を押すと、一覧で選んだ相手に送る", [(m["pane"], m["text"]) for m in sent], [("w1:p1", "PC から送る文")])
+    h1 = typed_h()
+    if touch:
+        page.press("#typed", "Enter")
+        check(f"{who} 指で使う端末では、Enter は改行になり、送らない", (page.input_value("#typed"), texts()), ("PC から送る文\n", []))
+        page.fill("#typed", "PC から送る文")
+        page.click("#send")
+    else:
+        page.press("#typed", "Enter")
+    check(f"{who} 文字の欄で Enter を押すと（指で使う端末では「送る」を押すと）、一覧で選んだ相手に送る", texts(), [["w1:p1", "PC から送る文"]])
+    # 改行: Shift+Enter で行を足す（送らない）。欄は行の数に合わせて伸び、送ると元に戻る。日本語の変換を決める Enter では送らない
+    page.evaluate("window.__sent = []")
+    page.fill("#typed", "1 行目")
+    page.press("#typed", "Shift+Enter")
+    page.keyboard.type("2 行目")
+    check(f"{who} Shift+Enter は改行になり、送らない", (page.input_value("#typed"), texts()), ("1 行目\n2 行目", []))
+    check(f"{who} 欄は行の数に合わせて伸びる", typed_h() > h1, True)
+    held = page.evaluate("""() => { const e = new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true, cancelable: true });
+        document.getElementById('typed').dispatchEvent(e); return e.defaultPrevented; }""")
+    check(f"{who} 変換を決める Enter では送らない（キーも横取りしない）", (held, texts(), page.input_value("#typed")), (False, [], "1 行目\n2 行目"))
+    page.click("#send") if touch else page.press("#typed", "Enter")
+    check(f"{who} 改行を入れた文は、改行のまま送る", texts(), [["w1:p1", "1 行目\n2 行目"]])
+    check(f"{who} 送ると欄は空になり、高さも元に戻る", (page.input_value("#typed"), typed_h()), ("", h1))
+    check(f"{who} 送った文の吹き出しは、改行のまま出す", page.locator("#log .msg.me").last.inner_text(), "1 行目\n2 行目")
+    page.fill("#typed", "\n".join(f"{i} 行目" for i in range(1, 31)))
+    check(f"{who} 行が多くても、欄は画面の 4 分の 1 より高くならない（中で送る）", typed_h() < page.viewport_size["height"] / 4, True)
+    page.fill("#typed", "")
+    check(f"{who} 消すと、欄の高さは元に戻る", typed_h(), h1)
     page.locator("#sessions .sess").nth(0).click()
 
     # 記憶の一覧
