@@ -24,7 +24,7 @@ ON = """⏺ 一覧を見ます。
    フォルダの中身を見る
  Do you want to proceed?
  ❯ 1. Yes
-   2. Yes, and don't ask again for ls commands in /Users/me/proj
+   2. Yes, and don't ask again for ls commands in /x/proj
    3. No, and tell Claude what to do differently (esc)
  Esc to cancel · Tab to amend"""
 OFF = ON.replace("⏺ フォルダの中身を見る", "  フォルダの中身を見る")
