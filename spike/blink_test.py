@@ -31,6 +31,38 @@ OFF = ON.replace("⏺ フォルダの中身を見る", "  フォルダの中身�
 RISKY_ON = ON.replace("ls -la", "rm -rf build").replace("ls commands", "rm commands").replace("フォルダの中身を見る", "build を消す")
 RISKY_OFF = RISKY_ON.replace("⏺ build を消す", "  build を消す")
 
+# 2026-11-10 に本物の Claude Code で取った形（複数行のコマンド。罫線と空行は read_prompt が除くので入れていない）。
+# 見出しの印は字下げなしの行の頭にあり、消えている間は空白 2 つになる。コマンドの本文は、結果の欄（⎿）でも承認の枠（│）でも字下げされる
+REAL_ON = """⏺ 書き込みます。
+⏺ 試験の書き込み
+  ⎿  $ tee /tmp/probe.txt <<'EOF2'
+     line 1
+     alpha
+     line 3
+     EOF2
+ Bash command
+ 試験の書き込み
+ │ tee /tmp/probe.txt <<'EOF2'
+ │ line 1
+ │ alpha
+ │ line 3
+ │ EOF2
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and always allow access to /tmp from this
+      project
+   3. No
+ Esc to cancel · Tab to amend"""
+REAL_OFF = REAL_ON.replace("⏺ 試験の書き込み", "  試験の書き込み")
+# 相手が書ける違い: 本文の行の頭に印を足す（字下げされた行）。中身の違うコマンドなので、別の問いとして扱う
+MARKED = REAL_ON.replace("     alpha", "     ⏺ alpha").replace(" │ alpha", " │ ⏺ alpha")
+MARKED_OFF = MARKED.replace("⏺ 試験の書き込み", "  試験の書き込み")
+# 長い承認（ほかに印の行が映っていない。取り消しにくい語は、最後の 15 行より上にだけある）
+LONG_ON = "\n".join(["⏺ 確認する", " Bash command", " 確認する", " │ python3 - <<'PY'", ' │ os.system("rm -rf build")']
+                    + [f" │ # 行 {i}" for i in range(1, 16)]
+                    + [" │ PY", " Do you want to proceed?", " ❯ 1. Yes", "   2. Yes, and don't ask again for python3 commands in /x/proj", "   3. No", " Esc to cancel · Tab to amend"])
+LONG_OFF = LONG_ON.replace("⏺ 確認する", "  確認する")
+
 TARGET = {"pane": "w9:p1", "title": "テスト", "cwd": "/x/proj", "kind": "claude", "session": "sess-1", "status": "blocked", "name": "", "hub": False}
 state = {"screen": ON, "keys": []}
 s.list_agents = lambda: [dict(TARGET)]
@@ -96,6 +128,22 @@ check("印を別の文字に替えたものは別の指紋", fp(ON) == fp(ON.rep
 check("行が増えれば別の指紋", fp(ON) == fp(ON.replace("   ls -la", "   ls -la\n⏺ rm -rf build")), False)
 check("行の頭の印の後ろに足した文字は数える", fp(ON) == fp(ON.replace("⏺ フォルダの中身を見る", "⏺ ⏺ フォルダの中身を見る")), False)
 
+check("本物の形でも、印が消えている間は同じ指紋", fp(REAL_ON) == fp(REAL_OFF), True)
+check("本文の行の頭に足された印は数える（印あり同士）", fp(REAL_ON) == fp(MARKED), False)
+check("本文の行の頭に足された印は数える（見出しの印が消えていても）", (fp(REAL_ON) == fp(MARKED_OFF), fp(REAL_OFF) == fp(MARKED), fp(REAL_OFF) == fp(MARKED_OFF)), (False, False, False))
+check("承認の枠の中だけ印が違っても別の指紋", fp(REAL_ON) == fp(REAL_OFF.replace(" │ alpha", " │ ⏺ alpha")), False)
+check("結果の欄の中だけ印が違っても別の指紋", fp(REAL_ON) == fp(REAL_OFF.replace("     alpha", "     ⏺ alpha")), False)
+check("字下げが 1 つでもあれば、行の頭の印は数える", fp(REAL_ON) == fp(REAL_ON.replace(" Bash command", " ⏺ Bash command")), False)
+
+# ---- いま聞かれている部分: 本文に印を書かれても区切りにしない。印が消えている間も、狭くはしない
+ap = s.asked_part
+check("本文の印では区切らない（見出しから下が全部入る）", ap(MARKED).splitlines()[0], "⏺ 試験の書き込み")
+check("印が消えている間は、1 つ前の印の行から（広くなる）", (ap(REAL_OFF).splitlines()[0], ap(REAL_ON) in ap(REAL_OFF).replace("  試験の書き込み", "⏺ 試験の書き込み", 1)), ("⏺ 書き込みます。", True))
+check("本文に印があって見出しの印が消えていても、狭くならない", ap(MARKED_OFF).splitlines()[0], "⏺ 書き込みます。")
+check("長い承認: 印ありなら、上のほうの取り消しにくい語を見つける", bool(s.RISKY.search(ap(LONG_ON))), True)
+check("長い承認: 印が消えていても、同じ語を見つける（最後の 15 行だけにしない）", bool(s.RISKY.search(ap(LONG_OFF))), True)
+check("長い承認は 26 行で、取り消しにくい語は最後の 15 行に無い", (len(LONG_ON.splitlines()), bool(s.RISKY.search("\n".join(LONG_OFF.splitlines()[-15:])))), (26, False))
+
 # ---- ハブ経由の答え: 見たときと答えるときで点滅の向きが違っても、同じ問いとして通す
 Q = "proj の「テスト」が、フォルダの中身を見る（ls）許可を求めています。許可しますか？"
 for name, seen, now in (("印ありで見て、印なしのときに答える", ON, OFF), ("印なしで見て、印ありのときに答える", OFF, ON)):
@@ -145,6 +193,27 @@ asked_then("proj で、本当に build のフォルダを消していいです�
 check("聞き返しのあとでコマンドが替わったら送らない", hub_answer(RISKY_OFF.replace("rm -rf build", "rm -rf /"), confirmed=True), ("unseen", []))
 s.hermes.hermes_turn_end(s.hub_human_turn(), "確かめ直します")
 
+# ---- 本文の印だけが違う問いに替わったら断る（見出しの印の向きによらない）
+for name, now in (("本文に印が足された（見出しの印あり）", MARKED), ("本文に印が足された（見出しの印なし）", MARKED_OFF)):
+    reset()
+    begin("承認どうなってる？")
+    screen(REAL_OFF)
+    asked_then("proj の「テスト」が、/tmp/probe.txt に書く（tee）許可を求めています。許可しますか？", "はい、許可して")
+    check(f"{name} → 送らない", hub_answer(now), ("unseen", []))
+    s.hermes.hermes_turn_end(s.hub_human_turn(), "確かめ直します")
+
+# ---- 長い承認: 印ありで見て、印なしのときに答えても、取り消しにくい操作の聞き返しを飛ばさない
+LQ = "proj の「テスト」が、build のフォルダを消す（rm -rf build）Python の実行の許可を求めています。許可しますか？"
+for name, seen, now in (("印ありで見て、印なしで答える", LONG_ON, LONG_OFF), ("印なしで見て、印なしで答える", LONG_OFF, LONG_OFF), ("印なしで見て、印ありで答える", LONG_OFF, LONG_ON)):
+    reset()
+    begin("承認見て")
+    screen(seen)
+    asked_then(LQ, "許可")
+    check(f"長い承認（{name}）→ 聞き返す", hub_answer(now), ("confirm", []))
+    s.hermes.hermes_turn_end(s.hub_human_turn(), "確かめ直します")
+state["screen"] = LONG_OFF
+check("長い承認: 画面に出す問いにも、印が消えている間、取り消しにくい印が付く", s._asked("w9:p1", "sess-1")[1]["risky"], True)
+
 # ---- 取り消しにくい語の判定は、点滅の向きで変わらない（この形では）
 check("取り消しにくい印は、印ありでも印なしでも付く", (bool(s.RISKY.search(s.asked_part(RISKY_ON))), bool(s.RISKY.search(s.asked_part(RISKY_OFF)))), (True, True))
 
@@ -154,6 +223,11 @@ shown = s._asked("w9:p1", "sess-1")[1]["fp"]
 check("ボタン: 印なしのときに押しても通る", button(OFF, shown), ("ok", ["1"]))
 check("ボタン: コマンドが替わっていたら送らない", button(OFF.replace("ls -la", "ls -lA"), shown), ("changed", []))
 check("ボタン: 別の承認に替わっていたら送らない", button(RISKY_OFF, shown), ("changed", []))
+state["screen"] = REAL_ON
+shown = s._asked("w9:p1", "sess-1")[1]["fp"]
+check("ボタン: 本物の形で、印なしのときに押しても通る", button(REAL_OFF, shown), ("ok", ["1"]))
+check("ボタン: 本文に印が足されていたら送らない（見出しの印あり）", button(MARKED, shown), ("changed", []))
+check("ボタン: 本文に印が足されていたら送らない（見出しの印なし）", button(MARKED_OFF, shown), ("changed", []))
 
 bad = [f"{n}: {g!r}（期待 {w!r}）" for n, ok, g, w in results if not ok]
 print("\n".join(bad) or f"{len(results)} 例、すべて期待どおり")
