@@ -67,7 +67,8 @@
   #talk { flex:3; height:64px; font-size:18px; border:none; border-radius:14px; background:var(--btn); color:var(--fg); }
   #talk.rec { background:var(--rec); }
   #stop { flex:1; height:64px; font-size:15px; border:none; border-radius:14px; background:var(--btn); color:var(--fg); }
-  #typed { flex:1; min-width:0; font-size:16px; padding:9px 12px; background:var(--btn); color:var(--fg); border:1px solid #333; border-radius:10px; }
+  #typed { flex:1; min-width:0; font:inherit; font-size:16px; line-height:1.4; padding:9px 12px; background:var(--btn); color:var(--fg); border:1px solid #333; border-radius:10px;
+    resize:none; overflow-y:auto; max-height:9.5em; box-sizing:border-box; } /* 高さは、行の数に合わせて台本が決める（fitTyped） */
   #send { width:64px; font-size:14px; border:none; border-radius:10px; background:var(--btn); color:var(--fg); }
   [hidden] { display:none !important; }
   /* 承認で止まっているセッション（画面の上に並べる） */
@@ -203,7 +204,8 @@
   body.wide #agent, body.wide #speaker { height:36px; padding:0 10px; background:var(--w-field); border-color:var(--w-rule); color:var(--w-t2); }
   body.wide #talk, body.wide #stop { height:36px; padding:0 16px; font-size:14px; border-radius:8px; border:1px solid var(--w-line); background:var(--w-field); color:var(--w-t1); }
   body.wide #talk { min-width:9.5em; } body.wide #talk.rec { background:var(--rec); border-color:var(--rec); }
-  body.wide #typed { height:46px; font-size:15px; padding:0 14px; background:var(--w-field); border-color:var(--w-line); }
+  body.wide #typed { min-height:46px; font-size:15px; padding:12px 14px; background:var(--w-field); border-color:var(--w-line); }
+  body.wide #typedForm { align-items:flex-end; }
   body.wide #typed:focus { outline:none; border-color:var(--s-run); }
   body.wide #send { width:auto; height:46px; padding:0 22px; background:var(--w-go); color:#fff; font-weight:600; }
   /* 右: 記録のタブと、広げて読む（⤢ 広げる） */
@@ -305,7 +307,7 @@
     <div id="status"><span id="conn" class="dot"></span><span id="statusText">接続中…</span><button id="hubStart">ハブを起動</button><button id="tap">▶ タップして再生</button><button id="sitBtn" aria-pressed="false" aria-label="いまの状況" title="いまの状況">💡</button><button id="tasksBtn" aria-pressed="false" aria-label="頼んだ件" title="頼んだ件">📋</button><button id="bell" aria-pressed="false" hidden>🔔</button><button id="mute" aria-pressed="false">🔇</button><button id="reload" aria-label="最新の画面を読み込み直す" title="最新の画面を読み込み直す">↻</button></div>
     <div class="row"><select id="agent" aria-label="セッション"></select><select id="speaker" aria-label="声"></select></div>
     <div class="row"><button id="talk">タップして話す</button><button id="stop">停止</button></div>
-    <form id="typedForm" class="row"><input id="typed" placeholder="文字で送る" autocomplete="off"><button id="send" type="submit">送る</button></form>
+    <form id="typedForm" class="row"><textarea id="typed" rows="1" placeholder="文字で送る" autocomplete="off"></textarea><button id="send" type="submit">送る</button></form>
   </div>
   <div id="viewer" hidden role="dialog" aria-modal="true" aria-labelledby="vName"><div class="vhead"><span id="vName"></span><span id="vPos"></span><button id="vPrev" aria-label="前の成果物">←</button><button id="vNext" aria-label="次の成果物">→</button><button id="vClose">✕ 閉じる</button></div><div id="vStage"></div><div id="vPath"></div></div>
 <script src="/static/vendor/marked.min.js"></script>
@@ -1452,10 +1454,19 @@ function stopRec() { if (rec && rec.state !== 'inactive') rec.stop(); $('talk').
 
 $('talk').onclick = () => { if (!$('agent').value) return; if (rec && rec.state === 'recording') stopRec(); else startRec().catch(e => { setStatus('マイクが使えません: ' + e.message); clog('mic failed: ' + e.name + ' ' + e.message); }); };
 $('stop').onclick = () => { if (linked()) ws.send(JSON.stringify({ type: 'stop' })); stopPlayback(); setStatus('止めました'); };
+// 文字の欄は、行の数に合わせて伸びる（上限は CSS の max-height。超えたら欄の中で送る）
+const fitTyped = () => { const el = $('typed'); el.style.height = 'auto'; el.style.height = (el.scrollHeight + 2) + 'px'; };
+$('typed').addEventListener('input', fitTyped);
+// Enter で送る。Shift+Enter は改行。日本語の変換を決める Enter では送らない。指で使う端末（画面のキーボード）では Enter は改行で、送るのはボタン
+$('typed').addEventListener('keydown', e => {
+  if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.keyCode === 229) return;
+  if (matchMedia('(pointer: coarse)').matches) return;
+  e.preventDefault(); $('typedForm').requestSubmit();
+});
 $('typedForm').onsubmit = e => {
   e.preventDefault(); const t = $('typed').value.trim(); if (!t || !$('agent').value || !linked()) return; // 届かない間は打った文をそのまま残す
   sendTurnStart(); prime();
-  $('typed').value = ''; bubble('me', t, 'pending'); localPush('me', t);
+  $('typed').value = ''; fitTyped(); bubble('me', t, 'pending'); localPush('me', t);
   ws.send(JSON.stringify({ type: 'text', text: t, pane: $('agent').value, key: curKey(), speaker: $('speaker').value }));
   setStatus('エージェントに送りました。考え中…');
 };
