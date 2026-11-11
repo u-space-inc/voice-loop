@@ -1464,7 +1464,9 @@ $('typed').addEventListener('keydown', e => {
   e.preventDefault(); $('typedForm').requestSubmit();
 });
 $('typedForm').onsubmit = e => {
-  e.preventDefault(); const t = $('typed').value.trim(); if (!t || !$('agent').value || !linked()) return; // 届かない間は打った文をそのまま残す
+  // 「送る」を押せない間（届かない・声がまだ決まっていない）は、Enter でも送らず、打った文をそのまま残す。
+  // Enter の requestSubmit() はボタンの無効を見ないので、ここでボタンと同じ可否（applyTarget）を確かめる
+  e.preventDefault(); const t = $('typed').value.trim(); if (!t || $('send').disabled || !$('agent').value || !linked()) return;
   sendTurnStart(); prime();
   $('typed').value = ''; fitTyped(); bubble('me', t, 'pending'); localPush('me', t);
   ws.send(JSON.stringify({ type: 'text', text: t, pane: $('agent').value, key: curKey(), speaker: $('speaker').value }));
