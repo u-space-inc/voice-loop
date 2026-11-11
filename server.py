@@ -1643,8 +1643,8 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
     if not hub:
         hlog(f"報告できません（ハブが居ない）: {label} {kind}", flush=True)
         return "no_hub"
-    headline, todo = {"done": ("が完了しました", f"hubctl read {d['pane']} で結果を確かめ、"),
-                      "more": ("に続きの返答がありました", f"先ほど報告した件の続きです。hubctl read {d['pane']} で確かめ、"),
+    headline, todo = {"done": ("が完了しました", f"hubctl read {d['pane']} -n 1 --full で結果を確かめ、判断に要る材料（選択肢・おすすめと理由・数字・期限・うまくいかなかったこと）は略さずに、"),
+                      "more": ("に続きの返答がありました", f"先ほど報告した件の続きです。hubctl read {d['pane']} -n 1 --full で確かめ、判断に要る材料は略さずに、"),
                       "background": ("は裏で作業を続けています", f"しばらくたっても結果が出ていません。hubctl read {d['pane']} で様子を確かめ、まだ動いていることを一言で、"),
                       "blocked": ("が承認・入力待ちで止まっています", f"hubctl screen {d['pane']} で何を聞かれているか確かめ、"),
                       "gone": ("のセッションが見つからなくなりました", "閉じられた可能性があることを、")}[kind]
