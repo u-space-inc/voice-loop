@@ -64,8 +64,12 @@ def _append(row: dict) -> dict:
     return row
 
 
+_CTRL = __import__("re").compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ud800-\udfff]")
+
+
 def clip(v: str | None, key: str) -> str:
-    v = " ".join(str(v or "").split())
+    """1 行にそろえ、制御文字（端末の表示を書き換える ESC など）と向きを変える文字を空白にして、字数で切る。"""
+    v = " ".join(_CTRL.sub(" ", str(v or "")).split())
     n = LIMITS[key]
     return v if len(v) <= n else v[: n - 1] + "…"
 
@@ -73,11 +77,11 @@ def clip(v: str | None, key: str) -> str:
 def show(r: dict, done: dict) -> str:
     t = time.strftime("%m/%d %H:%M", time.localtime(r["at"]))
     mark = "済" if r["n"] in done else {"judge": "判断待ち", "info": "情報", "baseline": "既読扱い"}.get(r["kind"], r["kind"])
-    s = f"[{r['n']}] {t} {mark}｜{r['project']}｜{r['source']}:{r['id']}｜{r['title']}"
+    s = f"[{r['n']}] {t} {mark}｜{clip(r['project'], 'project')}｜{clip(r['source'], 'project')}:{clip(r['id'], 'id')}｜{clip(r['title'], 'title')}"
     if r.get("note"):
-        s += f"\n    要ること: {r['note']}"
+        s += f"\n    要ること: {clip(r['note'], 'note')}"
     if r.get("prepared"):
-        s += f"\n    準備したこと: {r['prepared']}"
+        s += f"\n    準備したこと: {clip(r['prepared'], 'prepared')}"
     return s
 
 
