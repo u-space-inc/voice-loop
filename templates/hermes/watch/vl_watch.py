@@ -39,13 +39,13 @@ def clip(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
-_ID = re.compile(r"^[A-Za-z0-9_.@:+=-]{1,200}$")
+_ID = re.compile(r"[A-Za-z0-9_.@:+=-]{1,200}")
 
 
 def ident(v) -> str:
     """ID として使える文字だけの値か確かめる（行の形を崩させない）。だめなら例外。"""
     v = str(v or "")
-    if not _ID.match(v):
+    if not _ID.fullmatch(v):  # match と $ だと、末尾の改行を通してしまう
         raise ValueError("id")
     return v
 

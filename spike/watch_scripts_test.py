@@ -142,7 +142,8 @@ def raises(fn):
 
 
 check("ident: ID に使えない文字（空白・| ・改行・制御文字・日本語）は通さない",
-      [raises(lambda v=v: vl_watch.ident(v)) for v in ("abc_123-x.y@z:1+2=", "a b", "a|b", "a\nb", "\x1b[2K", "件名", "")], [False, True, True, True, True, True, True])
+      [raises(lambda v=v: vl_watch.ident(v)) for v in ("abc_123-x.y@z:1+2=", "a b", "a|b", "a\nb", "\x1b[2K", "件名", "", "m1\n", "m1\r", "a" * 201, "a" * 200)],
+      [False, True, True, True, True, True, True, True, True, True, False])
 
 
 def main_with(**fns):
