@@ -441,11 +441,12 @@ docker exec -it hermes hermes   # 対話の画面で決めるとき
 
 ### 代理として動かす（見張りの回）
 
-Hermes の定期の回（cron）に、メール・Slack（自分宛て）・録音・近い予定を見張らせ、新しい出来事があったときだけ読ませて、案件への振り分けと返信の下書きなどの下準備をさせ、判断が要るものだけを `hubctl notice` で知らせる形にできます。台本と手順は `templates/hermes/watch/` にあります。voice-loop の本体は知らせを受けて出すだけで、見張り・振り分け・下書き・記録は Hermes の側にあります。
+Hermes の定期の回（cron）に、メール・Slack（自分宛て。自分の発言は除く）・録音・近い予定を見張らせ、新しい出来事があったときだけ読ませて、案件への振り分けと返信の下書きなどの下準備をさせ、判断が要るものだけを `hubctl notice` で知らせる形にできます。台本と手順は `templates/hermes/watch/` にあります。voice-loop の本体は知らせを受けて出すだけで、見張り・振り分け・下書き・記録は Hermes の側にあります。
 
 - 15 分ごとに、見張りの台本（`vl_watch.py`、LLM を使わない）が各口の新しい順の数件を ID の行で出します。出力が前回と同じなら、Hermes は Agent を起こしません（費用がかかりません）。変わったときだけ、差分（新しい出来事）を手順 `voice-loop-watch` に渡して起こします
 - 記録は Hermes の置き場の `voice-loop/items.jsonl`（`vl_items.py` だけが書く）。ふだんの会話で「判断待ちは？」と聞くと、Hermes がここから答えます（指示文の「見張りの回の記録」の節）
 - Gmail の下書きは `vl_gmail_draft.py`（下書きの API だけを呼ぶ）、Slack の下書きは Slack の MCP の下書きの道具で作ります
+- 回の最後の出力は、ジョブの届け先に届きます。Hermes の Slack の口（ボット）を設けていれば、`--deliver slack:<DM のチャンネル ID>` で判断待ちの一覧を DM に届けられます。判断待ちが無い回は送りません（手順が最後の行を `[SILENT]` にします）
 - 要るもの: Hermes の Google 連携（同梱のスキル `google-workspace`。自分の Google Cloud の OAuth クライアントで認証します）、Slack の公式の MCP（`https://mcp.slack.com/mcp`。自分のワークスペースに内部アプリを作り、アプリの「Agents」で MCP を有効にします）、Plaud の MCP（`https://mcp.plaud.ai/mcp`）。それぞれの認証は、利用者がブラウザで承認します
 
 ```sh
@@ -463,6 +464,7 @@ docker exec -u 10000 hermes hermes cron create "*/15 7-20 * * *" "voice-loop の
 - 見張りの回は、利用者のいない間に、外から届いた文面（乗せられうる中身）を読みます。送信・予定の変更・共有・セッションへの指示をしないのは、手順と指示の決まりです。Slack の送信系の道具は `hermes tools disable --platform cron slack:slack_send_message …` で外せますが、MCP の道具を外す設定は Hermes のすべての口に効きます（ふだんの会話でも送れなくなります）。Gmail の送信は、Google の鍵が送信の権限を持つので、仕組みでは止めていません
 - 見張りの台本の出力（Agent の指示に入る）には、ID と構造のある時刻だけを入れ、件名・差出人の名前・本文・題は入れません。Slack の検索結果は文章の形で届くので、「全 N 件のうち i 件目」の見出しの並びを照らし、本文に見出しをまねた行があって並びが崩れたら、Slack の口を「読めない」にして知らせます（その間、Slack の見張りは止まります）
 - Gmail の返信の下書きの宛先は 1 人だけです（Reply-To が 1 つのアドレスならそれ、でなければ From）。Reply-To が差出人と別のアドレスでも採るので、送る前に宛先を確かめてください
+- 利用者本人の Slack の発言は拾いません（拾うと、Hermes との DM で話すたびに Agent が起きます）。予定は、開始の時刻が動いたときに新しい出来事になります（予定の一覧が更新時刻を返さないため。題や場所だけの変更は拾いません）
 - かんばん（`kanban`）は使っていません。review の列の件は、既定では Hermes が自動で別の Agent を起こして扱うためです
 - 起きた回ごとに Hermes のモデルの費用がかかります。回数は `hermes cron runs <ジョブ>`、トークンは `hermes insights` で見ます
 

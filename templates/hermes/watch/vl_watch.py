@@ -10,6 +10,10 @@
   中身は Agent が道具で読む。
 - 読むだけ。書き込みの道具は呼ばない。鍵の更新もしない（Hermes 本体が持つ）。
 - 読めなかった口は「<口> 読めない: <理由の種類>」の 1 行にする（理由の種類は変わらない語にする）。
+- 行の 2 つ目の語は、そのまま記録（vl_items.py）の id にする（Agent に組み立てさせない）。
+  mail <id> ／ slack <チャンネル>/<ts> <送り手> ／ cal <id>@<開始> ／ plaud <id> | <録音の開始>
+- 予定の一覧は更新時刻を返さないので、予定の id には開始の時刻を入れる（時刻が動いたら別の出来事になる）。
+- Slack は利用者本人の発言を拾わない（-from:me）。拾うと、Hermes との DM で話すたびに Agent が起きる。
 """
 from __future__ import annotations
 
@@ -28,6 +32,7 @@ PY = sys.executable
 GAPI = str(Path(vl_mcp.HOME) / "skills/productivity/google-workspace/scripts/google_api.py")
 N_MAIL, N_SLACK, N_PLAUD = 15, 15, 5
 MAIL_QUERY = "newer_than:3d -in:sent -in:drafts -in:chats -category:promotions"
+SLACK_QUERIES = ("to:me -from:me", "is:dm -from:me")
 
 
 _CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]")
@@ -75,7 +80,7 @@ def calendar() -> list[str]:
     for e in evs:
         st = e.get("start")
         st = st.get("dateTime") or st.get("date") if isinstance(st, dict) else st
-        out.append(f"cal {ident(e.get('id'))} {ident(e.get('updated') or '-')} | {ident(st or '-')}")
+        out.append(f"cal {ident(e.get('id'))}@{ident(st or '-')}")
     return out
 
 
@@ -123,14 +128,14 @@ def slack() -> list[str]:
     after = str(int((dt.datetime.now(JST) - dt.timedelta(days=3)).timestamp()) // 86400 * 86400)
     seen = {}
     with vl_mcp.Client("slack") as c:
-        for q in ("to:me", "is:dm"):
+        for q in SLACK_QUERIES:
             t = c.call("slack_search_public_and_private", {
                 "query": q, "channel_types": "public_channel,private_channel,mpim,im", "content_types": "messages", "after": after,
                 "sort": "timestamp", "limit": 20, "include_bots": False})
             for ts, ch, fr in _slack_items(t):
                 seen[(ch, ts)] = fr
     rows = sorted(seen.items(), key=lambda kv: float(kv[0][1]), reverse=True)[:N_SLACK]
-    return [f"slack {ch} {ts} {fr}" for (ch, ts), fr in rows]
+    return [f"slack {ch}/{ts} {fr}" for (ch, ts), fr in rows]
 
 
 def plaud() -> list[str]:
