@@ -19,6 +19,8 @@
   hubctl remember                 ユーザーの最後の発言「〜を覚えておいて」の「〜」を覚える（文は本体が発言から取り出す）
   hubctl forget                   ユーザーの最後の発言「メモの3番を忘れて」の番号を忘れる（番号も本体が発言から取り出す）
   hubctl proposals                開いている提案（拾う役が出した、セッションへの指示の案）。送るのはユーザーが画面の 💡 から
+  hubctl notice <題> [一言]       ユーザーに知らせる（画面の 💡 の「知らせ」に出し、画面を閉じていればプッシュ通知で題だけ届く）。
+                                  題は 60 字・一言は 400 字まで、1 時間に 20 件まで。見張りの回で、判断待ちを見つけたときに使う
 """
 import argparse
 import json
@@ -289,6 +291,18 @@ def cmd_forget(_):
     }.get(r.get("reason"), str(r.get("reason") or r)))
 
 
+def cmd_notice(a):
+    r = call("notice", body={"title": a.title, "text": " ".join(a.text)})
+    if r.get("ok"):
+        print(f"知らせました [{r['n']}]（" + {"sent": "プッシュ通知も送りました", "visible": "画面が開いているので、画面に出しました",
+                                              "none": "通知を受ける端末がないので、画面の一覧にだけ置きました"}.get(r.get("push"), "画面の一覧に置きました") + "）")
+        return
+    sys.exit("知らせていません: " + {
+        "bad_request": "題が空です。題（60 字まで）を入れてください。",
+        "too_many": f"1 時間に受ける数（{r.get('max')}件）を超えました。まとめて 1 件にしてください。",
+    }.get(r.get("reason"), str(r.get("reason") or r)))
+
+
 p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 sub = p.add_subparsers(dest="cmd", required=True)
 sub.add_parser("sessions").set_defaults(fn=cmd_sessions)
@@ -303,5 +317,6 @@ s = sub.add_parser("context"); s.add_argument("words", nargs="*"); s.set_default
 sub.add_parser("remember").set_defaults(fn=cmd_remember)
 sub.add_parser("forget").set_defaults(fn=cmd_forget)
 sub.add_parser("proposals").set_defaults(fn=cmd_proposals)
+s = sub.add_parser("notice"); s.add_argument("title"); s.add_argument("text", nargs="*"); s.set_defaults(fn=cmd_notice)
 args = p.parse_args()
 args.fn(args)

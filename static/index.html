@@ -120,6 +120,9 @@
   #sitNote.bad { color:#e07a74; }
   #situation details summary { font-size:12px; color:#c9b77a; cursor:pointer; }
   .fact { display:flex; align-items:flex-start; gap:6px; font-size:13px; overflow-wrap:anywhere; }
+  .notice { display:flex; flex-direction:column; gap:2px; padding:6px 10px; border:1px solid #2c3a4a; border-radius:10px; background:#121a24; font-size:13px; overflow-wrap:anywhere; }
+  .noteHead { display:flex; align-items:flex-start; gap:6px; } .noteHead b { flex:1; }
+  .noteAll { margin-left:8px; font-size:12px; }
   .fact span { flex:1; min-width:0; }
   .fact button { flex:none; border:none; background:none; color:var(--mute); font-size:15px; padding:0 6px; }
   #factForm { display:flex; gap:6px; }
@@ -223,6 +226,7 @@
   body.wide #situation .top { font-size:12px; color:var(--w-t3); }
   body.wide #sitBody h4 { margin:12px 0 2px; font-size:13px; color:var(--w-t1); }
   body.wide .topic { border:none; border-top:1px solid var(--w-rule); border-radius:0; background:none; padding:10px 0; }
+  body.wide .notice { border:none; border-top:1px solid var(--w-rule); border-radius:0; background:none; padding:10px 0; }
   body.wide .sitHead { color:var(--w-t3); }
   body.wide .sitHead button:not(.sure) { border:1px solid var(--w-line); background:none; color:var(--w-t2); font-size:12px; padding:4px 10px; }
   body.wide .sitHead button.sure { background:#b8862e; color:#111; font-weight:600; }
@@ -972,12 +976,14 @@ function proposalCard(p) {
 }
 async function loadSituation() {
   const box = $('sitBody');
-  let d, h;
+  let d, h, nt;
   try {
-    [d, h] = await Promise.all([fetch('/api/situation').then(r => r.json()), fetch('/api/hermes/skills').then(r => r.json()).catch(() => null)]);
+    [d, h, nt] = await Promise.all([fetch('/api/situation').then(r => r.json()), fetch('/api/hermes/skills').then(r => r.json()).catch(() => null),
+      fetch('/api/notices').then(r => r.json()).catch(() => null)]);
   } catch { box.textContent = '読めませんでした（接続を確かめてください）'; return; }
   if (sitHold) return;  // 読んでいるあいだに「送る」が押された
-  const waiting = (h && h.on ? h.items.length : 0) + d.proposals.filter(p => p.state === 'open').length;
+  const notes = nt ? nt.rows : [];
+  const waiting = (h && h.on ? h.items.length : 0) + d.proposals.filter(p => p.state === 'open').length + notes.length;
   $('sitCount').hidden = !waiting; $('sitCount').textContent = String(waiting);  // PC の「状況」タブの数（手順の書き足しと提案）
   box.innerHTML = '';
   const head = node('div', 'sitHead');
@@ -997,6 +1003,21 @@ async function loadSituation() {
   const hermesHub = agents.find(a => a.hermes && a.hub);
   if (hermesHub) box.appendChild(hubSessionRow(hermesHub));
   if (sitNote) { const n = node('div', sitNote[1] ? 'bad' : null, sitNote[0]); n.id = 'sitNote'; box.appendChild(n); }
+  if (notes.length) {  // 代理（Hermes）からの知らせ。文字として出すだけで、押して動くものは無い
+    const hd = node('h4', null, `${nt.sender} からの知らせ（${notes.length}）— 中身は、ハブとの会話で聞けます`);
+    const all = node('button', 'noteAll', 'すべて消す');
+    all.onclick = async () => { all.disabled = true; try { await postJSON('/api/notices/dismiss', { all: true }); } catch { sys('消せませんでした（本体に届きません）'); } loadSituation(); };
+    hd.appendChild(all); box.appendChild(hd);
+    for (const r of notes) {
+      const c = node('div', 'notice');
+      const top = node('div', 'noteHead'); top.appendChild(node('span', 'sitMeta', stamp(r.at) + ' ')); top.appendChild(node('b', null, r.title));
+      const x = node('button', null, '×'); x.setAttribute('aria-label', `知らせ ${r.n} を消す`);
+      x.onclick = async () => { x.disabled = true; try { await postJSON('/api/notices/dismiss', { n: r.n }); } catch { sys('消せませんでした（本体に届きません）'); } loadSituation(); };
+      top.appendChild(x); c.appendChild(top);
+      if (r.text) c.appendChild(node('div', null, r.text));
+      box.appendChild(c);
+    }
+  }
   if (h && h.on && (h.items.length || h.unreadable || h.problem)) {
     box.appendChild(node('h4', null, `ハブが手順に書き足したいこと（Hermes・${h.items.length}）— 採ると Hermes の手順に入り、次からの会話で使われます`));
     if (h.problem) box.appendChild(node('div', 'sitMeta bad', h.problem));
@@ -1402,6 +1423,7 @@ function connect() {
     else if (m.type === 'done') { serverDone = true; if (!playing && !queue.length) finishSpeaking(); loadAgents(); }
     else if (m.type === 'stopped') { stopPlayback(); setStatus('止めました'); }
     else if (m.type === 'blocked') loadAsks(); // 話している相手が承認で止まった → すぐ並べる
+    else if (m.type === 'agent_notice') { sys(`📨 ${m.sender} から: ${m.title}`); loadSituation(); } // 代理からの知らせ（題だけ。中身は 💡。閉じていても、状況の数を取り直す）
   };
 }
 function linked() { return !!ws && ws.readyState === 1; }

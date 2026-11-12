@@ -13,6 +13,7 @@ PC の見た目（Chromium）: 頼んだ件を「動いている」「終わっ�
 いま話している相手は絞り込みの外でも出す。
 広げて読む（Chromium）: ⤢ で右の列を画面いっぱいに・ほかの列は inert・長い記憶を切らずに出す・直す途中の文が残る・Esc（文の欄・一行の欄・
 変換の途中では効かない）・✕・狭めると戻る・広げている間だけ承認・入力待ちの数を出し、押すと戻ってカードのボタンへ。
+代理からの知らせ（Chromium）: 💡 の一覧に文字として出す（タグを解釈しない）・状況の数に入る・× とすべて消す・開いている画面に一行で出す。
 使い方: uv run spike/pc_ui_test.py"""
 import json
 import os
@@ -583,6 +584,34 @@ def run_reading(page, who):
     check(f"{who} PC の幅に戻すと 3 列（広げてはいない）", (wait(lambda: page.evaluate("document.body.classList.contains('wide')")), reading()), (True, False))
 
 
+def run_notice(page, who):
+    """代理（Hermes）からの知らせ: 💡 の一覧に文字として出す・数に入る・× と「すべて消す」・開いている画面に一行で出す。"""
+    seed()
+    now = time.time()
+    s.write_json(s.NOTICES_FILE, {"next": 3, "rows": [{"n": 1, "title": "古い知らせ", "text": "", "at": now - 3600},
+                                                     {"n": 2, "title": XSS, "text": "一言も" + XSS, "at": now - 60}], "sent": []})
+    open_page(page, 1400)
+    check(f"{who} 状況のタブの数に、知らせも入る（提案 1・知らせ 2）", wait(lambda: page.text_content("#sitCount") == "3"), True)
+    page.click("#tabSit")
+    check(f"{who} 知らせは新しい順に、題と一言を文字として出す（タグを解釈しない）",
+          wait(lambda: page.locator("#sitBody .notice").count() == 2 and XSS in (page.locator("#sitBody .notice").first.text_content() or "")), True)
+    check(f"{who} …そしてタグは動かない", (page.evaluate("window.__xss || 0"), page.locator("#sitBody .notice img").count()), (0, 0))
+    check(f"{who} 見出しに送り手と数", "Hermes からの知らせ（2）" in (page.text_content("#sitBody") or ""), True)
+    page.locator("#sitBody .notice").first.locator("button").click()
+    check(f"{who} × で 1 件消える（消したのは新しいほう）",
+          wait(lambda: page.locator("#sitBody .notice").count() == 1 and "古い知らせ" in (page.locator("#sitBody .notice").first.text_content() or "")), True)
+    import urllib.request
+    req = urllib.request.Request(BASE + "/api/hub/notice", data=json.dumps({"title": "新しい知らせ", "text": "下書きを作りました"}).encode(),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    r = json.loads(urllib.request.urlopen(req, timeout=10).read())
+    check(f"{who} 開いている画面には、届いた知らせを一行で出す（プッシュは送らない）",
+          (r.get("push"), wait(lambda: "📨 Hermes から: 新しい知らせ" in (page.text_content("#log") or ""))), ("visible", True))
+    check(f"{who} …そして一覧も取り直す", wait(lambda: page.locator("#sitBody .notice").count() == 2), True)
+    page.click("#sitBody .noteAll")
+    check(f"{who} 「すべて消す」で一覧が空になる", wait(lambda: page.locator("#sitBody .notice").count() == 0 and page.text_content("#sitCount") == "1"), True)
+    page.close()
+
+
 def run_phone(page, who):
     seed()
     open_page(page, 390)
@@ -648,6 +677,7 @@ with sync_playwright() as pw:
     run_sessions_nostore(b.new_page(), "Chromium（一覧・覚えておけない端末）:")
     run_reading(b.new_page(), "Chromium（広げて読む）:")
     run_phone(b.new_page(), "Chromium（スマホ）:")
+    run_notice(b.new_page(), "Chromium（知らせ）:")
     b.close()
     b = pw.webkit.launch()
     # デスクトップの設定の WebKit は、headless のこの試験では、PC の形と関係なく画面が固まる（main の画面でも同じ。2026-10-26 に確かめた）。

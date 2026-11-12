@@ -803,6 +803,7 @@ class Hermes(Brain, Talker):
 
     pane = HERMES_PANE
     name = "hermes"
+    label = "Hermes"
     off_text = "Hermes は設定されていません（config.env の VL_HERMES_KEY）。選び直してください。"
 
     def on(self) -> bool:
