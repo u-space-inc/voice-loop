@@ -439,6 +439,31 @@ docker exec -it hermes hermes   # 対話の画面で決めるとき
 - 一問一答（`hermes chat -q`）では Hermes はスキルを書きません（公式ドキュメント: one-shot では `skill_manage` を外す）。本体が API サーバー経由で同じ会話を続けているのはそのためです
 - Hermes は `hubctl` が返す内容（各セッションの記録の引用）を読みます。そこに紛れた指示には従わないよう指示文に書いてありますが、確実ではありません。乗せられたときに本体が止められること・止められないことは、上の「守り」の節に書いてあります。とくに、送ること、立てることは、本体では止められません。承認への答えは、本体があなたの発言と直前の問いで照らしますが、照らせる範囲には限りがあります（上の「守り」の「仕組みでは止めていないこと」）。
 
+### 代理として動かす（見張りの回）
+
+Hermes の定期の回（cron）に、メール・Slack（自分宛て）・録音・近い予定を見張らせ、新しい出来事があったときだけ読ませて、案件への振り分けと返信の下書きなどの下準備をさせ、判断が要るものだけを `hubctl notice` で知らせる形にできます。台本と手順は `templates/hermes/watch/` にあります。voice-loop の本体は知らせを受けて出すだけで、見張り・振り分け・下書き・記録は Hermes の側にあります。
+
+- 15 分ごとに、見張りの台本（`vl_watch.py`、LLM を使わない）が各口の新しい順の数件を ID の行で出します。出力が前回と同じなら、Hermes は Agent を起こしません（費用がかかりません）。変わったときだけ、差分（新しい出来事）を手順 `voice-loop-watch` に渡して起こします
+- 記録は Hermes の置き場の `voice-loop/items.jsonl`（`vl_items.py` だけが書く）。ふだんの会話で「判断待ちは？」と聞くと、Hermes がここから答えます（指示文の「見張りの回の記録」の節）
+- Gmail の下書きは `vl_gmail_draft.py`（下書きの API だけを呼ぶ）、Slack の下書きは Slack の MCP の下書きの道具で作ります
+- 要るもの: Hermes の Google 連携（同梱のスキル `google-workspace`。自分の Google Cloud の OAuth クライアントで認証します）、Slack の公式の MCP（`https://mcp.slack.com/mcp`。自分のワークスペースに内部アプリを作り、アプリの「Agents」で MCP を有効にします）、Plaud の MCP（`https://mcp.plaud.ai/mcp`）。それぞれの認証は、利用者がブラウザで承認します
+
+```sh
+cp templates/hermes/watch/vl_*.py ~/.hermes/scripts/
+mkdir -p ~/.hermes/skills/voice-loop/voice-loop-watch
+cp templates/hermes/watch/voice-loop-watch/SKILL.md ~/.hermes/skills/voice-loop/voice-loop-watch/
+docker exec -u 10000 hermes hermes config set timezone Asia/Tokyo        # cron の時刻を自分の時間帯で読む
+docker exec -u 10000 hermes hermes config set kanban.review_dispatch false # かんばんの review の列を自動で動かさない
+docker exec -u 10000 hermes hermes tools disable --platform cron connections
+docker exec -u 10000 hermes hermes cron create "*/15 7-20 * * *" "voice-loop の見張りの回です。添付のスキル voice-loop-watch の手順どおりに、MONITOR CHANGE DETECTED の + の行を扱ってください。" \
+  --name voice-loop-watch --monitor-script vl_watch.py --skill voice-loop-watch --deliver local --failure-deliver local
+```
+
+限り:
+- 見張りの回は、利用者のいない間に、外から届いた文面（乗せられうる中身）を読みます。送信・予定の変更・共有・セッションへの指示をしないのは、手順と指示の決まりです。Slack の送信系の道具は `hermes tools disable --platform cron slack:slack_send_message …` で外せますが、MCP の道具を外す設定は Hermes のすべての口に効きます（ふだんの会話でも送れなくなります）。Gmail の送信は、Google の鍵が送信の権限を持つので、仕組みでは止めていません
+- かんばん（`kanban`）は使っていません。review の列の件は、既定では Hermes が自動で別の Agent を起こして扱うためです
+- 起きた回ごとに Hermes のモデルの費用がかかります。回数は `hermes cron runs <ジョブ>`、トークンは `hermes insights` で見ます
+
 ### Hermes との会話をターミナルで見る（2026-10-21 に確かめた範囲）
 
 voice-loop が API で続けている会話は、Hermes 側ではふつうのセッション（ID は `VL_HERMES_SESSION` の値＋日付＋会話ごとの印。画面の 💡 の「ハブの会話」の欄に出る）として残る。目で見たいときは、任意のターミナルで次を打つと、その時点までの履歴が開く。
