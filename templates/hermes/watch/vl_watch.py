@@ -11,10 +11,12 @@
 - 読むだけ。書き込みの道具は呼ばない。鍵の更新もしない（Hermes 本体が持つ）。
 - 読めなかった口は「<口> 読めない: <理由の種類>」の 1 行にする（理由の種類は変わらない語にする）。
 - 行の 2 つ目の語は、そのまま記録（vl_items.py）の id にする（Agent に組み立てさせない）。
-  mail <id> ／ slack <チャンネル>/<ts> <送り手> ／ cal <id>@<開始> ／ plaud <id> | <録音の開始>
+  mail <id> ／ slack <チャンネル>/<ts> <送り手> ／ cal <id>@<開始> ／ plaud <id> | <録音の開始> ／ teams <id>
 - 予定の一覧は更新時刻を返さないので、予定の id には開始の時刻を入れる（時刻が動いたら別の出来事になる）。
   招待を送る側は予定の id を選べるので、形の合わない予定は 1 件ずつ外し、口ごとは止めない（外したことは 1 行で出す）。
 - 行の形は vl_items.py の _LINE と同じにする（変えるときは両方を変える）。
+- Teams は、Mac の側（voice-loop の scripts/teams_watch.py）が Chrome で読んで voice-loop/teams.jsonl に書いたものを読む（この台本は Teams に触れない）。
+  Mac の側を使っていなければ（teams-status.json が無ければ）、Teams の口は何も出さない。
 - Slack は利用者本人の発言を拾わない（-from:me）。拾うと、Hermes との DM で話すたびに Agent が起きる。
 """
 from __future__ import annotations
@@ -36,6 +38,13 @@ N_MAIL, N_SLACK, N_PLAUD = 15, 15, 5
 MAIL_QUERY = "newer_than:3d -in:sent -in:drafts -in:chats -category:promotions"
 SLACK_QUERIES = ("to:me -from:me", "is:dm -from:me")
 CAL_ODD = "cal 読めない: 形の合わない予定がある（その予定だけ見張れない）"
+N_TEAMS = 15
+TEAMS_STALE = 2 * 3600  # Mac の側は時間の外でも 30 分ごとに印を書く。これより古ければ止まっている
+TEAMS_REASON = {"signin": "サインインが要る（Mac の Chrome で Teams を開き、サインインし直す）",
+                "org": "組織の一覧を開けない（teams.json の組織の名前と ID を確かめる）",
+                "parse": "一覧の形が読めない（Chrome の Teams で、左の「メンション」を選んだままにする）",
+                "run": "取得に失敗"}
+_HEX16 = re.compile(r"[0-9a-f]{16}")
 
 
 _CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]")
@@ -155,11 +164,44 @@ def plaud() -> list[str]:
     return [f"plaud {ident(f.get('id'))} | {ident(f.get('start_at') or '-')}" for f in data[:N_PLAUD]]
 
 
+def teams(now: float | None = None) -> list[str] | None:
+    home = Path(vl_mcp.HOME) / "voice-loop"
+    try:
+        st = json.loads((home / "teams-status.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None  # Teams の見張りを使っていない（口ごと出さない）
+    now = dt.datetime.now(JST).timestamp() if now is None else now
+    rows = []
+    if not isinstance(st, dict) or not isinstance(st.get("at"), (int, float)) or not isinstance(st.get("orgs"), dict):
+        raise RuntimeError("teams")
+    if now - st["at"] > TEAMS_STALE:
+        rows.append("teams 読めない: Mac の見張りが 2 時間以上動いていない（Mac が止まっている・眠っている）")
+    for o in st["orgs"].values():
+        if isinstance(o, dict) and not o.get("ok"):
+            rows.append("teams 読めない: " + TEAMS_REASON.get(o.get("reason"), TEAMS_REASON["run"]))
+    items = []
+    feed = home / "teams.jsonl"
+    if feed.exists():
+        for line in feed.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if (isinstance(r, dict) and not r.get("baseline") and isinstance(r.get("first_seen"), (int, float))
+                    and now - r["first_seen"] < 3 * 86400 and _HEX16.fullmatch(str(r.get("id", "")))):
+                items.append(r)
+    items.sort(key=lambda r: r["first_seen"], reverse=True)
+    rows += [f"teams {r['id']}" for r in items[:N_TEAMS]]
+    return list(dict.fromkeys(rows))
+
+
 def main() -> None:
     parts = []
-    for name, fn in (("mail", mail), ("cal", calendar), ("slack", slack), ("plaud", plaud)):
+    for name, fn in (("mail", mail), ("cal", calendar), ("slack", slack), ("plaud", plaud), ("teams", teams)):
         try:
             rows = fn()
+            if rows is None:
+                continue
         except vl_mcp.NeedsAuth:
             rows = [f"{name} 読めない: 鍵の更新が要る（{name} の道具を一度使うと直る）"]
         except Garbled:

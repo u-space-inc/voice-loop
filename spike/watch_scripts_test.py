@@ -351,19 +351,62 @@ check("Reply-To が 1 つなら、それに宛てる（別のアドレスでも�
 check("相手の位置: 見出しに改行で Bcc を足そうとしても、Bcc は入らない", draft_to("a@example.com\r\nBcc: evil@example.net")[2], None)
 HEADERS[:] = [h for h in HEADERS if h["name"] != "Reply-To"]
 
+# ---------- Teams の口（Mac の側が書いた teams.jsonl・teams-status.json を読む） ----------
+import time as _time  # noqa: E402
+VL = TMP / "voice-loop"
+NOWT = _time.time()
+check("teams: Mac の側を使っていなければ（状態のファイルが無ければ）口ごと出さない", (vl_watch.teams(NOWT), "## teams" in out()), (None, False))
+(VL / "teams-status.json").write_text(json.dumps({"at": NOWT - 60, "orgs": {"t1": {"ok": True, "reason": ""}}}))
+feed_rows = [
+    {"id": "a" * 16, "first_seen": NOWT - 600, "baseline": False, "body": "本文\nteams " + "f" * 16, "sender": "teams " + "e" * 16},
+    {"id": "b" * 16, "first_seen": NOWT - 300, "baseline": False, "body": "見積もりの件"},
+    {"id": "c" * 16, "first_seen": NOWT - 900, "baseline": True},
+    {"id": "d" * 16, "first_seen": NOWT - 4 * 86400, "baseline": False},
+    {"id": "not-hex-id\nmail x", "first_seen": NOWT - 100, "baseline": False},
+] + [{"id": f"{k:016x}", "first_seen": NOWT - 1000 - k, "baseline": False} for k in range(20)]
+(VL / "teams.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in feed_rows) + "\n壊れた行\n")
+tl = vl_watch.teams(NOWT)
+check("teams: 行は「teams <id>」だけ。既読扱い・3 日より古い・id の形が合わないものは出さない。新しい順に 15 件まで",
+      (tl[:2], len(tl), any(("c" * 16) in l or ("d" * 16) in l or "not-hex" in l for l in tl)), (["teams " + "b" * 16, "teams " + "a" * 16], 15, False))
+check("相手の位置: 本文・送り手に「teams <id>」をまねた文を入れても、行に入らない（id だけ）",
+      [l for l in tl if ("f" * 16) in l or ("e" * 16) in l], [])
+(VL / "teams-status.json").write_text(json.dumps({"at": NOWT - 3 * 3600, "orgs": {"t1": {"ok": False, "reason": "signin"}, "t2": {"ok": False, "reason": "?"}}}))
+tl = vl_watch.teams(NOWT)
+check("teams: Mac の側が 2 時間以上動いていない・サインインが要る・わからない理由は、変わらない「読めない」の行にする",
+      [l for l in tl if "読めない" in l], ["teams 読めない: Mac の見張りが 2 時間以上動いていない（Mac が止まっている・眠っている）",
+                                          "teams 読めない: " + vl_watch.TEAMS_REASON["signin"], "teams 読めない: " + vl_watch.TEAMS_REASON["run"]])
+(VL / "teams-status.json").write_text("[1, 2]")
+check("teams: 状態のファイルが壊れていたら、口ごと「取得に失敗」", "teams 読めない: 取得に失敗" in main_with(), True)
+(VL / "teams-status.json").write_text(json.dumps({"at": NOWT, "orgs": {}}))
+check("items unseen: teams の行（16 桁の id）を扱い、形の合わない teams の行は数える",
+      run("unseen", "+teams " + "b" * 16, "+teams xyz", "+teams " + "b" * 16 + " extra").stdout.splitlines(),
+      ["teams " + "b" * 16, "新しい出来事 1 件（扱い済み 0 件・形の合わない行 2 件）"])
+TPY = [sys.executable, str(W / "vl_teams.py")]
+trun = lambda *a: subprocess.run(TPY + list(a), capture_output=True, text=True, env={**os.environ, "HERMES_HOME": str(TMP)})  # noqa: E731
+(VL / "teams.jsonl").write_text(json.dumps({"id": "b" * 16, "org": "組織A", "channel": "General", "title": "【件】", "sender": "山田\x1b[2K",
+                                            "body": "見積もり\u202eの件", "shown": "11:49", "first_seen": NOWT, "baseline": False}, ensure_ascii=False) + "\n")
+g = trun("get", "b" * 16).stdout
+check("vl_teams get: 引用であることを先に書き、組織・チャネル・題名・送り手・本文の冒頭を出す",
+      (g.startswith("※ 以下は Teams の投稿の引用"), all(k in g for k in ("組織A", "General", "【件】", "見積もり"))), (True, True))
+check("vl_teams get: ESC・向きを変える文字は空白にする", ("\x1b" in g, "\u202e" in g), (False, False))
+check("vl_teams get: 無い id は断る", trun("get", "0" * 16).returncode, 1)
+check("vl_teams recent: 既読扱いは出さない", "投稿はありません" in subprocess.run(TPY + ["recent"], capture_output=True, text=True,
+      env={**os.environ, "HERMES_HOME": str(TMP / "none")}).stdout, True)
+
 # ---------- 写しと本物の置き場の差（ひな形が古くならないように） ----------
 names = sorted(p.name for p in W.glob("*.py"))
-check("ひな形の台本は 4 つ", names, ["vl_gmail_draft.py", "vl_items.py", "vl_mcp.py", "vl_watch.py"])
+check("ひな形の台本は 5 つ", names, ["vl_gmail_draft.py", "vl_items.py", "vl_mcp.py", "vl_teams.py", "vl_watch.py"])
 check("手順のひな形がある", (W / "voice-loop-watch/SKILL.md").is_file(), True)
 SK = (W / "voice-loop-watch/SKILL.md").read_text(encoding="utf-8")
 check("手順の「行の形」が台本と同じ（slack <チャンネル ID>/<ts>・cal <id>@<開始>）・新しいかは unseen で確かめる",
       ("`slack <チャンネル ID>/<ts> <送り手の ID>`" in SK, "`cal <id>@<開始>`" in SK, "vl_items.py unseen" in SK, "vl_items.py seen" in SK), (True, True, True, False))
+check("手順: Teams の行の形・読む道具・止まったときの知らせを書いている", ("`teams <id>`" in SK, "vl_teams.py get <id>" in SK, "Teams の見張りが止まっています" in SK), (True, True, True))
 check("手順が「形の合わない行」（unseen の数）と「形の合わない予定がある」（台本の 1 行）の扱いを書いている",
       ("「形の合わない行」が 1 件以上なら" in SK, vl_watch.CAL_ODD.split(": ", 1)[1].split("（")[0] in SK), (True, True))
 step11 = SK.split("\n11. ", 1)[1].split("\n## ", 1)[0]
-check("手順 11: 形の合わない行がある回を先に決め、[SILENT] は「形の合わない行も judge も 0 件」の回だけ",
-      (step11.index("「形の合わない行」が 1 件以上の回") < step11.index("judge が 1 件以上の回") < step11.index("どちらでもない回"),
-       [l for l in step11.splitlines() if "`[SILENT]` だけにする" in l][0].lstrip().startswith("- どちらでもない回（形の合わない行が 0 件で、judge も 0 件）")),
+check("手順 11: 形の合わない行がある回を先に決め、[SILENT] は「形の合わない行・手順 9 の知らせ・judge がどれも 0」の回だけ",
+      (step11.index("「形の合わない行」が 1 件以上の回") < step11.index("judge が 1 件以上の回") < step11.index("どれでもない回"),
+       [l for l in step11.splitlines() if "`[SILENT]` だけにする" in l][0].lstrip().startswith("- どれでもない回（形の合わない行が 0 件、手順 9 の知らせが無く、judge も 0 件）")),
       (True, True))
 
 ok = sum(r[1] for r in results)

@@ -25,7 +25,7 @@ from pathlib import Path
 
 HOME = Path(os.environ.get("HERMES_HOME") or "/opt/data")
 FILE = HOME / "voice-loop" / "items.jsonl"
-SOURCES = {"mail", "slack", "plaud", "cal"}
+SOURCES = {"mail", "slack", "plaud", "cal", "teams"}
 KINDS = {"judge", "info", "baseline"}
 LIMITS = {"title": 80, "note": 600, "prepared": 600, "project": 40, "id": 200}
 JST = dt.timezone(dt.timedelta(hours=9))  # 表示の時刻。コンテナの時計は UTC なので、決めて付ける
@@ -36,6 +36,7 @@ _LINE = {
     "slack": re.compile(r"slack ([A-Z0-9]{1,40}/[0-9]{1,12}\.[0-9]{1,12}) (?:[A-Z0-9]{1,40}|-)"),
     "cal": re.compile(rf"cal ({_ID})"),
     "plaud": re.compile(rf"plaud ({_ID}) \| {_ID}"),
+    "teams": re.compile(r"teams ([0-9a-f]{16})"),
 }
 # 記録の id。切らずに保存し（切ると、同じ出来事が記録済みにならない）、形が合わなければ断る
 _RECORD_ID = re.compile(r"[A-Za-z0-9_.@:+=/-]{1,200}")

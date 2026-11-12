@@ -297,6 +297,7 @@ PC の画面では、セッションと頼んだ件の左に色の帯が付き�
 | 返事に外のサイトの画像や CSS（Markdown の画像・style の要素と属性・@import・@font-face・url()）が混じっても、画面はそれを取りに行かない（画面の CSP で、画像・動画・CSS・フォント・接続は本体からだけ。HTML を返すすべての応答に付ける。返事の style・動画と音声の要素は落とし、Markdown の画像は、その場では読み込まずに文字にする）。乗せられたハブが、URL に情報を載せて外へ出す道を塞ぐ | `spike/artifact_ui_test.py`・`spike/artifact_test.py` |
 | 返事（Markdown と HTML）に画面の部品と同じ id を書かれても、送る宛先と文は本物の欄から取る。返事の label や button を押させても、本物の送る・録音は動かない。返事を表示しただけで、本体の口や外のサイトへ要求を出さない（返事の画像は、その場では読み込まず「🖼 説明」の文字にする。PC の画面では、手元の画像・動画だけを本体の /api/file からサムネイルにする）。本体を指すリンクはリンクにしない（返事の HTML は、要素も属性も Markdown が出すものと害の無い書式だけを残す許可リスト。src は画像、href はリンクにだけ残す。id・name・class・style・for・form、style・form・SVG・動画などは落とす） | `spike/reply_html_test.py`・`spike/artifact_ui_test.py` |
 | 本体は Hermes の置き場（`~/.hermes`）で何も動かさず、書かない（git も動かさない）。読むのは承認待ちの記録と記憶のファイルだけで、symlink・通常でないファイル・ほかの名前からも指されるファイル・大きすぎるファイルは読まない（置き場を通して Mac のほかのファイルを読まされない） | `spike/hermes_skills_test.py` |
+| Teams の見張り（本体とは別の台本 `scripts/teams_watch.py`）は、Teams の一覧を読むだけで、Teams に書かない・押さない。無人の Claude（`claude -p --chrome`）が読んだページの中の指示で動こうとしても、関門（`scripts/teams_hook.py`）が、決めた道具・その回の組織の URL・待つことだけを通し、クリック・文字の入力・キー・ほかのページ・JavaScript・組み込みの道具・送る道具を止める（関門が動かなくても通さない）。読んだ文字は関門の写し取りがファイルに書き、項目に分けるのは LLM を使わない台本。Hermes の見張りの行には id だけを入れる。書くのは Hermes の置き場の `voice-loop/teams.jsonl`・`teams-status.json` だけ | `spike/teams_watch_test.py`・`spike/watch_scripts_test.py` |
 
 この表に書いた試験のファイルが実在することは、`spike/claims_test.py` が確かめます。
 
@@ -467,6 +468,31 @@ docker exec -u 10000 hermes hermes cron create "*/15 7-20 * * *" "voice-loop の
 - 利用者本人の Slack の発言は拾いません（拾うと、Hermes との DM で話すたびに Agent が起きます）。予定は、開始の時刻が動いたときに新しい出来事になります（予定の一覧が更新時刻を返さないため。題や場所だけの変更は拾いません）。招待を送る側は予定の id を選べるので、形の合わない予定（つないで 200 字を超える id を含む）はその 1 件だけを外し、「形の合わない予定がある」の 1 行を出します。外した予定は見張りが拾いません（送る側が、自分の予定を見張りから外せるということです）
 - かんばん（`kanban`）は使っていません。review の列の件は、既定では Hermes が自動で別の Agent を起こして扱うためです
 - 起きた回ごとに Hermes のモデルの費用がかかります。回数は `hermes cron runs <ジョブ>`、トークンは `hermes insights` で見ます
+
+#### Teams（Mac の Chrome で読む）
+
+Teams は、Hermes からは読めません（先方の組織の管理者の同意が要るため）。そこで、Mac の側の台本 `scripts/teams_watch.py` が、30 分ごとに Chrome（Claude in Chrome）で Teams の Web 版を開き、「メンション」の一覧だけを読んで、Hermes の置き場の `voice-loop/teams.jsonl` に書きます。見張りの回は、それを `teams` の口として拾い、ほかの口と同じように振り分けます（Teams の返信は下書きを作れないので、返信の案を記録に書きます）。
+
+1. Chrome で `https://teams.microsoft.com/v2/` にサインインし、左の「クイック ビュー」の「メンション」を選んだままにします（開いたときに前の表示が出るため）。
+2. 設定フォルダに `teams.json` を書きます。組織の名前は Teams の右上に出る名前、組織の ID は Teams の Web 版の通信に出る `tenantId` です。
+
+```json
+{"orgs": [{"name": "組織の名前", "tenant": "00000000-0000-0000-0000-000000000000"}], "hours": [8, 20], "days": [0, 1, 2, 3, 4], "model": "haiku"}
+```
+
+3. 一度動かして、`~/.hermes/voice-loop/teams-status.json` で組織ごとに読めたかを確かめます（初めて読んだ分は既読扱いになり、見張りの回は起きません）。そのあと launchd に載せます。
+
+```sh
+/usr/bin/python3 scripts/teams_watch.py run
+/usr/bin/python3 scripts/teams_watch.py plist > ~/Library/LaunchAgents/local.voice-loop.teams.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.voice-loop.teams.plist
+```
+
+限り:
+- 読むのは、あなたがメンションされた投稿の一覧（組織ごとに、一覧に出る数十件と、本文の冒頭の約 500 字）だけです。メンションの無い返信・あなた自身の投稿・スレッドの全文は読みません。スレッドを開かないので、既読にはしません
+- 決めた時間（既定は平日の 8〜20 時）に、Mac が起きていて、Chrome が Claude in Chrome とつながっているときだけ読みます。読めないとき（サインインが切れた・一覧の形が違う・Mac が 2 時間以上止まっている）は、見張りの回が「Teams の見張りが止まっています」と知らせます
+- 1 回ごとに、Claude Code の無人の回（既定は Haiku）を組織の数だけ使います。Teams の Web 版を開くので、その間、在席の表示が「連絡可能」になることがあります
+- 一覧は、Teams の表示が日本語のときの形で読みます
 
 ### Hermes との会話をターミナルで見る（2026-10-21 に確かめた範囲）
 
