@@ -193,8 +193,20 @@ def teams(now: float | None = None) -> list[str] | None:
                     and isinstance(r.get("posted", 0), (int, float)) and _HEX16.fullmatch(str(r.get("id", "")))):
                 items.append(r)
     items.sort(key=lambda r: (r["first_seen"], r.get("posted", 0)), reverse=True)
-    if items and sum(r["first_seen"] == items[0]["first_seen"] for r in items) > N_TEAMS:
-        rows.append(f"teams 読めない: 一度に {N_TEAMS} 件を超える新しい投稿があり、出しきれない（Teams で確かめる）")
+    if len(items) > N_TEAMS:  # 出さない古い分に、まだ記録に無い（扱っていない）投稿が残っていれば知らせる
+        recorded = set()
+        try:
+            for line in (home / "items.jsonl").read_text(encoding="utf-8", errors="replace").splitlines():
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(r, dict) and r.get("op") == "add" and r.get("source") == "teams":
+                    recorded.add(r.get("id"))
+        except FileNotFoundError:
+            pass
+        if any(r["id"] not in recorded for r in items[N_TEAMS:]):
+            rows.append(f"teams 読めない: まだ扱っていない投稿が {N_TEAMS} 件を超え、出しきれない（Teams で確かめる）")
     rows += [f"teams {r['id']}" for r in items[:N_TEAMS]]
     return list(dict.fromkeys(rows))
 

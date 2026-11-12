@@ -367,15 +367,26 @@ feed_rows = [
 (VL / "teams.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in feed_rows) + "\n壊れた行\n")
 tl = vl_watch.teams(NOWT)
 check("teams: 行は「teams <id>」だけ。既読扱い・id の形が合わないものは出さない。時間では区切らず、新しい順に 100 件まで",
-      (tl[:2], len(tl), any(("c" * 16) in l or "not-hex" in l for l in tl)), (["teams " + "b" * 16, "teams " + "a" * 16], vl_watch.N_TEAMS, False))
+      (lambda t: (t[:2], len(t), any(("c" * 16) in l or "not-hex" in l for l in t)))([l for l in tl if "読めない" not in l]),
+      (["teams " + "b" * 16, "teams " + "a" * 16], vl_watch.N_TEAMS, False))
 few = [r for r in feed_rows if r["id"] in ("a" * 16, "d" * 16)]
 (VL / "teams.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in few) + "\n")
 check("teams: 古い投稿は、日が経っただけでは行から消えない（行が変わると、何も来ていないのに Agent が起きる）",
       ("teams " + "d" * 16) in vl_watch.teams(NOWT), True)
-burst = [{"id": f"{k:016x}", "first_seen": NOWT, "baseline": False} for k in range(vl_watch.N_TEAMS + 1)]
-(VL / "teams.jsonl").write_text("\n".join(json.dumps(r) for r in burst) + "\n")
-check("teams: 一度に 100 件を超える新しい投稿は、出しきれないことを「読めない」の行で知らせる",
-      [l for l in vl_watch.teams(NOWT) if "読めない" in l], [f"teams 読めない: 一度に {vl_watch.N_TEAMS} 件を超える新しい投稿があり、出しきれない（Teams で確かめる）"])
+two_runs = [{"id": f"{k:016x}", "first_seen": NOWT - (0 if k < 60 else 1800), "baseline": False} for k in range(120)]
+(VL / "teams.jsonl").write_text("\n".join(json.dumps(r) for r in two_runs) + "\n")
+items_file = VL / "items.jsonl"
+saved_items = items_file.read_text() if items_file.exists() else None
+items_file.write_text("")
+HIDDEN = f"teams 読めない: まだ扱っていない投稿が {vl_watch.N_TEAMS} 件を超え、出しきれない（Teams で確かめる）"
+check("teams: 別々の回に 60 件ずつ届き、まだ扱っていないうちに 100 件を超えたら、出しきれないことを「読めない」の行で知らせる",
+      [l for l in vl_watch.teams(NOWT) if "読めない" in l], [HIDDEN])
+items_file.write_text("\n".join(json.dumps({"op": "add", "n": k + 1, "source": "teams", "id": f"{k:016x}"}) for k in range(100, 120)) + "\n")
+check("teams: 出さない古い分が、もう記録にあれば（扱った）、知らせない", [l for l in vl_watch.teams(NOWT) if "読めない" in l], [])
+if saved_items is None:
+    items_file.write_text("")
+else:
+    items_file.write_text(saved_items)
 (VL / "teams.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in feed_rows) + "\n")
 tl = vl_watch.teams(NOWT)
 check("相手の位置: 本文・送り手に「teams <id>」をまねた文を入れても、行に入らない（id だけ）",
@@ -384,7 +395,7 @@ check("相手の位置: 本文・送り手に「teams <id>」をまねた文を�
                                                                        "t3": {"ok": True, "gap": True}}}))
 tl = vl_watch.teams(NOWT)
 check("teams: Mac の側が 2 時間以上動いていない・サインインが要る・わからない理由・前回とつながらないは、変わらない「読めない」の行にする",
-      [l for l in tl if "読めない" in l], ["teams 読めない: Mac の見張りが 2 時間以上動いていない（Mac が止まっている・眠っている）",
+      [l for l in tl if "読めない" in l and "出しきれない" not in l], ["teams 読めない: Mac の見張りが 2 時間以上動いていない（Mac が止まっている・眠っている）",
                                           "teams 読めない: " + vl_watch.TEAMS_REASON["signin"], "teams 読めない: " + vl_watch.TEAMS_REASON["run"],
                                           "teams 読めない: 一覧が前回とつながらない（取りこぼしの可能性。Teams で確かめる）"])
 (VL / "teams-status.json").write_text("[1, 2]")
