@@ -15,6 +15,7 @@ guard が通すもの（ほかは全部止める）:
 ほかのスクリプトを動かす道は通らない。teams_watch.py はこの命令を sh で包み、終わりの数が 0 でなければ 2 に直して渡す
 （フック自体が動かなくても通さない）。
 """
+import fcntl
 import json
 import os
 import sys
@@ -25,14 +26,15 @@ MAX_CHUNKS = 60
 
 
 def next_chunk(path: str) -> int:
-    """この回の何番目の切り出しか（0 から）。ファイルで数える。"""
-    try:
-        with open(path, encoding="utf-8") as f:
-            k = int(f.read().strip() or "0")
-    except FileNotFoundError:
-        k = 0
-    with open(path, "w", encoding="utf-8") as f:
+    """この回の何番目の切り出しか（0 から）。ファイルで数える（鍵をかけ、同時の呼び出しでも番号を重ねない）。"""
+    with open(path, "a+", encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.seek(0)
+        k = int(f.read().strip() or "0")
+        f.seek(0)
+        f.truncate()
         f.write(str(k + 1))
+        f.flush()
     return k
 
 

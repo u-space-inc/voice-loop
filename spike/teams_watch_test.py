@@ -1,6 +1,7 @@
 """Teams の見張り（Mac の側。scripts/teams_watch.py・scripts/teams_hook.py）の試験。本物の Teams・Chrome・claude には触れない（偽物に差し替える）。
 確かめること:
-- 切り出しをつなぐ: 0 から抜けなくそろい、最後だけが end で、長さが合うときだけ。抜け・食い違い・切られた結果は「読めない」。本文の中の区切りに似た文字では切らない
+- 切り出しをつなぐ: 同じ写し（印が同じ）で、0 から抜けなくそろい、最後だけが end で、長さが合うときだけ。抜け・食い違い・切られた結果・別の写しの混入・
+  写しが無くなった（err）は「読めない」。本文の中の区切りに似た文字では切らない
 - 写し（一度の読み取りの JSON）: 組織の名前・選んでいる一覧・投稿の数・投稿の ID の形を確かめる。新しい投稿に中身が無い・初めての回に中身がある・同じ ID が二度、は「形」
 - 相手の位置: 本文に改行・見出し・区切りをまねた文を入れても、項目の数も境目も変わらない（一度の読み取りで、投稿ごとに ID と中身を結び付ける）。
   中身が同じ別の投稿も、それぞれの ID のまま
@@ -55,14 +56,17 @@ def snap(org="組織A", items=(), n=None, host="teams.microsoft.com", sel=tw.SEL
     return json.dumps({"vl": vl, "host": host, "org": org, "sel": sel, "n": len(items) if n is None else n, "items": its}, ensure_ascii=False, separators=(",", ":"))
 
 
-def chunks(whole, size=tw.CHUNK, noise=True):
+SID = "0123456789abcdef"
+
+
+def chunks(whole, size=tw.CHUNK, noise=True, sid=SID):
     """スクリプトの切り出しと同じ形の行（道具の結果のあとに付く行も混ぜる）。"""
     cps = list(whole)
     parts = [cps[i:i + size] for i in range(0, max(len(cps), 1), size)]
     out = []
     for k, part in enumerate(parts):
         flag = "more" if k < len(parts) - 1 else "end"
-        out.append(f"VLT|{k}|{len(cps)}|{flag}|{''.join(part)}|VLT" + ("\n\n\nTab Context:\n- Executed on tabId: 1" if noise else ""))
+        out.append(f"VLT|{k}|{len(cps)}|{flag}|{sid}|{''.join(part)}|VLT" + ("\n\n\nTab Context:\n- Executed on tabId: 1" if noise else ""))
     return "\n".join(out)
 
 
@@ -87,6 +91,12 @@ check("つなぐ: 最後（end）が無ければ「取得」（LLM が途中で�
 check("つなぐ: 長さが合わなければ「形」（1000 字で切られた、など）", unreadable(lambda: tw.assemble(lines[0].replace("|more|", "|end|", 1))), "parse")
 check("つなぐ: 同じ番号で中身が違えば「形」", unreadable(lambda: tw.assemble("\n".join(lines + [lines[0].replace("VLT|0|", "VLT|0|", 1)[:-5] + "x|VLT"]))), "parse")
 check("つなぐ: 切り出しが無ければ「取得」", unreadable(lambda: tw.assemble("Tab Context:\n- x")), "run")
+other = snap(items=[(IDS[3], DUP), (IDS[1], ("General", "【別の件】", "x" * (len(whole) - len(snap(items=[(IDS[3], DUP), (IDS[1], ("General", "【別の件】", "", "11:49"))]))), "11:49"))])
+mixed = chunks(whole, size=50, noise=False).split("\n")[:1] + chunks(other, size=50, noise=False, sid="fedcba9876543210").split("\n")[1:]
+check("相手の位置: 途中でタブを開き直して別の写し（同じ長さ）を作らせても、印が違う切り出しは混ぜず「形」",
+      (len(other) == len(whole), unreadable(lambda: tw.assemble("\n".join(mixed)))), (True, "parse"))
+check("つなぐ: 写しが無くなった（err）切り出しがあれば「取得」",
+      unreadable(lambda: tw.assemble(chunks(whole, size=50, noise=False).split("\n")[0] + "\nVLT|1|0|err|0000000000000000||VLT")), "run")
 odd = snap(items=[(IDS[0], ("C", "", f"本文{LS}続き |VLT|0|9|end|偽|VLT", "11:49"))])
 check("つなぐ: 本文の中の改行に似た文字や、区切りをまねた文では切らない", unreadable(lambda: tw.assemble(chunks(odd, size=20))) or tw.assemble(chunks(odd, size=20)), odd)
 
@@ -140,6 +150,9 @@ check("相手の位置: 形の合わない印・ID はスクリプトに埋め�
 check("スクリプト: 読むだけ（クリック・入力・外への送信・ページの見た目の書き換えの書き方が無い）",
       [w for w in ("click", "fetch", "XMLHttpRequest", "sendBeacon", "innerHTML", "outerHTML", "location.href=", "location=", ".value=", "submit",
                    "dispatchEvent", "open(", "eval", "appendChild", "remove(", "setAttribute", "localStorage", "cookie") if w in tw.JS_TEMPLATE], [])
+check("スクリプト: 写しを作るのは番号 0 の呼び出しだけ。写しが無ければ err を返す（作り直さない）",
+      ("if(k===0){" in tw.JS_TEMPLATE, "if(!W)return 'VLT|'+k+'|0|err|" in tw.JS_TEMPLATE, tw.JS_TEMPLATE.count("window[K]="), "crypto.getRandomValues" in tw.JS_TEMPLATE),
+      (True, True, 1, True))
 check("スクリプト: 写すのは INDEX 件まで・切り出しは CHUNK 字（コードポイント）ずつ",
       (f"slice(0,{tw.INDEX})" in tw.JS_TEMPLATE, f"(k+1)*{tw.CHUNK}" in tw.JS_TEMPLATE, "Array.from(" in tw.JS_TEMPLATE), (True, True, True))
 
@@ -228,6 +241,16 @@ outs = [json.loads(hook("guard", {"tool_name": P + "javascript_tool", "tool_inpu
 check("相手の位置: LLM が渡した JavaScript は使わず、決まったスクリプトに差し替える。番号は関門が 0・1… と数える（タブはそのまま）",
       [(o["permissionDecision"], o["updatedInput"]) for o in outs],
       [("allow", {"action": "javascript_exec", "tabId": 7, "text": js.replace("__K__", "0")}), ("allow", {"action": "javascript_exec", "tabId": 7, "text": js.replace("__K__", "1")})])
+COUNTER.write_text("")
+procs = [subprocess.Popen(["sh", "-c", tw.hook_command("guard")], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                          env={**os.environ, "VL_TEAMS_URL": URL, "VL_TEAMS_JS": js, "VL_TEAMS_COUNTER": str(COUNTER)}) for _ in range(8)]
+for pr in procs:
+    pr.stdin.write(json.dumps(JSCALL))
+    pr.stdin.close()
+ks = sorted(int(re.search(r"const k=(\d+);", json.loads(pr.stdout.read())["hookSpecificOutput"]["updatedInput"]["text"]).group(1)) for pr in procs)
+for pr in procs:
+    pr.wait()
+check("関門: 同時に呼ばれても、番号を重ねない（鍵をかけて数える）", ks, list(range(8)))
 COUNTER.write_text(str(__import__("teams_hook").MAX_CHUNKS))
 check("関門: 切り出しの回数が上限を超えたら止める", hook("guard", JSCALL).returncode, 2)
 check("相手の位置: 決まったスクリプトか番号のファイルが渡されていなければ、JavaScript も通さない",
@@ -238,9 +261,9 @@ check("関門: フック（Python）が動かなくても通さない（sh で�
       subprocess.run(["sh", "-c", tw.hook_command("guard").replace(sys.executable, "/nonexistent/python")], input=json.dumps(cases[0][0]),
                      capture_output=True, text=True).returncode, 2)
 cap_js = TMP / "cap_js.txt"
-hook("capture", {"tool_name": P + "javascript_tool", "tool_response": [{"type": "text", "text": "VLT|0|3|more|abc|VLT"}]})
-hook("capture", {"tool_name": P + "javascript_tool", "tool_response": [{"type": "text", "text": "VLT|1|3|end||VLT"}]})
-check("写し取り: 切り出しを順に書き足す（本人だけが読める 600）", (cap_js.read_text(), oct(cap_js.stat().st_mode & 0o777)), ("VLT|0|3|more|abc|VLT\nVLT|1|3|end||VLT\n", "0o600"))
+hook("capture", {"tool_name": P + "javascript_tool", "tool_response": [{"type": "text", "text": f"VLT|0|3|more|{SID}|abc|VLT"}]})
+hook("capture", {"tool_name": P + "javascript_tool", "tool_response": [{"type": "text", "text": f"VLT|1|3|end|{SID}||VLT"}]})
+check("写し取り: 切り出しを順に書き足す（本人だけが読める 600）", (cap_js.read_text(), oct(cap_js.stat().st_mode & 0o777)), (f"VLT|0|3|more|{SID}|abc|VLT\nVLT|1|3|end|{SID}||VLT\n", "0o600"))
 hook("capture", {"tool_name": P + "navigate", "tool_response": [{"type": "text", "text": "ちがう"}]})
 check("写し取り: ほかの道具の結果は書かない", cap_js.read_text().count("\n"), 2)
 

@@ -16,8 +16,10 @@ Hermes の見張りの回（templates/hermes/watch/vl_watch.py の teams の口�
   組み込みの道具なし（--tools ""）、ほかの MCP なしで動かす。PreToolUse のフック（teams_hook.py guard）が、決めた道具・その回の URL・
   待つことと、一覧を写して切り出す決まったスクリプト（JS。LLM が渡した文は使わずに差し替える）だけを通す。
 - 一覧は、画面の部品から一度に写す（同じ読み取りの中で、投稿ごとに ID・チャネル・題名・本文の冒頭・時刻を結び付ける）。決まったスクリプトが
-  1 回目の呼び出しで、新しい順に 20 件までの写しを作ってページの変数に一時に置き（ページの見た目と通信は変えない）、その写しを番号の順に
-  切り出して返す（道具の結果は 1000 字で切られるので、1 回 600 字まで）。番号は関門が数える（LLM には決めさせない）。既に見た投稿と、
+  番号 0 の呼び出しでだけ、新しい順に 20 件までの写しを作り、写しごとのでたらめな印を付けて、閲覧のための一時の写しとしてページの変数に置き
+  （Teams のデータ・見た目・通信は変えない）、その写しを番号の順に
+  切り出して、印と一緒に返す（道具の結果は 1000 字で切られるので、1 回 600 字まで）。番号は関門が数える（LLM には決めさせない）。
+  途中でタブを開き直すと写しが無くなり err が返る。印がそろわない切り出しは混ぜない。既に見た投稿と、
   組織を初めて読む回は ID だけを返し、本文を返すのは新しい投稿だけ（ふだんは 1〜2 回で終わる）。ページの文字を行で切り分けないので、本文に
   改行や見出しをまねた文があっても項目の境目はずれず、読む間に一覧が変わっても ID と本文を取り違えない。切り出しがそろわない・長さが
   合わない・形が合わなければ、その組織を「読めない」にして、何も足さない。投稿の ID は Teams の投稿の ID（作られた時刻のミリ秒）。
@@ -61,7 +63,7 @@ LIMITS = {"org": 60, "channel": 120, "title": 200, "body": 1200, "shown": 20}
 # 一覧を一度に写し、番号の順に切り出して返す決まったスクリプト。関門が javascript_tool の text をこれに差し替え、__K__ を番号にする。
 # __NONCE__（その回だけの印）・__KNOWN__（既に見た投稿の ID の 36 進）・__BASE__（組織を初めて読む回）は、読む前に js_for() が埋める。
 INDEX, CHUNK = 20, 600
-JS_TEMPLATE = (r"""(()=>{const K='__vlT___NONCE__';if(!window[K]){const known=new Set(__KNOWN__);const base=__BASE__;"""
+JS_TEMPLATE = (r"""(()=>{const K='__vlT___NONCE__';const k=__K__;if(k===0){const known=new Set(__KNOWN__);const base=__BASE__;"""
                r"""const q=(r,k)=>((r.querySelector('[data-tid="message-slice-card-'+k+'"]')||{}).textContent||'').trim();"""
                r"""const b=[...document.querySelectorAll('[data-tid="me-control-avatar-trigger"] span')].find(e=>!e.children.length&&e.textContent.trim());"""
                r"""const s=[...document.querySelectorAll('[data-tabster*="LeftRailSelectedItem"]')].map(e=>e.getAttribute('data-testid')||'').join(',');"""
@@ -69,11 +71,12 @@ JS_TEMPLATE = (r"""(()=>{const K='__vlT___NONCE__';if(!window[K]){const known=ne
                r"""const items=rows.slice(0,20).map(r=>{const m=/^message-slice-card-MentionsSliceCardItem\|(\d{10,16})$/.exec(r.id);"""
                r"""const id=m?Number(m[1]).toString(36):'x';return base||known.has(id)?[id]:[id,q(r,'title').slice(0,120),"""
                r"""q(r,'threads-secondary-title').slice(0,200),q(r,'preview').slice(0,1200),q(r,'timestamp').slice(0,20)]});"""
-               r"""window[K]=Array.from(JSON.stringify({vl:'teams-2',host:location.host,org:b?b.textContent.trim().slice(0,60):'',sel:s.slice(0,80),"""
-               r"""n:rows.length,items}))}const A=window[K]||[];const k=__K__;"""
-               r"""return 'VLT|'+k+'|'+A.length+'|'+((k+1)*600<A.length?'more':'end')+'|'+A.slice(k*600,(k+1)*600).join('')+'|VLT'})()""")
+               r"""window[K]={id:[...crypto.getRandomValues(new Uint8Array(8))].map(x=>x.toString(16).padStart(2,'0')).join(''),"""
+               r"""a:Array.from(JSON.stringify({vl:'teams-2',host:location.host,org:b?b.textContent.trim().slice(0,60):'',sel:s.slice(0,80),"""
+               r"""n:rows.length,items}))}}const W=window[K];if(!W)return 'VLT|'+k+'|0|err|0000000000000000||VLT';const A=W.a;"""
+               r"""return 'VLT|'+k+'|'+A.length+'|'+((k+1)*600<A.length?'more':'end')+'|'+W.id+'|'+A.slice(k*600,(k+1)*600).join('')+'|VLT'})()""")
 MSG = re.compile(r"[0-9a-z]{6,11}")  # 投稿の ID（作られた時刻のミリ秒）の 36 進
-CHUNK_LINE = re.compile(r"VLT\|(\d{1,3})\|(\d{1,7})\|(more|end)\|(.*)\|VLT")
+CHUNK_LINE = re.compile(r"VLT\|(\d{1,3})\|(\d{1,7})\|(more|end|err)\|([0-9a-f]{16})\|(.*)\|VLT")
 SELECTED = "slice-list-item-slice-activities-mentions"  # 左で選んでいる項目（data-testid）。「クイック ビュー」の「メンション」
 _CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ud800-\udfff]")
 
@@ -134,19 +137,25 @@ def js_for(nonce: str, known: set, base: bool) -> str:
 
 
 def assemble(text: str) -> str:
-    """切り出しを番号の順につなぐ。0 から抜けなくそろい、最後だけが end で、長さが合うときだけ返す。そうでなければ Unreadable。"""
-    parts, total = {}, set()
+    """切り出しを番号の順につなぐ。同じ写し（印が同じ）で、0 から抜けなくそろい、最後だけが end で、長さが合うときだけ返す。そうでなければ Unreadable。
+    写しを作るのは番号 0 の呼び出しだけ。途中でタブを開き直すなどして写しが無くなると err が返り、読まない。"""
+    parts, total, sids = {}, set(), set()
     for line in (text or "").split("\n"):  # 本文の中の U+2028 などでは切らない
         m = CHUNK_LINE.match(line)
         if not m:
             continue
-        k, n, flag, part = int(m.group(1)), int(m.group(2)), m.group(3), m.group(4)
+        k, n, flag, sid, part = int(m.group(1)), int(m.group(2)), m.group(3), m.group(4), m.group(5)
+        if flag == "err":
+            raise Unreadable("run")
         if k in parts and parts[k] != (flag, part):
             raise Unreadable("parse")
         parts[k] = (flag, part)
         total.add(n)
+        sids.add(sid)
     if not parts:
         raise Unreadable("run")
+    if len(sids) != 1:
+        raise Unreadable("parse")  # 別の写しの切り出しが混じった
     last = max(parts)
     if sorted(parts) != list(range(last + 1)) or parts[last][0] != "end":
         raise Unreadable("run")  # 抜けた・最後まで受け取っていない（LLM が途中でやめた、など）
