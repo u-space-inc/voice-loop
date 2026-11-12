@@ -15,6 +15,7 @@ import base64
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -2882,26 +2883,43 @@ NOTICE_TITLE, NOTICE_TEXT = 60, 400  # 字数の上限（超えた分は切る�
 NOTICE_KEEP, NOTICE_DAYS = 50, 7  # 残す数と日数
 NOTICE_PER_HOUR = 20  # 1 時間に受ける数（消したものも数える）。見張りが暴れても、通知が鳴り続けないように
 _notice_lock = threading.Lock()
-_NOTICE_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]")  # 制御文字・向きを変える文字
+_NOTICE_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ud800-\udfff]")  # 制御文字・向きを変える文字・対になっていないサロゲート
+NOTICE_FILE_MAX = 1_000_000  # 記録のファイルがこれより大きければ読まない（空として扱う）
 
 
 def _notice_clean(v, n: int) -> str | None:
-    """1 行にそろえ、制御文字を空白にして、n 字で切る。文字でなければ None。"""
+    """1 行にそろえ、制御文字などを空白にして、n 字で切る。文字でなければ None。"""
     if not isinstance(v, str):
         return None
     v = " ".join(_NOTICE_CTRL.sub(" ", v).split())
     return v if len(v) <= n else v[: n - 1] + "…"
 
 
+def _notice_time(t, now: float) -> bool:
+    """有限の数で、1 日より先の未来でない時刻か（時計が少し戻っても落とさない）。"""
+    return isinstance(t, (int, float)) and not isinstance(t, bool) and math.isfinite(t) and t - now < 86400
+
+
 def notices() -> dict:
-    """{"next": 次の番号, "rows": 残っている知らせ（古い順）, "sent": 直近 1 時間に受けた時刻}。期限の過ぎたものは落とす。"""
-    d = _read_json(NOTICES_FILE, {})
+    """{"next": 次の番号, "rows": 残っている知らせ（古い順）, "sent": 直近 1 時間に受けた時刻}。
+    記録は本体の状態フォルダにあるが、壊れていても・手で書き換えられていても、受けるときと同じ形にそろえ直してから使う。"""
+    try:
+        d = _read_json(NOTICES_FILE, {}) if not NOTICES_FILE.exists() or NOTICES_FILE.stat().st_size <= NOTICE_FILE_MAX else {}
+    except OSError:
+        d = {}
     now = time.time()
+    rows = []
+    for r in d.get("rows") if isinstance(d.get("rows"), list) else []:
+        if not isinstance(r, dict) or not _notice_time(r.get("at"), now) or now - r["at"] >= NOTICE_DAYS * 86400:
+            continue
+        n, title, text = r.get("n"), _notice_clean(r.get("title"), NOTICE_TITLE), _notice_clean(r.get("text"), NOTICE_TEXT)
+        if isinstance(n, int) and not isinstance(n, bool) and n > 0 and title and text is not None:
+            rows.append({"n": n, "title": title, "text": text, "at": float(r["at"])})
+    # 時計が戻っても上限が外れないよう、未来の時刻（1 日まで）も数え続ける
+    sent = [float(t) for t in (d.get("sent") if isinstance(d.get("sent"), list) else []) if _notice_time(t, now) and now - t < 3600]
+    top = max([0] + [r["n"] for r in rows])
     nxt = d.get("next")
-    rows = [r for r in d.get("rows", []) if isinstance(r, dict) and isinstance(r.get("n"), int) and isinstance(r.get("at"), (int, float))
-            and isinstance(r.get("title"), str) and isinstance(r.get("text"), str) and now - r["at"] < NOTICE_DAYS * 86400]
-    sent = [t for t in d.get("sent", []) if isinstance(t, (int, float)) and 0 <= now - t < 3600]
-    nxt = nxt if isinstance(nxt, int) and not isinstance(nxt, bool) and nxt > max([0] + [r["n"] for r in rows]) else max([0] + [r["n"] for r in rows]) + 1
+    nxt = nxt if isinstance(nxt, int) and not isinstance(nxt, bool) and nxt > top else top + 1
     return {"next": nxt, "rows": rows[-NOTICE_KEEP:], "sent": sent}
 
 

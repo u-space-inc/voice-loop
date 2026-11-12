@@ -2,7 +2,8 @@
 常駐の 8790・本物のコンテナには触れない。hubctl の確かめには、この試験の中で 127.0.0.1:8792 に本体の写しを立てる。
 画面での出し方（文字として出す・数・消す）は spike/pc_ui_test.py の「知らせ」で確かめる。
 相手の位置から見ること: コンテナ（鍵あり）から使えるのは知らせを足す口だけで、一覧・消す口は断る。題と一言は 1 行・上限の字数で切り、
-制御文字・向きを変える文字は空白にする。1 時間に受ける数の上限（消しても戻らない）。プッシュ通知には題だけを載せ、一言は載せない。
+制御文字・向きを変える文字・対になっていないサロゲートは空白にする。1 時間に受ける数の上限（消しても戻らない・時計が戻っても外れない）。
+状態フォルダの記録が壊れていても・書き換えられていても、受けるときと同じ形にそろえ直してから使う。プッシュ通知には題だけを載せ、一言は載せない。
 使い方: uv run spike/notice_test.py"""
 import asyncio
 import json
@@ -50,7 +51,8 @@ class FakeClient:
 
 s.push_all = fake_push
 c = TestClient(s.app, base_url="http://127.0.0.1:8790")
-post = lambda body: c.post("/api/hub/notice", json=body)
+# 本文は \uXXXX の形で送る（対になっていないサロゲートも、相手が送るのと同じ形で届く）
+post = lambda body: c.post("/api/hub/notice", content=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
 reset = lambda: s.NOTICES_FILE.unlink(missing_ok=True)
 
 # ---------- 受ける ----------
@@ -107,6 +109,45 @@ s.NOTICES_FILE.write_text("{壊れた")
 check("記録が壊れていても、一覧は空として読み、受け直せる", (c.get("/api/notices").json()["rows"], post({"title": "直った"}).json().get("n")), ([], 1))
 s.write_json(s.NOTICES_FILE, {"next": True, "rows": [{"n": 5, "title": "a", "text": "", "at": now}]})
 check("番号が壊れていても、残っている番号の次から振る", post({"title": "b"}).json().get("n"), 6)
+
+# ---------- 記録が仕込まれていても（相手の位置: 状態フォルダの記録を書き換えられた・壊れたとき） ----------
+for bad_doc in ({"rows": None, "sent": 7}, {"rows": "x", "sent": {"a": 1}, "next": "9"}, [], "文字"):
+    s.write_json(s.NOTICES_FILE, bad_doc)
+    check(f"形の違う記録 {str(bad_doc)[:30]} でも、一覧と受けるは落ちない", (c.get("/api/notices").status_code, post({"title": "a"}).status_code), (200, 200))
+reset()
+s.write_json(s.NOTICES_FILE, {"next": 9, "rows": [{"n": 1, "title": "題" * 1001, "text": "言" * 2000 + "\u202e", "at": now, "extra": "<b>x</b>"},
+                                                  {"n": 2, "title": "\u202e逆\u2066", "text": "", "at": now},
+                                                  {"n": 3, "title": "未来", "text": "", "at": now + 2 * 86400},
+                                                  {"n": 4, "title": "", "text": "", "at": now}, {"n": 5, "title": "t", "text": None, "at": now},
+                                                  {"n": True, "title": "t", "text": "", "at": now}, {"n": -1, "title": "t", "text": "", "at": now}], "sent": []})
+rows = {r["n"]: r for r in c.get("/api/notices").json()["rows"]}
+check("読み直しでも、題・一言を受けるときと同じ形にそろえる（字数・向きを変える文字）", (len(rows[1]["title"]), len(rows[1]["text"]), rows[2]["title"]), (60, 400, "逆"))
+check("返すのは決めた項目だけ", sorted(rows[1].keys()), ["at", "n", "text", "title"])
+check("1 日より先の未来の時刻・空の題・一言が文字でない・番号が真偽値や 0 以下のものは落とす", sorted(rows), [1, 2])
+s.NOTICES_FILE.write_text('{"next": 3, "rows": [{"n": 1, "title": "無限", "text": "", "at": Infinity}, {"n": 2, "title": "数でない", "text": "", "at": NaN}], "sent": [Infinity, NaN]}')
+check("有限でない時刻の行は落とし、一覧は返す", (c.get("/api/notices").status_code, c.get("/api/notices").json()["rows"]), (200, []))
+s.NOTICES_FILE.write_text('{"rows": [], "pad": "' + "x" * (s.NOTICE_FILE_MAX + 10) + '"}')
+check("大きすぎる記録は読まず、空として扱う", (c.get("/api/notices").json()["rows"], post({"title": "大きすぎのあと"}).json().get("n")), ([], 1))
+
+# ---------- 対になっていない文字（相手の位置: 不正な文字で本体を落とす・上限を使わずに繰り返す） ----------
+reset()
+r = post({"title": "前\ud800後", "text": "\udfff一言"})
+check("対になっていないサロゲートは空白にして受ける（500 にしない）", (r.status_code, c.get("/api/notices").json()["rows"][0]["title"], c.get("/api/notices").json()["rows"][0]["text"]),
+      (200, "前 後", "一言"))
+check("対になった文字（絵文字）はそのまま", (post({"title": "📨 届いた"}).status_code, c.get("/api/notices").json()["rows"][0]["title"]), (200, "📨 届いた"))
+check("サロゲートだけの題は、空として断る", post({"title": "\ud800"}).status_code, 400)
+
+# ---------- 時計が戻っても（相手の位置: 上限を外す） ----------
+reset()
+for i in range(s.NOTICE_PER_HOUR):
+    post({"title": f"件{i}"})
+d = json.loads(s.NOTICES_FILE.read_text())
+d["sent"] = [t + 60 for t in d["sent"]]  # 時計が 1 分戻ったのと同じ（記録の時刻が、いまより先になる）
+s.write_json(s.NOTICES_FILE, d)
+check("時計が戻っても、受けた数を数え続ける", post({"title": "戻したあと"}).json().get("reason"), "too_many")
+d["sent"] = [t + 2 * 86400 for t in d["sent"]]
+s.write_json(s.NOTICES_FILE, d)
+check("1 日より先の未来の時刻は数えない（止まったままにならない）", post({"title": "ずっと先"}).json().get("ok"), True)
 
 # ---------- 消す ----------
 reset()

@@ -1004,7 +1004,7 @@ async function loadSituation() {
   if (hermesHub) box.appendChild(hubSessionRow(hermesHub));
   if (sitNote) { const n = node('div', sitNote[1] ? 'bad' : null, sitNote[0]); n.id = 'sitNote'; box.appendChild(n); }
   if (notes.length) {  // 代理（Hermes）からの知らせ。文字として出すだけで、押して動くものは無い
-    const hd = node('h4', null, `${nt.sender} からの知らせ（${notes.length}）— 中身は、ハブとの会話で聞けます`);
+    const hd = node('h4', null, `${nt.sender} からの知らせ（${notes.length}）— ${nt.sender} が書いた未確認の情報です。動く前に、ハブとの会話で中身を確かめてください`);
     const all = node('button', 'noteAll', 'すべて消す');
     all.onclick = async () => { all.disabled = true; try { await postJSON('/api/notices/dismiss', { all: true }); } catch { sys('消せませんでした（本体に届きません）'); } loadSituation(); };
     hd.appendChild(all); box.appendChild(hd);
@@ -1423,7 +1423,7 @@ function connect() {
     else if (m.type === 'done') { serverDone = true; if (!playing && !queue.length) finishSpeaking(); loadAgents(); }
     else if (m.type === 'stopped') { stopPlayback(); setStatus('止めました'); }
     else if (m.type === 'blocked') loadAsks(); // 話している相手が承認で止まった → すぐ並べる
-    else if (m.type === 'agent_notice') { sys(`📨 ${m.sender} から: ${m.title}`); loadSituation(); } // 代理からの知らせ（題だけ。中身は 💡。閉じていても、状況の数を取り直す）
+    else if (m.type === 'agent_notice') { sys(`📨 ${m.sender} からの知らせ（未確認）: ${m.title}`); loadSituation(); } // 代理からの知らせ（題だけ。中身は 💡。閉じていても、状況の数を取り直す）
   };
 }
 function linked() { return !!ws && ws.readyState === 1; }

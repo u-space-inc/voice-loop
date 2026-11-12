@@ -596,7 +596,7 @@ def run_notice(page, who):
     check(f"{who} 知らせは新しい順に、題と一言を文字として出す（タグを解釈しない）",
           wait(lambda: page.locator("#sitBody .notice").count() == 2 and XSS in (page.locator("#sitBody .notice").first.text_content() or "")), True)
     check(f"{who} …そしてタグは動かない", (page.evaluate("window.__xss || 0"), page.locator("#sitBody .notice img").count()), (0, 0))
-    check(f"{who} 見出しに送り手と数", "Hermes からの知らせ（2）" in (page.text_content("#sitBody") or ""), True)
+    check(f"{who} 見出しに送り手と数、未確認の情報であること", ("Hermes からの知らせ（2）" in (page.text_content("#sitBody") or ""), "未確認の情報" in (page.text_content("#sitBody") or "")), (True, True))
     page.locator("#sitBody .notice").first.locator("button").click()
     check(f"{who} × で 1 件消える（消したのは新しいほう）",
           wait(lambda: page.locator("#sitBody .notice").count() == 1 and "古い知らせ" in (page.locator("#sitBody .notice").first.text_content() or "")), True)
@@ -605,7 +605,7 @@ def run_notice(page, who):
                                  headers={"Content-Type": "application/json"}, method="POST")
     r = json.loads(urllib.request.urlopen(req, timeout=10).read())
     check(f"{who} 開いている画面には、届いた知らせを一行で出す（プッシュは送らない）",
-          (r.get("push"), wait(lambda: "📨 Hermes から: 新しい知らせ" in (page.text_content("#log") or ""))), ("visible", True))
+          (r.get("push"), wait(lambda: "📨 Hermes からの知らせ（未確認）: 新しい知らせ" in (page.text_content("#log") or ""))), ("visible", True))
     check(f"{who} …そして一覧も取り直す", wait(lambda: page.locator("#sitBody .notice").count() == 2), True)
     page.click("#sitBody .noteAll")
     check(f"{who} 「すべて消す」で一覧が空になる", wait(lambda: page.locator("#sitBody .notice").count() == 0 and page.text_content("#sitCount") == "1"), True)
