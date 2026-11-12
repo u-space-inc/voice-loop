@@ -129,6 +129,16 @@ check("有限でない時刻の行は落とし、一覧は返す", (c.get("/api/
 s.NOTICES_FILE.write_text('{"rows": [], "pad": "' + "x" * (s.NOTICE_FILE_MAX + 10) + '"}')
 check("大きすぎる記録は読まず、空として扱う", (c.get("/api/notices").json()["rows"], post({"title": "大きすぎのあと"}).json().get("n")), ([], 1))
 
+big = "1" + "0" * 400
+s.NOTICES_FILE.write_text('{"next": 3, "rows": [{"n": 1, "title": "巨大な時刻", "text": "", "at": ' + big + '}, {"n": ' + big + ', "title": "巨大な番号", "text": "", "at": 1}], "sent": [' + big + ', -' + big + ']}')
+check("巨大な整数の時刻・番号の行は落とし、一覧・受ける・すべて消すは落ちない",
+      (c.get("/api/notices").status_code, c.get("/api/notices").json()["rows"], post({"title": "巨大のあと"}).status_code,
+       c.post("/api/notices/dismiss", json={"all": True}).status_code), (200, [], 200, 200))
+s.NOTICES_FILE.write_text('{"next": ' + "9" * 4300 + ', "rows": [{"n": 7, "title": "a", "text": "", "at": ' + str(now) + '}], "sent": []}')
+check("番号の続きが巨大なら、残っている番号の次から振る", post({"title": "続き"}).json().get("n"), 8)
+s.write_json(s.NOTICES_FILE, {"next": s.NOTICE_N_MAX, "rows": [], "sent": []})
+check("番号が上限に達したら、受けずに断る（画面で扱える整数を超えない）", post({"title": "上限"}).json().get("reason"), "too_many")
+
 # ---------- 対になっていない文字（相手の位置: 不正な文字で本体を落とす・上限を使わずに繰り返す） ----------
 reset()
 r = post({"title": "前\ud800後", "text": "\udfff一言"})

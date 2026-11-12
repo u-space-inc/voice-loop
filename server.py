@@ -15,7 +15,6 @@ import base64
 import hashlib
 import io
 import json
-import math
 import os
 import re
 import shutil
@@ -2895,9 +2894,17 @@ def _notice_clean(v, n: int) -> str | None:
     return v if len(v) <= n else v[: n - 1] + "…"
 
 
+NOTICE_N_MAX = 2**53 - 1  # 番号の上限（画面の JavaScript で正確に扱える整数まで）
+
+
 def _notice_time(t, now: float) -> bool:
-    """有限の数で、1 日より先の未来でない時刻か（時計が少し戻っても落とさない）。"""
-    return isinstance(t, (int, float)) and not isinstance(t, bool) and math.isfinite(t) and t - now < 86400
+    """ふつうの範囲の数で、1 日より先の未来でない時刻か（時計が少し戻っても落とさない）。
+    範囲は比べるだけで確かめる（巨大な整数を float に直すと例外になる。NaN は比べると偽）。"""
+    return isinstance(t, (int, float)) and not isinstance(t, bool) and -1e11 < t < 1e11 and t - now < 86400
+
+
+def _notice_n(n) -> bool:
+    return isinstance(n, int) and not isinstance(n, bool) and 0 < n <= NOTICE_N_MAX
 
 
 def notices() -> dict:
@@ -2913,13 +2920,13 @@ def notices() -> dict:
         if not isinstance(r, dict) or not _notice_time(r.get("at"), now) or now - r["at"] >= NOTICE_DAYS * 86400:
             continue
         n, title, text = r.get("n"), _notice_clean(r.get("title"), NOTICE_TITLE), _notice_clean(r.get("text"), NOTICE_TEXT)
-        if isinstance(n, int) and not isinstance(n, bool) and n > 0 and title and text is not None:
+        if _notice_n(n) and title and text is not None:
             rows.append({"n": n, "title": title, "text": text, "at": float(r["at"])})
     # 時計が戻っても上限が外れないよう、未来の時刻（1 日まで）も数え続ける
     sent = [float(t) for t in (d.get("sent") if isinstance(d.get("sent"), list) else []) if _notice_time(t, now) and now - t < 3600]
     top = max([0] + [r["n"] for r in rows])
     nxt = d.get("next")
-    nxt = nxt if isinstance(nxt, int) and not isinstance(nxt, bool) and nxt > top else top + 1
+    nxt = nxt if _notice_n(nxt) and nxt > top else top + 1
     return {"next": nxt, "rows": rows[-NOTICE_KEEP:], "sent": sent}
 
 
@@ -2931,7 +2938,7 @@ async def hub_notice(body: dict):
         return JSONResponse({"ok": False, "reason": "bad_request"}, status_code=400)
     with _notice_lock:
         d = notices()
-        if len(d["sent"]) >= NOTICE_PER_HOUR:
+        if len(d["sent"]) >= NOTICE_PER_HOUR or d["next"] >= NOTICE_N_MAX:
             return JSONResponse({"ok": False, "reason": "too_many", "max": NOTICE_PER_HOUR})
         row = {"n": d["next"], "title": title, "text": text, "at": time.time()}
         write_json(NOTICES_FILE, {"next": row["n"] + 1, "rows": (d["rows"] + [row])[-NOTICE_KEEP:], "sent": d["sent"] + [row["at"]]})
