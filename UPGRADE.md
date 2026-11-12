@@ -85,6 +85,12 @@
 - `hermes/hub.md` に、`templates/hermes/hub.md` の「指示を出すときの決まり」の節（入れ替え）と、「セッションの結果を伝えるときの決まり」の節（その次に足す）、「話し方」の最後の 1 文を写します。写さないと、通知の読み方だけが変わり、指示への足しは前のままです。
 - Hermes の手順（スキル）に、前に採った書き足しで「送信しない指示があれば明示」「外部への変更は先に報告して止まる」のような行が残っていると、ハブは足し続けます。画面の「記憶」か Hermes の対話画面で、手順を見直してください。
 
+## 0.18.0（Teams の見張り）
+
+- 見張りの回を使っているときだけの追加です。Mac の側の台本 `scripts/teams_watch.py` が、Chrome で Teams の「メンション」の一覧を読み、見張りの回が `teams` の口として拾えるようにしました。使うかどうかは任意で、入れ方は README の「Teams（Mac の Chrome で読む）」です。
+- 使うときは、`templates/hermes/watch/vl_*.py`（`vl_teams.py` が増えました）を `~/.hermes/scripts/` に、`voice-loop-watch/SKILL.md` を `~/.hermes/skills/voice-loop/voice-loop-watch/` に写します。`hermes/hub.md` には、`templates/hermes/hub.md` の「見張りの回の記録」の節の、`teams` の件の読み方の行を写します。
+- Teams を使わないときは、写しても見張りの出力は変わりません（`teams-status.json` が無ければ、Teams の口は何も出しません）。本体（`server.py`）と画面は変わっていません。
+
 ## 0.17.10（見張りの回が自分の発言で起きない）
 
 - 見張りの回を使っているときだけの変更です。Slack の見張りが、利用者本人の発言を拾っていました。Hermes との DM で話したり、だれかに DM を送ったりするたびに Agent が起き、その分の費用がかかっていました。いまは本人の発言を拾いません。
