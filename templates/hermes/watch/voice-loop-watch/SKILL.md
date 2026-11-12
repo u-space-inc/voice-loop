@@ -40,7 +40,7 @@ cron のジョブ `voice-loop-watch` の回。指示の中に `MONITOR CHANGE DE
    - Gmail の下書き: `/opt/hermes/.venv/bin/python /opt/data/scripts/vl_gmail_draft.py --reply-to <id> --body "…"`（送らない。作るだけ）
    - Slack: `slack_read_thread`（チャンネル ID と ts）・`slack_read_channel`・`slack_search_public_and_private`。下書きは `slack_send_message_draft`。
    - 録音: Plaud の `get_note`（要約）・`get_file`・`get_transcript`。
-   - Teams: `/opt/hermes/.venv/bin/python /opt/data/scripts/vl_teams.py get <id>`（組織・チャネル・題名・送り手・本文の冒頭）。本文は一覧に出る冒頭（約 500 字まで）だけで、スレッドの全文やほかの返信は読めない。
+   - Teams: `/opt/hermes/.venv/bin/python /opt/data/scripts/vl_teams.py get <id>`（組織・チャネル（チャットなら送り手）・題名・本文の冒頭（「送り手: 本文」の形）・投稿の時刻）。本文は一覧に出る冒頭（約 500 字まで）だけで、スレッドの全文やほかの返信は読めない。
    - 記録: `/opt/hermes/.venv/bin/python /opt/data/scripts/vl_items.py …`（`--help` で使い方）。
    - 知らせ: `/opt/voice-loop/hubctl notice "<題>" "<一言>"`。
 2. `+` の行を全部まとめて、1 回で `vl_items.py unseen "<行>" "<行>" …` に渡す（`+` は付けたままでよい）。出てきた行だけを扱う（ほかは前の回で扱った）。最後の行に新しい件数が出る。`読めない` の行は `unseen` に出ないので、差分から直接見る（手順 9・10）。最後の行の「形の合わない行」が 1 件以上なら、見張りの台本と手順が食い違っている（最後の出力の決め方は手順 11）。

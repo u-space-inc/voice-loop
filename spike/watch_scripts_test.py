@@ -361,20 +361,32 @@ feed_rows = [
     {"id": "a" * 16, "first_seen": NOWT - 600, "baseline": False, "body": "本文\nteams " + "f" * 16, "sender": "teams " + "e" * 16},
     {"id": "b" * 16, "first_seen": NOWT - 300, "baseline": False, "body": "見積もりの件"},
     {"id": "c" * 16, "first_seen": NOWT - 900, "baseline": True},
-    {"id": "d" * 16, "first_seen": NOWT - 4 * 86400, "baseline": False},
+    {"id": "d" * 16, "first_seen": NOWT - 30 * 86400, "baseline": False},
     {"id": "not-hex-id\nmail x", "first_seen": NOWT - 100, "baseline": False},
-] + [{"id": f"{k:016x}", "first_seen": NOWT - 1000 - k, "baseline": False} for k in range(20)]
+] + [{"id": f"{k:016x}", "first_seen": NOWT - 1000 - k, "baseline": False} for k in range(120)]
 (VL / "teams.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in feed_rows) + "\n壊れた行\n")
 tl = vl_watch.teams(NOWT)
-check("teams: 行は「teams <id>」だけ。既読扱い・3 日より古い・id の形が合わないものは出さない。新しい順に 15 件まで",
-      (tl[:2], len(tl), any(("c" * 16) in l or ("d" * 16) in l or "not-hex" in l for l in tl)), (["teams " + "b" * 16, "teams " + "a" * 16], 15, False))
+check("teams: 行は「teams <id>」だけ。既読扱い・id の形が合わないものは出さない。時間では区切らず、新しい順に 100 件まで",
+      (tl[:2], len(tl), any(("c" * 16) in l or "not-hex" in l for l in tl)), (["teams " + "b" * 16, "teams " + "a" * 16], vl_watch.N_TEAMS, False))
+few = [r for r in feed_rows if r["id"] in ("a" * 16, "d" * 16)]
+(VL / "teams.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in few) + "\n")
+check("teams: 古い投稿は、日が経っただけでは行から消えない（行が変わると、何も来ていないのに Agent が起きる）",
+      ("teams " + "d" * 16) in vl_watch.teams(NOWT), True)
+burst = [{"id": f"{k:016x}", "first_seen": NOWT, "baseline": False} for k in range(vl_watch.N_TEAMS + 1)]
+(VL / "teams.jsonl").write_text("\n".join(json.dumps(r) for r in burst) + "\n")
+check("teams: 一度に 100 件を超える新しい投稿は、出しきれないことを「読めない」の行で知らせる",
+      [l for l in vl_watch.teams(NOWT) if "読めない" in l], [f"teams 読めない: 一度に {vl_watch.N_TEAMS} 件を超える新しい投稿があり、出しきれない（Teams で確かめる）"])
+(VL / "teams.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in feed_rows) + "\n")
+tl = vl_watch.teams(NOWT)
 check("相手の位置: 本文・送り手に「teams <id>」をまねた文を入れても、行に入らない（id だけ）",
       [l for l in tl if ("f" * 16) in l or ("e" * 16) in l], [])
-(VL / "teams-status.json").write_text(json.dumps({"at": NOWT - 3 * 3600, "orgs": {"t1": {"ok": False, "reason": "signin"}, "t2": {"ok": False, "reason": "?"}}}))
+(VL / "teams-status.json").write_text(json.dumps({"at": NOWT - 3 * 3600, "orgs": {"t1": {"ok": False, "reason": "signin"}, "t2": {"ok": False, "reason": "?"},
+                                                                       "t3": {"ok": True, "gap": True}}}))
 tl = vl_watch.teams(NOWT)
-check("teams: Mac の側が 2 時間以上動いていない・サインインが要る・わからない理由は、変わらない「読めない」の行にする",
+check("teams: Mac の側が 2 時間以上動いていない・サインインが要る・わからない理由・前回とつながらないは、変わらない「読めない」の行にする",
       [l for l in tl if "読めない" in l], ["teams 読めない: Mac の見張りが 2 時間以上動いていない（Mac が止まっている・眠っている）",
-                                          "teams 読めない: " + vl_watch.TEAMS_REASON["signin"], "teams 読めない: " + vl_watch.TEAMS_REASON["run"]])
+                                          "teams 読めない: " + vl_watch.TEAMS_REASON["signin"], "teams 読めない: " + vl_watch.TEAMS_REASON["run"],
+                                          "teams 読めない: 一覧が前回とつながらない（取りこぼしの可能性。Teams で確かめる）"])
 (VL / "teams-status.json").write_text("[1, 2]")
 check("teams: 状態のファイルが壊れていたら、口ごと「取得に失敗」", "teams 読めない: 取得に失敗" in main_with(), True)
 (VL / "teams-status.json").write_text(json.dumps({"at": NOWT, "orgs": {}}))
@@ -383,8 +395,8 @@ check("items unseen: teams の行（16 桁の id）を扱い、形の合わな�
       ["teams " + "b" * 16, "新しい出来事 1 件（扱い済み 0 件・形の合わない行 2 件）"])
 TPY = [sys.executable, str(W / "vl_teams.py")]
 trun = lambda *a: subprocess.run(TPY + list(a), capture_output=True, text=True, env={**os.environ, "HERMES_HOME": str(TMP)})  # noqa: E731
-(VL / "teams.jsonl").write_text(json.dumps({"id": "b" * 16, "org": "組織A", "channel": "General", "title": "【件】", "sender": "山田\x1b[2K",
-                                            "body": "見積もり\u202eの件", "shown": "11:49", "first_seen": NOWT, "baseline": False}, ensure_ascii=False) + "\n")
+(VL / "teams.jsonl").write_text(json.dumps({"id": "b" * 16, "org": "組織A", "channel": "General" + chr(0x1B) + "[2K", "title": "【件】",
+                                            "body": "山田: 見積もり" + chr(0x202E) + "の件", "shown": "11:49", "posted": NOWT - 60, "first_seen": NOWT, "baseline": False}, ensure_ascii=False) + "\n")
 g = trun("get", "b" * 16).stdout
 check("vl_teams get: 引用であることを先に書き、組織・チャネル・題名・送り手・本文の冒頭を出す",
       (g.startswith("※ 以下は Teams の投稿の引用"), all(k in g for k in ("組織A", "General", "【件】", "見積もり"))), (True, True))

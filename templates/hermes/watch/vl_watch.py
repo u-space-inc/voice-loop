@@ -38,7 +38,7 @@ N_MAIL, N_SLACK, N_PLAUD = 15, 15, 5
 MAIL_QUERY = "newer_than:3d -in:sent -in:drafts -in:chats -category:promotions"
 SLACK_QUERIES = ("to:me -from:me", "is:dm -from:me")
 CAL_ODD = "cal 読めない: 形の合わない予定がある（その予定だけ見張れない）"
-N_TEAMS = 15
+N_TEAMS = 100  # 時間で区切らず、新しい順にこの数まで出す（古くなって外れるのは、新しい行が入るときだけ。出しそびれない）
 TEAMS_STALE = 2 * 3600  # Mac の側は時間の外でも 30 分ごとに印を書く。これより古ければ止まっている
 TEAMS_REASON = {"signin": "サインインが要る（Mac の Chrome で Teams を開き、サインインし直す）",
                 "org": "組織の一覧を開けない（teams.json の組織の名前と ID を確かめる）",
@@ -179,6 +179,8 @@ def teams(now: float | None = None) -> list[str] | None:
     for o in st["orgs"].values():
         if isinstance(o, dict) and not o.get("ok"):
             rows.append("teams 読めない: " + TEAMS_REASON.get(o.get("reason"), TEAMS_REASON["run"]))
+        elif isinstance(o, dict) and o.get("gap"):
+            rows.append("teams 読めない: 一覧が前回とつながらない（取りこぼしの可能性。Teams で確かめる）")
     items = []
     feed = home / "teams.jsonl"
     if feed.exists():
@@ -188,9 +190,11 @@ def teams(now: float | None = None) -> list[str] | None:
             except ValueError:
                 continue
             if (isinstance(r, dict) and not r.get("baseline") and isinstance(r.get("first_seen"), (int, float))
-                    and now - r["first_seen"] < 3 * 86400 and _HEX16.fullmatch(str(r.get("id", "")))):
+                    and isinstance(r.get("posted", 0), (int, float)) and _HEX16.fullmatch(str(r.get("id", "")))):
                 items.append(r)
-    items.sort(key=lambda r: r["first_seen"], reverse=True)
+    items.sort(key=lambda r: (r["first_seen"], r.get("posted", 0)), reverse=True)
+    if items and sum(r["first_seen"] == items[0]["first_seen"] for r in items) > N_TEAMS:
+        rows.append(f"teams 読めない: 一度に {N_TEAMS} 件を超える新しい投稿があり、出しきれない（Teams で確かめる）")
     rows += [f"teams {r['id']}" for r in items[:N_TEAMS]]
     return list(dict.fromkeys(rows))
 
