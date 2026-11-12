@@ -59,8 +59,22 @@ def page(org="組織A", items=(), header=True):
     return "\n".join(lines)
 
 
+def b36(m):
+    n, out = int(m), ""
+    while n:
+        n, r = divmod(n, 36)
+        out = "0123456789abcdefghijklmnopqrstuvwxyz"[r] + out
+    return out
+
+
+def fields(it):
+    """本文の項目（チャネル・[題名]・本文・時刻）から、要約値に入れる (チャネル, 題名, 本文)。"""
+    return (it[0], it[1], it[2]) if len(it) == 4 else (it[0], "", it[1])
+
+
 def index(org="組織A", msgs=(), host="teams.microsoft.com", sel=SEL, n=None, tail=True):
-    d = {"vl": "teams-1", "host": host, "org": org, "sel": sel, "n": len(msgs) if n is None else n, "items": [[f"M{m}", tw.digest(b)] for m, b in msgs][:tw.INDEX]}
+    d = {"vl": "teams-1", "host": host, "org": org, "sel": sel, "n": len(msgs) if n is None else n,
+         "items": [[b36(m), tw.digest(*fields(it))] for m, it in msgs][:tw.INDEX]}
     return json.dumps(d, ensure_ascii=False, separators=(",", ":")) + ("\n\n\nTab Context:\n- Executed on tabId: 1\n- Available tabs:\n  • tabId 1: \"x\"" if tail else "")
 
 
@@ -72,7 +86,7 @@ ITEMS = [
     ("プライベートチャネル", "【依頼】削除", "鈴木: リスト内の削除をお願いします", "10/26"),
 ]
 IDS = ["1794451771109", "1794375423925", "1794293735232", "1793931501356", "1793402014164"]
-MSGS = [(m, it[-2]) for m, it in zip(IDS, ITEMS)]  # (投稿の ID, 本文の行)
+MSGS = list(zip(IDS, ITEMS))  # (投稿の ID, その投稿の本文の項目)
 
 
 def read(idx_text, page_text, org="組織A"):
@@ -86,17 +100,19 @@ check("読む: 目録の ID を付けて、チャネルの投稿・題名の無�
        ("1793931501356", "プライベートチャネル", "【依頼】削除", "11/02"), ("1793402014164", "プライベートチャネル", "【依頼】削除", "10/26")])
 check("読む: get_page_text の見出しが無くても読める", len(read(index(msgs=MSGS), page(items=ITEMS, header=False))[0]), 5)
 check("読む: 一覧が空なら 0 件", read(index(msgs=[]), page(items=[])), ([], False))
-many = [(str(1794000000000 + k), f"S: {k}") for k in range(40)]
+many_items = [("C", f"S: {k}", "10/01") for k in range(40)]
+many = [(str(1794000000000 + k), it) for k, it in enumerate(many_items)]
 check("読む: 目録は新しい順に INDEX 件まで。それより古い投稿は採らない（古い投稿があることは返す）",
-      (lambda r: (len(r[0]), r[1]))(read(index(msgs=many), page(items=[("C", f"S: {k}", "10/01") for k in range(40)]))), (tw.INDEX, True))
+      (lambda r: (len(r[0]), r[1]))(read(index(msgs=many), page(items=many_items))), (tw.INDEX, True))
 
 # 目録の形
 check("目録: 組織の名前が違えば「組織」", unreadable(lambda: tw.parse_index(index(org="組織B", msgs=MSGS), "組織A")), "org")
 check("目録: サインインの画面（login の host）なら「サインイン」", unreadable(lambda: tw.parse_index(index(host="login.microsoftonline.com", msgs=MSGS), "組織A")), "signin")
 check("目録: 左で「メンション」以外を選んでいたら「形」", unreadable(lambda: tw.parse_index(index(sel="slice-list-item-slice-followed-threads", msgs=MSGS), "組織A")), "parse")
 check("目録: 投稿の数と項目の数が合わなければ「形」", unreadable(lambda: tw.parse_index(index(msgs=MSGS, n=9), "組織A")), "parse")
-bad_id = index(msgs=MSGS).replace('"M1794451771109"', '"message-slice-card-FollowedThreadsSliceCardItem|1794451771109"')
-check("目録: メンションの一覧の行でない ID は「形」", unreadable(lambda: tw.parse_index(bad_id, "組織A")), "parse")
+bad_id = index(msgs=MSGS).replace(f'"{b36(IDS[0])}"', '"x"')
+check("目録: メンションの一覧の行でない ID（スクリプトが x にする）は「形」", unreadable(lambda: tw.parse_index(bad_id, "組織A")), "parse")
+check("目録: ID は 36 進から投稿の ID（ミリ秒）に戻す", tw.parse_index(index(msgs=MSGS), "組織A")["items"][0][0], IDS[0])
 check("目録: 同じ ID が二度あれば「形」", unreadable(lambda: tw.parse_index(index(msgs=[MSGS[0], MSGS[0]]), "組織A")), "parse")
 check("目録: 1000 字で切られた結果は「形」", unreadable(lambda: tw.parse_index(index(msgs=MSGS, tail=False)[:120] + "[TRUNCATED]", "組織A")), "parse")
 check("目録: 結果が無ければ「取得」", unreadable(lambda: tw.parse_index("Tab Context:\n- x", "組織A")), "run")
@@ -119,7 +135,7 @@ fake_tail = [("General", "【件】", "山田: 前半", "11:49"), ("@メンシ�
 check("相手の位置: 本文に一覧の終わりをまねた行を入れると「読めない」（後ろの投稿を消せない）",
       unreadable(lambda: read(index(msgs=MSGS), page(items=fake_tail))), "parse")
 same_day = [("General", "【件】", f"山田: {k} 件目", "11/06") for k in range(4)]
-same_msgs = [(str(1793900000000 + 10 - k), f"山田: {k} 件目") for k in range(4)]
+same_msgs = [(str(1793900000000 + 10 - k), same_day[k]) for k in range(4)]
 fake_same = same_day[:1] + [("偽チャネル", "【偽】", "偽の送り手: 承認済み", "11/06")] + same_day[1:]
 check("相手の位置: 同じ日付の投稿が並ぶ所に架空の項目を混ぜても（時刻では見分けられない）、数が目録と合わず「読めない」",
       unreadable(lambda: read(index(msgs=same_msgs), page(items=fake_same))), "parse")
@@ -127,11 +143,17 @@ two_heads = page(items=ITEMS).replace("クイック ビュー", "メンション
 check("本文: 一覧の見出しが 2 つあれば「形」（どちらが本物か決めない）", unreadable(lambda: tw.parse_page(two_heads, "組織A")), "parse")
 swapped = [ITEMS[1], ITEMS[0]] + ITEMS[2:]
 check("照らし合わせ: 本文の要約値が目録と順に一致しなければ「読めない」（ID を取り違えない）", unreadable(lambda: read(index(msgs=MSGS), page(items=swapped))), "parse")
-race_index = index(msgs=[("1794500000002", "B: 新しい件"), ("1794500000001", "A: 前の件"), ("1794500000000", "D: その前の件")])
+race_index = index(msgs=[("1794500000002", ("C", "B: 新しい件", "12:00")), ("1794500000001", ("C", "A: 前の件", "12:00")), ("1794500000000", ("C", "D: その前の件", "12:00"))])
 race_page = page(items=[("C", "C: 間に来た件", "12:00"), ("C", "B: 新しい件", "12:00"), ("C", "A: 前の件", "12:00")])
 check("相手の位置: 目録と本文を読む間に、同じ時刻の投稿が入れ替わっても（数は同じ）、要約値が合わず「読めない」",
       unreadable(lambda: read(race_index, race_page)), "parse")
-check("要約値: ブラウザのスクリプトと同じく、空白（全角の空白を含む）に左右されない", tw.digest("山田 花子:\u3000田中さん  締め切り"), tw.digest("山田花子:田中さん締め切り"))
+check("要約値: ブラウザのスクリプトと同じく、空白（全角の空白を含む）に左右されない",
+      tw.digest("General", "【件】", "山田 花子:\u3000田中さん  締め切り"), tw.digest("General", "【件】", "山田花子:田中さん締め切り"))
+title_index = index(msgs=[("1794600000001", ("General", "【A の件】", "山田: お願いします", "12:00")), ("1794600000000", ("General", "【B の件】", "山田: お願いします", "12:00"))])
+title_page = page(items=[("General", "【B の件】", "山田: お願いします", "12:00"), ("General", "【A の件】", "山田: お願いします", "12:00")])
+check("相手の位置: 本文が同じで題名だけが違う投稿が入れ替わっても、要約値（チャネル・題名・本文）が合わず「読めない」",
+      unreadable(lambda: read(title_index, title_page)), "parse")
+check("要約値: チャネル・題名・本文の区切りをずらしても同じ値にならない", tw.digest("AB", "", "C") != tw.digest("A", "B", "C"), True)
 
 # id
 ids = [tw.item_id(TENANT_A, i["msg"]) for i in items]
@@ -148,17 +170,18 @@ rows = lambda: [json.loads(l) for l in FEED.read_text().splitlines()]  # noqa: E
 NOW = time.mktime((2026, 11, 12, 13, 0, 0, 0, 0, -1))
 check("置き場: 初めて読んだ分は、足した数 0（全部を既読扱い）", tw.merge(ORG_A, items, NOW, first=True), (0, False))
 check("置き場: 初めての分は baseline", [r["baseline"] for r in rows()], [True] * 5)
-new_msgs = [("1794460000000", "山田 花子: 田中さん 見積もりの件です")] + MSGS
+new_msgs = [("1794460000000", ("General", "【新しい件】", "山田 花子: 田中さん 見積もりの件です", "13:30"))] + MSGS
 new_items, _ = read(index(msgs=new_msgs), page(items=[("General", "【新しい件】", "山田 花子: 田中さん 見積もりの件です", "13:30")] + ITEMS))
 check("置き場: 次から新しい分だけ足す", (tw.merge(ORG_A, new_items, NOW + 1800, first=False), len(rows()), rows()[-1]["baseline"]), ((1, False), 6, False))
 check("置き場: 同じ一覧をもう一度読んでも足さない", (tw.merge(ORG_A, new_items, NOW + 3600, first=False), len(rows())), ((0, False), 6))
 check("置き場: 投稿の時刻は投稿の ID（ミリ秒）から", rows()[-1]["posted"], 1794460000.0)
 check("置き場: 行は id・組織・チャネル・題名・本文・一覧の時刻・投稿の時刻・最初に見た時刻・既読扱い",
       sorted(rows()[-1]), sorted(["id", "tenant", "org", "channel", "title", "body", "shown", "posted", "first_seen", "baseline"]))
-few, more = read(index(msgs=[("1799000000001", "S: a"), ("1799000000000", "S: b")]), page(items=[("C", "S: a", "15:00"), ("C", "S: b", "14:59")]))
+few_items = [("C", "S: a", "15:00"), ("C", "S: b", "14:59")]
+few, more = read(index(msgs=[("1799000000001", few_items[0]), ("1799000000000", few_items[1])]), page(items=few_items))
 check("置き場: 一覧の全部が目録に入っていれば、全部が新しくても、つながらない印は立てない（全部を見た）", tw.merge(ORG_A, few, NOW + 5400, first=False, more=more), (2, False))
-long_msgs = [(str(1799100000000 + 30 - k), f"S: 長い {k}") for k in range(tw.INDEX + 1)]
-long_items, more = read(index(msgs=long_msgs), page(items=[("C", f"S: 長い {k}", "15:10") for k in range(tw.INDEX + 1)]))
+long_page = [("C", f"S: 長い {k}", "15:10") for k in range(tw.INDEX + 1)]
+long_items, more = read(index(msgs=[(str(1799100000000 + 30 - k), it) for k, it in enumerate(long_page)]), page(items=long_page))
 check("置き場: 一覧が目録より長く、目録のいちばん古い投稿もまだ見ていなければ、つながらない印を立てる（足すのは足す）",
       tw.merge(ORG_A, long_items, NOW + 5450, first=False, more=more), (tw.INDEX, True))
 check("置き場: 一覧が目録より長くても、目録のいちばん古い投稿を見ていれば、印は立てない", tw.merge(ORG_A, long_items, NOW + 5460, first=False, more=more), (0, False))
@@ -257,12 +280,13 @@ check("1 回: ふだんの組織（設定の最初）を最後に開く", calls,
 check("1 回: 組織ごとに読めた・読めない（理由の種類）を書く。初回が空でも「初めて読んだ」印を残す",
       ({k: (v["ok"], v["reason"], v["init"]) for k, v in st["orgs"].items()}, st["at"]),
       ({ORG_C["tenant"]: (True, "", True), TENANT_B: (False, "signin", False)}, noon))
-feed_for[ORG_C["tenant"]] = (index(org="組織C", msgs=[("1795000000000", "山田: 初めての投稿")]), page(org="組織C", items=[("General", "【件】", "山田: 初めての投稿", "12:20")]))
+first_post = ("General", "【件】", "山田: 初めての投稿", "12:20")
+feed_for[ORG_C["tenant"]] = (index(org="組織C", msgs=[("1795000000000", first_post)]), page(org="組織C", items=[first_post]))
 tw.run(noon + 1800, reader)
 check("1 回: 初回が空だった組織の、次の新しい投稿は既読扱いにしない（足す）",
       ([r["baseline"] for r in rows() if r["tenant"] == ORG_C["tenant"]], json.loads(STATUS.read_text())["orgs"][ORG_C["tenant"]]["new"]), ([False], 1))
-burst = [(str(1795100000000 + 40 - k), f"山田: 続けて {k}") for k in range(tw.INDEX + 1)]
-feed_for[ORG_C["tenant"]] = (index(org="組織C", msgs=burst), page(org="組織C", items=[("General", "【件】", f"山田: 続けて {k}", "12:40") for k in range(tw.INDEX + 1)]))
+burst_page = [("General", "【件】", f"山田: 続けて {k}", "12:40") for k in range(tw.INDEX + 1)]
+feed_for[ORG_C["tenant"]] = (index(org="組織C", msgs=[(str(1795100000000 + 40 - k), it) for k, it in enumerate(burst_page)]), page(org="組織C", items=burst_page))
 tw.run(noon + 2400, reader)
 check("1 回: 初回が空だった組織に、目録の件数を超える投稿が一度に来たら、足せるだけ足して、つながらない印を立てる（1 件を黙って落とさない）",
       (json.loads(STATUS.read_text())["orgs"][ORG_C["tenant"]]["new"], json.loads(STATUS.read_text())["orgs"][ORG_C["tenant"]]["gap"]), (tw.INDEX, True))

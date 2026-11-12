@@ -15,10 +15,10 @@ Hermes の見張りの回（templates/hermes/watch/vl_watch.py の teams の口�
 - claude -p --chrome を、利用者の設定を読まず（--setting-sources ""。利用者のフック・許可・CLAUDE.md・プラグインを持ち込まない）、
   組み込みの道具なし（--tools ""）、ほかの MCP なしで動かす。PreToolUse のフック（teams_hook.py guard）が、決めた道具・その回の URL・
   待つこと・ページの文字を読むことと、一覧の目録を読む決まったスクリプト（JS。LLM が渡した文は使わずに差し替える）だけを通す。
-- 読むのは 2 つ。(1) 目録: 決まったスクリプトが、画面の部品から、組織の名前・選んでいる一覧・投稿の数・新しい順の投稿の ID と、
-  その投稿の本文の冒頭の要約値（空白を除いた文字の djb2 の下 6 桁）を返す（道具の結果は 1000 字で切られるので、短くしてある）。
-  (2) 本文: ページの文字（get_page_text）。台本（LLM なし）が (2) を項目に分け、項目の数が (1) の投稿の数と同じで、本文の要約値が (1) と
-  順に一致したときだけ採る。本文に改行や見出しをまねた文があって項目の境目がずれる、(1) と (2) を読む間に一覧が変わる、のどちらでも
+- 読むのは 2 つ。(1) 目録: 決まったスクリプトが、画面の部品から、組織の名前・選んでいる一覧・投稿の数・新しい順の投稿の ID（36 進）と、
+  その投稿のチャネル・題名・本文の冒頭をまとめた要約値（空白を除いて改行でつないだ文字の SHA-256 の先頭 64 bit）を返す（道具の結果は
+  1000 字で切られるので、短くしてある）。(2) 本文: ページの文字（get_page_text）。台本（LLM なし）が (2) を項目に分け、項目の数が (1) の
+  投稿の数と同じで、チャネル・題名・本文の要約値が (1) と順に一致したときだけ採る（要約値をねらって合わせることはできない）。本文に改行や見出しをまねた文があって項目の境目がずれる、(1) と (2) を読む間に一覧が変わる、のどちらでも
   数か要約値が合わなくなり、その組織を「読めない」にする（黙って取り違えない）。投稿の ID は (1) の Teams の投稿の ID（作られた時刻の
   ミリ秒）で、同じ投稿は同じ id、同じ文面の別の投稿は別の id になる。
 - 読んだ結果は、PostToolUse のフック（teams_hook.py capture）がファイルに書く。LLM には書き写させない。
@@ -58,25 +58,30 @@ UNUSED = [P + t for t in ("browser_batch", "file_upload", "find", "form_input", 
 LIMITS = {"org": 60, "channel": 120, "title": 200, "body": 1200, "shown": 20}
 
 # 一覧の目録を読む決まったスクリプト（読むだけ。ページを変えない）。関門が javascript_tool の text をこれに差し替える。
-# 結果は 1000 字までに収める（道具の結果はそこで切られる）: 新しい順に 25 件までの [M<投稿の ID>, 本文の冒頭の要約値]
-INDEX = 25
-JS = (r"""(()=>{const h=t=>{let x=5381;for(const c of t.replace(/\s+/g,''))x=(x*33+c.codePointAt(0))>>>0;return x.toString(16).padStart(8,'0').slice(-6)};"""
+# 結果は 1000 字までに収める（道具の結果はそこで切られる）: 新しい順に 20 件までの [<投稿の ID の 36 進>, チャネル・題名・本文の要約値]
+INDEX = 20
+JS = (r"""await (async()=>{const W=t=>t.trim().replace(/\s+/g,'');const E=new TextEncoder();"""
+      r"""const H=async(a,b,c)=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',E.encode(W(a)+'\n'+W(b)+'\n'+W(c))))].slice(0,8)"""
+      r""".map(x=>x.toString(16).padStart(2,'0')).join('');"""
+      r"""const q=(r,k)=>((r.querySelector('[data-tid="message-slice-card-'+k+'"]')||{}).textContent||'');"""
       r"""const b=[...document.querySelectorAll('[data-tid="me-control-avatar-trigger"] span')].find(e=>!e.children.length&&e.textContent.trim());"""
       r"""const s=[...document.querySelectorAll('[data-tabster*="LeftRailSelectedItem"]')].map(e=>e.getAttribute('data-testid')||'').join(',');"""
       r"""const rows=[...document.querySelectorAll('[data-testid="message-slice-card-item"]')];"""
-      r"""return JSON.stringify({vl:'teams-1',host:location.host,org:b?b.textContent.trim().slice(0,60):'',sel:s.slice(0,80),"""
-      r"""n:rows.length,items:rows.slice(0,25).map(r=>[r.id.replace('message-slice-card-MentionsSliceCardItem|','M'),"""
-      r"""h(((r.querySelector('[data-tid="message-slice-card-preview"]')||{}).textContent||'').trim())])})})()""")
-DIGEST = re.compile(r"[0-9a-f]{6}")
+      r"""const items=await Promise.all(rows.slice(0,20).map(async r=>{const m=/^message-slice-card-MentionsSliceCardItem\|(\d{10,16})$/.exec(r.id);"""
+      r"""return [m?Number(m[1]).toString(36):'x',await H(q(r,'title'),q(r,'threads-secondary-title'),q(r,'preview'))]}));"""
+      r"""return JSON.stringify({vl:'teams-1',host:location.host,org:b?b.textContent.trim().slice(0,60):'',sel:s.slice(0,80),n:rows.length,items})})()""")
+MSG = re.compile(r"[0-9a-z]{6,11}")  # 投稿の ID（作られた時刻のミリ秒）の 36 進
+DIGEST = re.compile(r"[0-9a-f]{16}")
+# JavaScript の \s と同じ空白（スクリプトの W() と同じに除く）
+_WS = re.compile("[" + "".join(map(chr, [9, 10, 11, 12, 13, 32, 0xA0, 0x1680, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000, 0xFEFF] + list(range(0x2000, 0x200B)))) + "]+")
 
 
-def digest(text: str) -> str:
-    """決まったスクリプトの h() と同じ要約値（空白を除いた文字の djb2 の下 6 桁）。"""
-    x = 5381
-    for c in re.sub(r"\s+", "", text.strip()):
-        x = (x * 33 + ord(c)) & 0xFFFFFFFF
-    return f"{x:08x}"[-6:]
-MSG = re.compile(r"M(\d{10,16})")
+def digest(channel: str, title: str, body: str) -> str:
+    """決まったスクリプトの H() と同じ要約値。空白を除き、改行でつないだ文字の SHA-256 の先頭 64 bit。"""
+    w = lambda t: _WS.sub("", t.strip())  # noqa: E731
+    return hashlib.sha256("\n".join(map(w, (channel, title, body))).encode("utf-8")).hexdigest()[:16]
+
+
 SELECTED = "slice-list-item-slice-activities-mentions"  # 左で選んでいる項目（data-testid）。「クイック ビュー」の「メンション」
 # ページの文字の、一覧の始まり（左の「メンション」を選んだ一覧の見出しのあと）と終わり
 HEAD = ["メンション", "未読", "チャネル", "チャット"]
@@ -148,11 +153,13 @@ def parse_index(text: str, org_name: str) -> dict:
     for it in items:
         if not (isinstance(it, list) and len(it) == 2 and all(isinstance(x, str) for x in it)):
             raise Unreadable("parse")
-        m = MSG.fullmatch(it[0])
-        if not m or m.group(1) in seen or not DIGEST.fullmatch(it[1]):
+        if not MSG.fullmatch(it[0]) or not DIGEST.fullmatch(it[1]):
             raise Unreadable("parse")
-        seen.add(m.group(1))
-        out.append((m.group(1), it[1]))
+        msg = str(int(it[0], 36))
+        if not 10 <= len(msg) <= 16 or msg in seen:
+            raise Unreadable("parse")
+        seen.add(msg)
+        out.append((msg, it[1]))
     return {"n": n, "items": out}
 
 
@@ -189,13 +196,13 @@ def parse_page(text: str, org_name: str) -> list[dict]:
 
 
 def combine(index: dict, page: list[dict]) -> tuple[list[dict], bool]:
-    """目録の投稿の数と、本文の項目の数が同じで、本文の要約値が順に一致したときだけ、目録の ID を付けて返す（新しい順に、目録の件数まで）。
+    """目録の投稿の数と、本文の項目の数が同じで、チャネル・題名・本文の要約値が順に一致したときだけ、目録の ID を付けて返す（新しい順に、目録の件数まで）。
     返すもの: (項目, 一覧に目録の件数より古い投稿がある)。"""
     if len(page) != index["n"]:
         raise Unreadable("parse")
     out = []
     for (msg, dg), it in zip(index["items"], page):
-        if digest(it["body"]) != dg:
+        if digest(it["channel"], it["title"], it["body"]) != dg:
             raise Unreadable("parse")
         out.append({**it, "msg": msg})
     return out, index["n"] > len(out)
