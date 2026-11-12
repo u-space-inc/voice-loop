@@ -1,16 +1,22 @@
 name: security-review
-# 正本: 設計ノートの assets/security-workflows/security-review.yml（2026-11-05 v3）
+# 正本: 設計ノートの assets/security-workflows/security-review.yml（2026-11-12 v4）
 # 各リポジトリはこのファイルをそのまま写す。許される差分は if の base.ref の行だけ（下の注記）
 # actions は commit SHA で固定（版の札は書き換えられうる。OAuth の鍵を渡す action はとくに）。更新は正本から
+# job「security-review」は既定ブランチの必須のチェック。指摘があれば失敗し、指摘が残ったままではマージできない
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-# 同じ PR で push が続いたら前の run を止める（Actions 分とサブスク枠の節約）
+    # edited: 宛て先を後から既定ブランチに変えたときに動き直すため。対象の PR では題名・本文の変更でも毎回レビューする（前の結果は使い回さない）
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+    # 既定ブランチ宛ての PR だけで起動する。ほかの枝宛てで起動して job が skip になると、その skip が合格として残り、
+    # 宛て先を既定ブランチに戻した直後（新しい run ができるまでの数秒）に、失敗した commit をマージできてしまう（2026-11-12 の sandbox の試験）
+    # 既定ブランチが staging で、main 宛ての hotfix も拾うリポジトリは [staging, main] にする
+    branches: [main]
+# 同じ PR で event が続いたら、前の run を取り消して後の run を実行する（取り消した run の記録は残る）
 concurrency:
   group: security-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 jobs:
-  review:
+  security-review:
     # 管理者本人（GitHub の数値 ID）が立てた、既定ブランチ宛ての、同一リポジトリの PR だけ。fork・Dependabot・他ブランチ宛ては対象外
     # 既定ブランチが staging で、main には昇格 PR だけを送るリポジトリは、base.ref の行を次に置き換える（昇格 PR は除外、hotfix は拾う）:
     #   (github.event.pull_request.base.ref == 'staging' || (github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.ref != 'staging'))
@@ -39,15 +45,46 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0          # 組み込み command は origin/HEAD との merge-base 比較をする
+      # 比較の基準は既定ブランチ。宛て先が既定ブランチと違う hotfix でも、昇格がマージコミットなら差分は hotfix 分だけになる（昇格を squash に変えるとずれる）
       - run: git remote set-head origin -a
-      - uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1.0.264（7 日ルール: 2026-10-27 公開）
+      - id: review
+        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1.0.264（7 日ルール: 2026-10-27 公開）
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # GitHub の操作はこのジョブの権限に絞る。Claude の App のトークンは contents: write を持つので使わない
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             /security-review
+            `.github/review-exceptions.md` があれば先に読んでください。そこにある項目のうち、本人の判断（日付と、どこで判断したか）が書かれたものの範囲内は指摘しないでください。本人の判断の欄が無い項目と、この PR で範囲を広げた項目は効かせず、そのことを書いて指摘してください。
             上のレビュー結果を、そのまま here-document で標準入力に渡し、`gh pr comment ${{ github.event.pull_request.number }} --body-file - --` で PR にコメントとして投稿してください。指摘が無ければ「指摘なし」と投稿してください。
+            指摘があるときは、コメントの最後に次の手順をそのまま付けてください。
+            ---
+            **指摘を受けたときの手順**（`security-review` が失敗のままではマージできません）
+            1. 直して push する。新しい commit をもう一度レビューします
+            2. 直さないのが本人の判断なら、`.github/review-exceptions.md` に範囲と本人の判断（日付・どこで）を書いて push する
+            3. 本人の判断が無いもの・迷うものは、マージせずに本人に聞く
+            ---
+            最後に、構造化した結果を返してください。completed はレビューを最後まで終えたか、findings は投稿した指摘の数です。
           claude_args: >-
             --allowedTools "Bash(gh pr comment ${{ github.event.pull_request.number }} --body-file - --:*),Bash(gh pr diff:*),Bash(git diff:*),Bash(git log:*),Bash(git status:*)"
             --max-turns 30
+            --json-schema '{"type":"object","properties":{"completed":{"type":"boolean"},"findings":{"type":"integer","minimum":0}},"required":["completed","findings"],"additionalProperties":false}'
+      # 合否はこの run の構造化した結果だけで決める（コメントは人とエージェントが読むためのもので、判定には使わない）
+      - name: 合否
+        env:
+          RESULT: ${{ steps.review.outputs.structured_output }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          try:
+              r = json.loads(os.environ.get("RESULT") or "")
+          except ValueError:
+              sys.exit("構造化した結果が無い・読めないので不合格")
+          completed, findings = r.get("completed"), r.get("findings")
+          print(f"completed={completed} findings={findings}")
+          if completed is not True or not isinstance(findings, int) or isinstance(findings, bool):
+              sys.exit("レビューを最後まで終えていないので不合格")
+          if findings != 0:
+              sys.exit(f"指摘あり {findings} 件。PR のコメントの手順に従う")
+          print("指摘なし")
+          PY
