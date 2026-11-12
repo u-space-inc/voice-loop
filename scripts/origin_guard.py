@@ -31,7 +31,8 @@ LOCAL_NAMES = {"127.0.0.1", "localhost", "::1"}
 DOCKER_NAME = "host.docker.internal"  # コンテナから見た、この Mac の名前
 DOCKER_ALLOWED = {("GET", "/api/hub/sessions"), ("GET", "/api/hub/read"), ("GET", "/api/hub/screen"), ("GET", "/api/hub/tasks"),
                   ("POST", "/api/hub/send"), ("POST", "/api/hub/answer"), ("POST", "/api/hub/spawn"), ("POST", "/api/hub/close"),
-                  ("GET", "/api/hub/context"), ("POST", "/api/hub/remember"), ("POST", "/api/hub/forget"), ("GET", "/api/hub/proposals")}
+                  ("GET", "/api/hub/context"), ("POST", "/api/hub/remember"), ("POST", "/api/hub/forget"), ("GET", "/api/hub/proposals"),
+                  ("POST", "/api/hub/notice")}
 
 
 # コンテナから Mac へ届く接続を中継するプログラムの名前（頭の部分。大文字小文字は問わない）。VL_CONTAINER_PROGRAMS で足せる

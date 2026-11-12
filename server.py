@@ -2873,6 +2873,106 @@ async def api_situation():
     return JSONResponse(d)
 
 
+# ---------- 代理からの知らせ（hubctl notice） ----------
+# 代理（Hermes）が、見張りの回（cron）で見つけた判断待ちなどを知らせる口。本体は、題と一言を文字として画面の一覧に出し、
+# プッシュ通知には題だけを載せる。知らせには押して動くものが無い（送る・答える・立てる・閉じるの口とはつながらない）。
+# 中身は代理が外から読んだものの要約なので、引用データとして文字で出すだけにする（HTML にしない）。
+NOTICES_FILE = STATE_DIR / "notices.json"
+NOTICE_TITLE, NOTICE_TEXT = 60, 400  # 字数の上限（超えた分は切る）
+NOTICE_KEEP, NOTICE_DAYS = 50, 7  # 残す数と日数
+NOTICE_PER_HOUR = 20  # 1 時間に受ける数（消したものも数える）。見張りが暴れても、通知が鳴り続けないように
+_notice_lock = threading.Lock()
+_NOTICE_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ud800-\udfff]")  # 制御文字・向きを変える文字・対になっていないサロゲート
+NOTICE_FILE_MAX = 1_000_000  # 記録のファイルがこれより大きければ読まない（空として扱う）
+
+
+def _notice_clean(v, n: int) -> str | None:
+    """1 行にそろえ、制御文字などを空白にして、n 字で切る。文字でなければ None。"""
+    if not isinstance(v, str):
+        return None
+    v = " ".join(_NOTICE_CTRL.sub(" ", v).split())
+    return v if len(v) <= n else v[: n - 1] + "…"
+
+
+NOTICE_N_MAX = 2**53 - 1  # 番号の上限（画面の JavaScript で正確に扱える整数まで）
+
+
+def _notice_time(t, now: float) -> bool:
+    """ふつうの範囲の数で、1 日より先の未来でない時刻か（時計が少し戻っても落とさない）。
+    範囲は比べるだけで確かめる（巨大な整数を float に直すと例外になる。NaN は比べると偽）。"""
+    return isinstance(t, (int, float)) and not isinstance(t, bool) and -1e11 < t < 1e11 and t - now < 86400
+
+
+def _notice_n(n) -> bool:
+    return isinstance(n, int) and not isinstance(n, bool) and 0 < n <= NOTICE_N_MAX
+
+
+def notices() -> dict:
+    """{"next": 次の番号, "rows": 残っている知らせ（古い順）, "sent": 直近 1 時間に受けた時刻}。
+    記録は本体の状態フォルダにあるが、壊れていても・手で書き換えられていても、受けるときと同じ形にそろえ直してから使う。"""
+    try:
+        d = _read_json(NOTICES_FILE, {}) if not NOTICES_FILE.exists() or NOTICES_FILE.stat().st_size <= NOTICE_FILE_MAX else {}
+    except OSError:
+        d = {}
+    now = time.time()
+    rows = []
+    for r in d.get("rows") if isinstance(d.get("rows"), list) else []:
+        if not isinstance(r, dict) or not _notice_time(r.get("at"), now) or now - r["at"] >= NOTICE_DAYS * 86400:
+            continue
+        n, title, text = r.get("n"), _notice_clean(r.get("title"), NOTICE_TITLE), _notice_clean(r.get("text"), NOTICE_TEXT)
+        if _notice_n(n) and title and text is not None:
+            rows.append({"n": n, "title": title, "text": text, "at": float(r["at"])})
+    # 時計が戻っても上限が外れないよう、未来の時刻（1 日まで）も数え続ける
+    sent = [float(t) for t in (d.get("sent") if isinstance(d.get("sent"), list) else []) if _notice_time(t, now) and now - t < 3600]
+    top = max([0] + [r["n"] for r in rows])
+    nxt = d.get("next")
+    nxt = nxt if _notice_n(nxt) and nxt > top else top + 1
+    return {"next": nxt, "rows": rows[-NOTICE_KEEP:], "sent": sent}
+
+
+@app.post("/api/hub/notice")
+async def hub_notice(body: dict):
+    """hubctl notice。代理が知らせる題と一言を受け、画面の一覧に足し、画面が開いていればそこへ、閉じていればプッシュ通知（題だけ）で知らせる。"""
+    title, text = _notice_clean(body.get("title"), NOTICE_TITLE), _notice_clean(body.get("text", ""), NOTICE_TEXT)
+    if not title or text is None:
+        return JSONResponse({"ok": False, "reason": "bad_request"}, status_code=400)
+    with _notice_lock:
+        d = notices()
+        if len(d["sent"]) >= NOTICE_PER_HOUR or d["next"] >= NOTICE_N_MAX:
+            return JSONResponse({"ok": False, "reason": "too_many", "max": NOTICE_PER_HOUR})
+        row = {"n": d["next"], "title": title, "text": text, "at": time.time()}
+        write_json(NOTICES_FILE, {"next": row["n"] + 1, "rows": (d["rows"] + [row])[-NOTICE_KEEP:], "sent": d["sent"] + [row["at"]]})
+    hlog(f"知らせ [{row['n']}]（題 {len(title)}字・一言 {len(text)}字）", flush=True)
+    for c in list(CLIENTS):
+        try:
+            await c.send(type="agent_notice", n=row["n"], title=title, sender=HUB.label)
+        except Exception:
+            pass
+    push = await push_all(f"{HUB.label} から", title, f"notice-{row['n']}")
+    return JSONResponse({"ok": True, "n": row["n"], "push": push})
+
+
+@app.get("/api/notices")
+def api_notices():
+    """画面の 💡 の「知らせ」。新しい順。コンテナからは使えない口。"""
+    with _notice_lock:
+        d = notices()
+    return JSONResponse({"sender": HUB.label, "rows": list(reversed(d["rows"]))})
+
+
+@app.post("/api/notices/dismiss")
+def api_notices_dismiss(body: dict):
+    """画面の ×（1 件）・すべて消す。コンテナからは使えない口。"""
+    n, every = body.get("n"), body.get("all") is True
+    if not every and (not isinstance(n, int) or isinstance(n, bool)):
+        return JSONResponse({"ok": False, "reason": "bad_request"}, status_code=400)
+    with _notice_lock:
+        d = notices()
+        keep = [] if every else [r for r in d["rows"] if r["n"] != n]
+        write_json(NOTICES_FILE, {**d, "rows": keep})
+    return JSONResponse({"ok": True, "left": len(keep)})
+
+
 @app.get("/api/hub/proposals")
 def hub_proposals():
     """hubctl proposals。開いている提案を読む（送る口はハブには無い）。"""

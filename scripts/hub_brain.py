@@ -21,6 +21,7 @@ class Brain:
     """ハブの頭。既定は「持っていない」の動きで、頭ごとに必要なものだけ書く。"""
 
     in_herdr = False  # 頭が herdr のセッションか（そうなら、ハブのフォルダのセッションをハブとして数える）
+    label = "ハブ"  # 画面と通知で、知らせの送り手として出す名前
 
     def ensure(self) -> dict:
         """使える状態にする。{"ok": True, "pane": …, "started": bool} か、{"ok": False, "reason": …, "detail": …}。"""
