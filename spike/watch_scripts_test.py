@@ -360,6 +360,11 @@ check("手順の「行の形」が台本と同じ（slack <チャンネル ID>/<
       ("`slack <チャンネル ID>/<ts> <送り手の ID>`" in SK, "`cal <id>@<開始>`" in SK, "vl_items.py unseen" in SK, "vl_items.py seen" in SK), (True, True, True, False))
 check("手順が「形の合わない行」（unseen の数）と「形の合わない予定がある」（台本の 1 行）の扱いを書いている",
       ("「形の合わない行」が 1 件以上なら" in SK, vl_watch.CAL_ODD.split(": ", 1)[1].split("（")[0] in SK), (True, True))
+step11 = SK.split("\n11. ", 1)[1].split("\n## ", 1)[0]
+check("手順 11: 形の合わない行がある回を先に決め、[SILENT] は「形の合わない行も judge も 0 件」の回だけ",
+      (step11.index("「形の合わない行」が 1 件以上の回") < step11.index("judge が 1 件以上の回") < step11.index("どちらでもない回"),
+       [l for l in step11.splitlines() if "`[SILENT]` だけにする" in l][0].lstrip().startswith("- どちらでもない回（形の合わない行が 0 件で、judge も 0 件）")),
+      (True, True))
 
 ok = sum(r[1] for r in results)
 for name, passed, got, want in results:
