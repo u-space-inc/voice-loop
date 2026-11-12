@@ -27,10 +27,18 @@ HOME = Path(os.environ.get("HERMES_HOME") or "/opt/data")
 FILE = HOME / "voice-loop" / "items.jsonl"
 SOURCES = {"mail", "slack", "plaud", "cal"}
 KINDS = {"judge", "info", "baseline"}
-LIMITS = {"title": 80, "note": 600, "prepared": 600, "project": 40, "id": 120}
+LIMITS = {"title": 80, "note": 600, "prepared": 600, "project": 40, "id": 200}
 JST = dt.timezone(dt.timedelta(hours=9))  # 表示の時刻。コンテナの時計は UTC なので、決めて付ける
-# 見張りの行の形（vl_watch.py）。2 つ目の語が記録の id。形の合わない行（見出し・「読めない」・相手の文）は扱わない
-_EVENT = re.compile(r"(mail|slack|plaud|cal) ([A-Za-z0-9_.@:+=/-]{1,200})(?: [A-Za-z0-9_.@:+=/|-]{1,200})*")
+# 見張りの行の形（vl_watch.py と同じ。変えるときは両方を変える）。2 つ目の語（括弧の中）が記録の id
+_ID = r"[A-Za-z0-9_.@:+=-]{1,200}"
+_LINE = {
+    "mail": re.compile(rf"mail ({_ID})"),
+    "slack": re.compile(r"slack ([A-Z0-9]{1,40}/[0-9]{1,12}\.[0-9]{1,12}) (?:[A-Z0-9]{1,40}|-)"),
+    "cal": re.compile(rf"cal ({_ID})"),
+    "plaud": re.compile(rf"plaud ({_ID}) \| {_ID}"),
+}
+# 記録の id。切らずに保存し（切ると、同じ出来事が記録済みにならない）、形が合わなければ断る
+_RECORD_ID = re.compile(r"[A-Za-z0-9_.@:+=/-]{1,200}")
 
 
 def _rows() -> list[dict]:
@@ -113,25 +121,35 @@ def main() -> int:
         return 0 if hit else 1
     if a.cmd == "unseen":
         known = {(r["source"], r["id"]) for r in items.values()}
-        new, old, picked = [], 0, set()
+        new, old, odd, picked = [], 0, 0, set()
         for raw in (a.lines or sys.stdin.read().splitlines()):
             line = raw.strip()
             line = line[1:].strip() if line.startswith("+") else line
-            m = _EVENT.fullmatch(line)
-            if not m or (m.group(1), m.group(2)) in picked:
+            src, _, rest = line.partition(" ")
+            if src not in _LINE or rest.startswith("読めない"):
+                continue  # 差分の見出し・口の見出し・「読めない」の行
+            m = _LINE[src].fullmatch(line)
+            if not m:
+                odd += 1  # 黙って捨てず、数を出す（見張りの台本と食い違っている）
                 continue
-            picked.add((m.group(1), m.group(2)))
-            if (m.group(1), m.group(2)) in known:
+            key = (src, m.group(1))
+            if key in picked:
+                continue
+            picked.add(key)
+            if key in known:
                 old += 1
             else:
                 new.append(line)
-        print("\n".join(new + [f"新しい出来事 {len(new)} 件（扱い済み {old} 件）"]))
+        print("\n".join(new + [f"新しい出来事 {len(new)} 件（扱い済み {old} 件・形の合わない行 {odd} 件）"]))
         return 0
     if a.cmd == "add":
+        if not _RECORD_ID.fullmatch(a.id):
+            print("id の形が合いません（見張りの行の 2 つ目の語を、そのまま渡してください）")
+            return 2
         if any(r["source"] == a.source and r["id"] == a.id for r in items.values()):
             print("既に記録にあります（追加しません）")
             return 0
-        r = _append({"op": "add", "at": time.time(), "source": a.source, "id": clip(a.id, "id"), "project": clip(a.project, "project") or "未振り分け",
+        r = _append({"op": "add", "at": time.time(), "source": a.source, "id": a.id, "project": clip(a.project, "project") or "未振り分け",
                      "kind": a.kind, "title": clip(a.title, "title"), "note": clip(a.note, "note"), "prepared": clip(a.prepared, "prepared")})
         print(f"記録しました [{r['n']}]")
         return 0

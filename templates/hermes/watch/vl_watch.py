@@ -13,6 +13,8 @@
 - 行の 2 つ目の語は、そのまま記録（vl_items.py）の id にする（Agent に組み立てさせない）。
   mail <id> ／ slack <チャンネル>/<ts> <送り手> ／ cal <id>@<開始> ／ plaud <id> | <録音の開始>
 - 予定の一覧は更新時刻を返さないので、予定の id には開始の時刻を入れる（時刻が動いたら別の出来事になる）。
+  招待を送る側は予定の id を選べるので、形の合わない予定は 1 件ずつ外し、口ごとは止めない（外したことは 1 行で出す）。
+- 行の形は vl_items.py の _LINE と同じにする（変えるときは両方を変える）。
 - Slack は利用者本人の発言を拾わない（-from:me）。拾うと、Hermes との DM で話すたびに Agent が起きる。
 """
 from __future__ import annotations
@@ -33,6 +35,7 @@ GAPI = str(Path(vl_mcp.HOME) / "skills/productivity/google-workspace/scripts/goo
 N_MAIL, N_SLACK, N_PLAUD = 15, 15, 5
 MAIL_QUERY = "newer_than:3d -in:sent -in:drafts -in:chats -category:promotions"
 SLACK_QUERIES = ("to:me -from:me", "is:dm -from:me")
+CAL_ODD = "cal 読めない: 形の合わない予定がある（その予定だけ見張れない）"
 
 
 _CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]")
@@ -76,11 +79,16 @@ def calendar() -> list[str]:
     evs = gapi("calendar", "list", "--start", today.isoformat(), "--end", (today + dt.timedelta(days=2)).isoformat(),
                "--max", "30")
     evs = evs if isinstance(evs, list) else evs.get("events", [])
-    out = []
+    out, odd = [], False
     for e in evs:
         st = e.get("start")
         st = st.get("dateTime") or st.get("date") if isinstance(st, dict) else st
-        out.append(f"cal {ident(e.get('id'))}@{ident(st or '-')}")
+        try:
+            out.append("cal " + ident(ident(e.get("id")) + "@" + ident(st or "-")))  # つないだ id も 200 字まで
+        except ValueError:
+            odd = True
+    if odd:
+        out.append(CAL_ODD)
     return out
 
 
@@ -115,9 +123,9 @@ def _slack_items(text: str) -> list[tuple[str, str, str]]:
     for k, m in enumerate(heads):
         end = heads[k + 1].start() if k + 1 < len(heads) else len(text)
         meta = text[m.end():end].split("\nText:", 1)[0]
-        ch = re.search(r"^Channel: .*?\(ID: ([A-Z0-9]+)\)\s*$", meta, re.M)
-        ts = re.search(r"^Message_ts: (\d+\.\d+)\s*$", meta, re.M)
-        fr = re.search(r"^From: .*?\(ID: ([A-Z0-9]+)\)\s*$", meta, re.M)
+        ch = re.search(r"^Channel: .*?\(ID: ([A-Z0-9]{1,40})\)\s*$", meta, re.M)
+        ts = re.search(r"^Message_ts: (\d{1,12}\.\d{1,12})\s*$", meta, re.M)
+        fr = re.search(r"^From: .*?\(ID: ([A-Z0-9]{1,40})\)\s*$", meta, re.M)
         if not (ch and ts):
             raise Garbled()
         items.append((ts.group(1), ch.group(1), fr.group(1) if fr else "-"))
