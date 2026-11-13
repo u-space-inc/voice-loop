@@ -250,8 +250,12 @@ SLACK_GEN = []
 _real_start_watch = s.start_watch
 
 
+SLACK_OVERLAP = []
+
+
 def record_start_watch(d, kind="send"):
     SLACK_GEN.append(d.get("sent_gen"))
+    SLACK_OVERLAP.append(d.get("overlap"))
     d["task"] = s.task_new(d, kind)  # 見張りは動かさない（この試験では報告を直接呼ぶ）
 
 
@@ -295,6 +299,89 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     c.portal.call(run_report, d_slack)
 check("相手の位置: 画面の依頼が順番を待つ間に Slack から頼み、そのあとで画面の依頼が届いても、ハブの報告は Slack に送らない",
       (direct, [("内訳を出しました" in p[2], "次の指示が送られました" in p[2]) for p in posted]), (["画面からの別の作業"], [(False, True)]))
+# 重なった送り: 先に送り始めた別の指示（Slack 以外）が herdr に受けられる前に、Slack の件を送る。先の指示があとから届いても、本文は載せない
+gate_a = threading.Event()
+
+
+def herdr_slow_a(*a, **k):
+    if "先の作業" in a:
+        gate_a.wait(10)
+        return {}  # 届いたか分からない
+    return {"result": {}}
+
+
+async def overlapped_dispatch():
+    s.herdr = herdr_slow_a
+    a_job = asyncio.create_task(s.dispatch(A_LP, "先の作業", "send"))
+    await asyncio.sleep(0.1)
+    rb = await s.dispatch(A_LP, "内訳を出して", "send", (DM, "1.2"))
+    gate_a.set()
+    await a_job
+    return rb, dict(s.INFLIGHT)
+
+
+SLACK_GEN.clear()
+SLACK_OVERLAP.clear()
+posted.clear()
+rb, inflight_after = asyncio.run(overlapped_dispatch())
+# Slack の件（2 つ目に start_watch に来たもの。1 つ目は先の作業）の記録のまま、報告を作る
+asyncio.run(run_report({"pane": "w1:p1", "cwd": "/x/lp", "project": "lp", "title": "見積", "text": "内訳を出して", "slack": (DM, "1.2"),
+                        "sent_gen": SLACK_GEN[0], "overlap": SLACK_OVERLAP[0]}))
+check("相手の位置: 先に送り始めた別の指示が届く前に Slack の件を送ったら、重なった件として、ハブの報告は Slack に送らない（先の指示があとから届いて答えが無くても）",
+      (rb.get("slack"), SLACK_OVERLAP, [("内訳を出しました" in p[2], "次の指示が送られました" in p[2]) for p in posted], inflight_after.get("w1:p1")),
+      (True, [True], [(False, True)], 0))
+s.herdr = lambda *a, **k: {"result": {}}
+
+OVERLAPS = []
+_rsw = s.start_watch
+
+
+def record_overlap(d, kind="send"):
+    OVERLAPS.append(d.get("overlap"))
+    _rsw(d, kind)
+
+
+s.start_watch = record_overlap
+
+
+async def two_in_a_row():
+    await s.dispatch(A_LP, "一つ目", "send")
+    await s.dispatch(A_LP, "二つ目", "send", (DM, "1.2"))
+
+
+asyncio.run(two_in_a_row())
+check("本体: 前の送りが herdr に受けられてから送った件は、重なった件にしない（ふつうに続けて頼んだとき）", OVERLAPS[-2:], [False, False])
+
+# 画面・声からの直接の発言が返事を待っている間に、Slack から同じセッションへ頼んだら、重なった件
+gate_ws = threading.Event()
+
+
+async def ask_slow(agent_, note):
+    if agent_["pane"] == "hub":
+        return ("done", "内訳を出しました（全文は画面で）")
+    await asyncio.to_thread(gate_ws.wait, 10)
+    return ("done", "画面から頼んだ作業の結果")
+
+
+s.ask = ask_slow
+with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+    s.PANE_LOCKS.clear()
+    with c.websocket_connect("ws://127.0.0.1:8790/ws") as w:
+        w.send_json({"type": "text", "text": "画面から頼む", "pane": "w1:p1", "speaker": 0})
+        for _ in range(200):
+            if w.receive_json().get("type") == "status":
+                break
+        for _ in range(100):
+            if s.INFLIGHT.get("w1:p1"):
+                break
+            __import__("time").sleep(0.02)
+        c.portal.call(s.dispatch, A_LP, "内訳を出して", "send", (DM, "1.2"))
+        gate_ws.set()
+        for _ in range(200):
+            if w.receive_json().get("type") == "reply":
+                break
+check("相手の位置: 画面・声からの発言が返事を待っている間に Slack から頼んだ件は、重なった件にする（途中の数は戻る）",
+      (OVERLAPS[-1], s.INFLIGHT.get("w1:p1")), (True, 0))
 s.ask = fake_ask
 check("本体: 設定した DM から頼まれたときだけ、報告を Slack にも送ると答える", (r1.get("slack"), r2.get("slack"), r3.get("slack")), (True, False, False))
 check("本体: 報告の途中は、Slack からでも次の指示を送れない", r4.get("reason"), "reporting")
