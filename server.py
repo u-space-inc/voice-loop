@@ -1692,6 +1692,33 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
         return "ok"
 
 
+def only_this_task(path: Path, offset: int, text: str) -> bool:
+    """Slack に結果の本文を載せてよいか（厳しめ）。記録で、この件の指示が見つかり、そのあとに利用者の側の行が 1 つも無いときだけ True。
+    画面や履歴で使う iter_events は、<system-reminder>・<task-notification>・<bash-input> などで始まる発言を飛ばすが、ここでは飛ばさない
+    （端末に直接打たれた文が、その形で始まっていても見落とさない）。道具の結果（tool_result だけの行）と、サブエージェントの行（isSidechain）だけは数えない。
+    読めない・形の違う記録は False（本文を載せない）。"""
+    head = " ".join(text.split())[:60]
+    found = False
+    for line in read_lines(path, offset=offset):
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict) or row.get("type") != "user" or row.get("isSidechain"):
+            continue
+        content = (row.get("message") or {}).get("content") if isinstance(row.get("message"), dict) else None
+        if isinstance(content, list) and content and all(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+            continue
+        if found:
+            return False  # この件の指示のあとの、利用者の側の行（発言・知らせ・メタの行も）
+        said = content if isinstance(content, str) else " ".join(b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text")
+        m = PASTED.match(said) if isinstance(said, str) else None
+        found = " ".join((m.group(1) if m else said).split()).startswith(head)
+        if not found:
+            return False  # この件の指示より前に、別の利用者の側の行がある（offset はこの件を送る直前なので、ふつうは無い）
+    return found
+
+
 def relay_slack(d: dict, label: str, headline: str, reply: str, fallback: str = slack_report.NO_REPORT):
     """Slack から頼まれた件なら、報告を同じスレッドにも送る（裏で。声と画面の報告を遅らせない）。送り先は slack_report.origin が決めた DM だけ。
     ハブの報告（reply）を載せるのは、それがこの件の結果だと言えるときだけ。言えなければ定型文にする:
@@ -1707,11 +1734,13 @@ def relay_slack(d: dict, label: str, headline: str, reply: str, fallback: str = 
         if reply.strip():
             text = slack_report.text_for(label, headline, "", slack_report.REPLACED)
             if same:
+                text = slack_report.text_for(label, headline, "", slack_report.UNVERIFIED)
                 path = d.get("path")
-                found, _, superseded, _ = (await asyncio.to_thread(delegation_state, Path(path), d["offset"], d["text"])
-                                           if path and Path(path).exists() else (False, "", False, False))
-                text = (slack_report.text_for(label, headline, reply) if found and not superseded
-                        else slack_report.text_for(label, headline, "", slack_report.UNVERIFIED))
+                try:
+                    if path and await asyncio.to_thread(only_this_task, Path(path), d["offset"], d["text"]):
+                        text = slack_report.text_for(label, headline, reply)
+                except Exception:  # 読めない記録（消えた・読めない）は、本文を載せずに定型文を送る
+                    hlog(f"Slack への報告: 記録を読めません（{label}）", flush=True)
         r = await asyncio.to_thread(slack_report.post, hermes.HERMES_CONTAINER, dest, text)
         hlog(f"Slack へ報告: {label} → {r}", flush=True)
 

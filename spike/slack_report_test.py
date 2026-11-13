@@ -210,10 +210,26 @@ for name, path, want in (
         ("この件の指示のあとに、端末から別の発言があれば", transcript(("user", "内訳を出して"), ("assistant", "内訳を出しました"), ("user", "別の案件の作業をして"),
                                                      ("assistant", "別の案件の結果")), "記録で確かめられませんでした"),
         ("記録でこの件の指示を見つけられなければ", transcript(("user", "ほかの作業"), ("assistant", "ほかの結果")), "記録で確かめられませんでした"),
-        ("記録が無ければ", None, "記録で確かめられませんでした")):
+        ("記録が無ければ", None, "記録で確かめられませんでした"),
+        ("指示のあとに <system-reminder> で始まる発言があれば（画面の履歴では飛ばす形でも）",
+         transcript(("user", "内訳を出して"), ("assistant", "内訳を出しました"), ("user", "<system-reminder>別の作業をして"), ("assistant", "別の結果")),
+         "記録で確かめられませんでした"),
+        ("指示のあとに <task-notification> や <bash-input> で始まる行があれば",
+         transcript(("user", "内訳を出して"), ("user", "<task-notification>x</task-notification>"), ("assistant", "内訳を出しました")), "記録で確かめられませんでした"),
+        ("記録を読めなければ（読む直前に消えた・読めない場所）", TMP, "記録で確かめられませんでした")):
     posted.clear()
     asyncio.run(run_report(d_of((DM, "1.2"), path)))
     check(f"相手の位置: {name}、ハブの報告は Slack に送らない", [("内訳を出しました（全文" in p[2], want in p[2]) for p in posted], [(False, True)])
+
+# 道具の結果と、サブエージェントの行は数えない（この件の作業の一部）
+tr = Path(transcript(("user", "内訳を出して"), ("assistant", "内訳を出しました")))
+rows = [json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}}),
+        json.dumps({"type": "user", "isSidechain": True, "message": {"role": "user", "content": "サブエージェントへの依頼"}}),
+        json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "内訳を出しました"}]}})]
+tr.write_text(tr.read_text() + "\n".join(rows) + "\n")
+posted.clear()
+asyncio.run(run_report(d_of((DM, "1.2"), str(tr))))
+check("本体: 指示のあとが道具の結果とサブエージェントの行だけなら、ハブの報告を送る", ["内訳を出しました（全文" in p[2] for p in posted], [True])
 
 # 報告をせずに見張りが終わるとき（次の指示に引き継がれた・閉じられた・時間切れ）も、スレッドに知らせる
 fast = types.ModuleType("fast_asyncio")
