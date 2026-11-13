@@ -1691,9 +1691,13 @@ def relay_slack(d: dict, label: str, headline: str, reply: str):
     dest = d.get("slack")
     if not dest:
         return
+    # 報告を待つ間に、同じセッションへ次の指示（画面から・声から）が送られていたら、ハブが読んだ結果はその新しい件のもの。
+    # 世代は増えるだけなので、ここで同じなら、ハブが報告を作った間ずっと同じ件だった
+    text = (slack_report.text_for(label, headline, reply) if "gen" not in d or WATCH_GEN.get(d["pane"]) == d["gen"]
+            else slack_report.text_for(label, headline, "", slack_report.REPLACED))
 
     async def go():
-        r = await asyncio.to_thread(slack_report.post, hermes.HERMES_CONTAINER, dest, slack_report.text_for(label, headline, reply))
+        r = await asyncio.to_thread(slack_report.post, hermes.HERMES_CONTAINER, dest, text)
         hlog(f"Slack へ報告: {label} → {r}", flush=True)
 
     job = asyncio.create_task(go())

@@ -135,6 +135,27 @@ check("本体: 報告はハブが REPORTING の中で作ったもの（その間
 posted.clear()
 asyncio.run(run_report(d_of(None)))
 check("本体: Slack から頼まれていない件は送らない", posted, [])
+async def report_after_new_send():
+    """報告がハブの順番を待つ間に、同じセッションへ Slack 以外から次の指示が送られた（世代が進んだ）"""
+    d = {**d_of((DM, "1.2")), "gen": 1}
+    s.WATCH_GEN["w1:p1"] = 1
+    lock = s.pane_lock("hub")
+    await lock.acquire()
+    job = asyncio.create_task(run_report(d))
+    await asyncio.sleep(0.05)
+    s.WATCH_GEN["w1:p1"] = 2  # 新しい件（Slack からではない）
+    lock.release()
+    return await job
+
+
+posted.clear()
+asyncio.run(report_after_new_send())
+check("相手の位置: 報告を待つ間に同じセッションへ次の指示が送られたら、ハブの報告（新しい件の結果）は Slack に送らない",
+      [(p[1], "内訳を出しました" in p[2], "次の指示が送られました" in p[2]) for p in posted], [((DM, "1.2"), False, True)])
+posted.clear()
+s.WATCH_GEN["w1:p1"] = 1
+asyncio.run(run_report({**d_of((DM, "1.2")), "gen": 1}))
+check("本体: 世代が同じなら、ハブの報告を送る", ["内訳を出しました" in p[2] for p in posted], [True])
 ANSWER = ("timeout", "")
 posted.clear()
 asyncio.run(run_report(d_of((DM, "1.2"))))

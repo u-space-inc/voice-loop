@@ -41,9 +41,13 @@ def origin(raw) -> tuple[str, str] | None:
     return CHAT, thread
 
 
-def text_for(label: str, headline: str, reply: str) -> str:
-    """Slack に送る文。見出し（案件｜件名と、何が起きたか）と、ハブの報告。報告が無ければ、画面で確かめるよう書く。"""
-    body = reply.strip() or "（ハブの報告を受け取れませんでした。voice-loop の画面で確かめてください）"
+NO_REPORT = "（ハブの報告を受け取れませんでした。voice-loop の画面で確かめてください）"
+REPLACED = "（報告の前に、同じセッションへ次の指示が送られました。この件の結果は voice-loop の画面で確かめてください）"
+
+
+def text_for(label: str, headline: str, reply: str, fallback: str = NO_REPORT) -> str:
+    """Slack に送る文。見出し（案件｜件名と、何が起きたか）と、ハブの報告。報告が無ければ fallback（画面で確かめるよう書く）。"""
+    body = reply.strip() or fallback
     text = f"【{label}{headline}】\n{body}"
     text = _MEDIA.sub("MEDIA：", _CTRL.sub(" ", text)).replace("<", "＜").replace(">", "＞")
     return text if len(text) <= LIMIT else text[: LIMIT - 1] + "…"
