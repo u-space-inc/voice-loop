@@ -246,6 +246,16 @@ async def nothing2(*a, **k):
 
 s.ask = ask_by_pane
 s.speak_to = nothing2
+SLACK_GEN = []
+_real_start_watch = s.start_watch
+
+
+def record_start_watch(d, kind="send"):
+    SLACK_GEN.append(d.get("sent_gen"))
+    d["task"] = s.task_new(d, kind)  # 見張りは動かさない（この試験では報告を直接呼ぶ）
+
+
+s.start_watch = record_start_watch
 posted.clear()
 with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     s.PANE_LOCKS.clear()
@@ -263,6 +273,28 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     fut.result(timeout=10)
 check("相手の位置: 報告を待つ間に、画面・声から同じセッションへ直接頼んでも、ハブの報告（新しい件の結果かもしれない）は Slack に送らない",
       (direct, [("内訳を出しました" in p[2], "次の指示が送られました" in p[2]) for p in posted]), (["別の作業をして"], [(False, True)]))
+# 逆の順: 画面の依頼がセッションの順番を待つ間に、Slack から同じセッションへ頼み、そのあとで画面の依頼が届く
+direct.clear()
+posted.clear()
+with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+    s.PANE_LOCKS.clear()
+    wlock = s.pane_lock("w1:p1")
+    c.portal.call(wlock.acquire)
+    with c.websocket_connect("ws://127.0.0.1:8790/ws") as w:
+        w.send_json({"type": "text", "text": "画面からの別の作業", "pane": "w1:p1", "speaker": 0})
+        for _ in range(200):
+            if w.receive_json().get("type") == "status":
+                break
+        r_slack = c.portal.call(s.dispatch, A_LP, "内訳を出して", "send", (DM, "1.2"))
+        c.portal.call(wlock.release)
+        for _ in range(200):
+            if w.receive_json().get("type") == "reply":
+                break
+    d_slack = {"pane": "w1:p1", "cwd": "/x/lp", "project": "lp", "title": "見積", "text": "内訳を出して", "slack": (DM, "1.2"),
+               "sent_gen": SLACK_GEN[-1]}
+    c.portal.call(run_report, d_slack)
+check("相手の位置: 画面の依頼が順番を待つ間に Slack から頼み、そのあとで画面の依頼が届いても、ハブの報告は Slack に送らない",
+      (direct, [("内訳を出しました" in p[2], "次の指示が送られました" in p[2]) for p in posted]), (["画面からの別の作業"], [(False, True)]))
 s.ask = fake_ask
 check("本体: 設定した DM から頼まれたときだけ、報告を Slack にも送ると答える", (r1.get("slack"), r2.get("slack"), r3.get("slack")), (True, False, False))
 check("本体: 報告の途中は、Slack からでも次の指示を送れない", r4.get("reason"), "reporting")

@@ -3130,6 +3130,7 @@ async def ws(sock: WebSocket):
         await send(type="status", text="エージェントに送りました。考え中…")
         SENT_GEN[pane] = SENT_GEN.get(pane, 0) + 1  # 画面・声からの直接の指示も、前の件の Slack への報告に新しい結果を載せない（送る前に進める）
         async with pane_lock(pane):  # ハブが自動通知に応答している最中なら、それが終わってから送る
+            SENT_GEN[pane] = SENT_GEN.get(pane, 0) + 1  # 順番を待つ間に、ハブ経由の件が送られていることがある。実際に送る直前にも進める
             state, reply = await ask(agent, text)
             if cancel.is_set():
                 return
