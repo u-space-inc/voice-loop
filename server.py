@@ -1520,8 +1520,6 @@ async def _watch_delegation(d: dict):
                 relay_slack(d, label, "の見張りは、同じセッションへの次の指示に引き継がれました", "", slack_report.SCREEN)
             return  # 同じセッションに新しい指示が送られた。見張りは最新の1つに任せる（古い件の名前で通知を重ねない）
         a = next((x for x in await asyncio.to_thread(list_agents) if x["pane"] == d["pane"] and x["cwd"] == d["cwd"]), None)
-        if a and d.get("slack") and not d.get("session") and not d.get("session_seen") and a.get("session"):
-            d["session_seen"] = a["session"]  # 送ったときに ID の無かった件で、最初に見えたセッション ID。以後は変えない（入れ替わったセッションを覚えない）
         if not a:  # ハブがユーザーの許可で閉じたものは、知らせない
             if reported is None and d["pane"] in CLOSED:
                 task_set(d.get("task"), "closed", "ハブが閉じました")
@@ -1534,11 +1532,6 @@ async def _watch_delegation(d: dict):
             continue
         path = jsonl_path(a)
         has = bool(path and path.exists())
-        # 立てた直後に送った件は、送ったときにセッション ID がまだ無い。最初に見えた ID（作業中に見えたものも）の記録の、最初の利用者の側の行が
-        # この件の指示なら、その ID を覚える。最初に見えた ID と違うセッション（入れ替わった）は覚えない
-        if (d.get("slack") and not d.get("session") and a.get("session") and a.get("session") == d.get("session_seen")
-                and has and not generic and scan_task(path, d["offset"], d["text"])[0]):
-            d["session"] = a["session"]
         # Slack への報告が、この件の指示のあとの発言を確かめるのに使う。送ったときと違うセッション（作り直された）なら使わない
         d["path"] = str(path) if has and not generic and a.get("session") and a.get("session") == d.get("session") else None
         read, reply, superseded, pending = delegation_state(path, d["offset"], d["text"]) if has and not generic else (False, "", False, False)
@@ -2072,6 +2065,20 @@ def spawn_session(directory: Path, project: str, model: str) -> dict:
     return {"ok": True, "pane": pane, "name": name}
 
 
+SPAWN_SESSION_WAIT = 5.0  # Slack から立てたとき、最初の指示を送る前に、セッション ID が見えるまで待つ上限（秒）
+
+
+async def spawned_agent(pane: str, wait: float = 0.0) -> dict | None:
+    """立てたセッション。wait があれば、セッション ID が見えるまで（最大 wait 秒）待つ。Slack への報告は、送ったときの ID と
+    報告のときの ID が同じときだけ本文を載せるので、ID が分からないまま送った件は定型文になる（あとから ID を覚え直さない）。"""
+    end = time.time() + wait
+    while True:
+        a = next((x for x in await asyncio.to_thread(list_agents) if x["pane"] == pane), None)
+        if not a or a.get("session") or time.time() >= end:
+            return a
+        await asyncio.sleep(0.5)
+
+
 @app.post("/api/hub/spawn")
 async def hub_spawn(body: dict):
     """PROJECTS_DIR 直下の既存プロジェクトに新しいセッションを立て、最初の指示があれば送る。"""
@@ -2098,8 +2105,9 @@ async def hub_spawn(body: dict):
         return JSONResponse(r)
     out = {"ok": True, "pane": r["pane"], "project": project, "model": model, "sent": False}
     if text:
-        a = next((x for x in await asyncio.to_thread(list_agents) if x["pane"] == r["pane"]), None)
-        sent = await dispatch(a, text, "spawn", slack_report.origin(body.get("origin"))) if a else {"ok": False, "reason": "起動したセッションが見つかりません"}
+        slack = slack_report.origin(body.get("origin"))
+        a = await spawned_agent(r["pane"], wait=SPAWN_SESSION_WAIT if slack else 0)
+        sent = await dispatch(a, text, "spawn", slack) if a else {"ok": False, "reason": "起動したセッションが見つかりません"}
         out["sent"], out["send_error"] = sent["ok"], None if sent["ok"] else sent.get("reason")
         out["slack"] = bool(sent.get("slack"))  # 片づいたときの報告を Slack のスレッドにも送るか
     return JSONResponse(out)

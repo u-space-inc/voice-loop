@@ -416,12 +416,26 @@ def spawned_watch(first_user):
 
 posted.clear()
 d_sp = spawned_watch("内訳を出して")
-check("本体: 立てた直後に送った件も、決まったセッションの記録の最初の発言がこの件の指示なら、その ID を覚えて本文を送る",
-      (d_sp.get("session"), ["内訳を出しました（全文" in p[2] for p in posted]), ("s1", [True]))
-posted.clear()
-d_sp2 = spawned_watch("別の人が打った指示")
-check("相手の位置: 立てた直後のセッションの最初の発言がこの件の指示でなければ、ID を覚えず、本文も送らない",
-      (d_sp2.get("session"), ["内訳を出しました（全文" in p[2] for p in posted]), (None, [False]))
+check("相手の位置: 送ったときにセッション ID が分からなかった件は、あとから ID を覚え直さず、本文を送らない（定型文だけ）",
+      (d_sp.get("session"), ["内訳を出しました（全文" in p[2] for p in posted]), (None, [False]))
+
+# Slack から立てるときは、最初の指示を送る前に、セッション ID が見えるまで少し待つ
+calls = {"n": 0}
+
+
+def agents_late_session():
+    calls["n"] += 1
+    return [{**A_LP, "session": "s1" if calls["n"] >= 3 else None}]
+
+
+real_list_ = s.list_agents
+s.list_agents = agents_late_session
+got_wait = asyncio.run(s.spawned_agent("w1:p1", wait=5))
+calls["n"] = 0
+got_now = asyncio.run(s.spawned_agent("w1:p1", wait=0))
+s.list_agents = real_list_
+check("本体: Slack から立てたときは、セッション ID が見えるまで（上限まで）待ってから送る。Slack からでなければ待たない",
+      (got_wait.get("session"), got_now.get("session")), ("s1", None))
 
 # 送ったときに ID の無かった件: 作業中に見えたセッションが、待つ間に同じ文の指示で始まる別のセッションに入れ替わっても、新しいほうは覚えない
 def swapped_watch():
@@ -461,7 +475,7 @@ def swapped_watch():
 posted.clear()
 d_sw = swapped_watch()
 check("相手の位置: 送ったときに ID の無かった件で、作業中に見えたセッションが同じ文で始まる別のセッションに入れ替わっても、新しいほうを覚えず本文も送らない",
-      (d_sw.get("session_seen"), d_sw.get("session"), ["別のセッションの結果" in p[2] or "内訳を出しました（全文" in p[2] for p in posted]), ("orig", None, [False]))
+      (d_sw.get("session"), ["別のセッションの結果" in p[2] or "内訳を出しました（全文" in p[2] for p in posted]), (None, [False]))
 
 # ハブが居ないときの完了の報告（定型文）のあとで見張りが失敗しても、失敗を重ねて送らない
 async def done_without_hub_then_boom(d):
