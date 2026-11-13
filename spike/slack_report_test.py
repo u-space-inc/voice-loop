@@ -233,6 +233,59 @@ posted.clear()
 asyncio.run(run_report(d_of((DM, "1.2"), str(tr))))
 check("本体: 指示のあとが道具の結果とサブエージェントの行だけなら、ハブの報告を送る", ["内訳を出しました（全文" in p[2] for p in posted], [True])
 
+# 同じセッションへの前の件と一つの返答にまとまり、報告を省くとき（LAST_DONE が同じ）も、この件のスレッドに知らせる
+def merged_watch():
+    tpath = Path(transcript(("user", "内訳を出して"), ("assistant", "前の件とまとめて片づけました")))
+    d = {**d_of((DM, "1.2"), str(tpath)), "gen": 5, "was_working": False, "task": None}
+    s.WATCH_GEN["w1:p1"] = 5
+    s.LAST_DONE["w1:p1"] = (s.last_turn_id(tpath), s.last_exchange(s.read_lines(tpath, tail_bytes=600_000))[1])
+    agent_ = {"pane": "w1:p1", "cwd": "/x/lp", "kind": "claude", "session": "x", "status": "idle", "title": "見積", "name": "", "hub": False}
+    real_list_, real_path_, real_async = s.list_agents, s.jsonl_path, s.asyncio
+    fast_ = types.ModuleType("fast_asyncio2")
+    fast_.__dict__.update(asyncio.__dict__)
+    fast_.sleep = lambda t, *a: asyncio.sleep(t / 1000, *a)
+    s.list_agents, s.jsonl_path, s.asyncio = (lambda: [agent_]), (lambda a: tpath), fast_
+
+    async def go():
+        await s._watch_delegation(d)
+        await asyncio.sleep(0.05)
+        for _ in range(50):
+            if not [t for t in s._tasks if not t.done()]:
+                break
+            await asyncio.sleep(0.02)
+    try:
+        asyncio.run(go())
+    finally:
+        s.list_agents, s.jsonl_path, s.asyncio = real_list_, real_path_, real_async
+
+
+async def broken_watch():
+    real = s._watch_delegation
+
+    async def boom(d):
+        raise RuntimeError("壊れた")
+    s._watch_delegation = boom
+    try:
+        task_id = s.task_new({**d_of((DM, "1.2")), "pane": "w1:p1"}, "send")
+        await s.watch_delegation({**d_of((DM, "1.2")), "task": task_id})
+        await asyncio.sleep(0.05)
+        for _ in range(50):
+            if not [t for t in s._tasks if not t.done()]:
+                break
+            await asyncio.sleep(0.02)
+    finally:
+        s._watch_delegation = real
+
+
+posted.clear()
+asyncio.run(broken_watch())
+check("本体: 見張りが途中で失敗したときも、Slack のスレッドに知らせる", [("途中で失敗しました" in p[2], "画面で確かめてください" in p[2]) for p in posted], [(True, True)])
+
+posted.clear()
+merged_watch()
+check("本体: 前の件と一つの返答にまとまって報告を省くときも、この件の Slack のスレッドに知らせる（本文は載せない）",
+      [(p[1], "まとめて片づきました" in p[2], "画面で確かめてください" in p[2]) for p in posted], [((DM, "1.2"), True, True)])
+
 # 報告をせずに見張りが終わるとき（次の指示に引き継がれた・閉じられた・時間切れ）も、スレッドに知らせる
 fast = types.ModuleType("fast_asyncio")
 fast.__dict__.update(asyncio.__dict__)

@@ -1497,6 +1497,7 @@ async def watch_delegation(d: dict):
         traceback.print_exc()
         if TASKS.get(d.get("task") or "", {}).get("status") != "done":
             task_set(d.get("task"), "failed", "見張りの途中で失敗しました（本体のログを見てください）")
+            relay_slack(d, f"{d['project']}｜{d['title']}", "の見張りが途中で失敗しました", "", slack_report.SCREEN)
     finally:
         WATCHING[d["pane"]] -= 1
 
@@ -1567,6 +1568,7 @@ async def _watch_delegation(d: dict):
         if now and LAST_DONE.get(d["pane"]) == now:  # 重ねて頼んだ件が、先に報告した返答の中で片づいていた
             hlog(f"報告を省略（先に報告した返答に含まれる）: {label}", flush=True)
             task_set(d.get("task"), "done", "同じセッションへの前の件と、まとめて報告しました")
+            relay_slack(d, label, "は、同じセッションへの前の件とまとめて片づきました", "", slack_report.SCREEN)
             return
         if now:
             LAST_DONE[d["pane"]] = now
