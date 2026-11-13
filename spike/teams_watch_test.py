@@ -172,7 +172,7 @@ globalThis.document={querySelectorAll:s=>s.includes('avatar')?[{children:[],text
 
 def node_run(age, known=(), base=False, ks=(0,)):
     js_text = tw.js_for("a1b2c3d4e5f6", set(known), base)
-    body = (FAKE_PAGE.replace("AGE", str(age)).replace("'SEL'", json.dumps(tw.SELECTED)) + "const res=[];" + "".join(f"res.push({js_text.replace('__K__', str(k))});" for k in ks)
+    body = (FAKE_PAGE.replace("AGE", str(age)).replace("'SEL'", json.dumps(tw.SELECTED)) + "const res=[];" + "".join(f"res.push(String({js_text.replace('__K__', str(k))}));" for k in ks)
             + "console.log(JSON.stringify({res,waits}));")
     p = subprocess.run([NODE, "--input-type=module", "-e", body], capture_output=True, text=True, timeout=30)
     return json.loads(p.stdout) if p.returncode == 0 else {"err": p.stderr[-300:]}
@@ -180,14 +180,17 @@ def node_run(age, known=(), base=False, ks=(0,)):
 
 if NODE:
     r = node_run(5000, known={"1794451771109"})
-    snap_ = read("\n".join(r.get("res", [])), known={"1794451771109"})
+    try:
+        snap_ = read("\n".join(r.get("res", [])), known={"1794451771109"})
+    except tw.Unreadable as e:
+        snap_ = f"読めない: {e.args[0]}（{str(r.get('res', r))[:80]}）"
     check("node: 開いて 5 秒なら、残りの 15 秒を待ってから写す（1 回だけ）", r.get("waits"), [15000])
     check("node: 写しはつながり、新しい投稿は中身つき・既に見た投稿は ID だけ",
           [(i["msg"], bool(i["fields"])) for i in snap_["items"]] if isinstance(snap_, dict) else snap_,
           [("1794529244269", True), ("1794451771109", False)])
     check("node: 開いて 25 秒なら待たない", node_run(25000).get("waits"), [])
     check("node: 番号 1 から呼ばれても写しを作らず err（待ちもしない）",
-          (node_run(5000, ks=(1,)).get("res", [""])[0].split("|")[3], node_run(5000, ks=(1,)).get("waits")), ("err", []))
+          ((node_run(5000, ks=(1,)).get("res", [""])[0].split("|") + [""] * 4)[3], node_run(5000, ks=(1,)).get("waits")), ("err", []))
 else:
     print("（node が無いので、スクリプトを動かす試験は飛ばした）")
 
