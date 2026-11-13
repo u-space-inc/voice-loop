@@ -1791,6 +1791,7 @@ def scan_task(path: Path, offset: int, texts: list[str]) -> tuple[bool, bool]:
     画面や履歴で使う iter_events は、<system-reminder>・<task-notification>・<bash-input> などで始まる発言と、作業中に届いた発言（queued_command）を
     飛ばすが、ここでは飛ばさない（端末に直接打たれた文が、その形で始まっていても、作業中に打たれても見落とさない）。
     道具の結果（tool_result だけの行）と、サブエージェントの行（isSidechain）と、裏の作業の完了の知らせ（queued_command の task-notification）だけは数えない。
+    最初の指示は、新しいターンの始まり（user の行）でなければならない（作業中に届いた形だと、前の別件のターンの返答と分けられない）。
     読めない行（壊れた・書きかけ）・形の違う行があれば (False, False)。"""
     want = [" ".join(t.split()) for t in texts]  # 送った指示の全文（先頭が同じ別の指示と取り違えない）
     seen = 0
@@ -1810,6 +1811,10 @@ def scan_task(path: Path, offset: int, texts: list[str]) -> tuple[bool, bool]:
             return True, False  # 送った指示のあとの、利用者の側の行（発言・知らせ・メタの行・作業中に届いた発言も）
         if " ".join(said.split()) != want[seen]:
             return False, False  # 送った指示の並びの途中か前に、別の利用者の側の行がある（offset は最初の指示を送る直前なので、ふつうは無い）
+        if seen == 0 and row.get("type") != "user":
+            # 最初の指示が、作業中に届いた形（前のターンの途中に混ざった）。ハブが読む吹き出しは前の指示のターンとまとまり、
+            # 別件の返答も入るので、この件の結果だけとは言えない。2 件目からは、最初の指示のターンの中に届いてよい
+            return False, False
         seen += 1
     return seen == len(want), seen == len(want)
 
@@ -1926,6 +1931,8 @@ def relay_slack(d: dict, label: str, headline: str, reply: str, fallback: str = 
                         text = slack_report.text_for(label, headline, reply, asks=asks)
                 except Exception:  # 読めない記録（消えた・読めない）は、本文を載せずに定型文を送る
                     hlog(f"Slack への報告: 記録を読めません（{label}）", flush=True)
+        if d.get("_merged_into"):  # 次の件にまとめた件は、自分では送らない（途中経過も。報告は次の件がまとめてする）。送る直前に見る（記録を確かめる間にまとめられることもある）
+            return
         r = await asyncio.to_thread(slack_report.post, dest, text)
         hlog(f"Slack へ報告: {label} → {r}", flush=True)
 

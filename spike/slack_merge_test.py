@@ -79,8 +79,14 @@ def append(p: Path, *rows):
         f.write("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
 
 
-check("記録: 作業中に送った指示（付け足しとして残る）も、この件の指示として見つける（1 件だけのとき）",
-      s.only_this_task(log_of(Q("内訳を出して"), TOOL(), AI("出しました")), 0, "内訳を出して"), True)
+check("相手の位置: 最初の指示が作業中に届いた形（前のターンに混ざった）なら、ハブが読む吹き出しに別件の返事が入るので、本文を載せない（1 件だけ・まとめた件とも）",
+      (s.only_this_task(log_of(Q("内訳を出して"), TOOL(), AI("出しました")), 0, "内訳を出して"),
+       s.only_these(log_of(Q("内訳を出して"), Q("期限も調べて"), AI("両方")), 0, ["内訳を出して", "期限も調べて"])), (False, False))
+_x = log_of(U("前の別件"), AI("前からの返事"))
+_off = _x.stat().st_size
+append(_x, Q("内訳を出して"), Q("期限も調べて"), AI("AとBを処理しました"))
+check("相手の位置: 進行中の別件のターンに 2 件とも作業中に届いても、本文を載せない（別件の返事と分けられない）",
+      s.only_these(_x, _off, ["内訳を出して", "期限も調べて"]), False)
 check("相手の位置: この件の指示のあと、作業中に端末から打たれた発言があれば、本文を載せない",
       s.only_this_task(log_of(U("内訳を出して"), Q("別の案件のことをして"), AI("両方やりました")), 0, "内訳を出して"), False)
 check("相手の位置: 作業中に別のエージェントから届いた発言も、別の発言として数える",
@@ -94,7 +100,8 @@ check("記録: ほかの付け足し（日付・環境など）は数えない",
 check("相手の位置: 形の読めない付け足しがあれば、本文を載せない",
       s.only_this_task(log_of(U("内訳を出して"), {"type": "attachment", "attachment": "?"}, AI("x")), 0, "内訳を出して"), False)
 check("記録: 作業中に届いた発言の文が部品の並びでも読む",
-      s.only_this_task(log_of(Q([{"type": "text", "text": "内訳を"}, {"type": "image"}, {"type": "text", "text": "出して"}]), AI("x")), 0, "内訳を 出して"), True)
+      s.only_these(log_of(U("内訳を出して"), Q([{"type": "text", "text": "期限も"}, {"type": "image"}, {"type": "text", "text": "調べて"}]), AI("x")), 0,
+                   ["内訳を出して", "期限も 調べて"]), True)
 check("記録: まとめた指示がその順に見つかり、あとに別の発言が無ければ本文を載せる（2 件目は作業中に届いた形）",
       s.only_these(log_of(U("内訳を出して"), TOOL(), Q("期限も調べて"), AI("両方やりました")), 0, ["内訳を出して", "期限も調べて"]), True)
 check("相手の位置: まとめた指示の間に、端末から別の発言があれば本文を載せない",
@@ -461,6 +468,70 @@ def raced_watch(merge):
 check("入れ違わない: 一覧を読む間に次の件にまとめられたら、前の件は報告せずに引き上げる（Slack にも送らない）",
       raced_watch(True), ([], "replaced", "同じセッションへの次の指示と、まとめて報告します", []))
 check("比べ: まとめられなければ、前の件はそのまま報告する", raced_watch(False)[0], ["done"])
+
+
+# 途中経過の報告を待つ間に、次の件にまとめられた: 古い件は古いスレッドに途中経過を送らない
+async def merged_while_interim(kind, hold):
+    fresh()
+    a = await send("内訳を出して", T1)
+    gate = asyncio.Event()
+    real_target = s.HUB.report_target
+
+    async def slow_target():
+        await gate.wait()
+        return {"pane": "hub"}
+    if hold == "target":
+        s.HUB.report_target = slow_target
+    else:
+        lock = s.pane_lock("hub")
+        await lock.acquire()
+    if kind == "blocked":
+        AG["status"] = "blocked"
+    try:
+        a["path"] = str(LOG["p"])
+        job = asyncio.create_task(s.report(a, kind))
+        await asyncio.sleep(0.05)
+        b = await send("期限も調べて", T2, Q)
+        if hold == "target":
+            s.HUB.report_target = real_target
+            gate.set()
+        else:
+            lock.release()
+        await job
+        await settle()
+    finally:
+        s.HUB.report_target = real_target
+        AG["status"] = "working"
+    return a, b
+
+
+for kind, hold in (("background", "target"), ("blocked", "lock")):
+    a, b = asyncio.run(merged_while_interim(kind, hold))
+    check(f"相手の位置: 途中経過（{kind}）の報告が{'届け先を調べる' if hold == 'target' else 'ハブの順番を'}待つ間にまとめられたら、古い件は古いスレッドに送らない（一言だけ）",
+          (a.get("_merged_into") is b, [(p[0], "そちらのスレッドで報告します" in p[1]) for p in posted]), (True, [(T1, True)]))
+
+
+async def merged_while_checking():
+    """記録を確かめている間（送る直前）に、次の件にまとめられた"""
+    fresh()
+    a = await send("内訳を出して", T1)
+    append(LOG["p"], AI("出しました"))
+    a["path"] = str(LOG["p"])
+    real_same = s.same_session
+
+    def same_then_merged(d):
+        d["_merged_into"] = {"text": "期限も調べて"}  # 確かめる間に、次の件にまとめられた
+        return real_same(d)
+    s.same_session = same_then_merged
+    try:
+        await s.report(a, "done")
+        await settle()
+    finally:
+        s.same_session = real_same
+
+
+asyncio.run(merged_while_checking())
+check("相手の位置: 記録を確かめる間に次の件にまとめられたら、送る直前に止める", posted, [])
 
 
 # 途中経過（承認・入力待ち）も、まとめた届け先に送る
