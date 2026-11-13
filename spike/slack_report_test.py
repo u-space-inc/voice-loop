@@ -636,12 +636,8 @@ check("本体: 空の返事で終わった報告は失敗として覚える（�
 # 待ちと処理の合計を、hubctl の待ち時間に収める（Slack から来た送る: 待ち + herdr の上限 30 秒 < send の 100 秒、立てる: 待ち + 起動の 90 秒 < start の 110 秒）
 src = (ROOT / "hubctl").read_text(encoding="utf-8")
 send_to = int(__import__("re").search(r'call\("send", .*?timeout=(\d+)\)', src).group(1))
-start_to = int(__import__("re").search(r'call\("spawn", .*?timeout=(\d+)\)', src).group(1))
-check("本体と hubctl: 報告を待つ時間と、送る・立てる処理の時間の合計が、hubctl の待ち時間に収まる",
-      (s.SLACK_QUEUE_WAIT + 30 < send_to, s.SLACK_SPAWN_WAIT + 90 < start_to), (True, True))
+check("本体と hubctl: 報告を待つ時間と送る処理（herdr の上限 30 秒）の合計が、hubctl send の待ち時間に収まる", s.SLACK_QUEUE_WAIT + 30 < send_to, True)
 with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
-    s.SLACK_SPAWN_WAIT = 0.3
-
     def start_report2():
         s.REPORT_IDLE = None
         s.REPORT_SEQ += 1
@@ -653,8 +649,8 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     r8 = c.post("/api/hub/spawn", json={"project": "lp", "text": "立てて", "origin": ok}).json()
     waited8 = time.monotonic() - t0
     c.portal.call(lambda: (setattr(s, "REPORTING", False), s.report_idle().set()))
-    s.SLACK_SPAWN_WAIT = 15.0
-check("報告中: Slack から来た「立てる」は、立てる用の短い上限まで待って、終わらなければ断る", (r8.get("reason"), 0.25 <= waited8 < 2), ("reporting", True))
+check("報告中: 「立てる」は Slack から来ても待たずに断る（起動と最初の送りまで含めると hubctl start の待ちに収まらないため）",
+      (r8.get("reason"), waited8 < 0.5), ("reporting", True))
 check("報告中: Slack から来ていない送信・立てるは、今までどおりすぐ断る",
       (r5.get("reason"), waited5 < 0.5, r6s.get("reason")), ("reporting", True, "reporting"))
 # 画面・声から、同じセッションへ直接話しかけて頼んだとき（/ws）。前の Slack の件の報告がハブの順番を待っている間に

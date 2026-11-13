@@ -1047,7 +1047,6 @@ PANE_LOCKS: dict[str, asyncio.Lock] = {}  # ひとつのセッションへの「
 REPORTING = False  # ハブが自動通知に応答している最中か
 REPORT_IDLE: asyncio.Event | None = None  # 報告が終わったときに立つ（Slack から来た送信が、報告の終わりを待つのに使う）。イベントループの中で作る
 SLACK_QUEUE_WAIT = 45.0  # Slack から来た送信が、報告の終わりを待つ上限（秒）。送り（herdr の上限 30 秒）と合わせて hubctl send の待ち（100 秒）に収める
-SLACK_SPAWN_WAIT = 15.0  # Slack から来た「立てる」の待ちの上限（秒）。立てる（最大 90 秒）と合わせて hubctl start の待ち（110 秒）に収める
 REPORT_SEQ = 0  # 報告の通し番号（報告を始めるたびに進む）
 REPORT_FAILED: dict[int, bool] = {}  # 番号ごとに、報告が失敗・時間切れで終わったか（直近の分だけ持つ）
 LAST_DONE: dict[str, tuple] = {}  # セッションごとの、最後に報告した (ターンの目印, 返答)。同じ返答を二度知らせないため
@@ -1833,8 +1832,8 @@ def report_idle() -> asyncio.Event:
     return REPORT_IDLE
 
 
-async def wait_report_if_slack(body: dict, limit: float | None = None) -> bool:
-    """報告中なら、Slack の DM から来た送信だけ、報告が終わるまで順番を待つ（上限 SLACK_QUEUE_WAIT 秒）。送ってよければ True。
+async def wait_report_if_slack(body: dict) -> bool:
+    """報告中なら、Slack の DM から来た送信（hubctl send）だけ、報告が終わるまで順番を待つ（上限 SLACK_QUEUE_WAIT 秒）。送ってよければ True。
     声・画面からの送信は報告と同じ順番待ちを通るので、ここで報告中なのは、報告を書いているハブ自身か、voice-loop の順番待ちを通らない
     Slack の会話だけ。ハブ自身が「Slack から」と偽っても、自分が書いている報告はその送信が返るまで終わらないので、上限まで待って断られる。
     待っている間の報告が失敗・時間切れで終わったときも断る。
@@ -1844,7 +1843,7 @@ async def wait_report_if_slack(body: dict, limit: float | None = None) -> bool:
         return True
     if not slack_report.origin(body.get("origin")):
         return False
-    first, deadline = REPORT_SEQ, time.monotonic() + (SLACK_QUEUE_WAIT if limit is None else limit)
+    first, deadline = REPORT_SEQ, time.monotonic() + SLACK_QUEUE_WAIT
     while REPORTING:  # 報告が続けて来ても、終わったすきに送る
         left = deadline - time.monotonic()
         if left <= 0:
@@ -2126,7 +2125,7 @@ async def spawned_agent(pane: str, wait: float = 0.0) -> dict | None:
 @app.post("/api/hub/spawn")
 async def hub_spawn(body: dict):
     """PROJECTS_DIR 直下の既存プロジェクトに新しいセッションを立て、最初の指示があれば送る。"""
-    if not await wait_report_if_slack(body, SLACK_SPAWN_WAIT):
+    if REPORTING:  # 立てるは、Slack から来ても待たない（起動と最初の送りまで含めると、hubctl start の待ち時間に収まらないため）
         return JSONResponse({"ok": False, "reason": "reporting"})
     if not PROJECTS_DIR or not PROJECTS_DIR.is_dir():
         return JSONResponse({"ok": False, "reason": "no_projects_dir"})
