@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import types
 from pathlib import Path
 
@@ -578,9 +579,36 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     r1 = c.post("/api/hub/send", json={"pane": "w1:p1", "text": "内訳を出して", "origin": ok}).json()
     r2 = c.post("/api/hub/send", json={"pane": "w1:p1", "text": "内訳を出して", "origin": {**ok, "chat": "D0ZZZZZZZZ"}}).json()
     r3 = c.post("/api/hub/send", json={"pane": "w1:p1", "text": "内訳を出して"}).json()
-    s.REPORTING = True
-    r4 = c.post("/api/hub/send", json={"pane": "w1:p1", "text": "続けて送れ", "origin": ok}).json()
-    s.REPORTING = False
+    # 報告中: Slack から来た送信は、報告が終わるまで順番を待ってから送る。それ以外は今までどおりすぐ断る
+    s.SLACK_QUEUE_WAIT = 0.6
+    c.portal.call(lambda: (setattr(s, "REPORTING", True), s.report_idle().clear()))
+    t0 = time.monotonic()
+    r4 = c.post("/api/hub/send", json={"pane": "w1:p1", "text": "続けて送れ", "origin": ok}).json()  # 報告が終わらない（ハブ自身が偽った形）
+    waited4 = time.monotonic() - t0
+    t0 = time.monotonic()
+    r5 = c.post("/api/hub/send", json={"pane": "w1:p1", "text": "画面以外から"}).json()
+    waited5 = time.monotonic() - t0
+    r6s = c.post("/api/hub/spawn", json={"project": "lp", "text": "立てて"}).json()
+    s.SLACK_QUEUE_WAIT = 10
+    got6 = {}
+
+    def slack_send_waiting():
+        got6["r"] = c.post("/api/hub/send", json={"pane": "w1:p1", "text": "報告のあとで届く", "origin": ok}).json()
+        got6["at"] = time.monotonic()
+
+    th6 = threading.Thread(target=slack_send_waiting)
+    th6.start()
+    time.sleep(0.5)
+    still_waiting = th6.is_alive()
+    released_at = time.monotonic()
+    c.portal.call(lambda: (setattr(s, "REPORTING", False), s.report_idle().set()))
+    th6.join(10)
+check("報告中: Slack から来た送信は、報告が終わるまで順番を待ち、終わったら送る（断らない）",
+      (still_waiting, got6.get("r", {}).get("ok"), got6.get("r", {}).get("slack"), got6.get("at", 0) >= released_at), (True, True, True, True))
+check("相手の位置: 報告が終わらないまま（報告を書いているハブ自身が Slack からと偽った形）なら、上限まで待って断る",
+      (r4.get("reason"), waited4 >= 0.5), ("reporting", True))
+check("報告中: Slack から来ていない送信・立てるは、今までどおりすぐ断る",
+      (r5.get("reason"), waited5 < 0.5, r6s.get("reason")), ("reporting", True, "reporting"))
 # 画面・声から、同じセッションへ直接話しかけて頼んだとき（/ws）。前の Slack の件の報告がハブの順番を待っている間に
 direct = []
 
@@ -803,7 +831,6 @@ check("相手の位置: ハブ経由の送りの待ちが取り消されても�
       (mid, OVERLAPS[-1], s.INFLIGHT.get("w1:p1")), (1, True, 0))
 s.ask = fake_ask
 check("本体: 設定した DM から頼まれたときだけ、報告を Slack にも送ると答える", (r1.get("slack"), r2.get("slack"), r3.get("slack")), (True, False, False))
-check("本体: 報告の途中は、Slack からでも次の指示を送れない", r4.get("reason"), "reporting")
 
 # ---------- hubctl ----------
 got = []

@@ -1045,6 +1045,8 @@ class Client:
 CLIENTS: set[Client] = set()
 PANE_LOCKS: dict[str, asyncio.Lock] = {}  # ひとつのセッションへの「送って返信を読む」は同時に1件だけ
 REPORTING = False  # ハブが自動通知に応答している最中か
+REPORT_IDLE: asyncio.Event | None = None  # 報告が終わったときに立つ（Slack から来た送信が、報告の終わりを待つのに使う）。イベントループの中で作る
+SLACK_QUEUE_WAIT = 45.0  # Slack から来た送信が、報告の終わりを待つ上限（秒）。hubctl の待ち（60 秒）より短く
 LAST_DONE: dict[str, tuple] = {}  # セッションごとの、最後に報告した (ターンの目印, 返答)。同じ返答を二度知らせないため
 _tasks: set[asyncio.Task] = set()
 
@@ -1680,10 +1682,12 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
                 return "skipped"
         saved = HUB.report_begin(note[len(NOTE_PREFIX):].split("‖", 1)[0].strip(), label)  # 見出しと報告を記録に書けたか
         REPORTING = True
+        report_idle().clear()
         try:
             state, reply = await ask(hub, note)
         finally:
             REPORTING = False
+            report_idle().set()
         hlog(f"報告 {kind}: {label} → {state}（画面 {len(CLIENTS)}）", flush=True)
         saved = await HUB.report_end(state, reply, label, saved)
         if state != "done" or not reply.strip():
@@ -1813,10 +1817,38 @@ async def dispatch(a: dict, text: str, kind: str = "send", slack: tuple[str, str
     return {"ok": True, "project": project, "title": a["title"], "was_working": a["status"] == "working", "task": d["task"], "slack": bool(slack)}
 
 
+def report_idle() -> asyncio.Event:
+    global REPORT_IDLE
+    if REPORT_IDLE is None:
+        REPORT_IDLE = asyncio.Event()
+        REPORT_IDLE.set()
+    return REPORT_IDLE
+
+
+async def wait_report_if_slack(body: dict) -> bool:
+    """報告中なら、Slack の DM から来た送信だけ、報告が終わるまで順番を待つ（上限 SLACK_QUEUE_WAIT 秒）。送ってよければ True。
+    声・画面からの送信は報告と同じ順番待ちを通るので、ここで報告中なのは、報告を書いているハブ自身か、voice-loop の順番待ちを通らない
+    Slack の会話だけ。ハブ自身が「Slack から」と偽っても、自分が書いている報告はその送信が返るまで終わらないので、上限まで待って断られる。"""
+    if not REPORTING:
+        return True
+    if not slack_report.origin(body.get("origin")):
+        return False
+    deadline = time.monotonic() + SLACK_QUEUE_WAIT
+    while REPORTING:  # 報告が続けて来ても、終わったすきに送る
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return False
+        try:
+            await asyncio.wait_for(report_idle().wait(), timeout=left)
+        except asyncio.TimeoutError:
+            return False
+    return True
+
+
 @app.post("/api/hub/send")
 async def hub_send(body: dict):
     """指示を送る。完了は待たず、片づいたら（または止まったら）ハブに通知して報告させる。"""
-    if REPORTING:  # 通知への応答の中から、次の指示を出させない（ユーザーの知らないところで連鎖するのを防ぐ）
+    if not await wait_report_if_slack(body):  # 通知への応答の中から、次の指示を出させない（ユーザーの知らないところで連鎖するのを防ぐ）
         return JSONResponse({"ok": False, "reason": "reporting"})
     pane, text = str(body.get("pane", "")), " ".join(str(body.get("text", "")).split())
     a = await asyncio.to_thread(_worker, pane)
@@ -2082,7 +2114,7 @@ async def spawned_agent(pane: str, wait: float = 0.0) -> dict | None:
 @app.post("/api/hub/spawn")
 async def hub_spawn(body: dict):
     """PROJECTS_DIR 直下の既存プロジェクトに新しいセッションを立て、最初の指示があれば送る。"""
-    if REPORTING:
+    if not await wait_report_if_slack(body):
         return JSONResponse({"ok": False, "reason": "reporting"})
     if not PROJECTS_DIR or not PROJECTS_DIR.is_dir():
         return JSONResponse({"ok": False, "reason": "no_projects_dir"})
