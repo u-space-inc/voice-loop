@@ -1437,7 +1437,7 @@ async def hub_tasks():
 TASK_DONE = re.compile(r"<tool-use-id>([^<]+)</tool-use-id>")
 WATCHING: dict[str, int] = {}  # セッションごとの、動いている見張りの数
 WATCH_GEN: dict[str, int] = {}  # セッションごとの、見張りの世代。指示を送るたびに進み、古い世代の見張りは引き上げる
-SENT_GEN: dict[str, int] = {}  # セッションごとの、指示を送ろうとした回数。送る前に進める（届いたか分からないときも進んだまま）。Slack への報告が、新しい件の結果を古い件として送らないために見る
+SENT_GEN: dict[str, int] = {}  # セッションごとの、指示を送ろうとした回数（ハブ経由の send・start・提案と、画面・声からの直接の発言）。送る前に進める（届いたか分からないときも進んだまま）。Slack への報告が、新しい件の結果を古い件として送らないために見る。承認への答えは同じ件の続きなので進めない
 
 
 def delegation_state(path: Path, offset: int, text: str) -> tuple[bool, str, bool, bool]:
@@ -3128,6 +3128,7 @@ async def ws(sock: WebSocket):
             await send(type="error", gone=True, text="話し相手が入れ替わっています。送らずに止めました。選び直してください。")
             return
         await send(type="status", text="エージェントに送りました。考え中…")
+        SENT_GEN[pane] = SENT_GEN.get(pane, 0) + 1  # 画面・声からの直接の指示も、前の件の Slack への報告に新しい結果を載せない（送る前に進める）
         async with pane_lock(pane):  # ハブが自動通知に応答している最中なら、それが終わってから送る
             state, reply = await ask(agent, text)
             if cancel.is_set():

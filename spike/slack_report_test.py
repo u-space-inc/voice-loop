@@ -228,6 +228,42 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     s.REPORTING = True
     r4 = c.post("/api/hub/send", json={"pane": "w1:p1", "text": "続けて送れ", "origin": ok}).json()
     s.REPORTING = False
+# 画面・声から、同じセッションへ直接話しかけて頼んだとき（/ws）。前の Slack の件の報告がハブの順番を待っている間に
+direct = []
+
+
+async def ask_by_pane(agent_, note):
+    if agent_["pane"] == "hub":
+        asked.append(s.REPORTING)
+        return ("done", "内訳を出しました（全文は画面で）")
+    direct.append(note)
+    return ("done", "画面から頼んだ別の作業の結果")
+
+
+async def nothing2(*a, **k):
+    return None
+
+
+s.ask = ask_by_pane
+s.speak_to = nothing2
+posted.clear()
+with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+    s.PANE_LOCKS.clear()
+    lock = s.pane_lock("hub")
+    c.portal.call(lock.acquire)
+    d_old = d_of((DM, "1.2"))
+    fut = c.portal.start_task_soon(run_report, d_old)
+    with c.websocket_connect("ws://127.0.0.1:8790/ws") as w:
+        w.send_json({"type": "text", "text": "別の作業をして", "pane": "w1:p1", "speaker": 0})
+        for _ in range(200):
+            m = w.receive_json()
+            if m.get("type") == "reply":
+                break
+    c.portal.call(lock.release)
+    fut.result(timeout=10)
+check("相手の位置: 報告を待つ間に、画面・声から同じセッションへ直接頼んでも、ハブの報告（新しい件の結果かもしれない）は Slack に送らない",
+      (direct, [("内訳を出しました" in p[2], "次の指示が送られました" in p[2]) for p in posted]), (["別の作業をして"], [(False, True)]))
+s.ask = fake_ask
 check("本体: 設定した DM から頼まれたときだけ、報告を Slack にも送ると答える", (r1.get("slack"), r2.get("slack"), r3.get("slack")), (True, False, False))
 check("本体: 報告の途中は、Slack からでも次の指示を送れない", r4.get("reason"), "reporting")
 
