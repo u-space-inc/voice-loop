@@ -102,6 +102,10 @@ async def fake_target():
     return {"pane": "hub"}
 
 
+async def no_hub_target():
+    return None
+
+
 async def fake_ask(hub, note):
     asked.append(s.REPORTING)
     return ANSWER
@@ -418,6 +422,74 @@ posted.clear()
 d_sp2 = spawned_watch("別の人が打った指示")
 check("相手の位置: 立てた直後のセッションの最初の発言がこの件の指示でなければ、ID を覚えず、本文も送らない",
       (d_sp2.get("session"), ["内訳を出しました（全文" in p[2] for p in posted]), (None, [False]))
+
+# 送ったときに ID の無かった件: 作業中に見えたセッションが、待つ間に同じ文の指示で始まる別のセッションに入れ替わっても、新しいほうは覚えない
+def swapped_watch():
+    orig = Path(transcript(("user", "内訳を出して"), ("assistant", "途中")))
+    repl = Path(transcript(("user", "内訳を出して"), ("assistant", "別のセッションの結果")))
+    d = {**d_of((DM, "1.2"), str(orig)), "session": None, "gen": 11, "was_working": False, "task": None}
+    s.WATCH_GEN["w1:p1"] = 11
+    s.LAST_DONE.pop("w1:p1", None)
+    seq = iter([{**A_LP, "session": "orig", "status": "working"}] * 2)
+    real_list_, real_path_, real_async, real_to = s.list_agents, s.jsonl_path, s.asyncio, s.WATCH_TIMEOUT
+
+    def agents():
+        nxt = next(seq, None)
+        return [nxt or {**A_LP, "session": "repl", "status": "idle"}]
+    s.list_agents = agents
+    s.jsonl_path = lambda a: {"orig": orig, "repl": repl}.get(a.get("session"))
+    s.WATCH_TIMEOUT = 1
+    fast_ = types.ModuleType("fast_asyncio4")
+    fast_.__dict__.update(asyncio.__dict__)
+    fast_.sleep = lambda t, *a: asyncio.sleep(t / 1000, *a)
+    s.asyncio = fast_
+
+    async def go():
+        await s._watch_delegation(d)
+        await asyncio.sleep(0.05)
+        for _ in range(50):
+            if not [t for t in s._tasks if not t.done()]:
+                break
+            await asyncio.sleep(0.02)
+    try:
+        asyncio.run(go())
+    finally:
+        s.list_agents, s.jsonl_path, s.asyncio, s.WATCH_TIMEOUT = real_list_, real_path_, real_async, real_to
+    return d
+
+
+posted.clear()
+d_sw = swapped_watch()
+check("相手の位置: 送ったときに ID の無かった件で、作業中に見えたセッションが同じ文で始まる別のセッションに入れ替わっても、新しいほうを覚えず本文も送らない",
+      (d_sw.get("session_seen"), d_sw.get("session"), ["別のセッションの結果" in p[2] or "内訳を出しました（全文" in p[2] for p in posted]), ("orig", None, [False]))
+
+# ハブが居ないときの完了の報告（定型文）のあとで見張りが失敗しても、失敗を重ねて送らない
+async def done_without_hub_then_boom(d):
+    real = s._watch_delegation
+
+    async def run(d_):
+        await s.report(d_, "done")
+        raise RuntimeError("次の読み取りで失敗")
+    s._watch_delegation = run
+    try:
+        await s.watch_delegation(d)
+        await asyncio.sleep(0.05)
+        for _ in range(50):
+            if not [t for t in s._tasks if not t.done()]:
+                break
+            await asyncio.sleep(0.02)
+    finally:
+        s._watch_delegation = real
+
+
+s.HUB.report_target = no_hub_target
+posted.clear()
+d_nh = d_of((DM, "1.2"))
+d_nh["task"] = s.task_new(d_nh, "send")
+asyncio.run(done_without_hub_then_boom(d_nh))
+s.HUB.report_target = fake_target
+check("本体: ハブが居ないときの完了の知らせ（定型文）のあとで見張りが失敗しても、失敗を重ねない",
+      [("完了しました" in p[2], "失敗しました" in p[2]) for p in posted], [(True, False)])
 
 posted.clear()
 merged_watch()

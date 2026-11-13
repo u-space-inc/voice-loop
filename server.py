@@ -1520,6 +1520,8 @@ async def _watch_delegation(d: dict):
                 relay_slack(d, label, "の見張りは、同じセッションへの次の指示に引き継がれました", "", slack_report.SCREEN)
             return  # 同じセッションに新しい指示が送られた。見張りは最新の1つに任せる（古い件の名前で通知を重ねない）
         a = next((x for x in await asyncio.to_thread(list_agents) if x["pane"] == d["pane"] and x["cwd"] == d["cwd"]), None)
+        if a and d.get("slack") and not d.get("session") and not d.get("session_seen") and a.get("session"):
+            d["session_seen"] = a["session"]  # 送ったときに ID の無かった件で、最初に見えたセッション ID。以後は変えない（入れ替わったセッションを覚えない）
         if not a:  # ハブがユーザーの許可で閉じたものは、知らせない
             if reported is None and d["pane"] in CLOSED:
                 task_set(d.get("task"), "closed", "ハブが閉じました")
@@ -1532,8 +1534,10 @@ async def _watch_delegation(d: dict):
             continue
         path = jsonl_path(a)
         has = bool(path and path.exists())
-        # 立てた直後に送った件は、送ったときにセッション ID がまだ無い。決まったあとで、その記録の最初の利用者の側の行がこの件の指示なら、その ID を覚える
-        if d.get("slack") and not d.get("session") and a.get("session") and has and not generic and scan_task(path, d["offset"], d["text"])[0]:
+        # 立てた直後に送った件は、送ったときにセッション ID がまだ無い。最初に見えた ID（作業中に見えたものも）の記録の、最初の利用者の側の行が
+        # この件の指示なら、その ID を覚える。最初に見えた ID と違うセッション（入れ替わった）は覚えない
+        if (d.get("slack") and not d.get("session") and a.get("session") and a.get("session") == d.get("session_seen")
+                and has and not generic and scan_task(path, d["offset"], d["text"])[0]):
             d["session"] = a["session"]
         # Slack への報告が、この件の指示のあとの発言を確かめるのに使う。送ったときと違うセッション（作り直された）なら使わない
         d["path"] = str(path) if has and not generic and a.get("session") and a.get("session") == d.get("session") else None
@@ -1666,6 +1670,8 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
     if not hub:
         hlog(f"報告できません（ハブが居ない）: {label} {kind}", flush=True)
         relay_slack(d, label, headline, "")
+        if kind in ("done", "more", "gone"):
+            d["_slack_done"] = True
         return "no_hub"
     # 一行・短文にする（長文や改行は「貼り付けられた内容」として包まれる）。結果の本文は通知に載せず、ハブが道具で読む。
     # 「‖」より前は画面にも出す見出し、後ろはハブへの依頼
@@ -1689,6 +1695,8 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
         saved = await HUB.report_end(state, reply, label, saved)
         if state != "done" or not reply.strip():
             relay_slack(d, label, headline, "")
+            if kind in ("done", "more", "gone"):
+                d["_slack_done"] = True
             return "failed"
         notify("ok")
         relay_slack(d, label, headline, reply)  # 報告は REPORTING の中で作られたもの（その間、ハブは次の指示を送れない）
@@ -1709,7 +1717,7 @@ def scan_task(path: Path, offset: int, text: str) -> tuple[bool, bool]:
     """記録の offset から、(この件の指示（全文が一致するもの）が最初の利用者の側の行か, そのあとに利用者の側の行が 1 つも無いか)。
     画面や履歴で使う iter_events は、<system-reminder>・<task-notification>・<bash-input> などで始まる発言を飛ばすが、ここでは飛ばさない
     （端末に直接打たれた文が、その形で始まっていても見落とさない）。道具の結果（tool_result だけの行）と、サブエージェントの行（isSidechain）だけは数えない。
-    読めない行（壊れた・書きかけ）・形の違う行があれば (False, False)。"""
+    この件の指示のあと、2 件目の利用者の側の行より前に、読めない行（壊れた・書きかけ）・形の違う行があれば (False, False)。"""
     want = " ".join(text.split())  # 送った指示の全文（先頭が同じ別の指示と取り違えない）
     found = False
     for line in read_lines(path, offset=offset):
