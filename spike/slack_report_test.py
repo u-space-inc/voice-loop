@@ -382,6 +382,72 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                 break
 check("相手の位置: 画面・声からの発言が返事を待っている間に Slack から頼んだ件は、重なった件にする（途中の数は戻る）",
       (OVERLAPS[-1], s.INFLIGHT.get("w1:p1")), (True, 0))
+# 取り消し: 画面からの依頼を「止める」で取り消しても、送る処理は裏で続く。その間に Slack から頼んだ件は重なった件
+gate_ws2 = threading.Event()
+
+
+async def ask_slow2(agent_, note):
+    if agent_["pane"] == "hub":
+        return ("done", "内訳を出しました（全文は画面で）")
+    await asyncio.to_thread(gate_ws2.wait, 10)
+    return ("done", "画面から頼んで止めた作業の結果")
+
+
+s.ask = ask_slow2
+with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+    s.PANE_LOCKS.clear()
+    with c.websocket_connect("ws://127.0.0.1:8790/ws") as w:
+        w.send_json({"type": "text", "text": "画面から頼んで止める", "pane": "w1:p1", "speaker": 0})
+        for _ in range(200):
+            if w.receive_json().get("type") == "status":
+                break
+        for _ in range(100):
+            if s.INFLIGHT.get("w1:p1"):
+                break
+            __import__("time").sleep(0.02)
+        w.send_json({"type": "stop"})
+        for _ in range(200):
+            if w.receive_json().get("type") == "stopped":
+                break
+        still = s.INFLIGHT.get("w1:p1")
+        c.portal.call(s.dispatch, A_LP, "内訳を出して", "send", (DM, "1.2"))
+        gate_ws2.set()
+    for _ in range(200):
+        if not s.INFLIGHT.get("w1:p1"):
+            break
+        __import__("time").sleep(0.02)
+check("相手の位置: 画面からの依頼を止めても、送る処理が終わるまでは途中に数え、その間に Slack から頼んだ件は重なった件にする",
+      (still, OVERLAPS[-1], s.INFLIGHT.get("w1:p1")), (1, True, 0))
+
+gate_d = threading.Event()
+
+
+def herdr_slow_c(*a, **k):
+    if "取り消される作業" in a:
+        gate_d.wait(10)
+    return {"result": {}}
+
+
+async def cancelled_dispatch():
+    s.herdr = herdr_slow_c
+    job = asyncio.create_task(s.dispatch(A_LP, "取り消される作業", "send"))
+    await asyncio.sleep(0.1)
+    job.cancel()
+    await asyncio.sleep(0.05)
+    mid = s.INFLIGHT.get("w1:p1")
+    await s.dispatch(A_LP, "内訳を出して", "send", (DM, "1.2"))
+    gate_d.set()
+    for _ in range(200):
+        if not s.INFLIGHT.get("w1:p1"):
+            break
+        await asyncio.sleep(0.02)
+    return mid
+
+
+mid = asyncio.run(cancelled_dispatch())
+s.herdr = lambda *a, **k: {"result": {}}
+check("相手の位置: ハブ経由の送りの待ちが取り消されても、herdr が受けるまでは途中に数え、その間の Slack の件は重なった件にする",
+      (mid, OVERLAPS[-1], s.INFLIGHT.get("w1:p1")), (1, True, 0))
 s.ask = fake_ask
 check("本体: 設定した DM から頼まれたときだけ、報告を Slack にも送ると答える", (r1.get("slack"), r2.get("slack"), r3.get("slack")), (True, False, False))
 check("本体: 報告の途中は、Slack からでも次の指示を送れない", r4.get("reason"), "reporting")

@@ -1438,7 +1438,7 @@ TASK_DONE = re.compile(r"<tool-use-id>([^<]+)</tool-use-id>")
 WATCHING: dict[str, int] = {}  # セッションごとの、動いている見張りの数
 WATCH_GEN: dict[str, int] = {}  # セッションごとの、見張りの世代。指示を送るたびに進み、古い世代の見張りは引き上げる
 SENT_GEN: dict[str, int] = {}  # セッションごとの、指示を送ろうとした回数（ハブ経由の send・start・提案と、画面・声からの直接の発言）。送る前に進める（届いたか分からないときも進んだまま）。Slack への報告が、新しい件の結果を古い件として送らないために見る。承認への答えは同じ件の続きなので進めない
-INFLIGHT: dict[str, int] = {}  # セッションごとの、いま送っている途中の指示の数（ハブ経由の送りは herdr が受けるまで、画面・声からの直接の発言は返事が来るまで）。重なって送った件の Slack への報告に、どちらの結果か分からない本文を載せないために見る
+INFLIGHT: dict[str, int] = {}  # セッションごとの、いま送っている途中の指示の数（ハブ経由の送りは herdr が受けるまで、画面・声からの直接の発言は返事が来るまで。待つ側が取り消されても、送る処理が終わるまで数える）。重なって送った件の Slack への報告に、どちらの結果か分からない本文を載せないために見る
 
 
 def delegation_state(path: Path, offset: int, text: str) -> tuple[bool, str, bool, bool]:
@@ -1708,6 +1708,15 @@ def relay_slack(d: dict, label: str, headline: str, reply: str):
     job.add_done_callback(_tasks.discard)
 
 
+def track_send(pane: str, coro) -> asyncio.Future:
+    """セッションへ送る処理を、終わるまで INFLIGHT に数える。待っている側が取り消されても（画面の「止める」・切断）、
+    送る処理は裏で続くので、数を戻すのは処理そのものが終わったとき。待つ側は asyncio.shield で待つ。"""
+    INFLIGHT[pane] = INFLIGHT.get(pane, 0) + 1
+    fut = asyncio.ensure_future(coro)
+    fut.add_done_callback(lambda _f: INFLIGHT.__setitem__(pane, INFLIGHT[pane] - 1))
+    return fut
+
+
 async def dispatch(a: dict, text: str, kind: str = "send", slack: tuple[str, str] | None = None) -> dict:
     """セッションに指示を送り、片づくまでの見張りを始める（頼んだ件の台帳にも載せる）。
     slack は、Slack から頼まれたときの (DM, スレッド)。片づいたときの報告を、そこにも送る。"""
@@ -1716,11 +1725,7 @@ async def dispatch(a: dict, text: str, kind: str = "send", slack: tuple[str, str
     offset = path.stat().st_size if path and path.exists() else 0
     SENT_GEN[pane] = sent_gen = SENT_GEN.get(pane, 0) + 1  # 送る前に進める。前の件の Slack への報告は、ここから先、結果の本文を送らない
     overlap = INFLIGHT.get(pane, 0) > 0  # ほかの指示を送っている途中。届く順が送り始めた順と逆になりうるので、この件の Slack への報告にも本文を載せない
-    INFLIGHT[pane] = INFLIGHT.get(pane, 0) + 1
-    try:
-        r = await asyncio.to_thread(herdr, "agent", "prompt", pane, text, timeout=30)
-    finally:
-        INFLIGHT[pane] -= 1
+    r = await asyncio.shield(track_send(pane, asyncio.to_thread(herdr, "agent", "prompt", pane, text, timeout=30)))
     err = (r.get("error") or {}).get("code") or (None if "result" in r else "herdr が応答しません")
     hlog(f"send → {pane} ({project}): {text[:120]!r} {'ERR ' + err if err else 'ok'}", flush=True)
     if err:  # unknown: herdr がはっきり断ったのでなく、応答が無かった（届いたかどうか分からない）
@@ -3136,32 +3141,23 @@ async def ws(sock: WebSocket):
             return
         await send(type="status", text="エージェントに送りました。考え中…")
         SENT_GEN[pane] = SENT_GEN.get(pane, 0) + 1  # 画面・声からの直接の指示も、前の件の Slack への報告に新しい結果を載せない（送る前に進める）
-        INFLIGHT[pane] = INFLIGHT.get(pane, 0) + 1  # 返事が来るまでに送られたハブ経由の件は、重なった件として扱う
-        landed = False  # 送り終えて、途中の数を戻したか（順番を待つ間に止められたときも戻す）
-        try:
-            async with pane_lock(pane):  # ハブが自動通知に応答している最中なら、それが終わってから送る
-                SENT_GEN[pane] = SENT_GEN.get(pane, 0) + 1  # 順番を待つ間に、ハブ経由の件が送られていることがある。実際に送る直前にも進める
-                try:
-                    state, reply = await ask(agent, text)
-                finally:
-                    INFLIGHT[pane] -= 1
-                    landed = True
-                if cancel.is_set():
-                    return
-                if state == "error":
-                    await send(type="error", text=f"送信できませんでした: {reply}")
-                elif state == "blocked":
-                    await send(type="status", text="承認待ちです")
-                    await send(type="blocked", pane=pane)  # 画面に、許可・断るのボタンを出させる
-                    await speak_to([client], "【承認待ちの画面】\n" + reply, cancel)
-                elif not reply.strip():
-                    await send(type="error", text="回答を読めませんでした")
-                else:
-                    await send(type="reply", pane=pane, text=reply)
-                    await speak_to([client], reply, cancel)
-        finally:
-            if not landed:
-                INFLIGHT[pane] -= 1
+        async with pane_lock(pane):  # ハブが自動通知に応答している最中なら、それが終わってから送る
+            SENT_GEN[pane] = SENT_GEN.get(pane, 0) + 1  # 順番を待つ間に、ハブ経由の件が送られていることがある。実際に送る直前にも進める
+            # 返事が来るまで（止められても、送る処理が裏で終わるまで）に送られたハブ経由の件は、重なった件として扱う
+            state, reply = await asyncio.shield(track_send(pane, ask(agent, text)))
+            if cancel.is_set():
+                return
+            if state == "error":
+                await send(type="error", text=f"送信できませんでした: {reply}")
+            elif state == "blocked":
+                await send(type="status", text="承認待ちです")
+                await send(type="blocked", pane=pane)  # 画面に、許可・断るのボタンを出させる
+                await speak_to([client], "【承認待ちの画面】\n" + reply, cancel)
+            elif not reply.strip():
+                await send(type="error", text="回答を読めませんでした")
+            else:
+                await send(type="reply", pane=pane, text=reply)
+                await speak_to([client], reply, cancel)
 
     def start_turn(text: str, pane: str, speaker: int, key: str | None):
         nonlocal cancel, current
