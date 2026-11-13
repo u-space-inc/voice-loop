@@ -72,24 +72,28 @@ log = Path(TMP) / "docker.log"
 fake.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" > {log}.args\ncat > {log}.in\nexit ${{FAKE_RC:-0}}\n")
 fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
 os.environ["VL_DOCKER"] = str(fake)
-r = sr.post("hermes", (DM, "1.2"), "本文\n二行目")
+r = sr.post((DM, "1.2"), "本文\n二行目", container="hermes")
 args = (Path(f"{log}.args").read_text().splitlines())
 check("送り方: コンテナの中の固定のコマンドに、本文を標準入力で渡す",
       (r, args, Path(f"{log}.in").read_text()),
       ("ok", ["exec", "-i", "-u", "10000:10000", "hermes", "timeout", "--kill-after=5", "30", sr.HERMES, "send", "-q", "-t", f"slack:{DM}:1.2", "-f", "-"], "本文\n二行目"))
-sr.post("hermes", (DM, ""), "x")
+sr.post((DM, ""), "x", container="hermes")
 check("送り方: スレッドが無ければ DM に", Path(f"{log}.args").read_text().splitlines()[-3], f"slack:{DM}")
 os.environ["FAKE_RC"] = "1"
-check("送り方: 失敗は短い理由だけ", sr.post("hermes", (DM, "1.2"), "x"), "終了コード 1")
+check("送り方: 失敗は短い理由だけ", sr.post((DM, "1.2"), "x", container="hermes"), "終了コード 1")
 del os.environ["FAKE_RC"]
 os.environ["VL_DOCKER"] = str(Path(TMP) / "nothing")
-check("送り方: docker が無ければ送らない", sr.post("hermes", (DM, "1.2"), "x").startswith("動かせません"), True)
+check("送り方: docker が無ければ送らない", sr.post((DM, "1.2"), "x", container="hermes").startswith("動かせません"), True)
 
 # ---------- 本体 ----------
 import server as s  # noqa: E402
 
 posted = []
-s.slack_report.post = lambda container, dest, text, wait=45: posted.append((container, dest, text)) or "ok"
+CUR = {"path": None}  # いまのセッションの記録（偽の jsonl_path が返す）
+A_LP = {"pane": "w1:p1", "cwd": "/x/lp", "kind": "claude", "session": "s1", "status": "idle", "title": "見積", "name": "", "hub": False}
+s.list_agents = lambda: [A_LP]
+s.jsonl_path = lambda a: Path(CUR["path"]) if CUR["path"] and a.get("session") == "s1" else None
+s.slack_report.post = lambda dest, text, wait=45, container=None: posted.append((s.slack_report.CONTAINER, dest, text)) or "ok"
 s.push_all = lambda *a, **k: asyncio.sleep(0, "none")
 asked = []
 
@@ -136,15 +140,16 @@ def d_of(slack, path="ok", text="内訳を出して"):
     s.SENT_GEN["w1:p1"] = 7
     if path == "ok":
         path = transcript(("user", "内訳を出して"), ("assistant", "内訳を出しました"))
+    CUR["path"] = path
     return {"pane": "w1:p1", "cwd": "/x/lp", "project": "lp", "title": "見積", "text": "内訳を出して", "slack": slack, "sent_gen": 7,
-            "offset": 0, "path": path}
+            "offset": 0, "path": path, "session": "s1"}
 
 
 ANSWER = ("done", "内訳を出しました（全文は画面で）")
 posted.clear()
 check("本体: Slack から頼まれた件は、ハブの報告を同じスレッドにも送る",
       (asyncio.run(run_report(d_of((DM, "1.2")))), posted),
-      ("ok", [(s.hermes.HERMES_CONTAINER, (DM, "1.2"), "【lp｜見積が完了しました】\n内訳を出しました（全文は画面で）")]))
+      ("ok", [("hermes", (DM, "1.2"), "【lp｜見積が完了しました】\n内訳を出しました（全文は画面で）")]))
 check("本体: 報告はハブが REPORTING の中で作ったもの（その間、次の指示は送れない）", asked[-1], True)
 posted.clear()
 asyncio.run(run_report(d_of(None)))
@@ -170,10 +175,6 @@ check("相手の位置: 報告を待つ間に同じセッションへ次の指�
 posted.clear()
 asyncio.run(run_report(d_of((DM, "1.2"))))  # d_of は、送ろうとした回数を件と同じにする
 check("本体: 世代が同じなら、ハブの報告を送る", ["内訳を出しました" in p[2] for p in posted], [True])
-A_LP = {"pane": "w1:p1", "cwd": "/x/lp", "kind": "claude", "session": None, "status": "idle", "title": "見積", "name": "", "hub": False}
-s.list_agents = lambda: [A_LP]
-
-
 async def report_while_new_send(herdr_answer, block):
     """報告がハブの順番を待つ間に、同じセッションへ（Slack 以外から）次の指示を送る。herdr は答えを返す前に止める（block）か、すぐ返す"""
     d = d_of((DM, "1.2"))
@@ -223,6 +224,21 @@ for name, path, want in (
     asyncio.run(run_report(d_of((DM, "1.2"), path)))
     check(f"相手の位置: {name}、ハブの報告は Slack に送らない", [("内訳を出しました（全文" in p[2], want in p[2]) for p in posted], [(False, True)])
 
+# 端末でセッションが作り直された（同じ場所に別のセッション）・記録に読めない行がある
+posted.clear()
+d_new = d_of((DM, "1.2"))
+A_LP["session"] = "s2"  # 報告を待つ間に、端末で作り直された。ハブが読むのは新しいセッション
+asyncio.run(run_report(d_new))
+A_LP["session"] = "s1"
+check("相手の位置: 報告を待つ間に端末でセッションが作り直されたら、ハブの報告は Slack に送らない",
+      [("内訳を出しました（全文" in p[2], "記録で確かめられませんでした" in p[2]) for p in posted], [(False, True)])
+broken = Path(transcript(("user", "内訳を出して"), ("assistant", "内訳を出しました")))
+broken.write_text(broken.read_text() + '{"type": "user", "message": {"content": "書きかけ\n')
+posted.clear()
+asyncio.run(run_report(d_of((DM, "1.2"), str(broken))))
+check("相手の位置: 指示のあとに読めない行（壊れた・書きかけ）があれば、ハブの報告は Slack に送らない",
+      [("内訳を出しました（全文" in p[2], "記録で確かめられませんでした" in p[2]) for p in posted], [(False, True)])
+
 # 道具の結果と、サブエージェントの行は数えない（この件の作業の一部）
 tr = Path(transcript(("user", "内訳を出して"), ("assistant", "内訳を出しました")))
 rows = [json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}}),
@@ -239,7 +255,7 @@ def merged_watch():
     d = {**d_of((DM, "1.2"), str(tpath)), "gen": 5, "was_working": False, "task": None}
     s.WATCH_GEN["w1:p1"] = 5
     s.LAST_DONE["w1:p1"] = (s.last_turn_id(tpath), s.last_exchange(s.read_lines(tpath, tail_bytes=600_000))[1])
-    agent_ = {"pane": "w1:p1", "cwd": "/x/lp", "kind": "claude", "session": "x", "status": "idle", "title": "見積", "name": "", "hub": False}
+    agent_ = {**A_LP}
     real_list_, real_path_, real_async = s.list_agents, s.jsonl_path, s.asyncio
     fast_ = types.ModuleType("fast_asyncio2")
     fast_.__dict__.update(asyncio.__dict__)
@@ -339,7 +355,7 @@ s.HUB.report_target = fake_target
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-AGENTS = {"w1:p1": {"pane": "w1:p1", "cwd": "/x/lp", "kind": "claude", "session": None, "status": "idle", "title": "見積", "name": "", "hub": False}}
+AGENTS = {"w1:p1": A_LP}
 s.list_agents = lambda: list(AGENTS.values())
 s._worker = lambda pane: AGENTS.get(pane)
 s.herdr = lambda *a, **k: {"result": {}}

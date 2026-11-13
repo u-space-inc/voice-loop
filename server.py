@@ -1531,7 +1531,8 @@ async def _watch_delegation(d: dict):
             continue
         path = jsonl_path(a)
         has = bool(path and path.exists())
-        d["path"] = str(path) if has and not generic else None  # Slack への報告が、この件の指示のあとの発言を確かめるのに使う
+        # Slack への報告が、この件の指示のあとの発言を確かめるのに使う。送ったときと違うセッション（作り直された）なら使わない
+        d["path"] = str(path) if has and not generic and a.get("session") and a.get("session") == d.get("session") else None
         read, reply, superseded, pending = delegation_state(path, d["offset"], d["text"]) if has and not generic else (False, "", False, False)
         if reported is not None and superseded:
             return  # 報告のあと、ユーザーが相手に直接次の発言をした。そこから先はユーザー自身の作業なので知らせない
@@ -1705,8 +1706,10 @@ def only_this_task(path: Path, offset: int, text: str) -> bool:
         try:
             row = json.loads(line)
         except json.JSONDecodeError:
-            continue
-        if not isinstance(row, dict) or row.get("type") != "user" or row.get("isSidechain"):
+            return False  # 読めない行（壊れた・書きかけ）があれば、そのあとの発言の有無を確かめられない
+        if not isinstance(row, dict):
+            return False
+        if row.get("type") != "user" or row.get("isSidechain"):
             continue
         content = (row.get("message") or {}).get("content") if isinstance(row.get("message"), dict) else None
         if isinstance(content, list) and content and all(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
@@ -1719,6 +1722,16 @@ def only_this_task(path: Path, offset: int, text: str) -> bool:
         if not found:
             return False  # この件の指示より前に、別の利用者の側の行がある（offset はこの件を送る直前なので、ふつうは無い）
     return found
+
+
+def same_session(d: dict) -> bool:
+    """いまその pane に居るのが、この件を送ったときと同じセッション（同じ場所・同じセッション ID・同じ記録）か。
+    端末でセッションが作り直されると、ハブが読むのは新しいセッションなので、古い記録の確かめは当てにならない。"""
+    a = next((x for x in list_agents() if x["pane"] == d["pane"]), None)
+    if not a or a.get("cwd") != d.get("cwd") or not d.get("session") or a.get("session") != d.get("session"):
+        return False
+    p = jsonl_path(a)
+    return bool(p) and str(p) == d.get("path")
 
 
 def relay_slack(d: dict, label: str, headline: str, reply: str, fallback: str = slack_report.NO_REPORT):
@@ -1739,11 +1752,12 @@ def relay_slack(d: dict, label: str, headline: str, reply: str, fallback: str = 
                 text = slack_report.text_for(label, headline, "", slack_report.UNVERIFIED)
                 path = d.get("path")
                 try:
-                    if path and await asyncio.to_thread(only_this_task, Path(path), d["offset"], d["text"]):
+                    if (path and await asyncio.to_thread(same_session, d)
+                            and await asyncio.to_thread(only_this_task, Path(path), d["offset"], d["text"])):
                         text = slack_report.text_for(label, headline, reply)
                 except Exception:  # 読めない記録（消えた・読めない）は、本文を載せずに定型文を送る
                     hlog(f"Slack への報告: 記録を読めません（{label}）", flush=True)
-        r = await asyncio.to_thread(slack_report.post, hermes.HERMES_CONTAINER, dest, text)
+        r = await asyncio.to_thread(slack_report.post, dest, text)
         hlog(f"Slack へ報告: {label} → {r}", flush=True)
 
     job = asyncio.create_task(go())
@@ -1775,7 +1789,8 @@ async def dispatch(a: dict, text: str, kind: str = "send", slack: tuple[str, str
         return {"ok": False, "reason": err, "unknown": not isinstance(r.get("error"), dict)}
     WATCH_GEN[pane] = WATCH_GEN.get(pane, 0) + 1  # このセッションの、これより前の見張りは引き上げさせる
     d = {"pane": pane, "cwd": a["cwd"], "project": project, "title": a["title"], "text": text, "offset": offset,
-         "was_working": a["status"] == "working", "gen": WATCH_GEN[pane], "sent_gen": sent_gen, "overlap": overlap, "slack": slack}
+         "was_working": a["status"] == "working", "gen": WATCH_GEN[pane], "sent_gen": sent_gen, "overlap": overlap, "slack": slack,
+         "session": a.get("session")}
     start_watch(d, kind)
     return {"ok": True, "project": project, "title": a["title"], "was_working": a["status"] == "working", "task": d["task"], "slack": bool(slack)}
 

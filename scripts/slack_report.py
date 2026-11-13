@@ -24,6 +24,7 @@ CHAT_RE = re.compile(r"D[A-Z0-9]{8,12}")  # Slack の DM のチャンネル ID
 TS_RE = re.compile(r"\d{1,12}\.\d{1,12}")  # Slack のメッセージの ts（スレッドの親）
 LIMIT = 3500  # 1 通の字数の上限（Slack の 1 通の上限より十分小さく）
 HERMES = "/opt/hermes/.venv/bin/hermes"
+CONTAINER = os.environ.get("VL_HERMES_CONTAINER", "hermes")  # Hermes のコンテナ（本体は頭の固有の設定を持たないので、ここで読む）
 RUN_LIMIT, HOST_WAIT = 30, 45
 _CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]")  # 改行とタブは残す
 _MEDIA = re.compile(r"MEDIA\s*:", re.I)
@@ -64,9 +65,9 @@ def command(container: str, dest: tuple[str, str]) -> list[str] | None:
     return [exe, "exec", "-i", "-u", USER, container, "timeout", "--kill-after=5", str(RUN_LIMIT), HERMES, "send", "-q", "-t", target, "-f", "-"]
 
 
-def post(container: str, dest: tuple[str, str], text: str, wait: float = HOST_WAIT) -> str:
+def post(dest: tuple[str, str], text: str, wait: float = HOST_WAIT, container: str | None = None) -> str:
     """送る。結果は ok か、送れなかった理由の短い語（中身は書かない）。"""
-    cmd = command(container, dest)
+    cmd = command(container or CONTAINER, dest)
     if not cmd:
         return "docker が見つかりません"
     try:
