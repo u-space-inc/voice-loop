@@ -297,6 +297,64 @@ posted.clear()
 asyncio.run(broken_watch())
 check("本体: 見張りが途中で失敗したときも、Slack のスレッドに知らせる", [("途中で失敗しました" in p[2], "画面で確かめてください" in p[2]) for p in posted], [(True, True)])
 
+# 報告の途中で失敗したとき: Slack に送る前の失敗なら定型文を 1 通、送ったあとの失敗なら重ねない
+async def report_in_watch(d):
+    real = s._watch_delegation
+
+    async def one_report(d_):
+        await s.report(d_, "done")
+    s._watch_delegation = one_report
+    try:
+        await s.watch_delegation(d)
+        await asyncio.sleep(0.05)
+        for _ in range(50):
+            if not [t for t in s._tasks if not t.done()]:
+                break
+            await asyncio.sleep(0.02)
+    finally:
+        s._watch_delegation = real
+
+
+async def boom_target():
+    raise RuntimeError("ハブに届かない")
+
+
+s.HUB.report_target = boom_target
+posted.clear()
+d_fail = d_of((DM, "1.2"))
+d_fail["task"] = s.task_new(d_fail, "send")
+asyncio.run(report_in_watch(d_fail))
+s.HUB.report_target = fake_target
+check("本体: 完了の報告を作る途中（Slack に送る前）で失敗したら、定型文を 1 通送る（台帳は先に完了になっていても）",
+      [("報告の途中で失敗しました" in p[2], "画面で確かめてください" in p[2]) for p in posted], [(True, True)])
+
+
+class FakeClient:
+    voice = False
+    visible = True
+    speaker = None
+
+    async def send(self, **k):
+        return None
+
+
+async def boom_speak(*a, **k):
+    raise RuntimeError("読み上げで失敗")
+
+
+real_speak = s.speak_to
+s.speak_to = boom_speak
+fc = FakeClient()
+s.CLIENTS.add(fc)
+ANSWER = ("done", "内訳を出しました（全文は画面で）")
+posted.clear()
+d_after = d_of((DM, "1.2"))
+d_after["task"] = s.task_new(d_after, "send")
+asyncio.run(report_in_watch(d_after))
+s.CLIENTS.discard(fc)
+s.speak_to = real_speak
+check("本体: Slack に送ったあとで失敗しても、重ねて送らない", [("内訳を出しました（全文" in p[2], "失敗しました" in p[2]) for p in posted], [(True, False)])
+
 posted.clear()
 merged_watch()
 check("本体: 前の件と一つの返答にまとまって報告を省くときも、この件の Slack のスレッドに知らせる（本文は載せない）",

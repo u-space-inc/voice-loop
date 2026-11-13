@@ -1497,6 +1497,7 @@ async def watch_delegation(d: dict):
         traceback.print_exc()
         if TASKS.get(d.get("task") or "", {}).get("status") != "done":
             task_set(d.get("task"), "failed", "見張りの途中で失敗しました（本体のログを見てください）")
+        if not d.get("_slack_failed_sent") and d.get("_slack_pending", True):  # 報告の途中の失敗は report が知らせた。報告を送り終えたあとの失敗は重ねない
             relay_slack(d, f"{d['project']}｜{d['title']}", "の見張りが途中で失敗しました", "", slack_report.SCREEN)
     finally:
         WATCHING[d["pane"]] -= 1
@@ -1625,10 +1626,14 @@ async def report(d: dict, kind: str):
         notify("waiting")
 
     timer = asyncio.create_task(late())
+    d["_slack_pending"] = True  # この報告の分を、まだ Slack に送っていない（relay_slack が落とす）
     try:
         outcome = await _report(d, kind, notify)
     except Exception:  # ハブへの報告が例外で終わっても、通知は送る
         notify("failed")
+        if d.get("slack") and d.get("_slack_pending"):  # Slack に送る前に失敗した。送ったあとの失敗なら重ねない
+            relay_slack(d, f"{d['project']}｜{d['title']}", "の報告の途中で失敗しました", "", slack_report.SCREEN)
+            d["_slack_failed_sent"] = True
         raise
     finally:
         timer.cancel()
@@ -1740,6 +1745,7 @@ def relay_slack(d: dict, label: str, headline: str, reply: str, fallback: str = 
     - 報告を待つ間に、同じセッションへ次の指示が送られようとした（SENT_GEN。送る前に進む・増えるだけ）か、送る途中でほかの指示と重なった（overlap）
     - セッションの記録で、この件の指示のあとに別の発言がある（端末に直接打たれたものも）か、記録でこの件の指示を見つけられない"""
     dest = d.get("slack")
+    d["_slack_pending"] = False
     if not dest:
         return
     same = SENT_GEN.get(d["pane"]) == d.get("sent_gen") and not d.get("overlap")
