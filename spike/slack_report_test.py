@@ -123,7 +123,8 @@ async def run_report(d, kind="done"):
 
 
 def d_of(slack):
-    return {"pane": "w1:p1", "cwd": "/x/lp", "project": "lp", "title": "見積", "text": "内訳を出して", "slack": slack}
+    s.SENT_GEN["w1:p1"] = 7
+    return {"pane": "w1:p1", "cwd": "/x/lp", "project": "lp", "title": "見積", "text": "内訳を出して", "slack": slack, "sent_gen": 7}
 
 
 ANSWER = ("done", "内訳を出しました（全文は画面で）")
@@ -137,13 +138,14 @@ asyncio.run(run_report(d_of(None)))
 check("本体: Slack から頼まれていない件は送らない", posted, [])
 async def report_after_new_send():
     """報告がハブの順番を待つ間に、同じセッションへ Slack 以外から次の指示が送られた（世代が進んだ）"""
-    d = {**d_of((DM, "1.2")), "gen": 1}
-    s.WATCH_GEN["w1:p1"] = 1
+    d = {**d_of((DM, "1.2")), "sent_gen": 1}
+    s.SENT_GEN["w1:p1"] = 1
+    s.PANE_LOCKS.clear()
     lock = s.pane_lock("hub")
     await lock.acquire()
     job = asyncio.create_task(run_report(d))
     await asyncio.sleep(0.05)
-    s.WATCH_GEN["w1:p1"] = 2  # 新しい件（Slack からではない）
+    s.SENT_GEN["w1:p1"] = 2  # 新しい件（Slack からではない）
     lock.release()
     return await job
 
@@ -153,9 +155,43 @@ asyncio.run(report_after_new_send())
 check("相手の位置: 報告を待つ間に同じセッションへ次の指示が送られたら、ハブの報告（新しい件の結果）は Slack に送らない",
       [(p[1], "内訳を出しました" in p[2], "次の指示が送られました" in p[2]) for p in posted], [((DM, "1.2"), False, True)])
 posted.clear()
-s.WATCH_GEN["w1:p1"] = 1
-asyncio.run(run_report({**d_of((DM, "1.2")), "gen": 1}))
+asyncio.run(run_report(d_of((DM, "1.2"))))  # d_of は、送ろうとした回数を件と同じにする
 check("本体: 世代が同じなら、ハブの報告を送る", ["内訳を出しました" in p[2] for p in posted], [True])
+A_LP = {"pane": "w1:p1", "cwd": "/x/lp", "kind": "claude", "session": None, "status": "idle", "title": "見積", "name": "", "hub": False}
+s.list_agents = lambda: [A_LP]
+
+
+async def report_while_new_send(herdr_answer, block):
+    """報告がハブの順番を待つ間に、同じセッションへ（Slack 以外から）次の指示を送る。herdr は答えを返す前に止める（block）か、すぐ返す"""
+    d = d_of((DM, "1.2"))
+    gate = threading.Event()
+
+    def fake_herdr(*a, **k):
+        if block:
+            gate.wait(10)
+        return herdr_answer
+
+    s.herdr = fake_herdr
+    s.PANE_LOCKS.clear()  # 鍵は作った回のイベントループに結び付くので、回ごとに作り直す
+    lock = s.pane_lock("hub")
+    await lock.acquire()
+    rep = asyncio.create_task(run_report(d))
+    await asyncio.sleep(0.05)
+    snd = asyncio.create_task(s.dispatch(A_LP, "別の作業", "send"))
+    await asyncio.sleep(0.05)
+    lock.release()
+    await rep  # 新しい指示の送りは、まだ herdr の答えを待っている（block のとき）
+    gate.set()
+    return await snd
+
+
+for name, answer, block in (("送って答えを待っている間", {"result": {}}, True), ("送ったが届いたか分からない（herdr が答えない）", {}, False),
+                            ("送ったが断られた", {"error": {"code": "x"}}, False)):
+    posted.clear()
+    sent = asyncio.run(report_while_new_send(answer, block))
+    check(f"相手の位置: 報告を待つ間に同じセッションへ次の指示を{name}も、ハブの報告は Slack に送らない",
+          [("内訳を出しました" in p[2], "次の指示が送られました" in p[2]) for p in posted], [(False, True)])
+s.herdr = lambda *a, **k: {"result": {}}
 ANSWER = ("timeout", "")
 posted.clear()
 asyncio.run(run_report(d_of((DM, "1.2"))))

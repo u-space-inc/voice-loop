@@ -1437,6 +1437,7 @@ async def hub_tasks():
 TASK_DONE = re.compile(r"<tool-use-id>([^<]+)</tool-use-id>")
 WATCHING: dict[str, int] = {}  # セッションごとの、動いている見張りの数
 WATCH_GEN: dict[str, int] = {}  # セッションごとの、見張りの世代。指示を送るたびに進み、古い世代の見張りは引き上げる
+SENT_GEN: dict[str, int] = {}  # セッションごとの、指示を送ろうとした回数。送る前に進める（届いたか分からないときも進んだまま）。Slack への報告が、新しい件の結果を古い件として送らないために見る
 
 
 def delegation_state(path: Path, offset: int, text: str) -> tuple[bool, str, bool, bool]:
@@ -1691,9 +1692,9 @@ def relay_slack(d: dict, label: str, headline: str, reply: str):
     dest = d.get("slack")
     if not dest:
         return
-    # 報告を待つ間に、同じセッションへ次の指示（画面から・声から）が送られていたら、ハブが読んだ結果はその新しい件のもの。
-    # 世代は増えるだけなので、ここで同じなら、ハブが報告を作った間ずっと同じ件だった
-    text = (slack_report.text_for(label, headline, reply) if "gen" not in d or WATCH_GEN.get(d["pane"]) == d["gen"]
+    # 報告を待つ間に、同じセッションへ次の指示（画面から・声から）が送られようとしていたら、ハブが読んだ結果はその新しい件のものかもしれない。
+    # SENT_GEN は送る前に進み、増えるだけなので、ここで同じなら、ハブが報告を作った間ずっと次の指示は出ていない（届いたか分からない送りも含めて）
+    text = (slack_report.text_for(label, headline, reply) if SENT_GEN.get(d["pane"]) == d.get("sent_gen")
             else slack_report.text_for(label, headline, "", slack_report.REPLACED))
 
     async def go():
@@ -1711,6 +1712,7 @@ async def dispatch(a: dict, text: str, kind: str = "send", slack: tuple[str, str
     pane, project = a["pane"], a["cwd"].rsplit("/", 1)[-1]
     path = jsonl_path(a)
     offset = path.stat().st_size if path and path.exists() else 0
+    SENT_GEN[pane] = sent_gen = SENT_GEN.get(pane, 0) + 1  # 送る前に進める。前の件の Slack への報告は、ここから先、結果の本文を送らない
     r = await asyncio.to_thread(herdr, "agent", "prompt", pane, text, timeout=30)
     err = (r.get("error") or {}).get("code") or (None if "result" in r else "herdr が応答しません")
     hlog(f"send → {pane} ({project}): {text[:120]!r} {'ERR ' + err if err else 'ok'}", flush=True)
@@ -1718,7 +1720,7 @@ async def dispatch(a: dict, text: str, kind: str = "send", slack: tuple[str, str
         return {"ok": False, "reason": err, "unknown": not isinstance(r.get("error"), dict)}
     WATCH_GEN[pane] = WATCH_GEN.get(pane, 0) + 1  # このセッションの、これより前の見張りは引き上げさせる
     d = {"pane": pane, "cwd": a["cwd"], "project": project, "title": a["title"], "text": text, "offset": offset,
-         "was_working": a["status"] == "working", "gen": WATCH_GEN[pane], "slack": slack}
+         "was_working": a["status"] == "working", "gen": WATCH_GEN[pane], "sent_gen": sent_gen, "slack": slack}
     start_watch(d, kind)
     return {"ok": True, "project": project, "title": a["title"], "was_working": a["status"] == "working", "task": d["task"], "slack": bool(slack)}
 
