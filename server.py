@@ -62,6 +62,7 @@ def _load_config_env():
 
 _load_config_env()
 import hub_hermes as hermes  # noqa: E402  頭の部品。読み込みのときに config.env の値を読むので、ここで読み込む
+import slack_report  # noqa: E402  Slack から頼まれた件の報告を、同じスレッドにも返す（config.env の値を読むので、ここで読み込む）
 WHISPER = os.environ.get("VL_WHISPER", "http://127.0.0.1:8080/v1/audio/transcriptions")
 # 声のエンジン。どちらも同じ形の API（audio_query → synthesis）で、違うのは呼び先と既定の声だけ
 VOICE_ENGINES = {
@@ -1640,14 +1641,15 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
     global REPORTING
     label = _clip(f"{d['project']}｜{d['title']}", 80)
     hub = await HUB.report_target()
-    if not hub:
-        hlog(f"報告できません（ハブが居ない）: {label} {kind}", flush=True)
-        return "no_hub"
     headline, todo = {"done": ("が完了しました", f"hubctl read {d['pane']} -n 1 --full で結果を確かめ、判断に要る材料（選択肢・おすすめと理由・数字・期限・うまくいかなかったこと）は略さずに、"),
                       "more": ("に続きの返答がありました", f"先ほど報告した件の続きです。hubctl read {d['pane']} -n 1 --full で確かめ、判断に要る材料は略さずに、"),
                       "background": ("は裏で作業を続けています", f"しばらくたっても結果が出ていません。hubctl read {d['pane']} で様子を確かめ、まだ動いていることを一言で、"),
                       "blocked": ("が承認・入力待ちで止まっています", f"hubctl screen {d['pane']} で何を聞かれているか確かめ、"),
                       "gone": ("のセッションが見つからなくなりました", "閉じられた可能性があることを、")}[kind]
+    if not hub:
+        hlog(f"報告できません（ハブが居ない）: {label} {kind}", flush=True)
+        relay_slack(d, label, headline, "")
+        return "no_hub"
     # 一行・短文にする（長文や改行は「貼り付けられた内容」として包まれる）。結果の本文は通知に載せず、ハブが道具で読む。
     # 「‖」より前は画面にも出す見出し、後ろはハブへの依頼
     about = report_about(d)
@@ -1669,8 +1671,10 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
         hlog(f"報告 {kind}: {label} → {state}（画面 {len(CLIENTS)}）", flush=True)
         saved = await HUB.report_end(state, reply, label, saved)
         if state != "done" or not reply.strip():
+            relay_slack(d, label, headline, "")
             return "failed"
         notify("ok")
+        relay_slack(d, label, headline, reply)  # 報告は REPORTING の中で作られたもの（その間、ハブは次の指示を送れない）
         clients = list(CLIENTS)
         for c in clients:
             try:
@@ -1682,8 +1686,24 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
         return "ok"
 
 
-async def dispatch(a: dict, text: str, kind: str = "send") -> dict:
-    """セッションに指示を送り、片づくまでの見張りを始める（頼んだ件の台帳にも載せる）。"""
+def relay_slack(d: dict, label: str, headline: str, reply: str):
+    """Slack から頼まれた件なら、報告を同じスレッドにも送る（裏で。声と画面の報告を遅らせない）。送り先は slack_report.origin が決めた DM だけ。"""
+    dest = d.get("slack")
+    if not dest:
+        return
+
+    async def go():
+        r = await asyncio.to_thread(slack_report.post, hermes.HERMES_CONTAINER, dest, slack_report.text_for(label, headline, reply))
+        hlog(f"Slack へ報告: {label} → {r}", flush=True)
+
+    job = asyncio.create_task(go())
+    _tasks.add(job)
+    job.add_done_callback(_tasks.discard)
+
+
+async def dispatch(a: dict, text: str, kind: str = "send", slack: tuple[str, str] | None = None) -> dict:
+    """セッションに指示を送り、片づくまでの見張りを始める（頼んだ件の台帳にも載せる）。
+    slack は、Slack から頼まれたときの (DM, スレッド)。片づいたときの報告を、そこにも送る。"""
     pane, project = a["pane"], a["cwd"].rsplit("/", 1)[-1]
     path = jsonl_path(a)
     offset = path.stat().st_size if path and path.exists() else 0
@@ -1694,9 +1714,9 @@ async def dispatch(a: dict, text: str, kind: str = "send") -> dict:
         return {"ok": False, "reason": err, "unknown": not isinstance(r.get("error"), dict)}
     WATCH_GEN[pane] = WATCH_GEN.get(pane, 0) + 1  # このセッションの、これより前の見張りは引き上げさせる
     d = {"pane": pane, "cwd": a["cwd"], "project": project, "title": a["title"], "text": text, "offset": offset,
-         "was_working": a["status"] == "working", "gen": WATCH_GEN[pane]}
+         "was_working": a["status"] == "working", "gen": WATCH_GEN[pane], "slack": slack}
     start_watch(d, kind)
-    return {"ok": True, "project": project, "title": a["title"], "was_working": a["status"] == "working", "task": d["task"]}
+    return {"ok": True, "project": project, "title": a["title"], "was_working": a["status"] == "working", "task": d["task"], "slack": bool(slack)}
 
 
 @app.post("/api/hub/send")
@@ -1716,7 +1736,7 @@ async def hub_send(body: dict):
         return JSONResponse({"ok": False, "reason": "proposal", "n": n})
     if a["status"] == "blocked":  # 承認や入力を待っている。herdr も送信を拒否する
         return JSONResponse({"ok": False, "reason": "blocked", "screen": read_prompt(pane)[-1200:]})
-    return JSONResponse(await dispatch(a, text))
+    return JSONResponse(await dispatch(a, text, slack=slack_report.origin(body.get("origin"))))
 
 
 # ---------- 承認・質問への回答（ハブは決めない。ユーザーの答えを相手に伝えるだけ） ----------
@@ -1978,8 +1998,9 @@ async def hub_spawn(body: dict):
     out = {"ok": True, "pane": r["pane"], "project": project, "model": model, "sent": False}
     if text:
         a = next((x for x in await asyncio.to_thread(list_agents) if x["pane"] == r["pane"]), None)
-        sent = await dispatch(a, text, "spawn") if a else {"ok": False, "reason": "起動したセッションが見つかりません"}
+        sent = await dispatch(a, text, "spawn", slack_report.origin(body.get("origin"))) if a else {"ok": False, "reason": "起動したセッションが見つかりません"}
         out["sent"], out["send_error"] = sent["ok"], None if sent["ok"] else sent.get("reason")
+        out["slack"] = bool(sent.get("slack"))  # 片づいたときの報告を Slack のスレッドにも送るか
     return JSONResponse(out)
 
 
