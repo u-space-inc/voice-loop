@@ -157,13 +157,30 @@ def cmd_answer(a):
     sys.exit("答えは送っていません: " + msg)
 
 
+def origin():
+    """Hermes の Slack の DM から呼ばれたとき、その会話（Hermes が端末に渡す環境変数）。本体は、片づいた件の報告をそのスレッドにも送る
+    （送れるのは、本体の設定に書いた DM だけ）。それ以外の窓口では None。"""
+    if os.environ.get("HERMES_SESSION_PLATFORM") != "slack" or not os.environ.get("HERMES_SESSION_CHAT_ID"):
+        return None
+    return {"platform": "slack", "chat": os.environ["HERMES_SESSION_CHAT_ID"],
+            "thread": os.environ.get("HERMES_SESSION_THREAD_ID") or os.environ.get("HERMES_SESSION_MESSAGE_ID") or ""}
+
+
+def with_origin(body):
+    o = origin()
+    return {**body, "origin": o} if o else body
+
+
+SLACK_NOTE = "片づくか止まると、voice-loop がこの Slack のスレッドにも報告を送ります（あなたが待つ必要はありません）。"
+
+
 def cmd_send(a):
     text = " ".join(a.text)
-    r = call("send", body={"pane": a.pane, "text": text})
+    r = call("send", body=with_origin({"pane": a.pane, "text": text}))
     if r.get("ok"):
         note = "（作業中だったので、いまの作業のあとに読まれます）" if r.get("was_working") else ""
         print(f"送りました → [{a.pane}] {r['project']}｜{r['title']}{note}\n送った文: {' '.join(text.split())}\n"
-              "片づくか、承認・入力待ちで止まると、あなたに自動通知が届きます。")
+              "片づくか、承認・入力待ちで止まると、あなたに自動通知が届きます。" + (SLACK_NOTE if r.get("slack") else ""))
     elif r.get("reason") == "blocked":
         print(f"送れませんでした: [{a.pane}] は承認・入力待ちで止まっています。画面の末尾:\n{QUOTE_NOTE}\n\n{r.get('screen', '')}")
         sys.exit(1)
@@ -178,11 +195,11 @@ def cmd_send(a):
 
 
 def cmd_start(a):
-    r = call("spawn", body={"project": a.project, "model": a.model, "text": " ".join(a.text)}, timeout=110)  # 起動に最大90秒かかる。Bash の打ち切り（120秒）より手前で返す
+    r = call("spawn", body=with_origin({"project": a.project, "model": a.model, "text": " ".join(a.text)}), timeout=110)  # 起動に最大90秒かかる。Bash の打ち切り（120秒）より手前で返す
     why = r.get("reason")
     if r.get("ok"):
         if r["sent"]:
-            tail = "最初の指示も送りました。片づくと自動通知が届きます。"
+            tail = "最初の指示も送りました。片づくと自動通知が届きます。" + (SLACK_NOTE if r.get("slack") else "")
         else:
             tail = "最初の指示は送っていません。" + (
                 f"立ち上がった直後に、何かを聞いて止まっています。`./hubctl screen {r['pane']}` で中身を見て、ユーザーに伝えてください。" if r.get("send_error") == "blocked"

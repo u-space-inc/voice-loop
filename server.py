@@ -62,6 +62,7 @@ def _load_config_env():
 
 _load_config_env()
 import hub_hermes as hermes  # noqa: E402  頭の部品。読み込みのときに config.env の値を読むので、ここで読み込む
+import slack_report  # noqa: E402  Slack から頼まれた件の報告を、同じスレッドにも返す（config.env の値を読むので、ここで読み込む）
 WHISPER = os.environ.get("VL_WHISPER", "http://127.0.0.1:8080/v1/audio/transcriptions")
 # 声のエンジン。どちらも同じ形の API（audio_query → synthesis）で、違うのは呼び先と既定の声だけ
 VOICE_ENGINES = {
@@ -1436,6 +1437,8 @@ async def hub_tasks():
 TASK_DONE = re.compile(r"<tool-use-id>([^<]+)</tool-use-id>")
 WATCHING: dict[str, int] = {}  # セッションごとの、動いている見張りの数
 WATCH_GEN: dict[str, int] = {}  # セッションごとの、見張りの世代。指示を送るたびに進み、古い世代の見張りは引き上げる
+SENT_GEN: dict[str, int] = {}  # セッションごとの、指示を送ろうとした回数（ハブ経由の send・start・提案と、画面・声からの直接の発言）。送る前に進める（届いたか分からないときも進んだまま）。Slack への報告が、新しい件の結果を古い件として送らないために見る。承認への答えは同じ件の続きなので進めない
+INFLIGHT: dict[str, int] = {}  # セッションごとの、いま送っている途中の指示の数（ハブ経由の送りは herdr が受けるまで、画面・声からの直接の発言は返事が来るまで。待つ側が取り消されても、送る処理が終わるまで数える）。重なって送った件の Slack への報告に、どちらの結果か分からない本文を載せないために見る
 
 
 def delegation_state(path: Path, offset: int, text: str) -> tuple[bool, str, bool, bool]:
@@ -1494,6 +1497,8 @@ async def watch_delegation(d: dict):
         traceback.print_exc()
         if TASKS.get(d.get("task") or "", {}).get("status") != "done":
             task_set(d.get("task"), "failed", "見張りの途中で失敗しました（本体のログを見てください）")
+        if not d.get("_slack_failed_sent") and not d.get("_slack_done"):  # 報告の途中の失敗は report が知らせた。完了の報告を送ったあとの失敗は重ねない
+            relay_slack(d, f"{d['project']}｜{d['title']}", "の見張りが途中で失敗しました", "", slack_report.SCREEN)
     finally:
         WATCHING[d["pane"]] -= 1
 
@@ -1512,11 +1517,13 @@ async def _watch_delegation(d: dict):
         if WATCH_GEN.get(d["pane"]) != d["gen"]:
             if reported is None:
                 task_set(d.get("task"), "replaced", "同じセッションに次の指示が送られたので、見張りはそちらの件に移りました")
+                relay_slack(d, label, "の見張りは、同じセッションへの次の指示に引き継がれました", "", slack_report.SCREEN)
             return  # 同じセッションに新しい指示が送られた。見張りは最新の1つに任せる（古い件の名前で通知を重ねない）
         a = next((x for x in await asyncio.to_thread(list_agents) if x["pane"] == d["pane"] and x["cwd"] == d["cwd"]), None)
         if not a:  # ハブがユーザーの許可で閉じたものは、知らせない
             if reported is None and d["pane"] in CLOSED:
                 task_set(d.get("task"), "closed", "ハブが閉じました")
+                relay_slack(d, label, "のセッションは、ハブが閉じました", "", slack_report.SCREEN)
             return await report(d, "gone") if reported is None and d["pane"] not in CLOSED else None
         if a["status"] == "working":
             saw_working, told_blocked, quiet = True, False, 0
@@ -1525,6 +1532,8 @@ async def _watch_delegation(d: dict):
             continue
         path = jsonl_path(a)
         has = bool(path and path.exists())
+        # Slack への報告が、この件の指示のあとの発言を確かめるのに使う。送ったときと違うセッション（作り直された）なら使わない
+        d["path"] = str(path) if has and not generic and a.get("session") and a.get("session") == d.get("session") else None
         read, reply, superseded, pending = delegation_state(path, d["offset"], d["text"]) if has and not generic else (False, "", False, False)
         if reported is not None and superseded:
             return  # 報告のあと、ユーザーが相手に直接次の発言をした。そこから先はユーザー自身の作業なので知らせない
@@ -1561,6 +1570,7 @@ async def _watch_delegation(d: dict):
         if now and LAST_DONE.get(d["pane"]) == now:  # 重ねて頼んだ件が、先に報告した返答の中で片づいていた
             hlog(f"報告を省略（先に報告した返答に含まれる）: {label}", flush=True)
             task_set(d.get("task"), "done", "同じセッションへの前の件と、まとめて報告しました")
+            relay_slack(d, label, "は、同じセッションへの前の件とまとめて片づきました", "", slack_report.SCREEN)
             return
         if now:
             LAST_DONE[d["pane"]] = now
@@ -1571,6 +1581,7 @@ async def _watch_delegation(d: dict):
     hlog(f"見張りを終了（{WATCH_TIMEOUT // 3600}時間）: {label}", flush=True)
     if reported is None:
         task_set(d.get("task"), "timeout", f"{WATCH_TIMEOUT // 3600}時間たっても片づかなかったので、見張りをやめました")
+        relay_slack(d, label, f"は {WATCH_TIMEOUT // 3600} 時間たっても片づかなかったので、見張りをやめました", "", slack_report.SCREEN)
 
 
 TASK_BY_REPORT = {"done": "done", "more": "done", "background": "background", "blocked": "blocked", "gone": "gone"}
@@ -1615,10 +1626,14 @@ async def report(d: dict, kind: str):
         notify("waiting")
 
     timer = asyncio.create_task(late())
+    d["_slack_pending"] = True  # この報告の分を、まだ Slack に送っていない（relay_slack が落とす）
     try:
         outcome = await _report(d, kind, notify)
     except Exception:  # ハブへの報告が例外で終わっても、通知は送る
         notify("failed")
+        if d.get("slack") and d.get("_slack_pending"):  # Slack に送る前に失敗した。送ったあとの失敗なら重ねない
+            relay_slack(d, f"{d['project']}｜{d['title']}", "の報告の途中で失敗しました", "", slack_report.SCREEN)
+            d["_slack_failed_sent"] = True
         raise
     finally:
         timer.cancel()
@@ -1640,14 +1655,17 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
     global REPORTING
     label = _clip(f"{d['project']}｜{d['title']}", 80)
     hub = await HUB.report_target()
-    if not hub:
-        hlog(f"報告できません（ハブが居ない）: {label} {kind}", flush=True)
-        return "no_hub"
     headline, todo = {"done": ("が完了しました", f"hubctl read {d['pane']} -n 1 --full で結果を確かめ、判断に要る材料（選択肢・おすすめと理由・数字・期限・うまくいかなかったこと）は略さずに、"),
                       "more": ("に続きの返答がありました", f"先ほど報告した件の続きです。hubctl read {d['pane']} -n 1 --full で確かめ、判断に要る材料は略さずに、"),
                       "background": ("は裏で作業を続けています", f"しばらくたっても結果が出ていません。hubctl read {d['pane']} で様子を確かめ、まだ動いていることを一言で、"),
                       "blocked": ("が承認・入力待ちで止まっています", f"hubctl screen {d['pane']} で何を聞かれているか確かめ、"),
                       "gone": ("のセッションが見つからなくなりました", "閉じられた可能性があることを、")}[kind]
+    if not hub:
+        hlog(f"報告できません（ハブが居ない）: {label} {kind}", flush=True)
+        relay_slack(d, label, headline, "")
+        if kind in ("done", "more", "gone"):
+            d["_slack_done"] = True
+        return "no_hub"
     # 一行・短文にする（長文や改行は「貼り付けられた内容」として包まれる）。結果の本文は通知に載せず、ハブが道具で読む。
     # 「‖」より前は画面にも出す見出し、後ろはハブへの依頼
     about = report_about(d)
@@ -1669,8 +1687,14 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
         hlog(f"報告 {kind}: {label} → {state}（画面 {len(CLIENTS)}）", flush=True)
         saved = await HUB.report_end(state, reply, label, saved)
         if state != "done" or not reply.strip():
+            relay_slack(d, label, headline, "")
+            if kind in ("done", "more", "gone"):
+                d["_slack_done"] = True
             return "failed"
         notify("ok")
+        relay_slack(d, label, headline, reply)  # 報告は REPORTING の中で作られたもの（その間、ハブは次の指示を送れない）
+        if kind in ("done", "more", "gone"):
+            d["_slack_done"] = True  # 完了の報告を送った。このあとの見張りの失敗は重ねて知らせない（途中経過のあとの失敗は知らせる）
         clients = list(CLIENTS)
         for c in clients:
             try:
@@ -1682,21 +1706,111 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
         return "ok"
 
 
-async def dispatch(a: dict, text: str, kind: str = "send") -> dict:
-    """セッションに指示を送り、片づくまでの見張りを始める（頼んだ件の台帳にも載せる）。"""
+def scan_task(path: Path, offset: int, text: str) -> tuple[bool, bool]:
+    """記録の offset から、(この件の指示（全文が一致するもの）が最初の利用者の側の行か, そのあとに利用者の側の行が 1 つも無いか)。
+    画面や履歴で使う iter_events は、<system-reminder>・<task-notification>・<bash-input> などで始まる発言を飛ばすが、ここでは飛ばさない
+    （端末に直接打たれた文が、その形で始まっていても見落とさない）。道具の結果（tool_result だけの行）と、サブエージェントの行（isSidechain）だけは数えない。
+    この件の指示のあと、2 件目の利用者の側の行より前に、読めない行（壊れた・書きかけ）・形の違う行があれば (False, False)。"""
+    want = " ".join(text.split())  # 送った指示の全文（先頭が同じ別の指示と取り違えない）
+    found = False
+    for line in read_lines(path, offset=offset):
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            return False, False  # 読めない行があれば、そのあとの発言の有無を確かめられない
+        if not isinstance(row, dict):
+            return False, False
+        if row.get("type") != "user" or row.get("isSidechain"):
+            continue
+        content = (row.get("message") or {}).get("content") if isinstance(row.get("message"), dict) else None
+        if isinstance(content, list) and content and all(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+            continue
+        if found:
+            return True, False  # この件の指示のあとの、利用者の側の行（発言・知らせ・メタの行も）
+        said = content if isinstance(content, str) else " ".join(b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text")
+        m = PASTED.match(said) if isinstance(said, str) else None
+        found = " ".join((m.group(1) if m else said).split()) == want
+        if not found:
+            return False, False  # この件の指示より前に、別の利用者の側の行がある（offset はこの件を送る直前なので、ふつうは無い）
+    return found, found
+
+
+def only_this_task(path: Path, offset: int, text: str) -> bool:
+    """Slack に結果の本文を載せてよいか（厳しめ）。記録で、この件の指示が見つかり、そのあとに利用者の側の行が 1 つも無いときだけ True。"""
+    found, clean = scan_task(path, offset, text)
+    return found and clean
+
+
+def same_session(d: dict) -> bool:
+    """いまその pane に居るのが、この件を送ったときと同じセッション（同じ場所・同じセッション ID・同じ記録）か。
+    端末でセッションが作り直されると、ハブが読むのは新しいセッションなので、古い記録の確かめは当てにならない。"""
+    a = next((x for x in list_agents() if x["pane"] == d["pane"]), None)
+    if not a or a.get("cwd") != d.get("cwd") or not d.get("session") or a.get("session") != d.get("session"):
+        return False
+    p = jsonl_path(a)
+    return bool(p) and str(p) == d.get("path")
+
+
+def relay_slack(d: dict, label: str, headline: str, reply: str, fallback: str = slack_report.NO_REPORT):
+    """Slack から頼まれた件なら、報告を同じスレッドにも送る（裏で。声と画面の報告を遅らせない）。送り先は slack_report.origin が決めた DM だけ。
+    ハブの報告（reply）を載せるのは、それがこの件の結果だと言えるときだけ。言えなければ定型文にする:
+    - 報告を待つ間に、同じセッションへ次の指示が送られようとした（SENT_GEN。送る前に進む・増えるだけ）か、送る途中でほかの指示と重なった（overlap）
+    - セッションの記録で、この件の指示のあとに別の発言がある（端末に直接打たれたものも）か、記録でこの件の指示を見つけられない"""
+    dest = d.get("slack")
+    d["_slack_pending"] = False
+    if not dest:
+        return
+    same = SENT_GEN.get(d["pane"]) == d.get("sent_gen") and not d.get("overlap")
+
+    async def go():
+        text = slack_report.text_for(label, headline, "", fallback)
+        if reply.strip():
+            text = slack_report.text_for(label, headline, "", slack_report.REPLACED)
+            if same:
+                text = slack_report.text_for(label, headline, "", slack_report.UNVERIFIED)
+                path = d.get("path")
+                try:
+                    if (path and await asyncio.to_thread(same_session, d)
+                            and await asyncio.to_thread(only_this_task, Path(path), d["offset"], d["text"])):
+                        text = slack_report.text_for(label, headline, reply)
+                except Exception:  # 読めない記録（消えた・読めない）は、本文を載せずに定型文を送る
+                    hlog(f"Slack への報告: 記録を読めません（{label}）", flush=True)
+        r = await asyncio.to_thread(slack_report.post, dest, text)
+        hlog(f"Slack へ報告: {label} → {r}", flush=True)
+
+    job = asyncio.create_task(go())
+    _tasks.add(job)
+    job.add_done_callback(_tasks.discard)
+
+
+def track_send(pane: str, coro) -> asyncio.Future:
+    """セッションへ送る処理を、終わるまで INFLIGHT に数える。待っている側が取り消されても（画面の「止める」・切断）、
+    送る処理は裏で続くので、数を戻すのは処理そのものが終わったとき。待つ側は asyncio.shield で待つ。"""
+    INFLIGHT[pane] = INFLIGHT.get(pane, 0) + 1
+    fut = asyncio.ensure_future(coro)
+    fut.add_done_callback(lambda _f: INFLIGHT.__setitem__(pane, INFLIGHT[pane] - 1))
+    return fut
+
+
+async def dispatch(a: dict, text: str, kind: str = "send", slack: tuple[str, str] | None = None) -> dict:
+    """セッションに指示を送り、片づくまでの見張りを始める（頼んだ件の台帳にも載せる）。
+    slack は、Slack から頼まれたときの (DM, スレッド)。片づいたときの報告を、そこにも送る。"""
     pane, project = a["pane"], a["cwd"].rsplit("/", 1)[-1]
     path = jsonl_path(a)
     offset = path.stat().st_size if path and path.exists() else 0
-    r = await asyncio.to_thread(herdr, "agent", "prompt", pane, text, timeout=30)
+    SENT_GEN[pane] = sent_gen = SENT_GEN.get(pane, 0) + 1  # 送る前に進める。前の件の Slack への報告は、ここから先、結果の本文を送らない
+    overlap = INFLIGHT.get(pane, 0) > 0  # ほかの指示を送っている途中。届く順が送り始めた順と逆になりうるので、この件の Slack への報告にも本文を載せない
+    r = await asyncio.shield(track_send(pane, asyncio.to_thread(herdr, "agent", "prompt", pane, text, timeout=30)))
     err = (r.get("error") or {}).get("code") or (None if "result" in r else "herdr が応答しません")
     hlog(f"send → {pane} ({project}): {text[:120]!r} {'ERR ' + err if err else 'ok'}", flush=True)
     if err:  # unknown: herdr がはっきり断ったのでなく、応答が無かった（届いたかどうか分からない）
         return {"ok": False, "reason": err, "unknown": not isinstance(r.get("error"), dict)}
     WATCH_GEN[pane] = WATCH_GEN.get(pane, 0) + 1  # このセッションの、これより前の見張りは引き上げさせる
     d = {"pane": pane, "cwd": a["cwd"], "project": project, "title": a["title"], "text": text, "offset": offset,
-         "was_working": a["status"] == "working", "gen": WATCH_GEN[pane]}
+         "was_working": a["status"] == "working", "gen": WATCH_GEN[pane], "sent_gen": sent_gen, "overlap": overlap, "slack": slack,
+         "session": a.get("session")}
     start_watch(d, kind)
-    return {"ok": True, "project": project, "title": a["title"], "was_working": a["status"] == "working", "task": d["task"]}
+    return {"ok": True, "project": project, "title": a["title"], "was_working": a["status"] == "working", "task": d["task"], "slack": bool(slack)}
 
 
 @app.post("/api/hub/send")
@@ -1716,7 +1830,7 @@ async def hub_send(body: dict):
         return JSONResponse({"ok": False, "reason": "proposal", "n": n})
     if a["status"] == "blocked":  # 承認や入力を待っている。herdr も送信を拒否する
         return JSONResponse({"ok": False, "reason": "blocked", "screen": read_prompt(pane)[-1200:]})
-    return JSONResponse(await dispatch(a, text))
+    return JSONResponse(await dispatch(a, text, slack=slack_report.origin(body.get("origin"))))
 
 
 # ---------- 承認・質問への回答（ハブは決めない。ユーザーの答えを相手に伝えるだけ） ----------
@@ -1951,6 +2065,20 @@ def spawn_session(directory: Path, project: str, model: str) -> dict:
     return {"ok": True, "pane": pane, "name": name}
 
 
+SPAWN_SESSION_WAIT = 5.0  # Slack から立てたとき、最初の指示を送る前に、セッション ID が見えるまで待つ上限（秒）
+
+
+async def spawned_agent(pane: str, wait: float = 0.0) -> dict | None:
+    """立てたセッション。wait があれば、セッション ID が見えるまで（最大 wait 秒）待つ。Slack への報告は、送ったときの ID と
+    報告のときの ID が同じときだけ本文を載せるので、ID が分からないまま送った件は定型文になる（あとから ID を覚え直さない）。"""
+    end = time.time() + wait
+    while True:
+        a = next((x for x in await asyncio.to_thread(list_agents) if x["pane"] == pane), None)
+        if not a or a.get("session") or time.time() >= end:
+            return a
+        await asyncio.sleep(0.5)
+
+
 @app.post("/api/hub/spawn")
 async def hub_spawn(body: dict):
     """PROJECTS_DIR 直下の既存プロジェクトに新しいセッションを立て、最初の指示があれば送る。"""
@@ -1977,9 +2105,11 @@ async def hub_spawn(body: dict):
         return JSONResponse(r)
     out = {"ok": True, "pane": r["pane"], "project": project, "model": model, "sent": False}
     if text:
-        a = next((x for x in await asyncio.to_thread(list_agents) if x["pane"] == r["pane"]), None)
-        sent = await dispatch(a, text, "spawn") if a else {"ok": False, "reason": "起動したセッションが見つかりません"}
+        slack = slack_report.origin(body.get("origin"))
+        a = await spawned_agent(r["pane"], wait=SPAWN_SESSION_WAIT if slack else 0)
+        sent = await dispatch(a, text, "spawn", slack) if a else {"ok": False, "reason": "起動したセッションが見つかりません"}
         out["sent"], out["send_error"] = sent["ok"], None if sent["ok"] else sent.get("reason")
+        out["slack"] = bool(sent.get("slack"))  # 片づいたときの報告を Slack のスレッドにも送るか
     return JSONResponse(out)
 
 
@@ -3101,8 +3231,11 @@ async def ws(sock: WebSocket):
             await send(type="error", gone=True, text="話し相手が入れ替わっています。送らずに止めました。選び直してください。")
             return
         await send(type="status", text="エージェントに送りました。考え中…")
+        SENT_GEN[pane] = SENT_GEN.get(pane, 0) + 1  # 画面・声からの直接の指示も、前の件の Slack への報告に新しい結果を載せない（送る前に進める）
         async with pane_lock(pane):  # ハブが自動通知に応答している最中なら、それが終わってから送る
-            state, reply = await ask(agent, text)
+            SENT_GEN[pane] = SENT_GEN.get(pane, 0) + 1  # 順番を待つ間に、ハブ経由の件が送られていることがある。実際に送る直前にも進める
+            # 返事が来るまで（止められても、送る処理が裏で終わるまで）に送られたハブ経由の件は、重なった件として扱う
+            state, reply = await asyncio.shield(track_send(pane, ask(agent, text)))
             if cancel.is_set():
                 return
             if state == "error":
