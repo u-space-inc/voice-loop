@@ -1047,6 +1047,8 @@ PANE_LOCKS: dict[str, asyncio.Lock] = {}  # ひとつのセッションへの「
 REPORTING = False  # ハブが自動通知に応答している最中か
 REPORT_IDLE: asyncio.Event | None = None  # 報告が終わったときに立つ（Slack から来た送信が、報告の終わりを待つのに使う）。イベントループの中で作る
 SLACK_QUEUE_WAIT = 45.0  # Slack から来た送信が、報告の終わりを待つ上限（秒）。hubctl の待ち（60 秒）より短く
+REPORT_SEQ = 0  # 報告の通し番号（報告を始めるたびに進む）
+REPORT_FAILED: dict[int, bool] = {}  # 番号ごとに、報告が失敗・時間切れで終わったか（直近の分だけ持つ）
 LAST_DONE: dict[str, tuple] = {}  # セッションごとの、最後に報告した (ターンの目印, 返答)。同じ返答を二度知らせないため
 _tasks: set[asyncio.Task] = set()
 
@@ -1654,7 +1656,7 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
     """ハブに自動通知を送り、ハブの報告を、開いている画面へ声で届ける。画面が無ければ履歴に残るだけ。
     結果は ok / no_hub（ハブが居ない）/ failed（ハブから報告を受け取れなかった）/ skipped（もう止まっていない）。
     notify は、ハブの報告を受け取れた時点で（読み上げる前に）呼ぶ。"""
-    global REPORTING
+    global REPORTING, REPORT_SEQ
     label = _clip(f"{d['project']}｜{d['title']}", 80)
     hub = await HUB.report_target()
     headline, todo = {"done": ("が完了しました", f"hubctl read {d['pane']} -n 1 --full で結果を確かめ、判断に要る材料（選択肢・おすすめと理由・数字・期限・うまくいかなかったこと）は略さずに、"),
@@ -1681,11 +1683,16 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
                 hlog(f"報告を省略（もう止まっていない）: {label}")
                 return "skipped"
         saved = HUB.report_begin(note[len(NOTE_PREFIX):].split("‖", 1)[0].strip(), label)  # 見出しと報告を記録に書けたか
+        REPORT_SEQ += 1
+        seq, state = REPORT_SEQ, "error"
         REPORTING = True
         report_idle().clear()
         try:
             state, reply = await ask(hub, note)
         finally:
+            REPORT_FAILED[seq] = state != "done"  # 失敗・時間切れで終わった報告を待っていた送信は、通さない
+            for old in [k for k in REPORT_FAILED if k < seq - 50]:
+                REPORT_FAILED.pop(old, None)
             REPORTING = False
             report_idle().set()
         hlog(f"報告 {kind}: {label} → {state}（画面 {len(CLIENTS)}）", flush=True)
@@ -1828,12 +1835,15 @@ def report_idle() -> asyncio.Event:
 async def wait_report_if_slack(body: dict) -> bool:
     """報告中なら、Slack の DM から来た送信だけ、報告が終わるまで順番を待つ（上限 SLACK_QUEUE_WAIT 秒）。送ってよければ True。
     声・画面からの送信は報告と同じ順番待ちを通るので、ここで報告中なのは、報告を書いているハブ自身か、voice-loop の順番待ちを通らない
-    Slack の会話だけ。ハブ自身が「Slack から」と偽っても、自分が書いている報告はその送信が返るまで終わらないので、上限まで待って断られる。"""
+    Slack の会話だけ。ハブ自身が「Slack から」と偽っても、自分が書いている報告はその送信が返るまで終わらないので、上限まで待って断られる。
+    待っている間の報告が失敗・時間切れで終わったときも断る。
+    限り: 報告中のハブが送信を裏で出して（または時間をずらして）から報告を終えれば、送信は報告のあとに通る。これは REPORTING が
+    もともと要求の来た瞬間だけを見る守り（報告の流れでうっかり送るのを止める）だからで、この関数で新しく開く穴ではない。"""
     if not REPORTING:
         return True
     if not slack_report.origin(body.get("origin")):
         return False
-    deadline = time.monotonic() + SLACK_QUEUE_WAIT
+    first, deadline = REPORT_SEQ, time.monotonic() + SLACK_QUEUE_WAIT
     while REPORTING:  # 報告が続けて来ても、終わったすきに送る
         left = deadline - time.monotonic()
         if left <= 0:
@@ -1842,7 +1852,8 @@ async def wait_report_if_slack(body: dict) -> bool:
             await asyncio.wait_for(report_idle().wait(), timeout=left)
         except asyncio.TimeoutError:
             return False
-    return True
+    # 待っている間の報告のどれかが失敗・時間切れで終わっていたら、通さない（報告中のハブが偽った送信が、報告の失敗で通らないように）
+    return not any(REPORT_FAILED.get(n, True) for n in range(first, REPORT_SEQ + 1))
 
 
 @app.post("/api/hub/send")

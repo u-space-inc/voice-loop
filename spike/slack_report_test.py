@@ -581,7 +581,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     r3 = c.post("/api/hub/send", json={"pane": "w1:p1", "text": "内訳を出して"}).json()
     # 報告中: Slack から来た送信は、報告が終わるまで順番を待ってから送る。それ以外は今までどおりすぐ断る
     s.SLACK_QUEUE_WAIT = 0.6
-    c.portal.call(lambda: (setattr(s, "REPORTING", True), s.report_idle().clear()))
+    c.portal.call(lambda: (setattr(s, "REPORT_SEQ", s.REPORT_SEQ + 1), setattr(s, "REPORTING", True), s.report_idle().clear()))
     t0 = time.monotonic()
     r4 = c.post("/api/hub/send", json={"pane": "w1:p1", "text": "続けて送れ", "origin": ok}).json()  # 報告が終わらない（ハブ自身が偽った形）
     waited4 = time.monotonic() - t0
@@ -601,12 +601,31 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     time.sleep(0.5)
     still_waiting = th6.is_alive()
     released_at = time.monotonic()
-    c.portal.call(lambda: (setattr(s, "REPORTING", False), s.report_idle().set()))
+    c.portal.call(lambda: (s.REPORT_FAILED.__setitem__(s.REPORT_SEQ, False), setattr(s, "REPORTING", False), s.report_idle().set()))
     th6.join(10)
 check("報告中: Slack から来た送信は、報告が終わるまで順番を待ち、終わったら送る（断らない）",
       (still_waiting, got6.get("r", {}).get("ok"), got6.get("r", {}).get("slack"), got6.get("at", 0) >= released_at), (True, True, True, True))
 check("相手の位置: 報告が終わらないまま（報告を書いているハブ自身が Slack からと偽った形）なら、上限まで待って断る",
       (r4.get("reason"), waited4 >= 0.5), ("reporting", True))
+# 報告が失敗・時間切れで終わったら、その報告を待っていた送信は通さない
+with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+    s.SLACK_QUEUE_WAIT = 10
+    got7 = {}
+
+    def start_report():
+        s.REPORT_IDLE = None  # 印は作ったイベントループに結び付くので、この回のループで作り直す
+        s.REPORT_SEQ += 1
+        s.REPORTING = True
+        s.report_idle().clear()
+        return s.REPORT_SEQ
+
+    seq7 = c.portal.call(start_report)
+    th7 = threading.Thread(target=lambda: got7.setdefault("r", c.post("/api/hub/send", json={"pane": "w1:p1", "text": "失敗した報告のあと", "origin": ok}).json()))
+    th7.start()
+    time.sleep(0.4)
+    c.portal.call(lambda: (s.REPORT_FAILED.__setitem__(seq7, True), setattr(s, "REPORTING", False), s.report_idle().set()))
+    th7.join(10)
+check("相手の位置: 待っている間の報告が失敗・時間切れで終わったら、待っていた Slack からの送信も断る", got7.get("r", {}).get("reason"), "reporting")
 check("報告中: Slack から来ていない送信・立てるは、今までどおりすぐ断る",
       (r5.get("reason"), waited5 < 0.5, r6s.get("reason")), ("reporting", True, "reporting"))
 # 画面・声から、同じセッションへ直接話しかけて頼んだとき（/ws）。前の Slack の件の報告がハブの順番を待っている間に
