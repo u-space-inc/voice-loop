@@ -10,6 +10,9 @@ Hermes の送信コマンド（`hermes send`。Hermes のボットとして投�
 - 本文の `MEDIA:` は、`hermes send` が手元のファイルを添付する印なので、全角のコロンに替えて添付にさせない。
   `<…|…>`（見た目と行き先の違うリンク）を作らせないよう、< > も全角に替える。制御文字・向きを変える文字は空白にする
 - 送るのはコンテナの中の固定のコマンドで、本文は標準入力で渡す（シェルを通さない）
+
+同じセッションに続けて頼んだ件（前の件の完了を報告する前に、次の件を送った）は、まとめて 1 つの報告にし、
+一番新しい依頼のスレッドに送る（server.py の merge_open・chain_dest）。前のスレッドには、次の依頼のスレッドで報告すると一言送る。
 """
 from __future__ import annotations
 
@@ -46,14 +49,36 @@ NO_REPORT = "（ハブの報告を受け取れませんでした。voice-loop �
 REPLACED = "（報告の前に、同じセッションへ次の指示が送られました。この件の結果は voice-loop の画面で確かめてください）"
 UNVERIFIED = "（この件の指示のあとに同じセッションへ別の発言があったか、記録で確かめられませんでした。結果は voice-loop の画面で確かめてください）"
 SCREEN = "（詳しくは voice-loop の画面で確かめてください）"
+# 同じセッションに続けて頼んでまとめた報告で、それぞれの依頼がどこから来たか
+HERE, OTHER_THREAD, FROM_SCREEN = "このスレッドから", "前のスレッドから", "voice-loop から"
+ASKS_SHOWN = 5  # まとめた報告に並べる依頼の数の上限（多いときは新しいものを残す）
 
 
-def text_for(label: str, headline: str, reply: str, fallback: str = NO_REPORT) -> str:
-    """Slack に送る文。見出し（案件｜件名と、何が起きたか）と、ハブの報告。報告が無ければ fallback（画面で確かめるよう書く）。"""
+def one_line(text: str, n: int) -> str:
+    t = " ".join(str(text).split())
+    return t if len(t) <= n else t[: n - 1] + "…"
+
+
+def text_for(label: str, headline: str, reply: str, fallback: str = NO_REPORT, asks=()) -> str:
+    """Slack に送る文。見出し（案件｜件名と、何が起きたか）と、ハブの報告。報告が無ければ fallback（画面で確かめるよう書く）。
+    asks は、同じセッションに続けて頼んでまとめた依頼の (文, どこから) の並び（古い順）。あれば見出しのあとに並べる。"""
     body = reply.strip() or fallback
-    text = f"【{label}{headline}】\n{body}"
+    if asks:
+        shown = list(asks)[-ASKS_SHOWN:]
+        lines = [f"【{label}{headline}】（{len(asks)} 件まとめて）"]
+        if len(asks) > len(shown):
+            lines.append(f"・ほか {len(asks) - len(shown)} 件")
+        lines += [f"・{one_line(t, 50)}（{where}）" for t, where in shown]
+        text = "\n".join(lines) + f"\n\n{body}"
+    else:
+        text = f"【{label}{headline}】\n{body}"
     text = _MEDIA.sub("MEDIA：", _CTRL.sub(" ", text)).replace("<", "＜").replace(">", "＞")
     return text if len(text) <= LIMIT else text[: LIMIT - 1] + "…"
+
+
+def pointer_text(label: str, next_text: str) -> str:
+    """前のスレッドへの一言。同じセッションへ別のスレッドから次の依頼が来たので、報告はそちらにまとめる。"""
+    return text_for(label, " への依頼は、次の依頼とまとめて、そちらのスレッドで報告します", f"次の依頼：「{one_line(next_text, 50)}」")
 
 
 def command(container: str, dest: tuple[str, str]) -> list[str] | None:
