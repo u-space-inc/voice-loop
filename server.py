@@ -1693,11 +1693,11 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
 
 
 def only_this_task(path: Path, offset: int, text: str) -> bool:
-    """Slack に結果の本文を載せてよいか（厳しめ）。記録で、この件の指示が見つかり、そのあとに利用者の側の行が 1 つも無いときだけ True。
+    """Slack に結果の本文を載せてよいか（厳しめ）。記録で、この件の指示（全文が一致するもの）が見つかり、そのあとに利用者の側の行が 1 つも無いときだけ True。
     画面や履歴で使う iter_events は、<system-reminder>・<task-notification>・<bash-input> などで始まる発言を飛ばすが、ここでは飛ばさない
     （端末に直接打たれた文が、その形で始まっていても見落とさない）。道具の結果（tool_result だけの行）と、サブエージェントの行（isSidechain）だけは数えない。
     読めない・形の違う記録は False（本文を載せない）。"""
-    head = " ".join(text.split())[:60]
+    want = " ".join(text.split())  # 送った指示の全文（先頭が同じ別の指示と取り違えない）
     found = False
     for line in read_lines(path, offset=offset):
         try:
@@ -1713,7 +1713,7 @@ def only_this_task(path: Path, offset: int, text: str) -> bool:
             return False  # この件の指示のあとの、利用者の側の行（発言・知らせ・メタの行も）
         said = content if isinstance(content, str) else " ".join(b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text")
         m = PASTED.match(said) if isinstance(said, str) else None
-        found = " ".join((m.group(1) if m else said).split()).startswith(head)
+        found = " ".join((m.group(1) if m else said).split()) == want
         if not found:
             return False  # この件の指示より前に、別の利用者の側の行がある（offset はこの件を送る直前なので、ふつうは無い）
     return found

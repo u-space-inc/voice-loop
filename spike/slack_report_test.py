@@ -132,7 +132,7 @@ def transcript(*turns):
     return str(p)
 
 
-def d_of(slack, path="ok"):
+def d_of(slack, path="ok", text="内訳を出して"):
     s.SENT_GEN["w1:p1"] = 7
     if path == "ok":
         path = transcript(("user", "内訳を出して"), ("assistant", "内訳を出しました"))
@@ -216,7 +216,9 @@ for name, path, want in (
          "記録で確かめられませんでした"),
         ("指示のあとに <task-notification> や <bash-input> で始まる行があれば",
          transcript(("user", "内訳を出して"), ("user", "<task-notification>x</task-notification>"), ("assistant", "内訳を出しました")), "記録で確かめられませんでした"),
-        ("記録を読めなければ（読む直前に消えた・読めない場所）", TMP, "記録で確かめられませんでした")):
+        ("記録を読めなければ（読む直前に消えた・読めない場所）", TMP, "記録で確かめられませんでした"),
+        ("記録にあるのが、先頭は同じで続きの違う指示なら",
+         transcript(("user", "内訳を出して" + "。" * 70 + "別の案件のほう"), ("assistant", "別の結果")), "記録で確かめられませんでした")):
     posted.clear()
     asyncio.run(run_report(d_of((DM, "1.2"), path)))
     check(f"相手の位置: {name}、ハブの報告は Slack に送らない", [("内訳を出しました（全文" in p[2], want in p[2]) for p in posted], [(False, True)])
