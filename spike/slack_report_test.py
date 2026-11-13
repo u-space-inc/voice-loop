@@ -355,6 +355,70 @@ s.CLIENTS.discard(fc)
 s.speak_to = real_speak
 check("本体: Slack に送ったあとで失敗しても、重ねて送らない", [("内訳を出しました（全文" in p[2], "失敗しました" in p[2]) for p in posted], [(True, False)])
 
+# 途中経過（承認・入力待ち）を Slack に送ったあとで見張りが失敗したら、その失敗も知らせる
+async def blocked_then_boom(d):
+    real = s._watch_delegation
+
+    async def run(d_):
+        await s.report(d_, "blocked")
+        raise RuntimeError("記録を読めない")
+    s._watch_delegation = run
+    try:
+        await s.watch_delegation(d)
+        await asyncio.sleep(0.05)
+        for _ in range(50):
+            if not [t for t in s._tasks if not t.done()]:
+                break
+            await asyncio.sleep(0.02)
+    finally:
+        s._watch_delegation = real
+
+
+A_LP["status"] = "blocked"
+posted.clear()
+d_blk = d_of((DM, "1.2"))
+d_blk["task"] = s.task_new(d_blk, "send")
+asyncio.run(blocked_then_boom(d_blk))
+A_LP["status"] = "idle"
+check("本体: 途中経過（承認・入力待ち）を送ったあとで見張りが失敗したら、その失敗も知らせる",
+      sorted(("承認・入力待ちで止まっています" in p[2], "見張りが途中で失敗しました" in p[2]) for p in posted), [(False, True), (True, False)])  # 送る順は裏の処理で前後する
+
+# 立てた直後に送った件（送ったときにセッション ID が無い）: 決まった ID の記録の最初の発言がこの件の指示なら、その ID で確かめて本文を送る
+def spawned_watch(first_user):
+    tpath = Path(transcript(("user", first_user), ("assistant", "内訳を出しました")))
+    d = {**d_of((DM, "1.2"), str(tpath)), "session": None, "gen": 9, "was_working": False, "task": None}
+    s.WATCH_GEN["w1:p1"] = 9
+    s.LAST_DONE.pop("w1:p1", None)
+    real_path_, real_async, real_to = s.jsonl_path, s.asyncio, s.WATCH_TIMEOUT
+    s.WATCH_TIMEOUT = 1  # 報告のあとの続きを見張る時間（この試験では 1 秒）
+    fast_ = types.ModuleType("fast_asyncio3")
+    fast_.__dict__.update(asyncio.__dict__)
+    fast_.sleep = lambda t, *a: asyncio.sleep(t / 1000, *a)
+    s.jsonl_path, s.asyncio = (lambda a: tpath if a.get("session") == "s1" else None), fast_
+
+    async def go():
+        await s._watch_delegation(d)
+        await asyncio.sleep(0.05)
+        for _ in range(50):
+            if not [t for t in s._tasks if not t.done()]:
+                break
+            await asyncio.sleep(0.02)
+    try:
+        asyncio.run(go())
+    finally:
+        s.jsonl_path, s.asyncio, s.WATCH_TIMEOUT = real_path_, real_async, real_to
+    return d
+
+
+posted.clear()
+d_sp = spawned_watch("内訳を出して")
+check("本体: 立てた直後に送った件も、決まったセッションの記録の最初の発言がこの件の指示なら、その ID を覚えて本文を送る",
+      (d_sp.get("session"), ["内訳を出しました（全文" in p[2] for p in posted]), ("s1", [True]))
+posted.clear()
+d_sp2 = spawned_watch("別の人が打った指示")
+check("相手の位置: 立てた直後のセッションの最初の発言がこの件の指示でなければ、ID を覚えず、本文も送らない",
+      (d_sp2.get("session"), ["内訳を出しました（全文" in p[2] for p in posted]), (None, [False]))
+
 posted.clear()
 merged_watch()
 check("本体: 前の件と一つの返答にまとまって報告を省くときも、この件の Slack のスレッドに知らせる（本文は載せない）",

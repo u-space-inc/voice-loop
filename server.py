@@ -1497,7 +1497,7 @@ async def watch_delegation(d: dict):
         traceback.print_exc()
         if TASKS.get(d.get("task") or "", {}).get("status") != "done":
             task_set(d.get("task"), "failed", "見張りの途中で失敗しました（本体のログを見てください）")
-        if not d.get("_slack_failed_sent") and d.get("_slack_pending", True):  # 報告の途中の失敗は report が知らせた。報告を送り終えたあとの失敗は重ねない
+        if not d.get("_slack_failed_sent") and not d.get("_slack_done"):  # 報告の途中の失敗は report が知らせた。完了の報告を送ったあとの失敗は重ねない
             relay_slack(d, f"{d['project']}｜{d['title']}", "の見張りが途中で失敗しました", "", slack_report.SCREEN)
     finally:
         WATCHING[d["pane"]] -= 1
@@ -1532,6 +1532,9 @@ async def _watch_delegation(d: dict):
             continue
         path = jsonl_path(a)
         has = bool(path and path.exists())
+        # 立てた直後に送った件は、送ったときにセッション ID がまだ無い。決まったあとで、その記録の最初の利用者の側の行がこの件の指示なら、その ID を覚える
+        if d.get("slack") and not d.get("session") and a.get("session") and has and not generic and scan_task(path, d["offset"], d["text"])[0]:
+            d["session"] = a["session"]
         # Slack への報告が、この件の指示のあとの発言を確かめるのに使う。送ったときと違うセッション（作り直された）なら使わない
         d["path"] = str(path) if has and not generic and a.get("session") and a.get("session") == d.get("session") else None
         read, reply, superseded, pending = delegation_state(path, d["offset"], d["text"]) if has and not generic else (False, "", False, False)
@@ -1689,6 +1692,8 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
             return "failed"
         notify("ok")
         relay_slack(d, label, headline, reply)  # 報告は REPORTING の中で作られたもの（その間、ハブは次の指示を送れない）
+        if kind in ("done", "more", "gone"):
+            d["_slack_done"] = True  # 完了の報告を送った。このあとの見張りの失敗は重ねて知らせない（途中経過のあとの失敗は知らせる）
         clients = list(CLIENTS)
         for c in clients:
             try:
@@ -1700,33 +1705,39 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
         return "ok"
 
 
-def only_this_task(path: Path, offset: int, text: str) -> bool:
-    """Slack に結果の本文を載せてよいか（厳しめ）。記録で、この件の指示（全文が一致するもの）が見つかり、そのあとに利用者の側の行が 1 つも無いときだけ True。
+def scan_task(path: Path, offset: int, text: str) -> tuple[bool, bool]:
+    """記録の offset から、(この件の指示（全文が一致するもの）が最初の利用者の側の行か, そのあとに利用者の側の行が 1 つも無いか)。
     画面や履歴で使う iter_events は、<system-reminder>・<task-notification>・<bash-input> などで始まる発言を飛ばすが、ここでは飛ばさない
     （端末に直接打たれた文が、その形で始まっていても見落とさない）。道具の結果（tool_result だけの行）と、サブエージェントの行（isSidechain）だけは数えない。
-    読めない・形の違う記録は False（本文を載せない）。"""
+    読めない行（壊れた・書きかけ）・形の違う行があれば (False, False)。"""
     want = " ".join(text.split())  # 送った指示の全文（先頭が同じ別の指示と取り違えない）
     found = False
     for line in read_lines(path, offset=offset):
         try:
             row = json.loads(line)
         except json.JSONDecodeError:
-            return False  # 読めない行（壊れた・書きかけ）があれば、そのあとの発言の有無を確かめられない
+            return False, False  # 読めない行があれば、そのあとの発言の有無を確かめられない
         if not isinstance(row, dict):
-            return False
+            return False, False
         if row.get("type") != "user" or row.get("isSidechain"):
             continue
         content = (row.get("message") or {}).get("content") if isinstance(row.get("message"), dict) else None
         if isinstance(content, list) and content and all(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
             continue
         if found:
-            return False  # この件の指示のあとの、利用者の側の行（発言・知らせ・メタの行も）
+            return True, False  # この件の指示のあとの、利用者の側の行（発言・知らせ・メタの行も）
         said = content if isinstance(content, str) else " ".join(b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text")
         m = PASTED.match(said) if isinstance(said, str) else None
         found = " ".join((m.group(1) if m else said).split()) == want
         if not found:
-            return False  # この件の指示より前に、別の利用者の側の行がある（offset はこの件を送る直前なので、ふつうは無い）
-    return found
+            return False, False  # この件の指示より前に、別の利用者の側の行がある（offset はこの件を送る直前なので、ふつうは無い）
+    return found, found
+
+
+def only_this_task(path: Path, offset: int, text: str) -> bool:
+    """Slack に結果の本文を載せてよいか（厳しめ）。記録で、この件の指示が見つかり、そのあとに利用者の側の行が 1 つも無いときだけ True。"""
+    found, clean = scan_task(path, offset, text)
+    return found and clean
 
 
 def same_session(d: dict) -> bool:
