@@ -1515,11 +1515,13 @@ async def _watch_delegation(d: dict):
         if WATCH_GEN.get(d["pane"]) != d["gen"]:
             if reported is None:
                 task_set(d.get("task"), "replaced", "同じセッションに次の指示が送られたので、見張りはそちらの件に移りました")
+                relay_slack(d, label, "の見張りは、同じセッションへの次の指示に引き継がれました", "", slack_report.SCREEN)
             return  # 同じセッションに新しい指示が送られた。見張りは最新の1つに任せる（古い件の名前で通知を重ねない）
         a = next((x for x in await asyncio.to_thread(list_agents) if x["pane"] == d["pane"] and x["cwd"] == d["cwd"]), None)
         if not a:  # ハブがユーザーの許可で閉じたものは、知らせない
             if reported is None and d["pane"] in CLOSED:
                 task_set(d.get("task"), "closed", "ハブが閉じました")
+                relay_slack(d, label, "のセッションは、ハブが閉じました", "", slack_report.SCREEN)
             return await report(d, "gone") if reported is None and d["pane"] not in CLOSED else None
         if a["status"] == "working":
             saw_working, told_blocked, quiet = True, False, 0
@@ -1528,6 +1530,7 @@ async def _watch_delegation(d: dict):
             continue
         path = jsonl_path(a)
         has = bool(path and path.exists())
+        d["path"] = str(path) if has and not generic else None  # Slack への報告が、この件の指示のあとの発言を確かめるのに使う
         read, reply, superseded, pending = delegation_state(path, d["offset"], d["text"]) if has and not generic else (False, "", False, False)
         if reported is not None and superseded:
             return  # 報告のあと、ユーザーが相手に直接次の発言をした。そこから先はユーザー自身の作業なので知らせない
@@ -1574,6 +1577,7 @@ async def _watch_delegation(d: dict):
     hlog(f"見張りを終了（{WATCH_TIMEOUT // 3600}時間）: {label}", flush=True)
     if reported is None:
         task_set(d.get("task"), "timeout", f"{WATCH_TIMEOUT // 3600}時間たっても片づかなかったので、見張りをやめました")
+        relay_slack(d, label, f"は {WATCH_TIMEOUT // 3600} 時間たっても片づかなかったので、見張りをやめました", "", slack_report.SCREEN)
 
 
 TASK_BY_REPORT = {"done": "done", "more": "done", "background": "background", "blocked": "blocked", "gone": "gone"}
@@ -1688,18 +1692,26 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
         return "ok"
 
 
-def relay_slack(d: dict, label: str, headline: str, reply: str):
-    """Slack から頼まれた件なら、報告を同じスレッドにも送る（裏で。声と画面の報告を遅らせない）。送り先は slack_report.origin が決めた DM だけ。"""
+def relay_slack(d: dict, label: str, headline: str, reply: str, fallback: str = slack_report.NO_REPORT):
+    """Slack から頼まれた件なら、報告を同じスレッドにも送る（裏で。声と画面の報告を遅らせない）。送り先は slack_report.origin が決めた DM だけ。
+    ハブの報告（reply）を載せるのは、それがこの件の結果だと言えるときだけ。言えなければ定型文にする:
+    - 報告を待つ間に、同じセッションへ次の指示が送られようとした（SENT_GEN。送る前に進む・増えるだけ）か、送る途中でほかの指示と重なった（overlap）
+    - セッションの記録で、この件の指示のあとに別の発言がある（端末に直接打たれたものも）か、記録でこの件の指示を見つけられない"""
     dest = d.get("slack")
     if not dest:
         return
-    # 報告を待つ間に、同じセッションへ次の指示（画面から・声から）が送られようとしていたら、ハブが読んだ結果はその新しい件のものかもしれない。
-    # SENT_GEN は送る前に進み、増えるだけなので、ここで同じなら、ハブが報告を作った間ずっと次の指示は出ていない（届いたか分からない送りも含めて）
-    # 送る途中でほかの指示と重なった件（overlap）も、届いた順が分からないので本文を載せない
-    text = (slack_report.text_for(label, headline, reply) if SENT_GEN.get(d["pane"]) == d.get("sent_gen") and not d.get("overlap")
-            else slack_report.text_for(label, headline, "", slack_report.REPLACED))
+    same = SENT_GEN.get(d["pane"]) == d.get("sent_gen") and not d.get("overlap")
 
     async def go():
+        text = slack_report.text_for(label, headline, "", fallback)
+        if reply.strip():
+            text = slack_report.text_for(label, headline, "", slack_report.REPLACED)
+            if same:
+                path = d.get("path")
+                found, _, superseded, _ = (await asyncio.to_thread(delegation_state, Path(path), d["offset"], d["text"])
+                                           if path and Path(path).exists() else (False, "", False, False))
+                text = (slack_report.text_for(label, headline, reply) if found and not superseded
+                        else slack_report.text_for(label, headline, "", slack_report.UNVERIFIED))
         r = await asyncio.to_thread(slack_report.post, hermes.HERMES_CONTAINER, dest, text)
         hlog(f"Slack へ報告: {label} → {r}", flush=True)
 

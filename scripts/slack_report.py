@@ -43,6 +43,8 @@ def origin(raw) -> tuple[str, str] | None:
 
 NO_REPORT = "（ハブの報告を受け取れませんでした。voice-loop の画面で確かめてください）"
 REPLACED = "（報告の前に、同じセッションへ次の指示が送られました。この件の結果は voice-loop の画面で確かめてください）"
+UNVERIFIED = "（この件の指示のあとに同じセッションへ別の発言があったか、記録で確かめられませんでした。結果は voice-loop の画面で確かめてください）"
+SCREEN = "（詳しくは voice-loop の画面で確かめてください）"
 
 
 def text_for(label: str, headline: str, reply: str, fallback: str = NO_REPORT) -> str:

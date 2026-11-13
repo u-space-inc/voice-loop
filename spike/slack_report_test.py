@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import types
 from pathlib import Path
 
 TMP = tempfile.mkdtemp()
@@ -122,9 +123,21 @@ async def run_report(d, kind="done"):
     return out
 
 
-def d_of(slack):
+def transcript(*turns):
+    """Claude Code のセッション記録（JSONL）の形で書く。turns は ("user" | "assistant", 文)"""
+    p = Path(tempfile.mkstemp(suffix=".jsonl", dir=TMP)[1])
+    rows = [{"type": "user", "message": {"role": "user", "content": t}} if k == "user" else
+            {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": t}]}} for k, t in turns]
+    p.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+    return str(p)
+
+
+def d_of(slack, path="ok"):
     s.SENT_GEN["w1:p1"] = 7
-    return {"pane": "w1:p1", "cwd": "/x/lp", "project": "lp", "title": "見積", "text": "内訳を出して", "slack": slack, "sent_gen": 7}
+    if path == "ok":
+        path = transcript(("user", "内訳を出して"), ("assistant", "内訳を出しました"))
+    return {"pane": "w1:p1", "cwd": "/x/lp", "project": "lp", "title": "見積", "text": "内訳を出して", "slack": slack, "sent_gen": 7,
+            "offset": 0, "path": path}
 
 
 ANSWER = ("done", "内訳を出しました（全文は画面で）")
@@ -192,6 +205,51 @@ for name, answer, block in (("送って答えを待っている間", {"result": 
     check(f"相手の位置: 報告を待つ間に同じセッションへ次の指示を{name}も、ハブの報告は Slack に送らない",
           [("内訳を出しました" in p[2], "次の指示が送られました" in p[2]) for p in posted], [(False, True)])
 s.herdr = lambda *a, **k: {"result": {}}
+# 端末に直接打たれた発言（本体を通らない）は、セッションの記録で見る
+for name, path, want in (
+        ("この件の指示のあとに、端末から別の発言があれば", transcript(("user", "内訳を出して"), ("assistant", "内訳を出しました"), ("user", "別の案件の作業をして"),
+                                                     ("assistant", "別の案件の結果")), "記録で確かめられませんでした"),
+        ("記録でこの件の指示を見つけられなければ", transcript(("user", "ほかの作業"), ("assistant", "ほかの結果")), "記録で確かめられませんでした"),
+        ("記録が無ければ", None, "記録で確かめられませんでした")):
+    posted.clear()
+    asyncio.run(run_report(d_of((DM, "1.2"), path)))
+    check(f"相手の位置: {name}、ハブの報告は Slack に送らない", [("内訳を出しました（全文" in p[2], want in p[2]) for p in posted], [(False, True)])
+
+# 報告をせずに見張りが終わるとき（次の指示に引き継がれた・閉じられた・時間切れ）も、スレッドに知らせる
+fast = types.ModuleType("fast_asyncio")
+fast.__dict__.update(asyncio.__dict__)
+_real_sleep = asyncio.sleep
+fast.sleep = lambda t, *a: _real_sleep(t / 1000, *a)
+
+
+async def watch_end(setup):
+    d = {**d_of((DM, "1.2")), "gen": 3, "was_working": False, "task": None}
+    s.WATCH_GEN["w1:p1"] = 3
+    setup(d)
+    real, s.asyncio = s.asyncio, fast
+    try:
+        await s._watch_delegation(d)
+        await _real_sleep(0.05)
+        for _ in range(50):
+            if not [t for t in s._tasks if not t.done()]:
+                break
+            await _real_sleep(0.02)
+    finally:
+        s.asyncio = real
+
+
+real_list, real_timeout = s.list_agents, s.WATCH_TIMEOUT
+for name, setup, want in (
+        ("同じセッションへの次の指示に引き継がれた", lambda d: s.WATCH_GEN.__setitem__("w1:p1", 4), "次の指示に引き継がれました"),
+        ("ハブが閉じた", lambda d: (setattr(s, "list_agents", lambda: []), s.CLOSED.add("w1:p1")), "ハブが閉じました"),
+        ("時間切れ", lambda d: setattr(s, "WATCH_TIMEOUT", 0), "見張りをやめました")):
+    posted.clear()
+    asyncio.run(watch_end(setup))
+    s.list_agents, s.WATCH_TIMEOUT = real_list, real_timeout
+    s.CLOSED.discard("w1:p1")
+    check(f"本体: 報告をせずに見張りが終わるとき（{name}）も、Slack のスレッドに知らせる（結果の本文は載せない）",
+          [(p[1], want in p[2], "画面で確かめてください" in p[2]) for p in posted], [((DM, "1.2"), True, True)])
+
 ANSWER = ("timeout", "")
 posted.clear()
 asyncio.run(run_report(d_of((DM, "1.2"))))
