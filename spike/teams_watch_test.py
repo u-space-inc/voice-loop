@@ -155,6 +155,41 @@ check("スクリプト: 写しを作るのは番号 0 の呼び出しだけ。�
       (True, True, 1, True))
 check("スクリプト: 写すのは INDEX 件まで・切り出しは CHUNK 字（コードポイント）ずつ",
       (f"slice(0,{tw.INDEX})" in tw.JS_TEMPLATE, f"(k+1)*{tw.CHUNK}" in tw.JS_TEMPLATE, "Array.from(" in tw.JS_TEMPLATE), (True, True, True))
+check("スクリプト: 先頭に await（道具は返った Promise を待たない）・写す前にページを開いてから PAGE_AGE_MS まで待つ",
+      (tw.JS_TEMPLATE.startswith("await (async()=>{"), f"const w={tw.PAGE_AGE_MS}-performance.now();" in tw.JS_TEMPLATE,
+       tw.JS_TEMPLATE.index("performance.now()") < tw.JS_TEMPLATE.index("querySelectorAll")), (True, True, True))
+
+# スクリプトを node で動かす（偽の画面。待ち時間は記録して、すぐ進める）
+NODE = __import__("shutil").which("node")
+FAKE_PAGE = r"""
+const waits=[];globalThis.window=globalThis;globalThis.performance={now:()=>AGE};globalThis.setTimeout=(f,ms)=>{waits.push(ms);f();};
+globalThis.location={host:'teams.microsoft.com'};
+const row=(m,f)=>({id:'message-slice-card-MentionsSliceCardItem|'+m,querySelector:s=>{const k=(/message-slice-card-([a-z-]+)"/.exec(s)||[])[1];return k in f?{textContent:f[k]}:null}});
+const ROWS=[row('1794529244269',{title:'General',['threads-secondary-title']:'題',preview:'送り手: 本文',timestamp:'9:20'}),row('1794451771109',{title:'General'})];
+globalThis.document={querySelectorAll:s=>s.includes('avatar')?[{children:[],textContent:'組織A'}]:s.includes('LeftRail')?[{getAttribute:()=>'SEL'}]:s.includes('slice-card-item')?ROWS:[]};
+"""
+
+
+def node_run(age, known=(), base=False, ks=(0,)):
+    js_text = tw.js_for("a1b2c3d4e5f6", set(known), base)
+    body = (FAKE_PAGE.replace("AGE", str(age)).replace("'SEL'", json.dumps(tw.SELECTED)) + "const res=[];" + "".join(f"res.push({js_text.replace('__K__', str(k))});" for k in ks)
+            + "console.log(JSON.stringify({res,waits}));")
+    p = subprocess.run([NODE, "--input-type=module", "-e", body], capture_output=True, text=True, timeout=30)
+    return json.loads(p.stdout) if p.returncode == 0 else {"err": p.stderr[-300:]}
+
+
+if NODE:
+    r = node_run(5000, known={"1794451771109"})
+    snap_ = read("\n".join(r.get("res", [])), known={"1794451771109"})
+    check("node: 開いて 5 秒なら、残りの 15 秒を待ってから写す（1 回だけ）", r.get("waits"), [15000])
+    check("node: 写しはつながり、新しい投稿は中身つき・既に見た投稿は ID だけ",
+          [(i["msg"], bool(i["fields"])) for i in snap_["items"]] if isinstance(snap_, dict) else snap_,
+          [("1794529244269", True), ("1794451771109", False)])
+    check("node: 開いて 25 秒なら待たない", node_run(25000).get("waits"), [])
+    check("node: 番号 1 から呼ばれても写しを作らず err（待ちもしない）",
+          (node_run(5000, ks=(1,)).get("res", [""])[0].split("|")[3], node_run(5000, ks=(1,)).get("waits")), ("err", []))
+else:
+    print("（node が無いので、スクリプトを動かす試験は飛ばした）")
 
 # ---------- 置き場 ----------
 ORG_A = {"name": "組織A", "tenant": TENANT_A}

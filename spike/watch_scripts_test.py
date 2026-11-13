@@ -227,6 +227,10 @@ check("items: 片づけた印", (run("done", "1").stdout.strip(), run("open").st
 check("items: 無い番号は断る", run("done", "99").returncode, 1)
 check("items: 口と種類は決めたものだけ", (run("add", "--source", "web", "--id", "x", "--kind", "info", "--title", "x").returncode != 0,
                                     run("add", "--source", "mail", "--id", "x", "--kind", "send", "--title", "x").returncode != 0), (True, True))
+r = run("add", "--source", "teams", "--id", "0123456789abcdef", "--project", "shop", "--kind", "fyi", "--title", "受け取りの連絡", "--prepared", "先方の了承の返事")
+check("items: 宛てて書かれた・対応不要（fyi）を記録でき、判断待ちには出さず、直近の記録には「宛て・対応不要」で出す",
+      (r.returncode, "受け取りの連絡" in run("open").stdout, "宛て・対応不要｜shop｜teams:0123456789abcdef｜受け取りの連絡" in run("recent").stdout),
+      (0, False, True))
 run("add", "--source", "mail", "--id", "m9", "--kind", "judge", "--title", "長" * 200 + "\n改行")
 row = [json.loads(l) for l in (TMP / "voice-loop/items.jsonl").read_text().splitlines() if '"m9"' in l][0]
 check("items: 題は 80 字で切り、1 行にする", (len(row["title"]), "\n" in row["title"]), (80, False))
@@ -427,10 +431,17 @@ check("手順: Teams の行の形・読む道具・止まったときの知ら�
 check("手順が「形の合わない行」（unseen の数）と「形の合わない予定がある」（台本の 1 行）の扱いを書いている",
       ("「形の合わない行」が 1 件以上なら" in SK, vl_watch.CAL_ODD.split(": ", 1)[1].split("（")[0] in SK), (True, True))
 step11 = SK.split("\n11. ", 1)[1].split("\n## ", 1)[0]
-check("手順 11: 形の合わない行がある回を先に決め、[SILENT] は「形の合わない行・手順 9 の知らせ・judge がどれも 0」の回だけ",
-      (step11.index("「形の合わない行」が 1 件以上の回") < step11.index("judge が 1 件以上の回") < step11.index("どれでもない回"),
-       [l for l in step11.splitlines() if "`[SILENT]` だけにする" in l][0].lstrip().startswith("- どれでもない回（形の合わない行が 0 件、手順 9 の知らせが無く、judge も 0 件）")),
+check("手順 11: 形の合わない行がある回を先に決め、[SILENT] は「形の合わない行・手順 9 の知らせ・judge・fyi がどれも 0」の回だけ",
+      (step11.index("「形の合わない行」が 1 件以上の回") < step11.index("judge か fyi が 1 件以上の回") < step11.index("どれでもない回"),
+       [l for l in step11.splitlines() if "`[SILENT]` だけにする" in l][0].lstrip().startswith("- どれでもない回（形の合わない行が 0 件、手順 9 の知らせが無く、judge も fyi も 0 件")),
       (True, True))
+step4 = SK.split("\n4. ", 1)[1].split("\n5. ", 1)[0]
+check("手順 4: 人が利用者に宛てて書いた対応不要のもの（fyi）を info と分ける（cc だけ・自動通知・既に返したものは info。迷えば fyi）",
+      ("（fyi）" in step4, "cc で名前があるだけのものは除く" in step4, "利用者が既に返したものは info" in step4, "fyi か info かで迷ったら fyi にする" in step4),
+      (True, True, True, True))
+check("手順: fyi は hubctl notice を使わず、DM（最後の出力）に 1 行で届ける・DM の行に相手の文や URL を写さない",
+      ("fyi と info だけの回は `hubctl notice` で知らせない" in SK, "「届いたもの（対応不要）」" in step11, "URL・電話番号・振込先" in SK, "--kind judge|fyi|info" in SK),
+      (True, True, True, True))
 
 ok = sum(r[1] for r in results)
 for name, passed, got, want in results:
