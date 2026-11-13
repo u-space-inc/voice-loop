@@ -176,7 +176,7 @@ SLACK_NOTE = "片づくか止まると、voice-loop がこの Slack のスレッ
 
 def cmd_send(a):
     text = " ".join(a.text)
-    r = call("send", body=with_origin({"pane": a.pane, "text": text}))
+    r = call("send", body=with_origin({"pane": a.pane, "text": text}), timeout=100)  # Slack から来た送信は、報告の終わりを最大 45 秒待ってから送る（本体の SLACK_QUEUE_WAIT）
     if r.get("ok"):
         note = "（作業中だったので、いまの作業のあとに読まれます）" if r.get("was_working") else ""
         print(f"送りました → [{a.pane}] {r['project']}｜{r['title']}{note}\n送った文: {' '.join(text.split())}\n"

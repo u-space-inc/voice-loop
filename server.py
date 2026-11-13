@@ -1046,7 +1046,8 @@ CLIENTS: set[Client] = set()
 PANE_LOCKS: dict[str, asyncio.Lock] = {}  # ひとつのセッションへの「送って返信を読む」は同時に1件だけ
 REPORTING = False  # ハブが自動通知に応答している最中か
 REPORT_IDLE: asyncio.Event | None = None  # 報告が終わったときに立つ（Slack から来た送信が、報告の終わりを待つのに使う）。イベントループの中で作る
-SLACK_QUEUE_WAIT = 45.0  # Slack から来た送信が、報告の終わりを待つ上限（秒）。hubctl の待ち（60 秒）より短く
+SLACK_QUEUE_WAIT = 45.0  # Slack から来た送信が、報告の終わりを待つ上限（秒）。送り（herdr の上限 30 秒）と合わせて hubctl send の待ち（100 秒）に収める
+SLACK_SPAWN_WAIT = 15.0  # Slack から来た「立てる」の待ちの上限（秒）。立てる（最大 90 秒）と合わせて hubctl start の待ち（110 秒）に収める
 REPORT_SEQ = 0  # 報告の通し番号（報告を始めるたびに進む）
 REPORT_FAILED: dict[int, bool] = {}  # 番号ごとに、報告が失敗・時間切れで終わったか（直近の分だけ持つ）
 LAST_DONE: dict[str, tuple] = {}  # セッションごとの、最後に報告した (ターンの目印, 返答)。同じ返答を二度知らせないため
@@ -1684,13 +1685,13 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
                 return "skipped"
         saved = HUB.report_begin(note[len(NOTE_PREFIX):].split("‖", 1)[0].strip(), label)  # 見出しと報告を記録に書けたか
         REPORT_SEQ += 1
-        seq, state = REPORT_SEQ, "error"
+        seq, state, reply = REPORT_SEQ, "error", ""
         REPORTING = True
         report_idle().clear()
         try:
             state, reply = await ask(hub, note)
         finally:
-            REPORT_FAILED[seq] = state != "done"  # 失敗・時間切れで終わった報告を待っていた送信は、通さない
+            REPORT_FAILED[seq] = state != "done" or not reply.strip()  # 失敗・時間切れ・空の返事で終わった報告を待っていた送信は、通さない（下の「failed」と同じ判定）
             for old in [k for k in REPORT_FAILED if k < seq - 50]:
                 REPORT_FAILED.pop(old, None)
             REPORTING = False
@@ -1832,7 +1833,7 @@ def report_idle() -> asyncio.Event:
     return REPORT_IDLE
 
 
-async def wait_report_if_slack(body: dict) -> bool:
+async def wait_report_if_slack(body: dict, limit: float | None = None) -> bool:
     """報告中なら、Slack の DM から来た送信だけ、報告が終わるまで順番を待つ（上限 SLACK_QUEUE_WAIT 秒）。送ってよければ True。
     声・画面からの送信は報告と同じ順番待ちを通るので、ここで報告中なのは、報告を書いているハブ自身か、voice-loop の順番待ちを通らない
     Slack の会話だけ。ハブ自身が「Slack から」と偽っても、自分が書いている報告はその送信が返るまで終わらないので、上限まで待って断られる。
@@ -1843,7 +1844,7 @@ async def wait_report_if_slack(body: dict) -> bool:
         return True
     if not slack_report.origin(body.get("origin")):
         return False
-    first, deadline = REPORT_SEQ, time.monotonic() + SLACK_QUEUE_WAIT
+    first, deadline = REPORT_SEQ, time.monotonic() + (SLACK_QUEUE_WAIT if limit is None else limit)
     while REPORTING:  # 報告が続けて来ても、終わったすきに送る
         left = deadline - time.monotonic()
         if left <= 0:
@@ -2125,7 +2126,7 @@ async def spawned_agent(pane: str, wait: float = 0.0) -> dict | None:
 @app.post("/api/hub/spawn")
 async def hub_spawn(body: dict):
     """PROJECTS_DIR 直下の既存プロジェクトに新しいセッションを立て、最初の指示があれば送る。"""
-    if not await wait_report_if_slack(body):
+    if not await wait_report_if_slack(body, SLACK_SPAWN_WAIT):
         return JSONResponse({"ok": False, "reason": "reporting"})
     if not PROJECTS_DIR or not PROJECTS_DIR.is_dir():
         return JSONResponse({"ok": False, "reason": "no_projects_dir"})
