@@ -2,7 +2,8 @@
 
   vl_items.py seen <source> <id>        記録にあれば 0 で終わる（無ければ 1）。同じ出来事を二度扱わないために使う
   vl_items.py unseen ["<行>" ...]       見張りの行（引数か標準入力。先頭の + は外す）から、まだ記録に無い出来事の行だけを出す
-  vl_items.py add --source mail --id X --project P --kind judge|info|baseline --title T [--note N] [--prepared 準備したこと]
+  vl_items.py add --source mail --id X --project P --kind judge|fyi|info|baseline --title T [--note N] [--prepared 準備したこと]
+                                       （fyi は、人が利用者に宛てて書いたが対応の要らないもの。見張りの回が DM に 1 行で知らせる）
   vl_items.py open [--project P]       判断待ち（kind=judge で、まだ片づいていないもの）を新しい順に
   vl_items.py recent [--hours 24]      直近の記録（種類を問わず）を新しい順に
   vl_items.py done <番号> [--note N]   判断待ちを片づけた印を付ける（ユーザーが「済んだ」と言ったとき）
@@ -26,7 +27,7 @@ from pathlib import Path
 HOME = Path(os.environ.get("HERMES_HOME") or "/opt/data")
 FILE = HOME / "voice-loop" / "items.jsonl"
 SOURCES = {"mail", "slack", "plaud", "cal", "teams"}
-KINDS = {"judge", "info", "baseline"}
+KINDS = {"judge", "fyi", "info", "baseline"}
 LIMITS = {"title": 80, "note": 600, "prepared": 600, "project": 40, "id": 200}
 JST = dt.timezone(dt.timedelta(hours=9))  # 表示の時刻。コンテナの時計は UTC なので、決めて付ける
 # 見張りの行の形（vl_watch.py と同じ。変えるときは両方を変える）。2 つ目の語（括弧の中）が記録の id
@@ -91,7 +92,7 @@ def clip(v: str | None, key: str) -> str:
 
 def show(r: dict, done: dict) -> str:
     t = dt.datetime.fromtimestamp(r["at"], JST).strftime("%m/%d %H:%M")
-    mark = "済" if r["n"] in done else {"judge": "判断待ち", "info": "情報", "baseline": "既読扱い"}.get(r["kind"], r["kind"])
+    mark = "済" if r["n"] in done else {"judge": "判断待ち", "fyi": "宛て・対応不要", "info": "情報", "baseline": "既読扱い"}.get(r["kind"], r["kind"])
     s = f"[{r['n']}] {t} {mark}｜{clip(r['project'], 'project')}｜{clip(r['source'], 'project')}:{clip(r['id'], 'id')}｜{clip(r['title'], 'title')}"
     if r.get("note"):
         s += f"\n    要ること: {clip(r['note'], 'note')}"
