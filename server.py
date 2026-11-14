@@ -939,9 +939,12 @@ def task_read(a: dict, tid: str, head: int, tail: int) -> JSONResponse:
     if not d.get("path") or any(e.get("session") != d.get("session") for e in chain) or not same_session(d):
         return gone
     try:
-        msgs, _found, _mixed = task_range(Path(d["path"]), chain[0]["offset"] if chain else d["offset"], [e["text"] for e in chain] + [d["text"]])
+        msgs, found, _mixed = task_range(Path(d["path"]), chain[0]["offset"] if chain else d["offset"], [e["text"] for e in chain] + [d["text"]])
     except OSError:
         return gone
+    if not found:  # この件の指示（まとめた件は全部）が記録に無い。別の件のやり取りを「この件の範囲」として見せない
+        return JSONResponse({"error": "この件の指示を、セッションの記録で見つけられません（届いていない・まだ記録に無い・一部だけ）。"
+                                      f"いまのセッションの直近のやり取りは hubctl read {a['pane']} で読めます"}, status_code=409)
     msgs = trim_range(msgs)
     return JSONResponse({"pane": a["pane"], "project": a["cwd"].rsplit("/", 1)[-1], "title": a["title"], "status": a["status"], "task": tid,
                          "messages": [{**m, "text": m["text"] if m["role"] == "gap" else _clip_ends(m["text"], head, tail)} for m in msgs]})
@@ -1741,7 +1744,10 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
             "判断に要る材料（選択肢・おすすめと理由・数字・期限・うまくいかなかったこと）は略さずに、間にあったほかの発言への答えは混ぜずに（あれば最後に一言で分けて）、"
             if by_task else f"hubctl read {d['pane']} -n 1 --full で結果を確かめ、判断に要る材料（選択肢・おすすめと理由・数字・期限・うまくいかなかったこと）は略さずに、")
     headline, todo = {"done": ("が完了しました", done),
-                      "more": ("に続きの返答がありました", f"先ほど報告した件の続きです。hubctl read {d['pane']} -n 1 --full で確かめ、判断に要る材料は略さずに、"),
+                      "more": ("に続きの返答がありました",
+                               f"先ほど報告した件の続きです。hubctl read {d['pane']} --task {tid} --full で、この指示を送ったところから今までを読み、前に報告したあとの続きを、"
+                               "判断に要る材料は略さずに、間にあったほかの発言への答えは混ぜずに（あれば最後に一言で分けて）、"
+                               if by_task else f"先ほど報告した件の続きです。hubctl read {d['pane']} -n 1 --full で確かめ、判断に要る材料は略さずに、"),
                       "background": ("は裏で作業を続けています", f"しばらくたっても結果が出ていません。hubctl read {d['pane']} で様子を確かめ、まだ動いていることを一言で、"),
                       "blocked": ("が承認・入力待ちで止まっています", f"hubctl screen {d['pane']} で何を聞かれているか確かめ、"),
                       "gone": ("のセッションが見つからなくなりました", "閉じられた可能性があることを、")}[kind]

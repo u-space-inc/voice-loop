@@ -3,9 +3,9 @@
 確かめること:
 - 範囲は、最初の指示を送った位置から今まで。返答は、作業中に届いた指示の位置で区切る。この件の指示に印を付け、ほかの発言と分けて見せる
 - Claude Code が足す行（isMeta）と会話の要約は見せない。吹き出しが多ければ、最初の指示までと新しいほうを残して、あいだを略す（上限 12）
-- 完了の知らせは、この件の範囲を読ませ、ほかの発言への答えを混ぜないよう頼む。範囲を持たない件（承認への答え・セッションが分からない件）は今までどおり最後の吹き出し
+- 完了の知らせと、報告のあとの続きの知らせは、この件の範囲を読ませ、ほかの発言への答えを混ぜないよう頼む。範囲を持たない件（承認への答え・セッションが分からない件）は今までどおり最後の吹き出し
 - Slack: 作業中に届いた 1 件の指示も、ハブの報告を注意の 1 行つきで送る（これまでは定型文）。何も混ざらなければ注意なし
-- 相手の位置: 番号の無い件・別のセッションの件・作り直されたセッションの件は読ませない。台帳から外れた件は読めなくなる。
+- 相手の位置: 番号の無い件・別のセッションの件・作り直されたセッションの件・指示が記録に無い（一部だけの）件は読ませない。台帳から外れた件は読めなくなる。
   セッションの文（返答・発言）が、吹き出しの見出し（▼）を偽れない（文の中の ▼ は、どこにあっても ▽ に替わる）。最初の指示の前に発言を積まれても、略すときに指示は残る
 使い方: uv run spike/hub_read_task_test.py"""
 import asyncio
@@ -181,6 +181,12 @@ AG["session"] = "s2"  # 端末でセッションが作り直された（ハブ�
 code, r = read(d_main["task"])
 AG["session"] = "s1"
 check("相手の位置: 作り直されたセッションの件は、古い記録を読ませない（吹き出しを返さない）", (code, "messages" in r), (409, False))
+code, r = read(sent(after=(U("別の件をやって"), AI("別の件の結果")))["task"])
+check("相手の位置: この件の指示が記録に無ければ（届いていない・まだ記録に無い）、別の件のやり取りを範囲として見せない", (code, "messages" in r), (409, False))
+d_part = sent(after=(U(ASK), AI("内訳です。")))
+d_part["chain"] = [{"text": "前の依頼（記録に無い）", "offset": d_part["offset"], "slack": T1, "overlap": False, "session": "s1", "sent_gen": 0}]
+code, r = read(d_part["task"])
+check("相手の位置: まとめた指示の一部しか記録に無ければ、範囲として見せない", (code, "messages" in r), (409, False))
 d_ans = {"pane": "w1:p1", "cwd": "/x/lp", "project": "lp", "title": "見積", "text": "", "offset": 0, "session": "s1", "path": str(LOG["p"])}
 d_ans["task"] = s.task_new(d_ans, "answer")
 check("相手の位置: 指示の無い件（承認・質問への答え）は、範囲で読ませない", read(d_ans["task"])[0], 404)
@@ -189,7 +195,7 @@ s.task_new({"pane": "w1:p1", "project": "lp", "title": "見積", "text": "次"},
 check("台帳から外れた件は、範囲でも読めなくなる（本体が覚えている件は増え続けない）", (d_main["task"] in s.TASK_RANGE, read(d_main["task"])[0]), (False, 404))
 _max = s.TASK_MAX
 s.TASK_MAX = 1  # 残す件の上限が小さいとき、動いている 2 件のうち 1 件が完了すると、完了した件は台帳から外れる
-d_a, d_b = sent(), sent()
+d_a, d_b = sent(after=(U(ASK), AI("内訳です。"))), sent(after=(U(ASK), AI("内訳です。")))
 s.task_set(d_a["task"], "done")
 s.TASK_MAX = _max
 check("相手の位置: 件の状態が進んで台帳から外れたときも（task_set）、範囲で読めなくなる",
@@ -219,6 +225,10 @@ d_c = sent(before=(U("前"), AI("前の返事")), after=(U(ASK), AI("内訳で�
 note, ps = report(d_c)
 check("Slack: 何も混ざらなければ、注意を付けずに送る（新しいターンの始まりに届き、ほかの発言も無い）",
       [p[1] for p in ps], ["【lp｜見積が完了しました】\n内訳は次のとおりです（ハブの報告）"])
+d_m = sent(after=(U(ASK), AI("内訳です。"), Q("端末からの別の件"), AI("別の件の結果")))
+note, ps = report(d_m, "more")
+check("知らせ: 報告のあとの続き（more）も、この件の範囲を読ませ、ほかの発言への答えを混ぜないよう頼む（Slack は注意つき）",
+      (f"--task {d_m['task']} --full" in note, "前に報告したあとの続き" in note, "混ぜずに" in note, [s.slack_report.MIXED in p[1] for p in ps]), (True, True, True, [True]))
 d_v = sent(slack=None, after=(U(ASK), AI("内訳です。")))
 note, ps = report(d_v)
 check("声と画面だけの件も、この件の範囲を読ませる（Slack には送らない）", (f"--task {d_v['task']} --full" in note, ps), (True, []))
