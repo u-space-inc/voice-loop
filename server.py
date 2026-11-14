@@ -925,7 +925,8 @@ _probes: dict[str, tuple[float, str]] = {}  # 点検で実際に試した結果:
 
 
 def _probe(name: str, fn, keep_ok: float = 60, keep_ng: float = 5) -> str:
-    """実際に試す点検。画面を開くたびに聞き取りや Anthropic を叩かないよう、結果を少しのあいだ覚えておく。"""
+    """実際に試す点検。画面を開くたびに聞き取りや Anthropic を叩かないよう、結果を少しのあいだ覚えておく。
+    使えなくなった・理由が変わった・使えるように戻ったときだけ、日付と時刻つきでログに 1 行残す（あとで外の障害と時刻を突き合わせるため）。"""
     hit = _probes.get(name)
     if hit and time.time() - hit[0] < (keep_ng if hit[1] else keep_ok):
         return hit[1]
@@ -934,6 +935,9 @@ def _probe(name: str, fn, keep_ok: float = 60, keep_ng: float = 5) -> str:
     except Exception as e:
         problem = f"{type(e).__name__}: {str(e)[:160]}"
     _probes[name] = (time.time(), problem)
+    if problem != (hit[1] if hit else ""):  # 初めての「使える」と、変わらない結果は書かない
+        said = f"使えません — {' '.join(problem.split())}" if problem else "使えるように戻りました"
+        print(f"[doctor] {name}: {said}  @{time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
     return problem
 
 
@@ -963,6 +967,9 @@ def _narrator_problem(model: str) -> str:
     except (anthropic.AuthenticationError, anthropic.PermissionDeniedError, TypeError):  # TypeError: 認証の情報がどこにも無い
         return "Anthropic の認証が通りません。`ant auth login` でログインするか、config.env に ANTHROPIC_API_KEY を書いてください"
     except anthropic.AnthropicError as e:
+        if isinstance(e, anthropic.APIStatusError) and e.status_code >= 500:  # 500・503・529 など。ログインし直しても直らない
+            return (f"Anthropic 側で一時的な障害が起きています（{e.status_code}）。ログインし直す必要はありません。"
+                    "しばらく待ってから点検を開き直してください。障害の状況は https://status.claude.com/ で見られます")
         return f"Anthropic に確かめられませんでした（{type(e).__name__}）。ログインがまだなら `ant auth login`、または config.env に ANTHROPIC_API_KEY を書いてください"
     return ""
 
