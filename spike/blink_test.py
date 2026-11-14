@@ -126,6 +126,8 @@ def button(text, fp):
 def reset():
     s.SEEN_PROMPT.clear()
     s.CONFIRMING.clear()
+    if hasattr(s, "ANSWERED"):
+        s.ANSWERED.clear()  # 答えたあと画面が変わった、の代わり（同じ作り物の画面に続けて答えるため。答えた問いの記録は画面のボタンと共有）
 
 
 # ---- 指紋そのもの

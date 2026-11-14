@@ -1,4 +1,4 @@
-"""画面のボタンからの返答（/api/prompt・/api/answer）の試験。止まっている画面を作り物にし、送るキーと断る理由を確かめる。
+"""画面のボタンからの返答（/api/prompt・/api/answer）の試験。止まっている画面を作り物にし、送るキーと断る理由を確かめる。承認の許可・断ると、選択式の質問の番号（実画面の形と、相手の位置から書ける形）。
 herdr には触れない（一覧・画面の読み取り・キーの送信を差し替える）。使い方: uv run spike/answer_test.py"""
 import asyncio
 import json
@@ -63,12 +63,14 @@ YESNO_SHORT = """⏺ どうしますか
    2. No
    3. Type something.
  Enter to select · ↑/↓ to navigate · Esc to cancel"""  # Codex の再現と同じ形
+from question_screens import REAL_CHOICE, REAL_MULTI, REAL_PREVIEW, REAL_TWO  # noqa: E402  2026-11-05 に本物の Claude Code で取った画面
 
 AGENT = {"pane": "w9:p1", "title": "テスト", "cwd": "/tmp/proj", "kind": "claude", "session": "sess-1",
          "status": "blocked", "name": "", "hub": False}
 state = {"status": "blocked", "screen": PERMISSION, "trust": False, "sent": []}
 s.list_agents = lambda: [{**AGENT, "status": state["status"]}]
 s.pane_shows_trust = lambda pane: state["trust"]
+REAL_READ = s.read_prompt  # 本物の read_prompt（herdr を呼ぶところだけ差し替えて確かめる）
 s.read_prompt = lambda pane: state["screen"]
 s.herdr = lambda *a, **k: (state["sent"].append(a[-1]), {"result": {}})[1] if a[:2] == ("agent", "send-keys") else {"result": {}}
 
@@ -177,6 +179,132 @@ case("選択肢が映りきっていない", screen="⏺ Write(/Users/me/proj/a.
 p = prompt()
 check("選択肢が映りきっていなければボタンを出さず、送らない", (p["kind"], [answer(fp=p["fp"], choice=c)[1] for c in ("allow", "deny")]), ("unknown", [[], []]))
 
+# 選択式の質問（問いが 1 つで 1 つを選ぶ）: 選択肢のボタンを出し、画面から読んだ番号だけを送る
+case("本物の選択式の質問", screen=REAL_CHOICE)
+p = prompt()
+check("1 つを選ぶ質問は、見出し・問い・選択肢を読む", (p["kind"], p["header"], p["question"], [(c["n"], c["label"], c["desc"]) for c in p["choices"]]),
+      ("question", "試験", "試験の質問です。どれにしますか？", [(1, "りんご", "赤い果物"), (2, "みかん", "橙の果物"), (3, "ぶどう", "紫の果物")]))
+check("質問の中身は見出しの印から見せる（会話の上の部分は出さない）", (p["text"].splitlines()[0], "試験です" in p["text"]), (" ☐ 試験", False))
+check("選ぶと、その番号だけを送る", answer(fp=p["fp"], choice="choose", n=2), ({"ok": True, "said": "2番「みかん」"}, ["2"]))
+for name, n in (("Type something.", 4), ("Chat about this", 5), ("無い番号", 9), ("0", 0), ("文字の番号", "2"), ("真偽値", True), ("番号なし", None)):
+    r, sent = answer(fp=p["fp"], choice="choose", **({} if n is None else {"n": n}))
+    check(f"{name}は選ばない", (r.get("reason"), sent), ("bad_choice", []))
+r, sent = answer(fp="0" * 40, choice="choose", n=1)
+check("画面が変わったら選ばない", (r.get("reason"), sent), ("changed", []))
+check("選ぶ質問にも、許可・断るは送らない", [(lambda r: (r[0].get("reason"), r[1]))(answer(fp=p["fp"], choice=c)) for c in ("allow", "deny")],
+      [("not_permission", []), ("not_permission", [])])
+answer(fp=p["fp"], choice="choose", n=1)
+r, sent = answer(keep=True, fp=p["fp"], choice="choose", n=3)
+check("同じ問いに、続けて別の番号は送らない", (r.get("reason"), sent), ("answered", []))
+check("セッション ID が無ければ選択肢を出さない", "choices" in s._ask_of({**AGENT, "session": None, "status": "blocked"}), False)
+case("取り消しにくい質問", screen=REAL_CHOICE.replace("試験の質問です。どれにしますか？", "本番に反映しますか？"))
+p = prompt()
+r, sent = answer(fp=p["fp"], choice="choose", n=1)
+check("取り消しにくく見える質問は、もう一度押すまで選ばない", (p["risky"], r.get("reason"), sent), (True, "confirm", []))
+check("もう一度押したら、その番号", answer(fp=p["fp"], choice="choose", n=1, confirmed=True)[1], ["1"])
+case("本物の Yes／No の質問を選ぶ", screen=REAL_YESNO)
+p = prompt()
+check("本物の Yes／No の質問は、承認でなく選択肢のボタンで答える", (p["kind"], [c["label"] for c in p["choices"]], answer(fp=p["fp"], choice="choose", n=2)),
+      ("question", ["Yes", "No"], ({"ok": True, "said": "2番「No」"}, ["2"])))
+for name, screen in (("複数選択", REAL_MULTI), ("問いが 2 つ", REAL_TWO), ("preview 付き", REAL_PREVIEW),
+                     ("見出しの印の無い Yes／No", YESNO_SHORT), ("見出しの印の無い質問", QUESTION)):
+    case(name, screen=screen)
+    p = prompt()
+    r, sent = answer(fp=p["fp"], choice="choose", n=1)
+    check(f"{name}は選択肢のボタンを出さず、番号も送らない", (p["kind"], "choices" in p, r.get("reason"), sent), ("question", False, "not_choice", []))
+for name, screen in (("複数選択", REAL_MULTI), ("問いが 2 つ", REAL_TWO)):
+    case(name, screen=screen)
+    check(f"{name}も、中身は見出しの印から見せる", prompt()["text"].splitlines()[0].startswith("←  ☐"), True)
+
+# 相手の位置から: セッションの中の Claude（乗せられているかもしれない）は、問い・選択肢・説明と、その上の会話の文を書ける
+case("番号が重なる", screen=REAL_CHOICE.replace("     赤い果物", "     赤い果物\n  2. 偽の選択肢"))
+check("選択肢の形の行で番号を重ねた画面は、選択肢を出さない", "choices" in prompt(), False)
+case("説明に番号", screen=REAL_CHOICE.replace("     赤い果物", "     2. 説明に書いた番号"))
+check("説明の行（5 文字下げ）の番号は選択肢にしない", [(c["n"], c["label"]) for c in prompt()["choices"]], [(1, "りんご"), (2, "みかん"), (3, "ぶどう")])
+case("形の外の行", screen=REAL_CHOICE.replace("     橙の果物", "     橙の果物\nここに別の行"))
+check("形の外の行が混じる画面は、選択肢を出さない", "choices" in prompt(), False)
+case("質問の形の下に承認", screen=REAL_CHOICE + "\n" + PERMISSION)
+p = prompt()
+check("いちばん下が承認なら、上に書かれた質問の形は読まない", (p["kind"], "choices" in p, answer(fp=p["fp"], choice="choose", n=1)), ("permission", False, ({"ok": False, "reason": "not_choice"}, [])))
+case("質問の形の下に入力待ち", screen=REAL_CHOICE + "\n" + UNKNOWN)
+p = prompt()
+check("いちばん下が操作案内でなければ、上に書かれた質問の形は読まない", ("choices" in p, answer(fp=p["fp"], choice="choose", n=1)[1]), (False, []))
+case("Submit の付いた見出し", screen=REAL_CHOICE.replace(" ☐ 試験", " ☐ 試験  ✔ Submit"))
+check("見出しに Submit があれば、選択肢を出さない", "choices" in prompt(), False)
+
+# 長い質問で、問いが末尾 15 行の外に出ても、取り消しにくい印を落とさない（2026-11-05 Codex の再現）
+LONG = """ ☐ 確認
+本番に反映しますか？
+❯ 1. 進める
+     説明1
+     補足1
+  2. 待つ
+     説明2
+     補足2
+  3. 調べる
+     説明3
+     補足3
+  4. 相談する
+     説明4
+     補足4
+  5. Type something.
+  6. Chat about this
+Enter to select · ↑/↓ to navigate · Esc to cancel"""
+case("長い質問", screen=LONG)
+p = prompt()
+r, sent = answer(fp=p["fp"], choice="choose", n=1)
+check("長い質問でも、問いの取り消しにくい印を落とさない", (len(p.get("choices", [])), p["risky"], r.get("reason"), sent), (4, True, "confirm", []))
+case("説明に ⏺", screen=REAL_CHOICE.replace("試験の質問です。どれにしますか？", "本番に反映しますか？").replace("     赤い果物", "     ⏺ 赤い果物"))
+p = prompt()
+check("説明の行に ⏺ があっても、問いの取り消しにくい印を落とさない", ("choices" in p, p["risky"]), (True, True))
+# 特殊な改行文字（U+2028 など）で、画面の 1 行の中に偽の見出しと選択肢を書く（2026-11-05 Codex）
+for ch in ("\u2028", "\u2029", "\x85", "\x0b"):
+    case("特殊な改行", screen=REAL_CHOICE.replace("     赤い果物", f"     赤い果物{ch} ☐ 偽の見出し{ch}どれにしますか？{ch}  1. 安全な案{ch}  2. 待つ"))
+    check(f"特殊な改行文字 U+{ord(ch):04X} のある画面は、選択肢を出さない", "choices" in prompt(), False)
+real_run = s.subprocess.run
+s.subprocess.run = lambda *a, **k: type("P", (), {"stdout": REAL_CHOICE.replace("     赤い果物", "     赤い果物\u2028  2. 偽"), "returncode": 0})()
+got = REAL_READ("w9:p1")
+s.subprocess.run = real_run
+check("read_prompt は特殊な改行文字を行の区切りにせず、� に置き換える", (got.count("\n"), "\ufffd" in got, "\u2028" in got), (REAL_CHOICE.count("\n"), True, False))
+case("見出しの印が 2 つ", screen=" ☐ 前の見出し\n前の問い\n" + REAL_CHOICE)
+check("見出しの印が 2 つある画面は、選択肢を出さない", "choices" in prompt(), False)
+
+
+# ハブ経由の答え（/api/hub/answer）と画面のボタンは、同じ鍵で順番にする（確かめてから送るまでが重ならない）
+async def hub_waits():
+    s._answer_lock = asyncio.Lock()  # ほかの試験の event loop に結び付いていない鍵にする
+    async with s._answer_lock:
+        t = asyncio.create_task(s.hub_answer({"pane": "nope", "answer": "1"}))
+        await asyncio.sleep(0.1)
+        waited = not t.done()
+    await t
+    return waited, t.done()
+check("ハブ経由の答えは、画面のボタンの返答の鍵が空くまで待つ", asyncio.run(hub_waits()), (True, True))
+
+# ハブ経由の答えと画面のボタンは、答えた問いの記録を共有する。答えたあと画面が書き換わるまでの間に、同じ問いへもう一度送らない
+# （2 つ目の番号が、次に出た承認の「今後は聞かずに許可」に届かないように。2026-11-05 Codex の再現: 順にどちらから送っても 2 回送れた）
+s.hub_turns = lambda n: [("t2", "2番で")]  # 利用者の最後の発言
+s.hub_heard = lambda turn: "proj の質問は何番にしますか？"  # その直前に利用者が聞いたハブの返答
+s.jsonl_path = lambda a: None
+s.start_watch = lambda *a, **k: None
+
+
+def hub(ans):
+    return json.loads(asyncio.run(s.hub_answer({"pane": "w9:p1", "answer": ans})).body)
+
+
+for order in ("ハブ → ボタン", "ボタン → ハブ"):
+    case(order, screen=REAL_CHOICE)
+    fp = prompt()["fp"]
+    s.ANSWERED.clear(); s._answer_lock = asyncio.Lock(); state["sent"].clear()
+    s.SEEN_PROMPT["w9:p1"] = (fp, "t1")  # ハブは前の発言で問いを見て、利用者に伝えた
+    page = lambda: json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "sess-1", "fp": fp, "choice": "choose", "n": 2})).body)
+    first, second = (hub("2"), page()) if order == "ハブ → ボタン" else (page(), hub("2"))
+    check(f"{order}: 画面が古い問いのままでも、送るのは 1 回だけ", (first.get("ok"), second.get("reason"), state["sent"]), (True, "answered", ["2"]))
+    s.SEEN_PROMPT["w9:p1"] = (fp, "t1")
+    check(f"{order}: そのあとハブが断る（いいえ）も、同じ問いには送らない", (hub("no").get("reason"), state["sent"]), ("answered", ["2"]))
+s.ANSWERED.clear()
+
 # セッションの立て直し（ハブも、key はセッション ID で見分ける）
 AGENT_HUB = {**AGENT, "hub": True, "cwd": str(s.HUB_DIR), "session": "old-session"}
 s.list_agents = lambda: [{**AGENT_HUB, "status": "blocked"}]
@@ -203,17 +331,19 @@ for name, st in (("信頼", {"trust": True}), ("読めない", {"trust": None}),
 
 # 止まっているセッションすべての一覧（画面の上に並べるもの）
 AGENTS = {"w1:p1": ("sess-a", "blocked", PERMISSION, False), "w2:p1": ("sess-b", "blocked", RISKY, False),
-          "w3:p1": ("sess-c", "blocked", QUESTION, False), "w4:p1": ("sess-d", "blocked", "", True), "w5:p1": ("sess-e", "working", "", False)}
+          "w3:p1": ("sess-c", "blocked", QUESTION, False), "w4:p1": ("sess-d", "blocked", "", True), "w5:p1": ("sess-e", "working", "", False),
+          "w6:p1": ("sess-f", "blocked", REAL_CHOICE, False)}
 s.list_agents = lambda: [{**AGENT, "pane": p, "session": k, "status": st, "title": f"t{p[1]}", "cwd": f"/x/proj{p[1]}"}
                          for p, (k, st, _, _) in AGENTS.items()]
 s.read_prompt = lambda pane: AGENTS[pane][2]
 s.pane_shows_trust = lambda pane: AGENTS[pane][3]
 got = json.loads(s.api_prompts().body)
-check("一覧は止まっているものだけ・順番どおり", [g["pane"] for g in got], ["w1:p1", "w2:p1", "w3:p1", "w4:p1"])
+check("一覧は止まっているものだけ・順番どおり", [g["pane"] for g in got], ["w1:p1", "w2:p1", "w3:p1", "w4:p1", "w6:p1"])
 check("一覧の中身（名前・key・種類・取り消しにくいか）",
       [(g["name"], g["key"], g["kind"], g.get("risky")) for g in got],
       [("proj1｜t1", "sess-a", "permission", False), ("proj2｜t2", "sess-b", "permission", True),
-       ("proj3｜t3", "sess-c", "question", False), ("proj4｜t4", "sess-d", "trust", None)])
+       ("proj3｜t3", "sess-c", "question", False), ("proj4｜t4", "sess-d", "trust", None), ("proj6｜t6", "sess-f", "question", False)])
+check("一覧の選択肢は、1 つを選ぶ質問にだけ付く", [[c["label"] for c in g.get("choices", [])] for g in got], [[], [], [], [], ["りんご", "みかん", "ぶどう"]])
 check("一覧の指紋は、それぞれの問いのもの", [g.get("fp") == s.prompt_fp(AGENTS[g["pane"]][2]) for g in got[:3]], [True, True, True])
 
 bad = [f"{n}: {g!r}（期待 {w!r}）" for n, ok, g, w in results if not ok]
