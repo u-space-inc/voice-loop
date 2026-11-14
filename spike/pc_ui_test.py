@@ -587,6 +587,19 @@ def run_notice(page, who):
     open_page(page, 1400)
     check(f"{who} 知らせのタブの数に、知らせの数が出る（2）", wait(lambda: page.text_content("#sitCount") == "2"), True)
     page.click("#tabSit")
+    # 読めなかったとき（本体が止まった・接続が切れた）は、知らせが無いことと分けて出し、数の札も消さない
+    page.route("**/api/notices", lambda r: r.abort())
+    page.evaluate("loadSituation()")
+    check(f"{who} 知らせを読めなければそう出し、「ありません」とは出さない・数の札は消さない",
+          (wait(lambda: "知らせを読めませんでした" in (page.text_content("#sitBody") or "")), "いまは知らせも承認待ちもありません" in (page.text_content("#sitBody") or ""),
+           page.text_content("#sitCount")), (True, False, "2"))
+    page.route("**/api/hermes/skills", lambda r: r.abort())
+    page.evaluate("loadSituation()")
+    check(f"{who} どちらも読めなければ、読めなかったとだけ出す・数の札は消さない",
+          (wait(lambda: (page.text_content("#sitBody") or "") == "読めませんでした（接続を確かめてください）"), page.text_content("#sitCount")), (True, "2"))
+    page.unroute("**/api/notices")
+    page.unroute("**/api/hermes/skills")
+    page.evaluate("loadSituation()")
     check(f"{who} 知らせは新しい順に、題と一言を文字として出す（タグを解釈しない）",
           wait(lambda: page.locator("#sitBody .notice").count() == 2 and XSS in (page.locator("#sitBody .notice").first.text_content() or "")), True)
     check(f"{who} …そしてタグは動かない", (page.evaluate("window.__xss || 0"), page.locator("#sitBody .notice img").count()), (0, 0))

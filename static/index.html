@@ -837,6 +837,7 @@ const node = (tag, cls, text) => { const e = document.createElement(tag); if (cl
 let sitTimer = null;
 // 「採る」「新しくする」の確かめの途中は、15 秒ごとの描き直しをしない
 let sitHold = false, sitNote = null;
+const FAILED = {};  // 読めなかった印（知らせが無い・Hermes でない、と分ける）
 // Hermes の手順の書き足し（承認待ち）: 「採る」は2段。採ると、コンテナの中で Hermes 自身の承認の処理（/skills approve と同じ）が動く。
 // 差分は開いたときに取る。開いていたものは、描き直しても開いたまま（差分は版ごとに覚えておく）
 const HSK_FAIL = {
@@ -925,18 +926,22 @@ function hubSessionRow(a, hold = v => { sitHold = v; }, done = (msg, bad) => { s
 }
 async function loadSituation() {
   const box = $('sitBody');
-  let h, nt;
-  try {
-    [h, nt] = await Promise.all([fetch('/api/hermes/skills').then(r => r.json()).catch(() => null), fetch('/api/notices').then(r => r.json()).catch(() => null)]);
-  } catch { box.textContent = '読めませんでした（接続を確かめてください）'; return; }
+  // 読めなかったときは、知らせが無いことと分けて出す（本体が止まった・接続が切れたときに「ありません」と見せない）
+  const get = url => fetch(url).then(r => r.ok ? r.json() : FAILED).catch(() => FAILED);
+  const [h, nt] = await Promise.all([get('/api/hermes/skills'), get('/api/notices')]);
   if (sitHold) return;  // 読んでいるあいだに「採る」などが押された
-  const notes = nt ? nt.rows : [];
-  const waiting = (h && h.on ? h.items.length : 0) + notes.length;
-  $('sitCount').hidden = !waiting; $('sitCount').textContent = String(waiting);  // PC の「知らせ」タブの数（知らせと手順の書き足し）
+  if (h === FAILED && nt === FAILED) { box.textContent = '読めませんでした（接続を確かめてください）'; return; }  // 数の札はそのまま
+  const notes = nt === FAILED ? [] : nt.rows;
+  if (h !== FAILED && nt !== FAILED) {  // 両方読めたときだけ数を描き直す
+    const waiting = (h.on ? h.items.length : 0) + notes.length;
+    $('sitCount').hidden = !waiting; $('sitCount').textContent = String(waiting);  // PC の「知らせ」タブの数（知らせと手順の書き足し）
+  }
   box.innerHTML = '';
   const hermesHub = agents.find(a => a.hermes && a.hub);
   if (hermesHub) box.appendChild(hubSessionRow(hermesHub));
   if (sitNote) { const n = node('div', sitNote[1] ? 'bad' : null, sitNote[0]); n.id = 'sitNote'; box.appendChild(n); }
+  if (nt === FAILED) box.appendChild(node('div', 'sitMeta bad', '知らせを読めませんでした（接続を確かめてください）'));
+  if (h === FAILED) box.appendChild(node('div', 'sitMeta bad', 'Hermes の手順の書き足しを読めませんでした（接続を確かめてください）'));
   if (notes.length) {  // 代理（Hermes）からの知らせ。文字として出すだけで、押して動くものは無い
     const hd = node('h4', null, `${nt.sender} からの知らせ（${notes.length}）— ${nt.sender} が書いた未確認の情報です。動く前に、ハブとの会話で中身を確かめてください`);
     const all = node('button', 'noteAll', 'すべて消す');
@@ -952,7 +957,7 @@ async function loadSituation() {
       box.appendChild(c);
     }
   }
-  if (h && h.on && (h.items.length || h.unreadable || h.problem)) {
+  if (h !== FAILED && h.on && (h.items.length || h.unreadable || h.problem)) {
     box.appendChild(node('h4', null, `ハブが手順に書き足したいこと（Hermes・${h.items.length}）— 採ると Hermes の手順に入り、次からの会話で使われます`));
     if (h.problem) box.appendChild(node('div', 'sitMeta bad', h.problem));
     if (h.verify) box.appendChild(node('div', 'sitMeta bad', '前の処理が終わったか確かめています。確かめられるまで、採る・捨てるは断ります'));
@@ -960,7 +965,7 @@ async function loadSituation() {
     for (const it of h.items) box.appendChild(hskCard(it));
     if (h.items.length) box.appendChild(node('div', 'sitMeta', '似た書き足しがもう手順にあれば、捨ててかまいません'));
   }
-  if (!notes.length && !(h && h.on && (h.items.length || h.unreadable || h.problem))) box.appendChild(node('div', 'sitMeta', 'いまは知らせも承認待ちもありません'));
+  if (h !== FAILED && nt !== FAILED && !notes.length && !(h.on && (h.items.length || h.unreadable || h.problem))) box.appendChild(node('div', 'sitMeta', 'いまは知らせも承認待ちもありません'));
 }
 function showSituation(open) { phone.sit = open; if (!wide) runSituation(open); }
 function runSituation(open) {  // 見える・15 秒ごとに取り直す、を切り替える（PC では常に開く）
