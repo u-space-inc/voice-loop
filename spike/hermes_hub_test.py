@@ -1,4 +1,4 @@
-"""Hermes がハブ（VL_HUB=hermes）のときの守りの試験。
+"""ハブ（Hermes）の守りの試験。
 ユーザーの発言と Hermes の返答は本体の台帳（HERMES_TURNS）に載り、承認に答える・閉じるの守りはそれで確かめる。
 Hermes の API と herdr には触れない（差し替える）。使い方: uv run spike/hermes_hub_test.py"""
 import asyncio
@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 TMP = tempfile.mkdtemp()
-os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HUB="hermes", VL_HERMES_KEY="k1")
+os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HERMES_KEY="k1")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import server as s  # noqa: E402
 

@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 TMP = tempfile.mkdtemp()
-os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HUB="hermes", VL_HERMES_KEY="k1", VL_HERMES_URL="http://127.0.0.1:9",
+os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HERMES_KEY="k1", VL_HERMES_URL="http://127.0.0.1:9",
                   VL_HERMES_HOME=f"{TMP}/hermes")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -177,13 +177,6 @@ check("鍵が無い・違うコンテナからは、知らせも断る", [proble
                                           ({"host": "127.0.0.1:8790"}, {"host": "127.0.0.1:8790", "x-vl-key": "k2"})], [True, True])
 check("よそのページ（Origin）からは、知らせも一覧も断る", [problem({"host": "127.0.0.1:8790", "origin": "https://evil.example"}, m, p) is not None
                                                 for m, p in (("POST", "/api/hub/notice"), ("GET", "/api/notices"), ("POST", "/api/notices/dismiss"))], [True] * 3)
-
-# ---------- Claude Code のハブのとき ----------
-s.HUB, was = s.ClaudeBrain(), s.HUB
-reset()
-post({"title": "ハブからの知らせ"})
-check("ハブが Claude Code なら、送り手は「ハブ」", (pushes[-1][0], c.get("/api/notices").json()["sender"]), ("ハブ から", "ハブ"))
-s.HUB = was
 
 # ---------- hubctl（127.0.0.1:8792 に本体の写しを立てる） ----------
 import uvicorn  # noqa: E402

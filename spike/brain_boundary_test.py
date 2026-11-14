@@ -1,8 +1,8 @@
 """本体（server.py）とハブの頭の線引きの試験。線が崩れると落ちる。
 - 本体のコードに、頭の固有の名前が出てこない（使ってよいのは、部品を読み込んで置く配線の行だけ。説明の文は数えない）
 - 頭の部品が本体を呼ぶ名前は、約束の CORE_TOOLS の中だけ
-- 約束の形（Brain・Talker）を、Claude Code と Hermes の両方が満たしている
-- 頭を替えても、本体の口の一覧は同じ
+- 約束の形（Brain・Talker）を、Hermes が満たしている
+- 頭は Hermes だけ（0.22.0 で Claude Code のハブを外した）。古い設定の VL_HUB=claude が残っていても、頭も本体の口の一覧も変わらない
 常駐の 8790・herdr・docker には触れない。使い方: uv run spike/brain_boundary_test.py"""
 import ast
 import inspect
@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 
 TMP = tempfile.mkdtemp()
-os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HUB="hermes", VL_HERMES_KEY="k1")
+os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HERMES_KEY="k1")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -41,8 +41,7 @@ for n in ast.walk(tree):
     if isinstance(n, ast.Name) and WORD.search(n.id) and n.id not in WIRING:
         found.add(n.id)
     elif isinstance(n, ast.Attribute) and WORD.search(n.attr):
-        if not (isinstance(n.value, ast.Name) and n.value.id == "hermes" and n.attr == "HERMES_HUB"):
-            found.add(n.attr)
+        found.add(n.attr)
     elif isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef) and WORD.search(n.name):
         found.add(n.name)
     elif isinstance(n, ast.Constant) and isinstance(n.value, str) and WORD.search(n.value):
@@ -51,7 +50,7 @@ check("本体のコードに頭の固有の名前が無い", sorted(found), [])
 WIRED = {  # 本体が部品に触ってよい文（完全一致）。関数の中から部品を呼ぶと、その関数全体がここに無いので落ちる
     "hermes.mount(app)",
     "TALKERS = {hermes.TALKER.pane: hermes.TALKER}",
-    "HUB = hermes.TALKER if hermes.HERMES_HUB else ClaudeBrain()",
+    "HUB = hermes.TALKER",
     "hermes.setup(sys.modules[__name__])",
 }
 
@@ -82,20 +81,19 @@ def missing(obj, cls):
     return sorted(k for k in abstract(cls) if getattr(type(obj), k) is getattr(cls, k))
 
 
-check("ハブの頭は VL_HUB=hermes なら Hermes", s.HUB is s.hermes.TALKER, True)
+check("ハブの頭は Hermes", s.HUB is s.hermes.TALKER, True)
 check("Hermes は頭の約束を満たす", missing(s.HUB, Brain), [])
 check("Hermes は話し相手の約束を満たす", missing(s.HUB, Talker), [])
-check("Claude Code は頭の約束を満たす", missing(s.ClaudeBrain(), Brain), [])
-check("Claude Code だけが herdr の中の頭", (s.ClaudeBrain().in_herdr, s.HUB.in_herdr), (True, False))
+check("Claude Code のハブの部品は本体に無い", [n for n in ("ClaudeBrain", "HUB_DIR", "hub_stuck", "heard_before") if hasattr(s, n)], [])
 
-# 頭を替えても本体の口は同じ（別のプロセスで VL_HUB=claude にして読み込み、一覧を比べる）
+# 古い設定が残っていても同じ（別のプロセスで VL_HUB=claude にして読み込み、頭と口の一覧を比べる）
 code = "import sys; sys.path.insert(0, '.'); import server as s; print(type(s.HUB).__name__); print('\\n'.join(sorted(f'{sorted(getattr(r, \"methods\", []) or [])} {r.path}' for r in s.app.routes)))"
 env = {**os.environ, "VL_HUB": "claude"}
 out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, capture_output=True, text=True, timeout=60)
 head, _, routes = out.stdout.partition("\n")
-check("VL_HUB=claude なら Claude Code", head, "ClaudeBrain")
+check("VL_HUB=claude が残っていても、頭は Hermes", head, "Hermes")
 here = "\n".join(sorted(f'{sorted(getattr(r, "methods", []) or [])} {r.path}' for r in s.app.routes))
-check("頭を替えても本体の口の一覧は同じ", routes.strip(), here)
+check("VL_HUB=claude が残っていても、本体の口の一覧は同じ", routes.strip(), here)
 check("口の数は分ける前と同じ（画面の /api/hermes/ の 9 個を含む）", sum(1 for line in here.splitlines() if "/api/hermes/" in line), 9)
 
 ok = sum(r[1] for r in results)

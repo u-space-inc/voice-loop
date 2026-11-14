@@ -43,7 +43,6 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "scripts"))
 from origin_guard import SameOriginOnly  # noqa: E402  接続元の確かめ
 import consent  # noqa: E402  利用者の発言が、許す・選ぶの答えになっているか（承認に答える・閉じるの守り）
-from hub_brain import Brain  # noqa: E402  ハブの頭との約束
 from places import CONFIG_DIR, STATE_DIR  # noqa: E402  端末ごとの設定と状態の置き場
 
 
@@ -101,10 +100,6 @@ def _load_readings():
 _load_readings()
 READING_RE = re.compile(r"(?<![A-Za-z])(" + "|".join(map(re.escape, sorted(READINGS, key=len, reverse=True))) + r")(?![A-Za-z])", re.I)
 PROJECTS = Path.home() / ".claude" / "projects"
-HUB_DIR = CONFIG_DIR / "hub"  # ここを作業ディレクトリにしている Claude Code セッションが「ハブ」。中の指示文は利用者が書き換えてよい
-HUB_MODEL = os.environ.get("VL_HUB_MODEL", "sonnet")
-HUB_WORKSPACE = os.environ.get("VL_HUB_WORKSPACE", "")  # ハブのタブを作る herdr ワークスペースの名前。空なら先頭のワークスペース
-HUB_SETTLE = float(os.environ.get("VL_HUB_SETTLE", "30"))  # 起動時、herdr 自身のセッション復元が落ち着くのを待つ秒数
 DEFAULT_SPEAKER = int(os.environ.get("VL_DEFAULT_SPEAKER") or _voice_speaker)  # 画面が声を知らせてこないときの声
 NOTE_PREFIX = "[voice-loop 通知]"  # ハブへの自動通知の目印。ユーザーの発言と区別する
 WATCH_TIMEOUT = 3 * 3600  # 頼んだ件を見張る上限
@@ -216,7 +211,8 @@ def pane_shows_trust(pane: str) -> bool | None:
     return None if screen is None else bool(TRUST_PROMPT.search(screen))
 
 
-def _agents() -> list[dict]:
+def list_agents() -> list[dict]:
+    """herdr のセッションの一覧。ハブ（Hermes）は herdr の外なので、ここには入らない（TALKERS）。"""
     r = herdr("agent", "list")
     agents = r.get("result", {}).get("agents", [])
     return [
@@ -228,128 +224,19 @@ def _agents() -> list[dict]:
             "session": (a.get("agent_session") or {}).get("value"),
             "status": a.get("agent_status"),
             "name": a.get("name") or "",
-            "hub": a.get("cwd", "") == str(HUB_DIR) and HUB.in_herdr,  # 頭が herdr の外のときは、hub フォルダの Claude Code はただのセッション
+            "hub": False,  # 画面と本体の形をそろえるための印。ハブは Hermes の項目だけ（hermes_agent）
         }
         for a in agents
     ]
 
 
-def _hub_unstarted(a: dict) -> bool:
-    """会話を始める前の画面（フォルダの信頼、ログイン、初回の設定など）で止まっているハブか。
-    herdr がセッション ID を持つのは Claude Code が会話を受け付けてからなので、「止まっていて ID が無い」で見分ける。"""
-    return a["hub"] and a["status"] == "blocked" and not a["session"]
-
-
-def list_agents() -> list[dict]:
-    # 始まる前の画面で止まっているハブは、まだ話し相手にしない（文字を送ると、その画面に答えてしまう）
-    return [a for a in _agents() if not _hub_unstarted(a)]
-
-
 def agent_key(a: dict) -> str:
-    """画面が「同じ相手か」を見分ける鍵。ハブは立て直すとセッション ID が変わるので "hub" で指す。"""
-    return "hub" if a["hub"] else (a.get("session") or a["pane"])
-
-
-_hub_lock = threading.Lock()
-# 初期の選択は「No, exit」なので、Enter だけでは進まない
-TRUST_TODO = ("herdr の hub タブを開くと、Claude Code がこのフォルダを信頼するか聞いています。↓ で「Yes, I trust this folder」を選び、Enter を押してください"
-              "（初回だけ。ハブが ./hubctl を確認なしで実行できる設定を持っているために出る確認です）")
-STUCK_TODO = ("herdr の hub タブを開くと、Claude Code が会話を始める前の画面で止まっています。画面の問いに答えてください"
-              "（初回は、ログインや設定の確認が出ることがあります）。答えたあと、もう一度 start を実行するか「ハブを起動」を押します")
-
-
-def hub_stuck() -> dict | None:
-    """ハブが会話を始める前の画面で止まっていれば、その pane と、利用者に頼むこと。答えるのは利用者（代わりに答えない）。"""
-    for p in herdr("pane", "list").get("result", {}).get("panes") or []:
-        if p.get("cwd") == str(HUB_DIR) and pane_shows_trust(p["pane_id"]):
-            return {"reason": "trust", "pane": p["pane_id"], "detail": TRUST_TODO}
-    hub = next((a for a in _agents() if _hub_unstarted(a)), None)
-    return {"reason": "stuck", "pane": hub["pane"], "detail": STUCK_TODO} if hub else None
-
-
-class ClaudeBrain(Brain):
-    """herdr の中の Claude Code がハブ。話す・記録は、ほかのセッションと同じ。"""
-
-    in_herdr = True
-
-    def ensure(self) -> dict:
-        """ハブが居なければ立てる。Mac の再起動後に残る hub タブ（中身はシェル）があればその中で、無ければタブを作る。"""
-        with _hub_lock:
-            if not (HUB_DIR / "speaking.md").is_file():
-                return {"ok": False, "reason": "hub_dir", "detail": f"ハブの作業フォルダがまだありません（{HUB_DIR}）。プラグインの start を実行してください"}
-            stuck = hub_stuck()
-            if stuck:
-                return {"ok": False, **stuck}
-            hub = next((a for a in list_agents() if a["hub"]), None)
-            if hub:
-                return {"ok": True, "pane": hub["pane"], "started": False}
-            panes = herdr("pane", "list").get("result", {}).get("panes")
-            if panes is None:
-                return {"ok": False, "reason": "herdr が応答しません"}
-            pane = next((p["pane_id"] for p in panes if p.get("cwd") == str(HUB_DIR) and not p.get("agent")), None)
-            if not pane:
-                wss = herdr("workspace", "list").get("result", {}).get("workspaces") or []
-                if not wss:
-                    return {"ok": False, "reason": "herdr にワークスペースがありません"}
-                ws = next((w for w in wss if w.get("label") == HUB_WORKSPACE), wss[0])["workspace_id"]
-                r = herdr("tab", "create", "--workspace", ws, "--cwd", str(HUB_DIR), "--label", "hub", "--no-focus")
-                pane = ((r.get("result") or {}).get("root_pane") or {}).get("pane_id")
-                if not pane:
-                    return {"ok": False, "reason": f"タブを作れませんでした: {json.dumps(r, ensure_ascii=False)[:200]}"}
-                time.sleep(2)  # シェルが立ち上がるのを待つ
-            # 話し方の決まりはシステムプロンプトにも載せる（CLAUDE.md だけだと、列挙のときに箇条書きへ戻る）
-            speaking = " ".join((HUB_DIR / "speaking.md").read_text().split())
-            r = herdr("agent", "start", "hub", "--kind", "claude", "--pane", pane, "--timeout", "90000", "--",
-                      "--model", HUB_MODEL, "--append-system-prompt", speaking, timeout=120)
-            stuck = hub_stuck()
-            if stuck:
-                return {"ok": False, **stuck}
-            if (r.get("error") or {}).get("code") == "agent_name_taken":
-                return {"ok": False, "reason": "name_taken", "detail": "herdr に「hub」という名前の別のセッションがあります。そのタブを閉じてから、もう一度 start してください"}
-            if "result" not in r:
-                return {"ok": False, "reason": f"ハブを起動できませんでした: {json.dumps(r, ensure_ascii=False)[:200]}"}
-            return {"ok": True, "pane": pane, "started": True}
-
-    async def boot(self):
-        """サーバー起動時（= Mac の再起動後）にハブを確かめる。herdr が開かれるまで待ち、復元が落ち着いてから1回だけ行う。"""
-        for _ in range(360):  # 最長1時間
-            if "result" in await asyncio.to_thread(herdr, "agent", "list"):
-                break
-            await asyncio.sleep(10)
-        else:
-            print("[hub] herdr が応答しないため、起動時のハブ確認をあきらめました", flush=True)
-            return
-        await asyncio.sleep(HUB_SETTLE)
-        hlog(f"起動時の確認: {json.dumps(await asyncio.to_thread(ensure_hub), ensure_ascii=False)}", flush=True)
-
-    def doctor(self, add):
-        files = (HUB_DIR / "CLAUDE.md").is_file() and (HUB_DIR / "speaking.md").is_file()
-        add("ハブの作業フォルダ", files, "プラグインの start を実行してください（指示文のひな形が置かれます）")
-        if files:
-            stuck = hub_stuck()
-            if stuck:
-                add("ハブ", False, stuck["detail"])
-            else:
-                add("ハブ", any(a["hub"] for a in list_agents()), "プラグインの start を実行するか、画面の「ハブを起動」を押してください")
-        for talker in TALKERS.values():
-            if talker.on():
-                talker.doctor_as_talker(add)
-
-    def turns(self, n: int = 1) -> list[tuple[str, str]]:
-        return human_turns(hub_log(), n)
-
-    def heard(self, turn: str) -> str:
-        return heard_before(hub_log(), turn)
-
-    def reply_to(self, turn: str) -> str:
-        return reply_to(hub_log(), turn)
-
-    async def report_target(self) -> dict | None:
-        return next((a for a in await asyncio.to_thread(list_agents) if a["hub"]), None)
+    """画面が「同じ相手か」を見分ける鍵（ハブの Hermes は、自分の項目で "hub"）。"""
+    return a.get("session") or a["pane"]
 
 
 TALKERS = {hermes.TALKER.pane: hermes.TALKER}  # herdr の外の話し相手
-HUB = hermes.TALKER if hermes.HERMES_HUB else ClaudeBrain()  # ハブの頭（config.env の VL_HUB）。約束は scripts/hub_brain.py
+HUB = hermes.TALKER  # ハブの頭は Hermes（0.22.0 で Claude Code のハブを外した）。約束は scripts/hub_brain.py
 
 
 def ensure_hub() -> dict:
@@ -461,32 +348,6 @@ def last_turn_id(path: Path) -> str | None:
         if any(kind == "user" for kind, _ in iter_events([lines[i]])):
             return json.loads(lines[i]).get("uuid") or f"line-{i}"
     return None
-
-
-def human_turns(path: Path | None, n: int = 1) -> list[tuple[str, str]]:
-    """ユーザー本人の発言の (ID, 文) を、新しいものから n 件（自動通知は数えない）。「ユーザーが新しく何か言ったか」を見分けるのに使う。"""
-    if not (path and path.exists()):
-        return []
-    lines, out = read_lines(path, tail_bytes=600_000), []
-    for i in range(len(lines) - 1, -1, -1):
-        if len(out) >= n:
-            break
-        said = [text for kind, text in iter_events([lines[i]]) if kind == "user" and not text.startswith(NOTE_PREFIX)]
-        if said:
-            out.append((json.loads(lines[i]).get("uuid") or f"line-{i}", said[0]))
-    return out
-
-
-def reply_to(path: Path | None, turn: str) -> str:
-    """記録の中の発言 turn への返答（最後のツール呼び出しより後の文 = ユーザーが聞いたもの）。見つからなければ空。"""
-    if not (path and path.exists()):
-        return ""
-    lines = read_lines(path, tail_bytes=600_000)
-    for i, line in enumerate(lines):
-        if f'"{turn}"' in line and json.loads(line).get("uuid") == turn:
-            end = next((j for j in range(i + 1, len(lines)) if any(k == "user" for k, _ in iter_events([lines[j]]))), len(lines))
-            return last_exchange(lines[i:end])[1]
-    return ""
 
 
 def reply_since(path: Path, offset: int) -> str:
@@ -712,22 +573,6 @@ def hub_turns(n: int = 1) -> list[tuple[str, str]]:
     return HUB.turns(n)
 
 
-def heard_before(path: Path | None, turn: str) -> str:
-    """Claude Code のハブの記録で、発言 turn の行より前の、ハブの最後の返答（発言か自動通知への返答。最後のツール呼び出しより後の文をまとめたもの）。
-    turn の行より後（いまの発言の中でハブが書く文）は使わない。見つからなければ空。"""
-    if not (path and path.exists()):
-        return ""
-    lines = read_lines(path, tail_bytes=600_000)
-    for i in range(len(lines) - 1, -1, -1):
-        try:
-            uid = json.loads(lines[i]).get("uuid")
-        except json.JSONDecodeError:
-            continue
-        if uid == turn:
-            return last_exchange(lines[:i])[1]
-    return ""
-
-
 def hub_heard(turn: str | None) -> str:
     """利用者が発言 turn の直前に聞いたハブの返答（本体が受け取った原文）。分からなければ空（守りは断る側に倒れる）。"""
     return HUB.heard(turn) if turn else ""
@@ -782,12 +627,12 @@ def artifact_file(pane: str, raw: str) -> tuple[Path | None, str]:
         agents = list_agents()
         _artifact_agents = (time.monotonic(), agents)
     me = next((a for a in agents if a["pane"] == pane), None)
-    hub = pane in TALKERS or bool(me and me["hub"])
+    hub = pane in TALKERS
     if me is None and not hub:
         return None, "そのセッションがありません"
     home, roots, named = Path.home().resolve(), [], []  # named: (ハブが見ているフォルダ名＝cwd の末尾。hub_sessions の project と同じ, たどった先)
     for a in agents if hub else [me]:
-        if a["hub"] or not a.get("cwd"):
+        if not a.get("cwd"):
             continue
         try:
             r = Path(a["cwd"]).resolve(strict=True)
@@ -861,7 +706,7 @@ def _clip_ends(text: str, head: int, tail: int) -> str:
 
 
 def _worker(pane: str) -> dict | None:
-    return next((a for a in list_agents() if a["pane"] == pane and not a["hub"]), None)
+    return next((a for a in list_agents() if a["pane"] == pane), None)
 
 
 def asked_by(pane: str, user: str, mtime: float | None) -> str | None:
@@ -880,8 +725,6 @@ def hub_sessions():
     """ハブ以外の全セッションの状態と、最後のやり取り。最後に記録が動いた時刻と、直近の依頼がどこから来たか（asked_by）も付ける。"""
     out = []
     for a in list_agents():
-        if a["hub"]:
-            continue
         path = jsonl_path(a)
         has = bool(path and path.exists())
         user, reply = last_exchange(read_lines(path, tail_bytes=600_000)) if has else ("", "")
@@ -1390,7 +1233,7 @@ async def watch_blocked():
                 who, since, told = old if old and old[0] == who else (who, time.time(), first)
                 if not told and time.time() - since >= BLOCKED_NOTIFY_AFTER:
                     told = True  # 見えている画面があって送らなかったときも（その画面の上に承認の欄が出ている）
-                    name = "ハブ" if a["hub"] else f"{a['cwd'].rsplit('/', 1)[-1]}｜{a['title']}"
+                    name = f"{a['cwd'].rsplit('/', 1)[-1]}｜{a['title']}"
                     await push_all(name, "承認・入力待ちで止まっています", f"blocked-{p}", urgency="high")
                 held[p] = (who, since, told)
         except asyncio.CancelledError:
@@ -2098,11 +1941,6 @@ def prompt_fp(text: str) -> str:
     return hashlib.sha1(" ".join(text.split()).encode()).hexdigest()
 
 
-def hub_log() -> Path | None:
-    hub = next((a for a in list_agents() if a["hub"]), None)
-    return jsonl_path(hub) if hub else None
-
-
 def hub_human_turn() -> str | None:
     return next((turn for turn, _ in hub_turns()), None)
 
@@ -2310,7 +2148,7 @@ def api_prompts():
         if a["status"] == "blocked":
             asked = _ask_of(a)
             if asked["kind"] != "none":
-                out.append({"pane": a["pane"], "key": a.get("session") or "", "name": "ハブ" if a["hub"] else f"{a['cwd'].rsplit('/', 1)[-1]}｜{a['title']}", **asked})
+                out.append({"pane": a["pane"], "key": a.get("session") or "", "name": f"{a['cwd'].rsplit('/', 1)[-1]}｜{a['title']}", **asked})
     return JSONResponse(out)
 
 

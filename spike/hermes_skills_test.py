@@ -26,7 +26,7 @@ TMP = tempfile.mkdtemp()
 HOME = Path(TMP) / "hermes"
 PEND = HOME / "pending" / "skills"
 PEND.mkdir(parents=True)
-os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HUB="hermes", VL_HERMES_KEY="k1", VL_HERMES_URL="http://127.0.0.1:9", VL_HERMES_HOME=str(HOME),
+os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HERMES_KEY="k1", VL_HERMES_URL="http://127.0.0.1:9", VL_HERMES_HOME=str(HOME),
                   VL_HERMES_CONTAINER="hermes-test")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -503,9 +503,10 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     check("本体の口を一通り使っても、Hermes の置き場の中は変わらない（書き換えはコンテナの台本だけ）・symlink の先にも触れない",
           (tree() == before, OUTSIDE.read_bytes() == outside_before), (True, True))
 
-    s.hermes.HERMES_HUB = False
-    check("ハブが Hermes でなければ欄を出さない", view(), {"on": False})
-    s.hermes.HERMES_HUB = True
+    home = s.hermes.HERMES_HOME
+    s.hermes.HERMES_HOME = Path(TMP) / "nowhere"
+    check("Hermes の置き場が無ければ欄を出さない", view(), {"on": False})
+    s.hermes.HERMES_HOME = home
 
 # ---------- 通知 ----------
 reset()

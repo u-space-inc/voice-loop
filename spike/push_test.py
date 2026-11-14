@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 TMP = tempfile.mkdtemp()
-os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HUB="claude")
+os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state")
 os.environ.pop("VL_PUSH_SUBJECT", None)
 os.environ.pop("VL_PUSH_HOSTS", None)
 ROOT = Path(__file__).resolve().parent.parent
@@ -215,7 +215,7 @@ s.PUSH_SUBS.write_text(json.dumps([apple.sub]))
 
 # ---------------- 頼んだ件の報告と通知 ----------------
 D = {"pane": "w9:p1", "cwd": "/x/proj", "project": "proj", "title": "テスト", "text": "テストして", "offset": 0, "was_working": False, "gen": 1}
-HUB = {"pane": "w1:p1", "cwd": str(s.HUB_DIR), "kind": "claude", "session": "h", "status": "idle", "title": "hub", "name": "", "hub": True}
+TARGET = {"pane": "w9:p1", "cwd": "/x/proj", "kind": "claude", "session": "s9", "status": "idle", "title": "テスト", "name": "", "hub": False}
 spoken: list[float] = []
 
 
@@ -227,20 +227,23 @@ async def slow_speak(clients, text, cancel):
 s.speak_to = slow_speak
 
 
-async def run_report(kind, hub_answer=("done", "片づきました"), agents=None):
+async def run_report(kind, hub_answer=("done", "片づきました"), agents=None, hub=True):
+    """頼んだ件の報告を 1 回。ハブ（Hermes）への問いかけは差し替える。hub=False なら Hermes の鍵が無い（ハブが居ない）。"""
     sent.clear()
     spoken.clear()
-    s.list_agents = (lambda: agents) if agents is not None else (lambda: [HUB])
+    s.list_agents = (lambda: agents) if agents is not None else (lambda: [dict(TARGET)])
 
     async def fake_ask(agent, text):
         return hub_answer
 
     s.ask = fake_ask
+    key, s.hermes.HERMES_KEY = s.hermes.HERMES_KEY, ("k1" if hub else "")
     t0 = time.time()
     try:
         await s.report(dict(D), kind)
     finally:  # 報告が例外で終わっても、裏で送る通知は最後まで待つ（本物の本体ではループが続くので送られる）
         await asyncio.gather(*list(s._tasks), return_exceptions=True)
+        s.hermes.HERMES_KEY = key
     return t0
 
 
@@ -266,12 +269,12 @@ asyncio.run(run_report("background"))
 check("裏で作業中: 通知を送る", bodies(), ["裏で作業を続けています"])
 asyncio.run(run_report("gone"))
 check("見失った: 通知を送る", bodies(), ["セッションが見つからなくなりました"])
-asyncio.run(run_report("blocked", agents=[HUB, {**HUB, "pane": "w9:p1", "cwd": "/x/proj", "hub": False, "status": "blocked"}]))
+asyncio.run(run_report("blocked", agents=[{**TARGET, "status": "blocked"}]))
 check("承認待ち: report からは送らない（watch_blocked が送る）", bodies(), [])
 asyncio.run(run_report("done", hub_answer=("error", "Hermes に届きません")))
 check("ハブから報告を受け取れなくても、通知は送る", bodies(), ["完了しました（ハブから報告を受け取れませんでした）"])
-asyncio.run(run_report("done", agents=[]))
-check("ハブが居なくても、通知は送る", bodies(), ["完了しました（ハブが居ないので、声の報告はありません）"])
+asyncio.run(run_report("done", hub=False))
+check("ハブが居なくても（Hermes の鍵が無い）、通知は送る", bodies(), ["完了しました（ハブが居ないので、声の報告はありません）"])
 
 
 async def raising_report(d, kind, notify=None):
@@ -292,7 +295,8 @@ s.REPORT_PUSH_WAIT = 0.2
 
 async def slow_hub():
     sent.clear()
-    s.list_agents = lambda: [HUB]
+    s.list_agents = lambda: [dict(TARGET)]
+    s.hermes.HERMES_KEY = "k1"
 
     async def slow_ask(agent, text):
         await asyncio.sleep(1.0)
@@ -306,6 +310,7 @@ async def slow_hub():
 
 
 t0 = asyncio.run(slow_hub())
+s.hermes.HERMES_KEY = ""
 check("ハブの報告が遅いときは、待ちきらずに通知する（1回だけ）", (bodies(), round(sent[0]["at"] - t0, 1) < 0.9 if sent else None),
       (["完了しました（ハブの報告は、このあと届きます）"], True))
 
@@ -328,7 +333,8 @@ async def visible_then_hidden(hide_at):
     sent.clear()
     screen = Screen()
     s.CLIENTS.add(screen)
-    s.list_agents = lambda: [HUB]
+    s.list_agents = lambda: [dict(TARGET)]
+    s.hermes.HERMES_KEY = "k1"
 
     async def slow_ask(agent, text):
         await asyncio.sleep(1.0)
@@ -341,6 +347,7 @@ async def visible_then_hidden(hide_at):
     if hider:
         hider.cancel()
     s.CLIENTS.discard(screen)
+    s.hermes.HERMES_KEY = ""
 
 
 asyncio.run(visible_then_hidden(0.4))
@@ -373,7 +380,6 @@ frames = [
     [{**A, "status": "idle"}, {**B, "status": "idle"}],
     [{**A, "status": "idle"}, {**B, "status": "blocked"}],     # B がまた止まった → もう1回
     [{**A, "session": "sa2", "status": "blocked"}, {**B, "status": "blocked"}],  # 同じ場所に別のセッションが止まって居る → 1回
-    [{**A, "session": "sa2", "status": "blocked"}, {**B, "status": "blocked"}, {**HUB, "status": "blocked"}],  # ハブが止まった → 1回
 ]
 
 
@@ -396,7 +402,7 @@ async def run_blocked():
 asyncio.run(run_blocked())
 got = [(apple.open(x["data"])["title"], apple.open(x["data"])["tag"]) for x in sent]
 check("止まったときに1回ずつ（起動時からのものは除く・止まったままは重ねない）", got,
-      [("b｜B", "blocked-w3:p1"), ("a｜A", "blocked-w2:p1"), ("b｜B", "blocked-w3:p1"), ("a｜A", "blocked-w2:p1"), ("ハブ", "blocked-w1:p1")])
+      [("b｜B", "blocked-w3:p1"), ("a｜A", "blocked-w2:p1"), ("b｜B", "blocked-w3:p1"), ("a｜A", "blocked-w2:p1")])
 check("承認待ちは急ぎ（Urgency: high）", {x["headers"].get("Urgency") for x in sent}, {"high"})
 
 

@@ -305,19 +305,19 @@ for order in ("ハブ → ボタン", "ボタン → ハブ"):
     check(f"{order}: そのあとハブが断る（いいえ）も、同じ問いには送らない", (hub("no").get("reason"), state["sent"]), ("answered", ["2"]))
 s.ANSWERED.clear()
 
-# セッションの立て直し（ハブも、key はセッション ID で見分ける）
-AGENT_HUB = {**AGENT, "hub": True, "cwd": str(s.HUB_DIR), "session": "old-session"}
-s.list_agents = lambda: [{**AGENT_HUB, "status": "blocked"}]
-case("ハブの承認")
+# セッションの立て直し（key はセッション ID で見分ける）
+AGENT_RE = {**AGENT, "session": "old-session"}
+s.list_agents = lambda: [{**AGENT_RE, "status": "blocked"}]
+case("立て直す前の承認")
 fp = s._asked("w9:p1", "old-session")[1]["fp"]
-AGENT_HUB["session"] = "new-session"  # 同じ場所でハブが立て直された（画面の文字は同じ）
+AGENT_RE["session"] = "new-session"  # 同じ pane でセッションが立て直された（画面の文字は同じ）
 state["sent"].clear(); s.ANSWERED.clear()
 r = json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "old-session", "fp": fp, "choice": "allow"})).body)
-check("立て直されたハブには、古い欄から送らない", (r["reason"], state["sent"]), ("gone", []))
+check("立て直されたセッションには、古い欄から送らない", (r["reason"], state["sent"]), ("gone", []))
 r = json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "hub", "fp": fp, "choice": "allow"})).body)
-check("ハブを \"hub\" で指しても送らない", (r["reason"], state["sent"]), ("gone", []))
-AGENT_HUB["session"] = None  # セッション ID が無い
-check("セッション ID が無ければボタンを出さない", s._ask_of({**AGENT_HUB, "status": "blocked"})["kind"], "unknown")
+check("herdr のセッションを、ハブの鍵 \"hub\" で指しても送らない", (r["reason"], state["sent"]), ("gone", []))
+AGENT_RE["session"] = None  # セッション ID が無い
+check("セッション ID が無ければボタンを出さない", s._ask_of({**AGENT_RE, "status": "blocked"})["kind"], "unknown")
 s.list_agents = lambda: [{**AGENT, "status": state["status"]}]
 
 case("わからない画面", screen=UNKNOWN)

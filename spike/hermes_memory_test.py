@@ -9,7 +9,7 @@ TMP = tempfile.mkdtemp()
 HOME = Path(TMP) / "hermes"
 MEM = HOME / "memories"
 MEM.mkdir(parents=True)
-os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HUB="hermes", VL_HERMES_KEY="k1", VL_HERMES_HOME=str(HOME))
+os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HERMES_KEY="k1", VL_HERMES_HOME=str(HOME))
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -134,11 +134,11 @@ check("記憶の口は、どれもコンテナ（ハブ）から使えない（�
 check("足す・直す・消すの台本の命令にだけ目印が入る（上限を読む台本と、台本の本文には入らない）",
       (hm.WRITE_MARK in (hm.command("hermes", "add") or [hm.WRITE_MARK]), any(hm.WRITE_MARK in x for x in (hm.command("hermes", "limits") or [])), hm.WRITE_MARK in hm.SCRIPT),
       (True, False, False))
-hub = s.hermes.HERMES_HUB
-s.hermes.HERMES_HUB = False
-check("Hermes がハブでなければ、一覧も書き込みも off", (view(), c.post("/api/hermes/memory/add", json={"target": "user", "content": "x"}).json()),
+home = s.hermes.HERMES_HOME
+s.hermes.HERMES_HOME = Path(TMP) / "nowhere"
+check("Hermes の置き場が無ければ、一覧も書き込みも off", (view(), c.post("/api/hermes/memory/add", json={"target": "user", "content": "x"}).json()),
       ({"on": False}, {"ok": False, "reason": "off"}))
-s.hermes.HERMES_HUB = hub
+s.hermes.HERMES_HOME = home
 
 ok = sum(r[1] for r in results)
 for name, passed, got, want in results:

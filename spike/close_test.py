@@ -1,6 +1,6 @@
 """ハブがセッションを閉じる（/api/hub/close）と、立てる数に上限が無いこと（/api/hub/spawn）の試験。
-ハブの記録は作り物の JSONL に発言と返答を書き足して進め、閉じてよい時だけ herdr に閉じる命令が出るかを確かめる。
-herdr には触れない（一覧・閉じる命令・起動を差し替える）。使い方: uv run spike/close_test.py"""
+ハブ（Hermes）とユーザーのやり取りは本体の台帳（HERMES_TURNS）に発言と返答を足して進め、閉じてよい時だけ herdr に閉じる命令が出るかを確かめる。
+Hermes の API と herdr には触れない（一覧・閉じる命令・起動を差し替える）。使い方: uv run spike/close_test.py"""
 import asyncio
 import json
 import os
@@ -9,32 +9,28 @@ import tempfile
 from pathlib import Path
 
 TMP = tempfile.mkdtemp()
-os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state")  # 本物の設定フォルダを読まない
+os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HERMES_KEY="k1")  # 本物の設定フォルダを読まない
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import server as s  # noqa: E402
 
-HUB_LOG = Path(TMP) / "hub.jsonl"
-HUB = {"pane": "w1:p1", "title": "hub", "cwd": str(s.HUB_DIR), "kind": "claude", "session": "hub-sess", "status": "idle", "name": "hub", "hub": True}
 TARGET = {"pane": "w9:p1", "title": "テスト", "cwd": "/x/proj", "kind": "claude", "session": "sess-1", "status": "idle", "name": "", "hub": False}
 ASK = "proj の「テスト」のセッションを閉じていいですか。"  # 聞いたときのハブの返答（ユーザーが聞いたもの）
-agents = [HUB, TARGET]
+agents = [TARGET]
 closed: list[str] = []
 fail = {"herdr": False}
 s.list_agents = lambda: [dict(a) for a in agents]
-s.jsonl_path = lambda a: HUB_LOG if a["hub"] else None
+s.jsonl_path = lambda a: None
 s.herdr = lambda *a, **k: ((closed.append(a[2]), {} if fail["herdr"] else {"result": {}})[1] if a[:2] == ("pane", "close") else {"result": {}})
-n = 0
 
 
-def say(text: str, reply: str = "わかりました", note: bool = False):
-    """ハブの記録に、ユーザーの発言（note なら自動通知）と、ツールの結果、ハブの返答を書き足す。"""
-    global n
-    n += 1
-    with HUB_LOG.open("a") as f:
-        f.write(json.dumps({"type": "user", "uuid": f"u{n}", "message": {"content": (s.NOTE_PREFIX + " " if note else "") + text}}, ensure_ascii=False) + "\n")
-        f.write(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "確かめます"}, {"type": "tool_use", "input": {}}]}}, ensure_ascii=False) + "\n")
-        f.write(json.dumps({"type": "user", "uuid": f"t{n}", "message": {"content": [{"type": "tool_result", "content": "x"}]}}) + "\n")
-        f.write(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": reply}]}}, ensure_ascii=False) + "\n")
+def say(text: str, reply: str = "わかりました", note: bool = False) -> str | None:
+    """ユーザーが text と言い、ハブが reply と答えた（台帳に載る）。note なら自動通知への報告（台帳には載らず、聞いた返答だけが替わる）。"""
+    if note:
+        s.hermes.HERMES_HEARD["text"] = reply  # 報告を受けたとき（report_end）と同じ
+        return None
+    turn = s.hermes.hermes_turn_begin(text)
+    s.hermes.hermes_turn_end(turn, reply)
+    return turn
 
 
 def close(pane="w9:p1", **body):
@@ -57,12 +53,11 @@ def check(name, got, want):
     results.append((name, got == want, got, want))
 
 
-HUB_LOG.write_text("")
-say("テストのセッションを閉じて")
+u1 = say("テストのセッションを閉じて")
 say("テストが完了しました", note=True)
-check("ユーザー本人の発言（ツールの結果と自動通知は数えない）", s.human_turns(HUB_LOG, 3), [("u1", "テストのセッションを閉じて")])
-check("承認への回答で使う「最後の発言」は前と同じ", s.hub_human_turn(), "u1")
-check("その発言への返答は、最後のツールより後の文", s.reply_to(HUB_LOG, "u1"), "わかりました")
+check("ユーザー本人の発言（自動通知は数えない）", s.hub_turns(3), [(u1, "テストのセッションを閉じて")])
+check("承認への回答で使う「最後の発言」は前と同じ", s.hub_human_turn(), u1)
+check("その発言への返答", s.hub_reply_to(u1), "わかりました")
 
 r = json.loads(asyncio.run(s.hub_close({"pane": "w9:p1"})).body)
 check("1回目は閉じずに、閉じる相手を返す", (r["reason"], r["project"], r["title"], r["status"], closed), ("confirm", "proj", "テスト", "idle", []))
@@ -156,14 +151,11 @@ s.REPORTING = False
 fail["herdr"] = True
 check("herdr が閉じられなかったら、閉じた印を残さない", (close(confirmed=True), "w9:p1" in s.CLOSED), (("herdr", ["w9:p1"]), False))
 fail["herdr"] = False
-check("ハブ自身は閉じない", close(pane="w1:p1", confirmed=True), ("gone", []))
+check("ハブ自身は閉じない", close(pane="hermes", confirmed=True), ("gone", []))
 check("無いセッションは閉じない", close(pane="w7:p7", confirmed=True), ("gone", []))
 
-HUB_LOG.write_text("")  # ハブにまだ発言が無い
+s.hermes.HERMES_TURNS.clear()  # ハブにまだ発言が無い（起動したばかり・台帳を読めなかった）
 check("ハブの発言が無いときは、聞いても閉じない", (close()[0], close(confirmed=True)), ("confirm", ("same_turn", [])))
-s.list_agents = lambda: [dict(TARGET)]  # ハブが居ない
-check("ハブが居ないときも閉じない", (close()[0], close(confirmed=True)), ("confirm", ("same_turn", [])))
-s.list_agents = lambda: [dict(a) for a in agents]
 
 # 見張り: ハブが閉じたセッションは「見つからなくなった」と知らせない。ほかの理由で消えたものは知らせる
 reports = []
@@ -184,7 +176,7 @@ check("閉じたものは知らせず、ほかの理由で消えたものは知�
 s.PROJECTS_DIR = Path(TMP) / "projects"
 spawned = []
 s.spawn_session = lambda directory, project, model: (spawned.append(project), {"ok": True, "pane": "w5:p9", "name": "hubjob-blog-1"})[1]
-s.list_agents = lambda: [HUB] + [{**TARGET, "pane": f"w5:p{i}", "name": f"hubjob-blog-{i}"} for i in range(5)]
+s.list_agents = lambda: [{**TARGET, "pane": f"w5:p{i}", "name": f"hubjob-blog-{i}"} for i in range(5)]
 r = json.loads(asyncio.run(s.hub_spawn({"project": "blog"})).body)
 check("ハブが立てたものが5つ居ても、6つ目を立てる", (r["ok"], spawned), (True, ["blog"]))
 

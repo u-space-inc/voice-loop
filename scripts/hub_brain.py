@@ -19,7 +19,6 @@ CORE_TOOLS = {"CLIENTS", "_clip", "_probe", "_probes", "hlog", "pane_lock", "pus
 class Brain:
     """ハブの頭。既定は「持っていない」の動きで、頭ごとに必要なものだけ書く。"""
 
-    in_herdr = False  # 頭が herdr のセッションか（そうなら、ハブのフォルダのセッションをハブとして数える）
     label = "ハブ"  # 画面と通知で、知らせの送り手として出す名前
 
     def ensure(self) -> dict:
@@ -91,6 +90,3 @@ class Talker:
     def ask(self, text: str) -> str:
         """1 往復して返事を返す（自動通知など。失敗は例外）。"""
         raise NotImplementedError
-
-    def doctor_as_talker(self, add):
-        """ハブでないときの点検の項目。"""

@@ -10,7 +10,6 @@ from pathlib import Path
 
 TMP = tempfile.mkdtemp()
 os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state")  # 本物の設定フォルダを読まない
-os.environ.pop("VL_HUB", None)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import server as s  # noqa: E402
 
@@ -206,8 +205,8 @@ sock = turn(True)
 check("読み上げる画面では、これまでどおり音声も届く", (sock.types()[1:], len(sock.wavs), narr["calls"]), (["reply", "speaking", "done"], 3, 1))
 
 # ハブからの報告: 開いている画面がどれも切っていれば、語り手を呼ばず、文字だけ届く
-HUB = {"pane": "w1:p1", "title": "hub", "cwd": str(s.HUB_DIR), "kind": "claude", "session": "hub-sess", "status": "idle", "name": "hub", "hub": True}
-s.list_agents = lambda: [dict(HUB), dict(AGENT)]
+s.hermes.HERMES_KEY = "k1"  # 報告を受けるハブ（Hermes）が居る。ハブへの問いかけは上の fake_ask
+s.list_agents = lambda: [dict(AGENT)]
 d = {"pane": "w9:p1", "project": "proj", "title": "テスト", "text": "README を直して"}
 
 

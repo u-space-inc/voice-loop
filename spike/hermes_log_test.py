@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 TMP = tempfile.mkdtemp()
-os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HUB="hermes", VL_HERMES_KEY="k1")
+os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HERMES_KEY="k1")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import server as s  # noqa: E402
@@ -213,29 +213,6 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     s.hermes._load_hermes_turns()
     check("壊れた行があっても台帳は戻る", s.hub_turns(1)[0][1], "再起動のあと")
 
-    # ---- ハブが Claude Code のとき: Hermes は話し相手の1人。会話は同じように記録し、ハブの報告は Hermes の記録に入れない
-    s.hermes.HERMES_HUB, hermes_hub = False, s.HUB
-    s.HUB = s.ClaudeBrain()
-    plan.append((0, "Hermes です"))
-    with c.websocket_connect(WS) as w:
-        say(w, "こんにちは")
-        until(w, "reply")
-    check("ハブでなくても Hermes との会話は記録する", records()[-2:], [("me", "こんにちは"), ("ai", "Hermes です")])
-    check("一覧の鍵は hermes（ハブではない）", [a["key"] for a in json.loads(s.api_agents().body)], ["hermes"])
-    n = len(records())
-    s.list_agents = lambda: [{"pane": "w1:p1", "cwd": "/x/hub", "title": "hub", "kind": "claude", "session": "s", "status": "idle", "name": "hub", "hub": True}]
-    real_ask = s.ask
-
-    async def claude_hub_ask(hub, text):  # Claude Code のハブは自分の記録に残すので、本体は Hermes の記録に書かない
-        return "done", "テストの件が終わりました"
-
-    s.ask = claude_hub_ask
-    c.portal.call(s.report, D, "done")
-    s.ask = real_ask
-    s.list_agents = lambda: []
-    check("Claude Code のハブへの報告は Hermes の記録に入らない", len(records()), n)
-    s.hermes.HERMES_HUB, s.HUB = True, hermes_hub
-
     # ---- 前の書き込みが途中で切れていた（末尾に改行が無い）: 次の発言をつなげずに書く
     with s.hermes.HERMES_LOG.open("a") as f:
         f.write('{"role": "ai", "text": "途中で切れた')
@@ -299,17 +276,17 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     check("起動し直したあとの発言の ID は、前のどれとも違う", after["new"] in {r[0] for r in s.hermes.HERMES_TURNS}, False)
 
     # ---- 記録を読めなくても、本体は起動する（守りの台帳は空から。履歴は「読めなかった」と出す）
-    def start_with(prepare, hub="hermes"):
+    def start_with(prepare, key="k1"):
         state = Path(tempfile.mkdtemp())
         prepare(state / "hermes-log.jsonl")
-        env = {**os.environ, "VL_STATE_DIR": str(state), "VL_HUB": hub, "VL_HERMES_KEY": "k1" if hub == "hermes" else ""}
+        env = {**os.environ, "VL_STATE_DIR": str(state), "VL_HERMES_KEY": key}
         code = ("import json, server as s; h = s.hermes.hermes_history(); ok = s.hermes.hermes_log('me', 'x');"
                 " print(json.dumps({'turns': len(s.hermes.HERMES_TURNS), 'history': [m['role'] for m in h], 'last': h[-1]['text'] if h else '', 'write': ok}))")
         r = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
         return json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 else {"exit": r.returncode, "err": r.stderr.strip().splitlines()[-1:]}
 
-    got = start_with(lambda path: path.mkdir(parents=True), hub="claude")
-    check("記録の場所がフォルダでも起動する（ハブが Claude Code でも）", (got.get("turns"), got.get("history"), got.get("write")), (0, ["error"], False))
+    got = start_with(lambda path: path.mkdir(parents=True), key="")
+    check("記録の場所がフォルダでも起動する（Hermes の鍵が無くても）", (got.get("turns"), got.get("history"), got.get("write")), (0, ["error"], False))
     check("読めないことは履歴に出る", "読めませんでした" in got.get("last", ""), True)
 
     def unreadable(path):
@@ -333,7 +310,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     s.hermes.hermes_log("me", "回したあと")  # ここまでの記録は 200 バイトを超えているので、書く前に回る
     s.hermes.HERMES_LOG_MAX = real_max
     old = s.hermes.HERMES_LOG.with_name("hermes-log.1.jsonl")
-    check("回した分は hermes-log.1.jsonl に", "こんにちは" in old.read_text() if old.exists() else None, True)
+    check("回した分は hermes-log.1.jsonl に", "再起動のあと" in old.read_text() if old.exists() else None, True)
     check("回したあとの履歴は新しい記録から", history()["messages"], [{"role": "me", "text": "回したあと"}])
 
     # ---- Hermes 以外の相手の履歴は、これまでどおり
