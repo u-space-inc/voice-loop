@@ -6,6 +6,8 @@
 
   hubctl sessions                 全セッションの状態と最後のやり取り
   hubctl read <pane> [-n N] [--full]   そのセッションの直近 N 件のやり取り（既定 6）
+  hubctl read <pane> --task <件> [--full]
+                                  その件の範囲（指示を送ったところから今まで）を、発言ごとに区切って読む（完了の通知が件を書く）
   hubctl screen <pane>            そのセッションの端末画面（承認待ちの中身を見るとき）
   hubctl send <pane> <指示文>     指示を送る（完了は待たない。片づくと自動通知が届く。一段落・700字以内）
   hubctl start <project> [--model opus|sonnet|haiku|fable] [最初の指示]
@@ -25,6 +27,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -98,13 +101,41 @@ def cmd_sessions(_):
         print(f"  直近の返答: {one_line(r['last_reply'])}\n")
 
 
+def unmark(text):
+    """吹き出しの中の ▼ を、どこにあっても ▽ にする（セッションの文が、吹き出しの見出しを偽れないように。
+    行頭だけを見ると、見えない文字を前に置いた形をすべて数え上げなければならないので、位置は見ない）。"""
+    return str(text).replace("▼", "▽")
+
+
+def task_notes(msgs):
+    """--task のときの、範囲の読み方の注意。"""
+    first = next((m for m in msgs if m.get("this")), None)
+    out = ["この件の範囲（指示を送ったところから今まで）です。「この件の指示」への答えを報告し、ほかの発言への答えは混ぜないでください。"]
+    if first and first.get("queued"):
+        out.append("この件の指示は、セッションが別の作業をしている最中に届きました。指示のすぐあとの返答には、その作業の続きも入っています。")
+    if any(m["role"] == "me" and not m.get("this") for m in msgs):
+        out.append("この件の指示のほかに、発言（端末・画面・声から直接・ほかの件・ほかのセッションやエージェントから）が入っています。")
+    return "\n".join(out)
+
+
 def cmd_read(a):
-    r = call("read", {"pane": a.pane, "n": a.n, "full": "true" if a.full else "false"})
+    params = {"pane": a.pane, "n": a.n, "full": "true" if a.full else "false", **({"task": a.task} if a.task else {})}
+    r = call("read", params)
     if "error" in r:
         sys.exit(r["error"])
     print(f"[{r['pane']}] {r['project']}｜{r['title']}　状態: {STATUS.get(r['status'], r['status'])}\n{QUOTE_NOTE}\n")
+    if a.task:
+        print(task_notes(r["messages"]) + "\n")
     for m in r["messages"]:
-        print(("▼ ユーザー" if m["role"] == "me" else "▼ セッションの返答") + "\n" + m["text"] + "\n")
+        if m["role"] == "gap":
+            print(m["text"] + "\n")
+            continue
+        if m["role"] == "me":
+            head = ("▼ この件の指示" if m.get("this") else "▼ ほかの発言") if a.task else "▼ ユーザー"
+            head += "（作業中に届いた）" if m.get("queued") else ""
+        else:
+            head = "▼ セッションの返答"
+        print(head + "\n" + unmark(m["text"]) + "\n")
     if not r["messages"]:
         print("（まだやり取りがありません）")
 
@@ -323,7 +354,7 @@ def cmd_notice(a):
 p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 sub = p.add_subparsers(dest="cmd", required=True)
 sub.add_parser("sessions").set_defaults(fn=cmd_sessions)
-s = sub.add_parser("read"); s.add_argument("pane"); s.add_argument("-n", type=int, default=6); s.add_argument("--full", action="store_true"); s.set_defaults(fn=cmd_read)
+s = sub.add_parser("read"); s.add_argument("pane"); s.add_argument("-n", type=int, default=6); s.add_argument("--full", action="store_true"); s.add_argument("--task", default=""); s.set_defaults(fn=cmd_read)
 s = sub.add_parser("screen"); s.add_argument("pane"); s.set_defaults(fn=cmd_screen)
 s = sub.add_parser("send"); s.add_argument("pane"); s.add_argument("text", nargs="+"); s.set_defaults(fn=cmd_send)
 s = sub.add_parser("answer"); s.add_argument("pane"); s.add_argument("answer"); s.add_argument("--confirmed", action="store_true"); s.set_defaults(fn=cmd_answer)

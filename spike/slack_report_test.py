@@ -175,11 +175,11 @@ async def report_after_new_send():
 
 posted.clear()
 asyncio.run(report_after_new_send())
-check("相手の位置: 報告を待つ間に同じセッションへ次の指示が送られたら、ハブの報告（新しい件の結果）は Slack に送らない",
-      [(p[1], "内訳を出しました" in p[2], "次の指示が送られました" in p[2]) for p in posted], [((DM, "1.2"), False, True)])
+check("相手の位置: 報告を待つ間に同じセッションへ次の指示が送られたら、ハブの報告の頭に、ほかのやり取りがあった注意を付ける（ハブが読み分けた報告）",
+      [(p[1], "内訳を出しました" in p[2], s.slack_report.MIXED in p[2]) for p in posted], [((DM, "1.2"), True, True)])
 posted.clear()
 asyncio.run(run_report(d_of((DM, "1.2"))))  # d_of は、送ろうとした回数を件と同じにする
-check("本体: 世代が同じなら、ハブの報告を送る", ["内訳を出しました" in p[2] for p in posted], [True])
+check("本体: 世代が同じで、記録にほかの発言も無ければ、ハブの報告を注意なしで送る", [("内訳を出しました" in p[2], s.slack_report.MIXED in p[2]) for p in posted], [(True, False)])
 async def report_while_new_send(herdr_answer, block):
     """報告がハブの順番を待つ間に、同じセッションへ（Slack 以外から）次の指示を送る。herdr は答えを返す前に止める（block）か、すぐ返す"""
     d = d_of((DM, "1.2"))
@@ -208,26 +208,27 @@ for name, answer, block in (("送って答えを待っている間", {"result": 
                             ("送ったが断られた", {"error": {"code": "x"}}, False)):
     posted.clear()
     sent = asyncio.run(report_while_new_send(answer, block))
-    check(f"相手の位置: 報告を待つ間に同じセッションへ次の指示を{name}も、ハブの報告は Slack に送らない",
-          [("内訳を出しました" in p[2], "次の指示が送られました" in p[2]) for p in posted], [(False, True)])
+    check(f"相手の位置: 報告を待つ間に同じセッションへ次の指示を{name}も、ハブの報告に注意を付ける",
+          [("内訳を出しました" in p[2], s.slack_report.MIXED in p[2]) for p in posted], [(True, True)])
 s.herdr = lambda *a, **k: {"result": {}}
-# 端末に直接打たれた発言（本体を通らない）は、セッションの記録で見る
-for name, path, want in (
-        ("この件の指示のあとに、端末から別の発言があれば", transcript(("user", "内訳を出して"), ("assistant", "内訳を出しました"), ("user", "別の案件の作業をして"),
-                                                     ("assistant", "別の案件の結果")), "記録で確かめられませんでした"),
-        ("記録でこの件の指示を見つけられなければ", transcript(("user", "ほかの作業"), ("assistant", "ほかの結果")), "記録で確かめられませんでした"),
-        ("記録が無ければ", None, "記録で確かめられませんでした"),
-        ("指示のあとに <system-reminder> で始まる発言があれば（画面の履歴では飛ばす形でも）",
+# 端末に直接打たれた発言（本体を通らない）は、セッションの記録で見る。混ざったら注意を付け、この件の記録を読めなければ本文を載せない
+NOT_FOUND = "記録で見つけられませんでした"
+for name, path, body, want in (
+        ("この件の指示のあとに、端末から別の発言があれば、注意を付ける", transcript(("user", "内訳を出して"), ("assistant", "内訳を出しました"), ("user", "別の案件の作業をして"),
+                                                               ("assistant", "別の案件の結果")), True, s.slack_report.MIXED),
+        ("記録でこの件の指示を見つけられなければ、本文を載せない", transcript(("user", "ほかの作業"), ("assistant", "ほかの結果")), False, NOT_FOUND),
+        ("記録が無ければ、本文を載せない", None, False, NOT_FOUND),
+        ("指示のあとに <system-reminder> で始まる発言があれば（画面の履歴では飛ばす形でも）、注意を付ける",
          transcript(("user", "内訳を出して"), ("assistant", "内訳を出しました"), ("user", "<system-reminder>別の作業をして"), ("assistant", "別の結果")),
-         "記録で確かめられませんでした"),
-        ("指示のあとに <task-notification> や <bash-input> で始まる行があれば",
-         transcript(("user", "内訳を出して"), ("user", "<task-notification>x</task-notification>"), ("assistant", "内訳を出しました")), "記録で確かめられませんでした"),
-        ("記録を読めなければ（読む直前に消えた・読めない場所）", TMP, "記録で確かめられませんでした"),
-        ("記録にあるのが、先頭は同じで続きの違う指示なら",
-         transcript(("user", "内訳を出して" + "。" * 70 + "別の案件のほう"), ("assistant", "別の結果")), "記録で確かめられませんでした")):
+         True, s.slack_report.MIXED),
+        ("指示のあとに <task-notification> や <bash-input> で始まる行があれば、注意を付ける",
+         transcript(("user", "内訳を出して"), ("user", "<task-notification>x</task-notification>"), ("assistant", "内訳を出しました")), True, s.slack_report.MIXED),
+        ("記録を読めなければ（読む直前に消えた・読めない場所）、本文を載せない", TMP, False, NOT_FOUND),
+        ("記録にあるのが、先頭は同じで続きの違う指示なら、本文を載せない",
+         transcript(("user", "内訳を出して" + "。" * 70 + "別の案件のほう"), ("assistant", "別の結果")), False, NOT_FOUND)):
     posted.clear()
     asyncio.run(run_report(d_of((DM, "1.2"), path)))
-    check(f"相手の位置: {name}、ハブの報告は Slack に送らない", [("内訳を出しました（全文" in p[2], want in p[2]) for p in posted], [(False, True)])
+    check(f"相手の位置: {name}", [("内訳を出しました（全文" in p[2], want in p[2]) for p in posted], [(body, True)])
 
 # 端末でセッションが作り直された（同じ場所に別のセッション）・記録に読めない行がある
 posted.clear()
@@ -235,14 +236,14 @@ d_new = d_of((DM, "1.2"))
 A_LP["session"] = "s2"  # 報告を待つ間に、端末で作り直された。ハブが読むのは新しいセッション
 asyncio.run(run_report(d_new))
 A_LP["session"] = "s1"
-check("相手の位置: 報告を待つ間に端末でセッションが作り直されたら、ハブの報告は Slack に送らない",
-      [("内訳を出しました（全文" in p[2], "記録で確かめられませんでした" in p[2]) for p in posted], [(False, True)])
+check("相手の位置: 報告を待つ間に端末でセッションが作り直されたら、ハブの報告は Slack に送らない（この件の記録を読めない）",
+      [("内訳を出しました（全文" in p[2], NOT_FOUND in p[2]) for p in posted], [(False, True)])
 broken = Path(transcript(("user", "内訳を出して"), ("assistant", "内訳を出しました")))
 broken.write_text(broken.read_text() + '{"type": "user", "message": {"content": "書きかけ\n')
 posted.clear()
 asyncio.run(run_report(d_of((DM, "1.2"), str(broken))))
-check("相手の位置: 指示のあとに読めない行（壊れた・書きかけ）があれば、ハブの報告は Slack に送らない",
-      [("内訳を出しました（全文" in p[2], "記録で確かめられませんでした" in p[2]) for p in posted], [(False, True)])
+check("相手の位置: 指示のあとに読めない行（壊れた・書きかけ）があれば、ハブの報告に注意を付ける",
+      [("内訳を出しました（全文" in p[2], s.slack_report.MIXED in p[2]) for p in posted], [(True, True)])
 
 # 道具の結果と、サブエージェントの行は数えない（この件の作業の一部）
 tr = Path(transcript(("user", "内訳を出して"), ("assistant", "内訳を出しました")))
@@ -252,7 +253,18 @@ rows = [json.dumps({"type": "user", "message": {"role": "user", "content": [{"ty
 tr.write_text(tr.read_text() + "\n".join(rows) + "\n")
 posted.clear()
 asyncio.run(run_report(d_of((DM, "1.2"), str(tr))))
-check("本体: 指示のあとが道具の結果とサブエージェントの行だけなら、ハブの報告を送る", ["内訳を出しました（全文" in p[2] for p in posted], [True])
+check("本体: 指示のあとが道具の結果とサブエージェントの行だけなら、ハブの報告を注意なしで送る",
+      [("内訳を出しました（全文" in p[2], s.slack_report.MIXED in p[2]) for p in posted], [(True, False)])
+# Claude Code が足す行（isMeta）と会話の要約（isCompactSummary）も数えない。打ち込んだ文では、この印は立たない
+tr = Path(transcript(("user", "内訳を出して"), ("assistant", "内訳を出しました")))
+rows = [json.dumps({"type": "user", "isMeta": True, "message": {"role": "user", "content": "Base directory for this skill: …"}}, ensure_ascii=False),
+        json.dumps({"type": "user", "isCompactSummary": True, "message": {"role": "user", "content": "This session is being continued …"}}),
+        json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "内訳を出しました"}]}}, ensure_ascii=False)]
+tr.write_text(tr.read_text() + "\n".join(rows) + "\n")
+posted.clear()
+asyncio.run(run_report(d_of((DM, "1.2"), str(tr))))
+check("本体: 指示のあとが Claude Code の足す行と会話の要約だけなら、ハブの報告を注意なしで送る",
+      [("内訳を出しました（全文" in p[2], s.slack_report.MIXED in p[2]) for p in posted], [(True, False)])
 
 # 同じセッションへの前の件と一つの返答にまとまり、報告を省くとき（LAST_DONE が同じ）も、この件のスレッドに知らせる
 def merged_watch():
@@ -700,8 +712,8 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                 break
     c.portal.call(lock.release)
     fut.result(timeout=10)
-check("相手の位置: 報告を待つ間に、画面・声から同じセッションへ直接頼んでも、ハブの報告（新しい件の結果かもしれない）は Slack に送らない",
-      (direct, [("内訳を出しました" in p[2], "次の指示が送られました" in p[2]) for p in posted]), (["別の作業をして"], [(False, True)]))
+check("相手の位置: 報告を待つ間に、画面・声から同じセッションへ直接頼んだら、ハブの報告に注意を付ける（記録に残る前でも）",
+      (direct, [("内訳を出しました" in p[2], s.slack_report.MIXED in p[2]) for p in posted]), (["別の作業をして"], [(True, True)]))
 # 逆の順: 画面の依頼がセッションの順番を待つ間に、Slack から同じセッションへ頼み、そのあとで画面の依頼が届く
 direct.clear()
 posted.clear()
@@ -719,11 +731,12 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         for _ in range(200):
             if w.receive_json().get("type") == "reply":
                 break
+    CUR["path"] = transcript(("user", "内訳を出して"), ("assistant", "内訳を出しました"))  # 記録は整って見える（画面の依頼はまだ残っていない）
     d_slack = {"pane": "w1:p1", "cwd": "/x/lp", "project": "lp", "title": "見積", "text": "内訳を出して", "slack": (DM, "1.2"),
-               "sent_gen": SLACK_GEN[-1]}
+               "sent_gen": SLACK_GEN[-1], "offset": 0, "path": CUR["path"], "session": "s1"}
     c.portal.call(run_report, d_slack)
-check("相手の位置: 画面の依頼が順番を待つ間に Slack から頼み、そのあとで画面の依頼が届いても、ハブの報告は Slack に送らない",
-      (direct, [("内訳を出しました" in p[2], "次の指示が送られました" in p[2]) for p in posted]), (["画面からの別の作業"], [(False, True)]))
+check("相手の位置: 画面の依頼が順番を待つ間に Slack から頼み、そのあとで画面の依頼が届いたら、記録が整って見えても、ハブの報告に注意を付ける",
+      (direct, [("内訳を出しました" in p[2], s.slack_report.MIXED in p[2]) for p in posted]), (["画面からの別の作業"], [(True, True)]))
 # 重なった送り: 先に送り始めた別の指示（Slack 以外）が herdr に受けられる前に、Slack の件を送る。先の指示があとから届いても、本文は載せない
 gate_a = threading.Event()
 
@@ -750,11 +763,12 @@ SLACK_OVERLAP.clear()
 posted.clear()
 rb, inflight_after = asyncio.run(overlapped_dispatch())
 # Slack の件（2 つ目に start_watch に来たもの。1 つ目は先の作業）の記録のまま、報告を作る
+CUR["path"] = transcript(("user", "内訳を出して"), ("assistant", "内訳を出しました"))  # 記録は整って見える（先の指示はまだ残っていない）
 asyncio.run(run_report({"pane": "w1:p1", "cwd": "/x/lp", "project": "lp", "title": "見積", "text": "内訳を出して", "slack": (DM, "1.2"),
-                        "sent_gen": SLACK_GEN[0], "overlap": SLACK_OVERLAP[0]}))
-check("相手の位置: 先に送り始めた別の指示が届く前に Slack の件を送ったら、重なった件として、ハブの報告は Slack に送らない（先の指示があとから届いて答えが無くても）",
-      (rb.get("slack"), SLACK_OVERLAP, [("内訳を出しました" in p[2], "次の指示が送られました" in p[2]) for p in posted], inflight_after.get("w1:p1")),
-      (True, [True], [(False, True)], 0))
+                        "sent_gen": SLACK_GEN[0], "overlap": SLACK_OVERLAP[0], "offset": 0, "path": CUR["path"], "session": "s1"}))
+check("相手の位置: 先に送り始めた別の指示が届く前に Slack の件を送ったら、重なった件として、記録が整って見えても、ハブの報告に注意を付ける",
+      (rb.get("slack"), SLACK_OVERLAP, [("内訳を出しました" in p[2], s.slack_report.MIXED in p[2]) for p in posted], inflight_after.get("w1:p1")),
+      (True, [True], [(True, True)], 0))
 s.herdr = lambda *a, **k: {"result": {}}
 
 OVERLAPS = []
