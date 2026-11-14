@@ -51,7 +51,7 @@
   /* 読み上げの切り替え。読み上げの途中でもすぐ押せるよう、↻ より押せる広さを持たせる。切っている間は色をつけて、文字だけと分かるようにする */
   #mute { flex:none; border:none; border-radius:8px; background:none; font-size:17px; line-height:1; padding:6px 9px; margin:-6px 0; opacity:.45; }
   #mute[aria-pressed="true"] { opacity:1; background:#5a1f1d; }
-  /* 通知（🔔）・頼んだ件（📋）・いまの状況（💡）。🔇 と同じ大きさ。入っている・開いている間は色をつける */
+  /* 通知（🔔）・頼んだ件（📋）・知らせと承認（💡）。🔇 と同じ大きさ。入っている・開いている間は色をつける */
   #bell, #tasksBtn, #sitBtn { flex:none; border:none; border-radius:8px; background:none; font-size:17px; line-height:1; padding:6px 9px; margin:-6px 0; opacity:.45; }
   #bell[aria-pressed="true"] { opacity:1; background:#1f4a32; }
   #tasksBtn[aria-pressed="true"] { opacity:1; background:#2a2f45; }
@@ -88,7 +88,7 @@
   .task .st { font-size:12px; color:#9fb0e0; }
   .task.active .st { color:#e6c36a; } .task.done .st { color:var(--ok); } .task.bad .st { color:#e07a74; }
   .task .what, .task .note { color:#bbb; font-size:12px; overflow-wrap:anywhere; }
-  /* いまの状況（💡 で開く） */
+  /* 知らせと承認（💡 で開く）: 代理（Hermes）からの知らせと、Hermes の手順の書き足し */
   #situation { flex:none; max-height:55dvh; overflow-y:auto; display:flex; flex-direction:column; gap:6px; padding:calc(8px + env(safe-area-inset-top)) 12px 8px; background:#17150f; border-bottom:1px solid #3a3420; }
   #situation .top { display:flex; align-items:center; font-size:13px; color:#d8c88f; }
   #situation .top span { flex:1; }
@@ -97,9 +97,7 @@
   #sitBody h4 { margin:6px 0 0; font-size:12px; font-weight:600; color:#c9b77a; }
   .sitHead { display:flex; align-items:center; gap:8px; font-size:12px; color:#bbb; }
   .sitHead span { flex:1; }
-  .sitHead button, #factForm button { border:none; border-radius:8px; background:#3a3420; color:var(--fg); font-size:13px; padding:5px 10px; }
-  .topic { display:flex; flex-direction:column; gap:2px; padding:6px 10px; border:1px solid #3a3420; border-radius:10px; background:#1d1a12; font-size:13px; }
-  .topic .now, .topic .nx { color:#ccc; font-size:12px; overflow-wrap:anywhere; }
+  .sitHead button { border:none; border-radius:8px; background:#3a3420; color:var(--fg); font-size:13px; padding:5px 10px; }
   .sitMeta { color:var(--mute); font-size:12px; overflow-wrap:anywhere; }
   .sitMeta.bad { color:#e07a74; }
   .prop { display:flex; flex-direction:column; gap:4px; padding:8px 10px; border:1px solid #6b5a2a; border-radius:10px; background:#241f12; font-size:13px; }
@@ -109,7 +107,7 @@
   .prop .acts button { border:none; border-radius:8px; background:#3a3420; color:var(--fg); font-size:13px; padding:6px 12px; }
   .prop .acts button.go { background:#6b5a2a; }
   .prop .acts button.sure { background:#b8862e; color:#111; font-weight:600; }
-  /* Hermes の手順の書き足し（承認待ち）。提案と見分けるため色を変える */
+  /* Hermes の手順の書き足し（承認待ち） */
   .prop.hsk { border-color:#4d5a80; background:#161b29; }
   .prop.hsk .go { background:#4d5a80; }
   pre.diff { margin:4px 0 0; max-height:40dvh; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font-size:11px; line-height:1.45; color:#cfd6e6; background:#0f121b; border-radius:6px; padding:6px 8px; }
@@ -119,17 +117,12 @@
   #sitNote { font-size:12px; color:#d8c88f; overflow-wrap:anywhere; }
   #sitNote.bad { color:#e07a74; }
   #situation details summary { font-size:12px; color:#c9b77a; cursor:pointer; }
-  .fact { display:flex; align-items:flex-start; gap:6px; font-size:13px; overflow-wrap:anywhere; }
   .notice { display:flex; flex-direction:column; gap:2px; padding:6px 10px; border:1px solid #2c3a4a; border-radius:10px; background:#121a24; font-size:13px; overflow-wrap:anywhere; }
   .noteHead { display:flex; align-items:flex-start; gap:6px; } .noteHead b { flex:1; }
   .noteAll { margin-left:8px; font-size:12px; }
-  .fact span { flex:1; min-width:0; }
-  .fact button { flex:none; border:none; background:none; color:var(--mute); font-size:15px; padding:0 6px; }
-  #factForm { display:flex; gap:6px; }
-  #factText { flex:1; min-width:0; font-size:16px; padding:6px 10px; background:var(--btn); color:var(--fg); border:1px solid #333; border-radius:8px; }
-  /* PC（横幅 1100px 以上で body に wide）。3 列: 左にセッションの一覧と頼んだ件、真ん中に会話、右に記録（記憶・状況）。スマホの幅では何も変えない。
+  /* PC（横幅 1100px 以上で body に wide）。3 列: 左にセッションの一覧と頼んだ件、真ん中に会話、右に記録（記憶・知らせ）。スマホの幅では何も変えない。
      左の縦の色の帯は状態を表す（セッション・頼んだ件・承認のカードで同じ色）: 黄＝あなた待ち、青＝動いている、緑＝終わった、赤＝切れた・失敗、灰＝それ以外。
-     箱で囲むのは押して決めるもの（承認・提案・足す欄）だけにして、一覧は線で区切る */
+     箱で囲むのは押して決めるもの（承認・手順の書き足し）だけにして、一覧は線で区切る */
   #side, #rec { display:none; }
   body.wide {
     --w-bg:#121316; --w-col:#17181b; --w-hover:#1d1f23; --w-sel:#25282e; --w-rule:#272a2f; --w-field:#1b1d21; --w-line:#363a41;
@@ -225,7 +218,6 @@
   body.wide #situation { flex:1; min-height:0; max-height:none; padding:12px 20px 24px; gap:8px; border-bottom:none; background:none; }
   body.wide #situation .top { font-size:12px; color:var(--w-t3); }
   body.wide #sitBody h4 { margin:12px 0 2px; font-size:13px; color:var(--w-t1); }
-  body.wide .topic { border:none; border-top:1px solid var(--w-rule); border-radius:0; background:none; padding:10px 0; }
   body.wide .notice { border:none; border-top:1px solid var(--w-rule); border-radius:0; background:none; padding:10px 0; }
   body.wide .sitHead { color:var(--w-t3); }
   body.wide .sitHead button:not(.sure) { border:1px solid var(--w-line); background:none; color:var(--w-t2); font-size:12px; padding:4px 10px; }
@@ -269,7 +261,7 @@
   body.reading .mem { font-size:15px; }
   body.reading .mem .text.clamp { display:block; -webkit-line-clamp:unset; overflow:visible; }
   body.reading .mem > .more { display:none; }
-  body.reading .topic, body.reading .prop { font-size:14px; } body.reading .topic .now, body.reading .topic .nx, body.reading .sitMeta { font-size:13px; }
+  body.reading .prop { font-size:14px; } body.reading .sitMeta { font-size:13px; }
   body.reading pre.diff { max-height:none; font-size:13px; line-height:1.55; padding:10px 14px; }
   /* 成果物: 返事に出てきた画像・動画のサムネイル（PC の幅だけ）。押すと #viewer で大きく見る。Markdown の画像は、その場では文字（.mref）にする */
   .mref { color:var(--mute); } .mref.inl { display:none; }
@@ -302,13 +294,13 @@
 </head>
 <body>
   <div id="side"><div class="side-h">セッション</div><div id="sessTools" role="group" aria-label="状態で絞り込む"></div><div id="sessions"></div></div>
-  <div id="rec" data-tab="mem"><div id="recHead"><div id="recTabs" role="tablist"><button id="tabMem" role="tab" aria-selected="true">記憶</button><button id="tabSit" role="tab" aria-selected="false">状況<span class="n" id="sitCount" hidden></span></button></div><button id="readAsks" hidden></button><button id="readBtn" aria-pressed="false" aria-label="記憶と状況を画面いっぱいに広げて読む" title="記憶と状況を画面いっぱいに広げて読む">⤢ 広げる</button></div><div id="memPanel"></div></div>
+  <div id="rec" data-tab="mem"><div id="recHead"><div id="recTabs" role="tablist"><button id="tabMem" role="tab" aria-selected="true">記憶</button><button id="tabSit" role="tab" aria-selected="false">知らせ<span class="n" id="sitCount" hidden></span></button></div><button id="readAsks" hidden></button><button id="readBtn" aria-pressed="false" aria-label="記憶と知らせを画面いっぱいに広げて読む" title="記憶と知らせを画面いっぱいに広げて読む">⤢ 広げる</button></div><div id="memPanel"></div></div>
   <div id="asks"></div>
   <div id="tasks" hidden><div class="top"><span>頼んだ件（ハブ経由で送った指示と、その見張り）</span><button id="tasksClose" aria-label="閉じる">✕</button></div><div id="taskList"></div></div>
-  <div id="situation" hidden><div class="top"><span>いまの状況（録音・予定・メールから）</span><button id="sitClose" aria-label="閉じる">✕</button></div><div id="sitBody"></div><form id="factForm"><input id="factText" placeholder="覚えてほしいこと（打った文のまま覚えます）" maxlength="150" autocomplete="off"><button type="submit">覚える</button></form></div>
+  <div id="situation" hidden><div class="top"><span>知らせと承認（Hermes から）</span><button id="sitClose" aria-label="閉じる">✕</button></div><div id="sitBody"></div></div>
   <div id="log"></div>
   <div id="bar">
-    <div id="status"><span id="conn" class="dot"></span><span id="statusText">接続中…</span><button id="hubStart">ハブを起動</button><button id="tap">▶ タップして再生</button><button id="sitBtn" aria-pressed="false" aria-label="いまの状況" title="いまの状況">💡</button><button id="tasksBtn" aria-pressed="false" aria-label="頼んだ件" title="頼んだ件">📋</button><button id="bell" aria-pressed="false" hidden>🔔</button><button id="mute" aria-pressed="false">🔇</button><button id="reload" aria-label="最新の画面を読み込み直す" title="最新の画面を読み込み直す">↻</button></div>
+    <div id="status"><span id="conn" class="dot"></span><span id="statusText">接続中…</span><button id="hubStart">ハブを起動</button><button id="tap">▶ タップして再生</button><button id="sitBtn" aria-pressed="false" aria-label="知らせと承認" title="知らせと承認">💡</button><button id="tasksBtn" aria-pressed="false" aria-label="頼んだ件" title="頼んだ件">📋</button><button id="bell" aria-pressed="false" hidden>🔔</button><button id="mute" aria-pressed="false">🔇</button><button id="reload" aria-label="最新の画面を読み込み直す" title="最新の画面を読み込み直す">↻</button></div>
     <div class="row"><select id="agent" aria-label="セッション"></select><select id="speaker" aria-label="声"></select></div>
     <div class="row"><button id="talk">タップして話す</button><button id="stop">停止</button></div>
     <form id="typedForm" class="row"><textarea id="typed" rows="1" placeholder="文字で送る" autocomplete="off"></textarea><button id="send" type="submit">送る</button></form>
@@ -763,7 +755,7 @@ const TASK_STATUS = {
   gone: ['セッションが見つからなくなった', 'bad'], closed: ['閉じた', ''], replaced: ['次の指示に引き継ぎ', ''],
   timeout: ['見張り終了（片づかなかった）', 'bad'], failed: ['見張りが失敗', 'bad'], lost: ['見張りが切れた（本体が止まった）', 'bad'],
 };
-const TASK_KIND = { send: '指示', spawn: '立てて最初の指示', answer: '承認・質問への答え', proposal: '提案から' };
+const TASK_KIND = { send: '指示', spawn: '立てて最初の指示', answer: '承認・質問への答え' };
 const clock = min => { const d = new Date(Date.now() - min * 60000); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 let tasksTimer = null;
 async function loadTasks() {
@@ -838,24 +830,14 @@ function runTasks(open) {  // 見える・10 秒ごとに取り直す、を切�
 $('tasksBtn').onclick = () => { showSituation(false); showTasks($('tasks').hidden); };
 $('tasksClose').onclick = () => showTasks(false);
 
-// ---------- いまの状況（💡） ----------
-// 録音・予定・メールから拾う役がまとめた話題と、覚えていること（ここで足す・× で忘れる）。開いている間は 15 秒ごとに取り直す
+// ---------- 知らせと承認（💡） ----------
+// 代理（Hermes）からの知らせと、Hermes の手順の書き足し（採る・捨てる）。ハブの会話を新しくするボタンもここ。開いている間は 15 秒ごとに取り直す
 const stamp = ts => { const d = new Date(ts * 1000); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 const node = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 let sitTimer = null;
-// 提案: 「送る」は2段（押すと確かめが出て、もう一度押して送る）。確かめの途中と送っている途中は、15 秒ごとの描き直しをしない
+// 「採る」「新しくする」の確かめの途中は、15 秒ごとの描き直しをしない
 let sitHold = false, sitNote = null;
-const PROP_CLOSED = { sent: '送った', dropped: '見送った', expired: '期限で消えた', stale: '古くなった', replaced: '入れ替わった', failed: '送れていない', unknown: '送れたか分からない' };
-const PROP_FAIL = {
-  changed: '提案が変わっていました。読み直しました', closed: 'この提案はもう閉じています（期限・話題の変化など）', no_such: 'この提案はもうありません',
-  sending: 'この提案は送っている途中です', no_projects_dir: 'セッションを立てる場所が設定されていません（config.env の VL_PROJECTS_DIR）',
-  no_project: 'フォルダが見つかりません。送っていません', not_started: 'セッションを立てられませんでした。もう一度押せます',
-  trust: 'セッションは立ちましたが「このフォルダを信頼しますか」で止まっています。そのタブで答えてから、要ればハブに送り直しを頼んでください',
-  start_failed: 'セッションは立てましたが、起動できず、指示は送れていません。様子を見て、要ればハブに頼んでください',
-  send_failed: 'セッションは立てましたが、指示は送れていません。様子を見て、要ればハブに頼んでください',
-  stale: 'セッションは立てましたが、そのあいだに話題の中身が変わったので、指示は送っていません',
-  unknown: '送れたか分かりません。📋 やセッションの様子を見てください',
-};
+const FAILED = {};  // 読めなかった印（知らせが無い・Hermes でない、と分ける）
 // Hermes の手順の書き足し（承認待ち）: 「採る」は2段。採ると、コンテナの中で Hermes 自身の承認の処理（/skills approve と同じ）が動く。
 // 差分は開いたときに取る。開いていたものは、描き直しても開いたまま（差分は版ごとに覚えておく）
 const HSK_FAIL = {
@@ -942,67 +924,24 @@ function hubSessionRow(a, hold = v => { sitHold = v; }, done = (msg, bad) => { s
   row.appendChild(b);
   return row;
 }
-function proposalCard(p) {
-  const c = node('div', 'prop');
-  const left = Math.max(1, Math.ceil((p.expires * 1000 - Date.now()) / 3600000));
-  c.appendChild(node('div', null, `[${p.n}] ${p.folder}`));
-  c.appendChild(node('div', 'sitMeta', `なぜ今: ${p.why}・` + (p.state === 'sending' ? '送っている途中' : `あと${left}時間で消えます`)));
-  c.appendChild(node('div', 'text', p.text));
-  if (p.risky) c.appendChild(node('div', 'risky', '取り消しにくい操作（送信・公開・削除・本番など）にかかわる語を含みます。中身をよく読んでから送ってください'));
-  if (p.state !== 'open') return c;
-  const acts = node('div', 'acts');
-  const go = node('button', 'go', '送る'), no = node('button', null, '見送る');
-  let timer = null;
-  const reset = () => { clearTimeout(timer); sitHold = false; go.className = 'go'; go.textContent = '送る'; };
-  go.onclick = async () => {
-    if (!go.classList.contains('sure')) {  // 1段目: 確かめを出す。10 秒で戻る
-      sitHold = true; go.className = 'sure'; go.textContent = `${p.folder} に新しいセッションを立てて送る`;
-      timer = setTimeout(reset, 10000); return;
-    }
-    clearTimeout(timer); go.disabled = no.disabled = true; go.textContent = '送っています…（立てるのに1分ほど）';
-    let r; try { r = await postJSON('/api/proposals/send', { n: p.n, v: p.v }); } catch { r = { ok: false, reason: 'unknown' }; }
-    const where = r.pane ? `（立てたセッション: ${p.folder} のワークスペースの「ハブが起動」のタブ・${r.pane}）` : '';
-    sitNote = r.ok ? [`提案 ${p.n} を送りました: ${r.project} に新しいセッションを立てました（📋 で見張っています）`, false]
-      : [`提案 ${p.n}: ` + (PROP_FAIL[r.reason] || r.reason) + (r.why ? `（${r.why}）` : '') + where, true];
-    sys(sitNote[0]); sitHold = false; loadSituation();
-  };
-  no.onclick = async () => {
-    reset(); no.disabled = true;
-    try { await postJSON('/api/proposals/drop', { n: p.n }); } catch { sys('見送れませんでした（本体に届きません）'); }
-    loadSituation();
-  };
-  acts.append(go, no); c.appendChild(acts);
-  return c;
-}
 async function loadSituation() {
   const box = $('sitBody');
-  let d, h, nt;
-  try {
-    [d, h, nt] = await Promise.all([fetch('/api/situation').then(r => r.json()), fetch('/api/hermes/skills').then(r => r.json()).catch(() => null),
-      fetch('/api/notices').then(r => r.json()).catch(() => null)]);
-  } catch { box.textContent = '読めませんでした（接続を確かめてください）'; return; }
-  if (sitHold) return;  // 読んでいるあいだに「送る」が押された
-  const notes = nt ? nt.rows : [];
-  const waiting = (h && h.on ? h.items.length : 0) + d.proposals.filter(p => p.state === 'open').length + notes.length;
-  $('sitCount').hidden = !waiting; $('sitCount').textContent = String(waiting);  // PC の「状況」タブの数（手順の書き足しと提案）
-  box.innerHTML = '';
-  const head = node('div', 'sitHead');
-  head.appendChild(node('span', null, !d.enabled ? '拾う役は切ってあります（config.env の VL_INTAKE=1 で動きます）'
-    : (d.last_ok ? `最終更新 ${stamp(d.last_ok)}` : 'まだ一度もまとめていません') + (d.running ? '・まとめ中…' : '')));
-  if (d.enabled) {
-    const b = node('button', null, d.running ? 'まとめ中…' : 'いま拾う'); b.disabled = d.running;
-    b.onclick = async () => {
-      b.disabled = true;
-      let r; try { r = await postJSON('/api/situation/run', {}); } catch { r = { ok: false, reason: '本体に届きません' }; }
-      if (!r.ok) sys('いま拾うを始められませんでした: ' + r.reason);
-      setTimeout(loadSituation, 1500);
-    };
-    head.appendChild(b);
+  // 読めなかったときは、知らせが無いことと分けて出す（本体が止まった・接続が切れたときに「ありません」と見せない）
+  const get = url => fetch(url).then(r => r.ok ? r.json() : FAILED).catch(() => FAILED);
+  const [h, nt] = await Promise.all([get('/api/hermes/skills'), get('/api/notices')]);
+  if (sitHold) return;  // 読んでいるあいだに「採る」などが押された
+  if (h === FAILED && nt === FAILED) { box.textContent = '読めませんでした（接続を確かめてください）'; return; }  // 数の札はそのまま
+  const notes = nt === FAILED ? [] : nt.rows;
+  if (h !== FAILED && nt !== FAILED) {  // 両方読めたときだけ数を描き直す
+    const waiting = (h.on ? h.items.length : 0) + notes.length;
+    $('sitCount').hidden = !waiting; $('sitCount').textContent = String(waiting);  // PC の「知らせ」タブの数（知らせと手順の書き足し）
   }
-  box.appendChild(head);
+  box.innerHTML = '';
   const hermesHub = agents.find(a => a.hermes && a.hub);
   if (hermesHub) box.appendChild(hubSessionRow(hermesHub));
   if (sitNote) { const n = node('div', sitNote[1] ? 'bad' : null, sitNote[0]); n.id = 'sitNote'; box.appendChild(n); }
+  if (nt === FAILED) box.appendChild(node('div', 'sitMeta bad', '知らせを読めませんでした（接続を確かめてください）'));
+  if (h === FAILED) box.appendChild(node('div', 'sitMeta bad', 'Hermes の手順の書き足しを読めませんでした（接続を確かめてください）'));
   if (notes.length) {  // 代理（Hermes）からの知らせ。文字として出すだけで、押して動くものは無い
     const hd = node('h4', null, `${nt.sender} からの知らせ（${notes.length}）— ${nt.sender} が書いた未確認の情報です。動く前に、ハブとの会話で中身を確かめてください`);
     const all = node('button', 'noteAll', 'すべて消す');
@@ -1018,7 +957,7 @@ async function loadSituation() {
       box.appendChild(c);
     }
   }
-  if (h && h.on && (h.items.length || h.unreadable || h.problem)) {
+  if (h !== FAILED && h.on && (h.items.length || h.unreadable || h.problem)) {
     box.appendChild(node('h4', null, `ハブが手順に書き足したいこと（Hermes・${h.items.length}）— 採ると Hermes の手順に入り、次からの会話で使われます`));
     if (h.problem) box.appendChild(node('div', 'sitMeta bad', h.problem));
     if (h.verify) box.appendChild(node('div', 'sitMeta bad', '前の処理が終わったか確かめています。確かめられるまで、採る・捨てるは断ります'));
@@ -1026,50 +965,7 @@ async function loadSituation() {
     for (const it of h.items) box.appendChild(hskCard(it));
     if (h.items.length) box.appendChild(node('div', 'sitMeta', '似た書き足しがもう手順にあれば、捨ててかまいません'));
   }
-  if (d.proposals.length) {
-    box.appendChild(node('h4', null, `提案（${d.proposals.length}）— 送ると、そのフォルダに新しいセッションを立てて頼みます。放っておけば消えます`));
-    for (const p of d.proposals) box.appendChild(proposalCard(p));
-  }
-  if (d.closed.length) {
-    const det = document.createElement('details');
-    det.appendChild(node('summary', null, `閉じた提案（${d.closed.length}）`));
-    for (const p of d.closed) {
-      const task = p.task_status ? `・頼んだ件: ${p.task_status === 'expired' ? '記録の保存期間外' : (TASK_STATUS[p.task_status] || [p.task_status])[0]}` : '';
-      det.appendChild(node('div', 'sitMeta' + (['failed', 'unknown'].includes(p.state) ? ' bad' : ''),
-        `${stamp(p.closed_at || p.at)} ${PROP_CLOSED[p.state] || p.state}｜${p.folder}：${p.text}` + (p.note ? `（${p.note}）` : '')
-        + (p.pane ? `・セッション: ${p.folder} の「ハブが起動」のタブ（${p.pane}）` : '') + task));
-    }
-    box.appendChild(det);
-  }
-  box.appendChild(node('h4', null, `覚えていること（${d.facts.length}）`));
-  for (const f of d.facts) {
-    const row = node('div', 'fact'); row.appendChild(node('span', null, `[${f.n}] ${f.text}`));
-    const x = node('button', null, '×'); x.setAttribute('aria-label', `${f.n}番を忘れる`);
-    x.onclick = async () => { x.disabled = true; try { await postJSON('/api/facts/delete', { n: f.n }); } catch { sys('忘れられませんでした（本体に届きません）'); } loadSituation(); };
-    row.appendChild(x); box.appendChild(row);
-  }
-  box.appendChild(node('h4', null, `話題（${d.topics.length}）`));
-  if (!d.topics.length) box.appendChild(node('div', 'sitMeta', 'まだありません'));
-  for (const t of d.topics) {
-    const c = node('div', 'topic');
-    c.appendChild(node('div', null, t.title + (t.folder ? `（${t.folder}）` : '')));
-    c.appendChild(node('div', 'now', t.now));
-    if (t.next || t.until) c.appendChild(node('div', 'nx', '次: ' + (t.next || '—') + (t.until ? `（予定 ${t.until}）` : '')));
-    const labels = (t.sources || []).slice(-3).map(s => s.label).filter(Boolean).join('、');
-    c.appendChild(node('div', 'sitMeta', `最後に動いた日 ${t.moved}` + (labels ? `・${labels}` : '')));
-    box.appendChild(c);
-  }
-  if (d.faded.length) {
-    box.appendChild(node('h4', null, '最近外れた話題'));
-    for (const f of d.faded) box.appendChild(node('div', 'sitMeta', `${f.title}（${f.reason}・${stamp(f.at)}）`));
-  }
-  if (d.runs.length) {
-    box.appendChild(node('h4', null, '最近の回'));
-    for (const r of d.runs) {
-      const what = r.ok ? `成功（足す ${r.added || 0}・直す ${r.updated || 0}・外す ${(r.retired || 0) + (r.faded || 0)}・読んだ ${r.read ?? '?'}・私用 ${r.private ?? 0}` + (r.proposed ? `・提案 ${r.proposed}` : '') + '）' : '失敗: ' + r.why;
-      box.appendChild(node('div', 'sitMeta' + (r.ok ? '' : ' bad'), `${stamp(r.at)} ${what}` + (r.denied && r.denied.length ? `・止めた道具 ${r.denied.join('、')}` : '') + (r.missing && r.missing.length ? `・見えなかった連携 ${r.missing.join('、')}` : '')));
-    }
-  }
+  if (h !== FAILED && nt !== FAILED && !notes.length && !(h.on && (h.items.length || h.unreadable || h.problem))) box.appendChild(node('div', 'sitMeta', 'いまは知らせも承認待ちもありません'));
 }
 function showSituation(open) { phone.sit = open; if (!wide) runSituation(open); }
 function runSituation(open) {  // 見える・15 秒ごとに取り直す、を切り替える（PC では常に開く）
@@ -1080,16 +976,9 @@ function runSituation(open) {  // 見える・15 秒ごとに取り直す、を�
 }
 $('sitBtn').onclick = () => { showTasks(false); showSituation($('situation').hidden); };
 $('sitClose').onclick = () => showSituation(false);
-$('factForm').onsubmit = async ev => {
-  ev.preventDefault();
-  const text = $('factText').value.trim(); if (!text) return;
-  let r; try { r = await postJSON('/api/facts', { text }); } catch { r = { ok: false, reason: '本体に届きません' }; }
-  if (r.ok) $('factText').value = ''; else sys('覚えられませんでした: ' + r.reason);
-  loadSituation();
-};
 
 // ---------- PC の形（横幅 1100px 以上）: 3 列。スマホの幅では今のまま ----------
-// 頼んだ件（#tasks）と状況（#situation）は、同じ箱を左右の列へ移して常に開く（中の部品と入力の途中はそのまま）。戻すと元の場所とスマホでの開閉に戻る
+// 頼んだ件（#tasks）と知らせ（#situation）は、同じ箱を左右の列へ移して常に開く（中の部品と入力の途中はそのまま）。戻すと元の場所とスマホでの開閉に戻る
 const WIDE = window.matchMedia('(min-width: 1100px)');
 const homeOf = {};
 for (const id of ['tasks', 'situation']) { const m = document.createComment(id); $(id).before(m); homeOf[id] = m; }
@@ -1117,7 +1006,7 @@ function setReading(on) {
   reading = on && wide;
   document.body.classList.toggle('reading', reading);
   applyInert();
-  const b = $('readBtn'); b.textContent = reading ? '✕ 戻す' : '⤢ 広げる'; b.title = reading ? '3 列に戻す（Esc）' : '記憶と状況を画面いっぱいに広げて読む';
+  const b = $('readBtn'); b.textContent = reading ? '✕ 戻す' : '⤢ 広げる'; b.title = reading ? '3 列に戻す（Esc）' : '記憶と知らせを画面いっぱいに広げて読む';
   b.setAttribute('aria-label', b.title); b.setAttribute('aria-pressed', String(reading));
   requestAnimationFrame(measureMore);  // 「続きを表示」が要るかは幅で変わる
 }
@@ -1423,7 +1312,7 @@ function connect() {
     else if (m.type === 'done') { serverDone = true; if (!playing && !queue.length) finishSpeaking(); loadAgents(); }
     else if (m.type === 'stopped') { stopPlayback(); setStatus('止めました'); }
     else if (m.type === 'blocked') loadAsks(); // 話している相手が承認で止まった → すぐ並べる
-    else if (m.type === 'agent_notice') { sys(`📨 ${m.sender} からの知らせ（未確認）: ${m.title}`); loadSituation(); } // 代理からの知らせ（題だけ。中身は 💡。閉じていても、状況の数を取り直す）
+    else if (m.type === 'agent_notice') { sys(`📨 ${m.sender} からの知らせ（未確認）: ${m.title}`); loadSituation(); } // 代理からの知らせ（題だけ。中身は 💡。閉じていても、知らせの数を取り直す）
   };
 }
 function linked() { return !!ws && ws.readyState === 1; }

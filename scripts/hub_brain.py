@@ -8,13 +8,12 @@ voice-loop（herdr の拡張）は、声・画面・通知・セッションの�
   道具        hubctl と /api/hub/ の口。どの頭にも同じ（頭は実作業をせず、セッションに頼む）
   知らせる    頼んだ件の結果をハブに届け、報告を受け取る（report_target・report_begin・report_end）
   確かめる    本体が頭の外で持つ、本人の発言の台帳（turns・heard・reply_to）。承認に答える・閉じるの守りはこれで確かめる
-  提案を見せる 頭が持っている、本人の判断待ちの数（pending_note）
 
 頭の専用の部品は、本体の道具を core だけで呼ぶ。使ってよい名前は CORE_TOOLS で、spike/brain_boundary_test.py が確かめる。
 """
 
 # 頭の部品が使ってよい本体の道具（本体のモジュールの名前）
-CORE_TOOLS = {"CLIENTS", "_clip", "_probe", "_probes", "hlog", "pane_lock", "push_all", "read_lines", "situation_counts", "situation_rules", "write_json"}
+CORE_TOOLS = {"CLIENTS", "_clip", "_probe", "_probes", "hlog", "pane_lock", "push_all", "read_lines", "write_json"}
 
 
 class Brain:
@@ -60,14 +59,6 @@ class Brain:
     async def report_end(self, state: str, reply: str, about: str, saved: bool) -> bool:
         """報告のあと。記録に書けたかを返す。"""
         return saved
-
-    def memory_for_intake(self) -> dict:
-        """拾う役の入力に足す欄（頭が会話から覚えたこと）。"""
-        return {}
-
-    def pending_note(self) -> str:
-        """朝のまとめに足す、本人の判断待ちの案内。無ければ空。"""
-        return ""
 
 
 class Talker:

@@ -1,4 +1,4 @@
-"""Hermes の手順（スキル）の書き足しを、画面の 💡 で採る・捨てるための部品。と、Hermes の記憶を読む部品（拾う役に渡す）。
+"""Hermes の手順（スキル）の書き足しを、画面の 💡 で採る・捨てるための部品。
 
 Hermes は skills.write_approval が入っていると、手順の書き足しを承認待ちに積む（<置き場>/pending/skills/<id>.json）。
 Hermes の承認の口は対話画面の /skills だけなので、同じ処理（Hermes の apply_skill_pending）を本体から呼べるようにする。
@@ -174,33 +174,6 @@ def pending_ids(home: Path) -> list[str] | None:
         return None
     finally:
         os.close(dfd)
-
-
-def read_memory(home: Path, limit: int) -> tuple[list[str], int]:
-    """Hermes の記憶（memories/USER.md・MEMORY.md）の項目（Hermes は「§」だけの行で区切る）。(項目, 字数の上限で外した数)。
-    読めないファイル（無い・symlink・大きすぎるなど）は飛ばす。"""
-    try:
-        dfd = _open_dir(home, ("memories",))
-    except OSError:
-        return [], 0
-    entries: list[str] = []
-    try:
-        for name in ("USER.md", "MEMORY.md"):
-            try:
-                text = _read_at(dfd, name, MEMORY_MAX).decode("utf-8", "replace")
-            except (OSError, ValueError):
-                continue
-            entries += [e.strip() for e in re.split(r"\n[ \t]*§[ \t]*\n", "\n" + text + "\n") if e.strip()]
-    finally:
-        os.close(dfd)
-    out, used, cut = [], 0, 0
-    for e in entries:
-        if used + len(e) > limit:
-            cut += 1
-            continue
-        out.append(e)
-        used += len(e)
-    return out, cut
 
 
 # ---------- コンテナの中の台本 ----------

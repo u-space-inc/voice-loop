@@ -57,7 +57,7 @@ async def nothing(*a, **k):
     return None
 
 
-s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.intake_loop = s.hermes.watch_hermes_skills = nothing
+s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.hermes.watch_hermes_skills = nothing
 s.list_agents = lambda: [{"pane": "w1:p1", "title": "記事", "cwd": "/x/blog", "kind": "claude", "session": "s1", "status": "idle", "name": "", "hub": False}]
 REPLY = ("# 見出し\n\n> 引用の文\n\n`手元のコード` と\n\n```\nブロックのコード\n```\n\n確認してください。\n\n| 項目 | 数 |\n|:--|--:|\n| 傷 | 3 |\n\n3. 三つ目から\n4. 四つ目\n\n- [x] 済んだこと\n- [ ] まだのこと\n\n"
          "[説明](https://example.invalid/doc \"題\") ![図の説明](out/a.png)\n\n"

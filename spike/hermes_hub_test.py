@@ -93,13 +93,12 @@ check("Hermes が居ないときは理由を返す", s.ensure_hub(), {"ok": Fals
 # ---- 指示文は発言のたびに system として付く（書き換えが次の発言から効く）
 s.hermes.HERMES_DIR.mkdir(parents=True, exist_ok=True)
 (s.hermes.HERMES_DIR / "hub.md").write_text("ハブの決まり v1")
-RULES = s.situation_rules("/opt/voice-loop/hubctl").strip()  # いまの状況の使い方（件数によらず毎回同じ文）
-check("指示文が system で先頭に付き、そのあとに状況の使い方が付く", s.hermes.hermes_messages("やあ"),
-      [{"role": "system", "content": "ハブの決まり v1\n\n" + RULES}, {"role": "user", "content": "やあ"}])
+check("指示文が system で先頭に付き、発言はそのまま", s.hermes.hermes_messages("やあ"),
+      [{"role": "system", "content": "ハブの決まり v1"}, {"role": "user", "content": "やあ"}])
 (s.hermes.HERMES_DIR / "hub.md").write_text("ハブの決まり v2")
-check("書き換えは次の発言から効く", s.hermes.hermes_messages("やあ")[0]["content"].startswith("ハブの決まり v2\n\n## いまの状況"), True)
+check("書き換えは次の発言から効く", s.hermes.hermes_messages("やあ")[0]["content"], "ハブの決まり v2")
 (s.hermes.HERMES_DIR / "hub.md").unlink()
-check("指示文が無ければ、状況の使い方と発言だけ", s.hermes.hermes_messages("やあ"), [{"role": "system", "content": RULES}, {"role": "user", "content": "やあ"}])
+check("指示文が無ければ、発言だけ", s.hermes.hermes_messages("やあ"), [{"role": "user", "content": "やあ"}])
 
 # ---- 台帳
 check("発言が無いうちは最後の発言も無い", s.hub_human_turn(), None)
