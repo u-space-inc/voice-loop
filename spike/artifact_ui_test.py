@@ -55,7 +55,7 @@ async def nothing(*a, **k):
     return None
 
 
-s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.intake_loop = s.hermes.watch_hermes_skills = nothing
+s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.hermes.watch_hermes_skills = nothing
 PROJ = TMP / "proj"
 (PROJ / "out").mkdir(parents=True)
 (PROJ / ".git").mkdir()

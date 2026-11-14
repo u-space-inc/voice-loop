@@ -74,39 +74,37 @@ def outside(path):
 
 
 SPOOF = f"127.0.0.1:{PORT}"
-check("この Mac の上からは、画面用の口を読める", outside("/api/situation"), "200")
-check("コンテナから（名前そのまま）: 画面用の口は断る", inside("/api/situation"), "403")
-check("コンテナから Host を 127.0.0.1 と偽っても、画面用の口は断る", inside("/api/situation", host=SPOOF), "403")
+check("この Mac の上からは、画面用の口を読める", outside("/api/notices"), "200")
+check("コンテナから（名前そのまま）: 画面用の口は断る", inside("/api/notices"), "403")
+check("コンテナから Host を 127.0.0.1 と偽っても、画面用の口は断る", inside("/api/notices", host=SPOOF), "403")
 check("コンテナから Host を偽っても、承認に答える画面の口は断る", inside("/api/answer", host=SPOOF, method="POST"), "403")
-check("コンテナから Host を偽っても、覚えていることを足す口は断る", inside("/api/facts", host=SPOOF, method="POST"), "403")
+check("コンテナから Host を偽っても、知らせを消す画面の口は断る", inside("/api/notices/dismiss", host=SPOOF, method="POST"), "403")
 check("コンテナから Host を偽っても、画面そのものは断る", inside("/", host=SPOOF), "403")
 check("コンテナから Host を Tailscale の名前に偽っても断る", inside("/api/agents", host="mini.example-tailnet.ts.net"), "403")
 check("コンテナから Host を偽り鍵も付けても、画面の口は断る", inside("/api/answer", host=SPOOF, key=KEY, method="POST"), "403")
-check("コンテナから Host と X-Forwarded-For（スマホの住所のつもり）を偽っても、画面用の口は断る", inside("/api/situation", host=SPOOF, xff="100.99.99.99"), "403")
+check("コンテナから Host と X-Forwarded-For（スマホの住所のつもり）を偽っても、画面用の口は断る", inside("/api/notices", host=SPOOF, xff="100.99.99.99"), "403")
 check("コンテナから X-Forwarded-For を偽っても、承認に答える画面の口は断る", inside("/api/answer", host=SPOOF, xff="100.99.99.99", method="POST"), "403")
-check("コンテナから: 鍵つきの hubctl の口は通す（名前そのまま）", inside("/api/hub/context", key=KEY), "200")
-check("コンテナから: 鍵つきの hubctl の口は通す（Host を偽っていても）", inside("/api/hub/context", host=SPOOF, key=KEY), "200")
-check("コンテナから: Host を偽っても、鍵なしの hubctl の口は断る", inside("/api/hub/context", host=SPOOF), "403")
-check("コンテナから Host を偽っても、提案を送る・見送る画面の口は断る",
-      (inside("/api/proposals/send", host=SPOOF, method="POST"), inside("/api/proposals/drop", host=SPOOF, key=KEY, method="POST")), ("403", "403"))
-check("コンテナから: 鍵つきなら、提案を読む hubctl の口は通す", inside("/api/hub/proposals", key=KEY), "200")
+check("コンテナから: 鍵つきの hubctl の口は通す（名前そのまま）", inside("/api/hub/tasks", key=KEY), "200")
+check("コンテナから: 鍵つきの hubctl の口は通す（Host を偽っていても）", inside("/api/hub/tasks", host=SPOOF, key=KEY), "200")
+check("コンテナから: Host を偽っても、鍵なしの hubctl の口は断る", inside("/api/hub/tasks", host=SPOOF), "403")
 ws = subprocess.run(["docker", "exec", "-u", "10000:10000", CONTAINER, "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "-m", "10",
                      "-H", f"Host: {SPOOF}", "-H", "Connection: Upgrade", "-H", "Upgrade: websocket", "-H", "Sec-WebSocket-Version: 13",
                      "-H", "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==", f"http://host.docker.internal:{PORT}/ws"], capture_output=True, text=True, timeout=30).stdout.strip()
 check("コンテナから Host を偽っても、WebSocket（声の会話）は断る", ws, "403")
 
-# 送ってすぐ切る: 本体が接続のもとを調べるころには接続が消えている。断られる（覚えていることが増えない）こと
+# 送ってすぐ切る: 本体が接続のもとを調べるころには接続が消えている。断られる（知らせが消えない）こと
 RAW = ("import socket\n"
-       "body = b'{\"text\": \"sent from the container and closed at once\"}'\n"
+       "body = b'{\"all\": true}'\n"
        "for _ in range(5):\n"
        f"    s = socket.create_connection(('host.docker.internal', {PORT}))\n"
-       f"    s.sendall(b'POST /api/facts HTTP/1.1\\r\\nHost: 127.0.0.1:{PORT}\\r\\nContent-Type: application/json\\r\\nContent-Length: ' + str(len(body)).encode() + b'\\r\\nConnection: close\\r\\n\\r\\n' + body)\n"
+       f"    s.sendall(b'POST /api/notices/dismiss HTTP/1.1\\r\\nHost: 127.0.0.1:{PORT}\\r\\nContent-Type: application/json\\r\\nContent-Length: ' + str(len(body)).encode() + b'\\r\\nConnection: close\\r\\n\\r\\n' + body)\n"
        "    s.close()\n")
-before = len(s.facts()["facts"])
+s.write_json(s.NOTICES_FILE, {"next": 2, "rows": [{"n": 1, "title": "試験の知らせ", "text": "", "at": time.time()}], "sent": []})
+before = len(s.notices()["rows"])
 sent = subprocess.run(["docker", "exec", "-u", "10000:10000", CONTAINER, "/opt/hermes/.venv/bin/python", "-c", RAW], capture_output=True, text=True, timeout=30)
 time.sleep(2)
 check("コンテナの中の台本が動いた（送ってすぐ切る5回）", (sent.returncode, sent.stderr.strip()[-200:]), (0, ""))
-check("コンテナから送ってすぐ切っても、画面の口（覚えていることを足す）は通らない（5回）", len(s.facts()["facts"]) - before, 0)
+check("コンテナから送ってすぐ切っても、画面の口（知らせを消す）は通らない（5回）", before - len(s.notices()["rows"]), 0)
 
 # ---------- 本体の口を全部たどる ----------
 import json  # noqa: E402
@@ -127,8 +125,6 @@ for r in s.app.routes:
 # （本体の一覧を期待値に使うと、誤って画面の口を足しても試験が気づかない）
 HUB_OPEN = {("GET", "/api/hub/sessions"), ("GET", "/api/hub/read"), ("GET", "/api/hub/screen"), ("GET", "/api/hub/tasks"),
             ("POST", "/api/hub/send"), ("POST", "/api/hub/answer"), ("POST", "/api/hub/spawn"), ("POST", "/api/hub/close"),
-            ("GET", "/api/hub/context"), ("POST", "/api/hub/remember"), ("POST", "/api/hub/forget"),
-            ("GET", "/api/hub/proposals"),  # 提案を読むだけ（0.11.0）。送る・見送るは画面の口で、コンテナには開かない
             ("POST", "/api/hub/notice")}  # 代理からの知らせを足すだけ（0.17.8）。一覧・消すは画面の口で、コンテナには開かない
 check("本体の「コンテナに開く口」の一覧が、試験の側の一覧と同じ", (sorted(origin_guard.DOCKER_ALLOWED - HUB_OPEN), sorted(HUB_OPEN - origin_guard.DOCKER_ALLOWED)), ([], []))
 check("コンテナに開く口は、どれも本体に実在する", sorted(HUB_OPEN - set(ROUTES)), [])
@@ -194,12 +190,12 @@ if TS_URL:
                '-H "X-VL-Key: $(cat /opt/voice-loop/hub_key)"' if key else "", f'-H "X-Forwarded-For: {xff}"' if xff else ""]
         cmd = f'curl -s -o /dev/null -w "%{{http_code}}" -m 15 {" ".join(hdr)} "{TS_URL}{path}"'
         return subprocess.run(["docker", "exec", "-u", "10000:10000", CONTAINER, "sh", "-c", cmd], capture_output=True, text=True, timeout=60).stdout.strip()
-    check("常駐: コンテナから Tailscale の名前で、画面用の口（読むだけ）は断る", via_ts("/api/situation"), "403")
-    check("常駐: コンテナから Tailscale の名前で、鍵なしのハブの口（読むだけ）は断る", via_ts("/api/hub/context"), "403")
+    check("常駐: コンテナから Tailscale の名前で、画面用の口（読むだけ）は断る", via_ts("/api/notices"), "403")
+    check("常駐: コンテナから Tailscale の名前で、鍵なしのハブの口（読むだけ）は断る", via_ts("/api/hub/tasks"), "403")
     check("常駐: コンテナから Tailscale の名前で、WebSocket は断る", via_ts("/ws", ws=True), "403")
-    check("常駐: Tailscale の名前で鍵を付けても、画面用の口と WebSocket は断る", (via_ts("/api/situation", key=True), via_ts("/ws", ws=True, key=True)), ("403", "403"))
-    check("常駐: Tailscale の名前で接続元（X-Forwarded-For）を偽っても、画面用の口は断る", via_ts("/api/situation", xff="100.99.99.99"), "403")
-    check("常駐: Tailscale の名前でも、鍵つきならハブの道具の口（読むだけ）は届く", via_ts("/api/hub/context", key=True), "200")
+    check("常駐: Tailscale の名前で鍵を付けても、画面用の口と WebSocket は断る", (via_ts("/api/notices", key=True), via_ts("/ws", ws=True, key=True)), ("403", "403"))
+    check("常駐: Tailscale の名前で接続元（X-Forwarded-For）を偽っても、画面用の口は断る", via_ts("/api/notices", xff="100.99.99.99"), "403")
+    check("常駐: Tailscale の名前でも、鍵つきならハブの道具の口（読むだけ）は届く", via_ts("/api/hub/tasks", key=True), "200")
 else:
     print("（Tailscale の名前から入る道は確かめていません。VL_TEST_TS_URL を付けると、常駐に読むだけで確かめます）")
 

@@ -190,38 +190,12 @@ s.hermes.HERMES_KEY = key
 check("ハブ（コンテナ）からは、鍵があっても新しくする口を使えない",
       problem({"host": "127.0.0.1:8790", "x-vl-key": "k1"}, "POST", "/api/hermes/session/new", container=True) is not None, True)
 
-# ---------- Hermes に渡す指示は毎回同じ文（件数や時刻は発言の後ろに） ----------
+# ---------- Hermes に渡す指示は毎回同じ文（発言には何も足さない） ----------
 s.hermes.HERMES_DIR.mkdir(parents=True, exist_ok=True)
 (s.hermes.HERMES_DIR / "hub.md").write_text("ハブへの指示（試験）")
-s.INTAKE = True
-sit = s.situation()
-sit["topics"] = [{"id": "t1", "title": "ブログ", "now": "初稿を書いている", "next": "", "folder": "", "until": "", "moved": "2026-10-20", "sources": []}]
-sit["last_ok"] = time.time() - 60
-s.write_json(s.SITUATION_FILE, sit)
-s.write_json(s.FACTS_FILE, {"next": 2, "facts": [{"n": 1, "text": "週次定例は情報交換の場", "at": time.time(), "via": "screen"}]})
-first = s.hermes.hermes_messages("こんにちは")
-sit["last_ok"] = time.time() - 3600  # 「何分前」が変わる
-sit["topics"].append({**sit["topics"][0], "id": "t2", "title": "ネットショップ"})  # 件数が変わる
-s.write_json(s.SITUATION_FILE, sit)
-s.write_json(s.FACTS_FILE, {"next": 3, "facts": [{"n": 1, "text": "週次定例は情報交換の場", "at": time.time(), "via": "screen"},
-                                                 {"n": 2, "text": "blog は個人の案件", "at": time.time(), "via": "screen"}]})
-second = s.hermes.hermes_messages("こんにちは")
-check("件数や「何分前」が変わっても、指示（system）は1字も変わらない（キャッシュを書き直させない）", first[0] == second[0], True)
-check("件数と時刻は、発言の後ろの案内で変わる", (first[-1]["content"] != second[-1]["content"], "話題 2 件" in second[-1]["content"], "覚えていること 2 件" in second[-1]["content"]),
-      (True, True, True))
-check("発言はそのまま先頭に残り、案内はユーザーの言葉ではないと書いてある",
-      second[-1]["content"].startswith("こんにちは\n\n［voice-loop の案内（ユーザーの言葉ではありません）"), True)
-check("指示には、件数・時刻・話題の本文が入らない", any(w in second[0]["content"] for w in ("2 件", "分前", "最終更新 1", "ネットショップ", "初稿")), False)
-s.INTAKE = False
-for p in (s.SITUATION_FILE, s.FACTS_FILE):
-    p.unlink()
-none = s.hermes.hermes_messages("やあ")
-check("話題も覚えていることも無く、拾う役も切ってあれば、発言の後ろの案内は足さない", none[-1], {"role": "user", "content": "やあ"})
-check("…そのときも、指示（system）は件数があるときと同じ（0件と1件の境で変わらない）", none[0] == second[0], True)
-s.write_json(s.FACTS_FILE, {"next": 2, "facts": [{"n": 1, "text": "はじめての覚えごと", "at": time.time(), "via": "screen"}]})
-one = s.hermes.hermes_messages("やあ")
-check("最初の1件を覚えても、指示（system）は変わらず、案内だけが付く", (one[0] == none[0], "覚えていること 1 件" in one[-1]["content"]), (True, True))
-s.FACTS_FILE.unlink()
+first, second = s.hermes.hermes_messages("こんにちは"), s.hermes.hermes_messages("こんにちは")
+check("指示（system）は毎回 1 字も変わらない（キャッシュを書き直させない）", (first[0] == second[0], first[0]["content"]), (True, "ハブへの指示（試験）"))
+check("発言には、本体の案内を足さない", first[-1], {"role": "user", "content": "こんにちは"})
 
 # ---------- sessions: 最終更新の時刻と、直近の依頼がどこから来たか ----------
 LOG = Path(TMP) / "w.jsonl"

@@ -55,7 +55,7 @@ async def nothing(*a, **k):
     return None
 
 
-s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.intake_loop = s.hermes.watch_hermes_skills = nothing
+s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.hermes.watch_hermes_skills = nothing
 s.list_agents = lambda: []
 down = {"on": False}  # True の間、本体の / は 503（Mac の本体が止まっていて、中継だけが答える形）
 framed_status = []  # 枠からの要求（Sec-Fetch-Dest: iframe）に、本体が返した状態

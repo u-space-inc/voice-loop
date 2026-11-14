@@ -1,6 +1,6 @@
 """画面の 💡 の「ハブが手順に書き足したいこと（Hermes）」の通し。本体の写しをこの試験の中で 127.0.0.1:8791 に立て、本物のブラウザ（Chromium と、
 iPhone を名乗る WebKit）で開く。Hermes の置き場は一時のフォルダ、コンテナの台本は差し替える（docker・常駐の 8790 には触れない）。
-見ること: 欄が提案より上に出る（要約・いつ・どこから）、扱えない形は採るを出さない、差分は開いたときに取り、描き直しても開いたまま、
+見ること: 欄が出る（要約・いつ・どこから）、扱えない形は採るを出さない、差分は開いたときに取り、描き直しても開いたまま、
 文は文字として出す（タグを解釈しない）、「採る」は2段（1回目では当てない・描き直しで確かめが消えない）、採った・捨てたの案内、
 分からないの赤い案内と採るが消えること、コンテナが使えないときの理由、承認待ちが無ければ欄を出さない。
 差分は行ごとに色を分ける（文字として入れる）。PC の幅（Chromium）では ⤢ で広げて読む（差分を高さで切らず字を大きく・開いた差分と確かめは残る・Esc で戻る）。
@@ -38,7 +38,7 @@ async def nothing(*a, **k):
     return None
 
 
-s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.intake_loop = s.hermes.watch_hermes_skills = nothing
+s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.hermes.watch_hermes_skills = nothing
 s.list_agents = lambda: []
 CALLS = []
 OUT = {}
@@ -78,12 +78,6 @@ def seed():
     OUT.clear()
     record("aaaaaaaa", PATCH, "読み替えに「山だ」を足す")
     record("bbbbbbbb", {"action": "delete", "name": "voice-loop-hub"}, "<img src=x onerror=\"window.__xss=1\">手順を消す", origin="assistant_tool")
-    now = time.time()
-    t = {"id": "t1", "title": "話題", "now": "いま", "next": "次", "folder": "shop", "until": "", "moved": time.strftime("%Y-%m-%d"),
-         "sources": [{"kind": "plaud", "id": "p1", "at": time.strftime("%Y-%m-%dT%H:%M+09:00"), "label": "録音"}]}
-    s.write_json(s.SITUATION_FILE, {"topics": [t], "faded": [], "seen": {}, "last_ok": now - 600, "next_id": 2, "proposals": {
-        "next": 2, "open": [{"n": 1, "v": "v1", "topic": "t1", "folder": "shop", "text": "ひな形を作ってください", "why": "金曜まで", "sources": ["p1"],
-                             "basis": s.topic_basis(t), "at": now, "expires": now + 86400, "state": "open"}], "closed": [], "used": {}}})
 
 
 srv = uvicorn.Server(uvicorn.Config(s.app, host="127.0.0.1", port=PORT, log_level="warning"))
@@ -112,7 +106,7 @@ def open_panel(page):
     page.goto(BASE + "/")
     page.wait_for_function("document.getElementById('conn').classList.contains('on')")
     page.click("#sitBtn")
-    page.wait_for_selector("#sitBody .sitHead")
+    page.wait_for_selector("#sitBody > *")
 
 
 def heads(page):
@@ -124,7 +118,7 @@ def run(page, who):
     open_panel(page)
     page.wait_for_selector("#sitBody .prop.hsk")
     h = heads(page)
-    check(f"{who} 欄が出て、提案より上にある", (h[0].startswith("ハブが手順に書き足したいこと（Hermes・2）"), h[1].startswith("提案（1）")), (True, True))
+    check(f"{who} 欄が出る", h[0].startswith("ハブが手順に書き足したいこと（Hermes・2）"), True)
     cards = page.locator("#sitBody .prop.hsk")
     texts = [cards.nth(i).text_content() for i in range(cards.count())]
     check(f"{who} 要約・どこから（見直し・会話の中）・扱えない形の理由", (cards.count(), "読み替えに「山だ」を足す" in texts[0], "会話のあとの見直しから" in texts[0],
@@ -185,8 +179,8 @@ def run(page, who):
 
     # ハブの会話を新しくする（2段。1回目は確かめだけ）
     page.click("#sitBtn")
-    page.wait_for_selector("#sitBody .sitHead")
-    row = lambda: page.locator("#sitBody .sitHead").nth(1)
+    page.wait_for_selector("#sitBody > *")
+    row = lambda: page.locator("#sitBody .sitHead").nth(0)  # ハブの会話の行（拾う役の見出しの行は 0.20.0 で外した）
     before = s.hermes.hermes_session()
     check(f"{who} ハブの会話の欄に、いまの会話の名前と、毎朝4時に新しくなることが出る",
           wait(lambda: before in (row().text_content() or "") and "毎朝4時に新しくなります" in (row().text_content() or "")), True)

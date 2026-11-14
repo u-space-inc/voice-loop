@@ -1,10 +1,10 @@
 """PC の形（横幅 1100px 以上で 3 列）と、Hermes の記憶を足す・直す・消す画面の通し。本体の写しを 127.0.0.1:8791 に立て、本物のブラウザ
 （Chromium と WebKit）で開く。Hermes の記憶の置き場は一時のフォルダ、コンテナの台本は差し替える（docker・常駐の 8790 には触れない）。声の一覧は
 この試験の中の小さな偽物（127.0.0.1:8795）から取る。
-見ること: 1400px で 3 列（左にセッションの一覧と頼んだ件、真ん中に会話、右に記録のタブ）・💡 📋 のボタンと ✕ を隠す・タブの切り替えと「状況」の数・
+見ること: 1400px で 3 列（左にセッションの一覧と頼んだ件、真ん中に会話、右に記録のタブ）・💡 📋 のボタンと ✕ を隠す・タブの切り替えと「知らせ」の数・
 セッションの一覧で話し相手が替わる（文字で送ると選んだ相手に届く）・記憶の一覧（字数・上限・文字として出す）・足す・直す（取り直しても編集の途中が残る）・
 消す（2 段）・当たったか分からないときの赤い案内と次の書き込みを断ること・1099px と 1100px の境・横にはみ出さない・PC でも話す・停止・文字・声・🔇・↻ が出る・
-スマホの幅に戻すと今の形（💡 📋 の相互の開閉、覚えていることの追加と削除）に戻り、もう一度 PC にしても壊れない。
+スマホの幅に戻すと今の形（💡 📋 の相互の開閉）に戻り、もう一度 PC にしても壊れない。
 スマホの幅では、▶ タップして再生・ハブを起動を次の行に全幅で出し、状態の文を細い列に折らない（PC の幅では同じ行のまま）。
 PC の見た目（Chromium）: 頼んだ件を「動いている」「終わった」に分け、状態の色の帯・指示の文は 2 行で切って押すと全文（取り直しても開いたまま）・
 ハブの返事の行頭の【見出し】を太く・記憶の上限との棒・長い項目は 4 行で切って「続きを表示」・直す・消すはマウスを載せた項目と消すの確かめ中だけ出す・
@@ -13,7 +13,7 @@ PC の見た目（Chromium）: 頼んだ件を「動いている」「終わっ�
 いま話している相手は絞り込みの外でも出す。
 広げて読む（Chromium）: ⤢ で右の列を画面いっぱいに・ほかの列は inert・長い記憶を切らずに出す・直す途中の文が残る・Esc（文の欄・一行の欄・
 変換の途中では効かない）・✕・狭めると戻る・広げている間だけ承認・入力待ちの数を出し、押すと戻ってカードのボタンへ。
-代理からの知らせ（Chromium）: 💡 の一覧に文字として出す（タグを解釈しない）・状況の数に入る・× とすべて消す・開いている画面に一行で出す。
+代理からの知らせ（Chromium）: 💡 の一覧に文字として出す（タグを解釈しない）・知らせの数に入る・× とすべて消す・開いている画面に一行で出す。
 使い方: uv run spike/pc_ui_test.py"""
 import json
 import os
@@ -30,7 +30,7 @@ MEM = HOME / "memories"
 MEM.mkdir(parents=True)
 TTS_PORT = 8795
 os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HUB="hermes", VL_HERMES_KEY="k1", VL_HERMES_URL="http://127.0.0.1:9",
-                  VL_HERMES_HOME=str(HOME), VL_INTAKE="1", VL_VOICE_URL=f"http://127.0.0.1:{TTS_PORT}")
+                  VL_HERMES_HOME=str(HOME), VL_VOICE_URL=f"http://127.0.0.1:{TTS_PORT}")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import uvicorn  # noqa: E402
@@ -66,7 +66,7 @@ async def nothing(*a, **k):
     return None
 
 
-s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.intake_loop = s.hermes.watch_hermes_skills = nothing
+s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.hermes.watch_hermes_skills = nothing
 AGENTS = [{"pane": "w1:p1", "title": "記事", "cwd": "/x/blog", "kind": "claude", "session": "s1", "status": "idle", "name": "", "hub": False},
           {"pane": "w2:p1", "title": "受注", "cwd": "/x/shop", "kind": "claude", "session": "s2", "status": "blocked", "name": "", "hub": False}]
 s.list_agents = lambda: [dict(a) for a in AGENTS]
@@ -116,12 +116,7 @@ def seed():
     OUT.clear()
     STILL["v"] = False
     now = time.time()
-    t = {"id": "t1", "title": "話題", "now": "いま", "next": "次", "folder": "shop", "until": "", "moved": time.strftime("%Y-%m-%d"),
-         "sources": [{"kind": "plaud", "id": "p1", "at": time.strftime("%Y-%m-%dT%H:%M+09:00"), "label": "録音"}]}
-    s.write_json(s.SITUATION_FILE, {"topics": [t], "faded": [], "seen": {}, "last_ok": now - 600, "next_id": 2, "proposals": {
-        "next": 2, "open": [{"n": 1, "v": "v1", "topic": "t1", "folder": "shop", "text": "ひな形を作ってください", "why": "金曜まで", "sources": ["p1"],
-                             "basis": s.topic_basis(t), "at": now, "expires": now + 86400, "state": "open"}], "closed": [], "used": {}}})
-    s.write_json(s.FACTS_FILE, {"next": 1, "facts": []})
+    s.write_json(s.NOTICES_FILE, {"next": 2, "rows": [{"n": 1, "title": "ひな形を作ってください", "text": "", "at": now - 600}], "sent": []})  # 💡 に 1 件
 
 
 srv = uvicorn.Server(uvicorn.Config(s.app, host="127.0.0.1", port=PORT, log_level="warning"))
@@ -168,7 +163,7 @@ def run_wide(page, who):
     page.wait_for_selector("#memPanel .mem")
     side, log, rec = box(page, "#side"), box(page, "#log"), box(page, "#rec")
     check(f"{who} 3 列（1400px で左 280px＝幅の 2 割・真ん中・右 364px＝2.6 割が横に並ぶ）", (side[1], rec[1], side[0] < log[0] < rec[0]), (280, 364, True))
-    check(f"{who} 頼んだ件は左の列に入って常に出る・状況は右の列に入る",
+    check(f"{who} 頼んだ件は左の列に入って常に出る・知らせは右の列に入る",
           (page.evaluate("document.getElementById('tasks').parentElement.id"), visible(page, "#tasks"), page.evaluate("document.getElementById('situation').parentElement.id")),
           ("side", True, "rec"))
     check(f"{who} 💡 📋 のボタンと ✕ は隠す", [visible(page, x) for x in ("#sitBtn", "#tasksBtn", "#tasksClose", "#sitClose")], [False] * 4)
@@ -176,10 +171,10 @@ def run_wide(page, who):
     check(f"{who} PC でも 話す・停止・文字の欄・送る・声・🔇・↻ が出ている", [visible(page, x) for x in ("#talk", "#stop", "#typed", "#send", "#speaker", "#mute", "#reload")], [True] * 7)
 
     # タブ
-    check(f"{who} 右は「記憶」が先に開く（状況のタブに、提案の数が出る）", (visible(page, "#memPanel"), visible(page, "#situation"), wait(lambda: page.text_content("#sitCount") == "1")),
+    check(f"{who} 右は「記憶」が先に開く（知らせのタブに、知らせの数が出る）", (visible(page, "#memPanel"), visible(page, "#situation"), wait(lambda: page.text_content("#sitCount") == "1")),
           (True, False, True))
     page.click("#tabSit")
-    check(f"{who} 「状況」を押すと、今の 💡 の中身（提案・覚えていること）が出る", (visible(page, "#situation"), visible(page, "#memPanel"), wait(lambda: "ひな形を作ってください" in (page.text_content("#sitBody") or ""))),
+    check(f"{who} 「知らせ」を押すと、💡 の中身（知らせ）が出る", (visible(page, "#situation"), visible(page, "#memPanel"), wait(lambda: "ひな形を作ってください" in (page.text_content("#sitBody") or ""))),
           (True, False, True))
     page.click("#tabMem")
 
@@ -190,6 +185,8 @@ def run_wide(page, who):
     page.locator("#sessions .sess").nth(2).click()
     check(f"{who} 一覧で押すと話し相手が替わる（select も同じ相手）", (page.evaluate("document.getElementById('agent').value"), wait(lambda: names()[2][2])), ("w1:p1", True))
     wait(lambda: not page.locator("#send").is_disabled())
+    # 相手を替えると会話の記録を取り直して描き直す。描き終わる前に送ると、送った吹き出しが描き直しで消えるので、描き終わるのを待つ
+    wait(lambda: "このセッションにはまだ会話がありません" in (page.text_content("#log") or ""))
     page.evaluate("(() => { window.__sent = []; const o = ws.send.bind(ws); ws.send = m => { window.__sent.push(m); if (typeof m !== 'string' || JSON.parse(m).type !== 'text') o(m); }; })()")
     texts = lambda: page.evaluate("window.__sent.map(m => JSON.parse(m)).filter(m => m.type === 'text').map(m => [m.pane, m.text])")
     typed_h = lambda: round(page.locator("#typed").bounding_box()["height"])
@@ -513,7 +510,7 @@ def run_sessions_nostore(page, who):
 
 
 def run_reading(page, who):
-    """⤢ で右の列（記憶・状況）を画面いっぱいに広げて読む。CSS で広げるだけなので、直す途中の文はそのまま。ほかの列は押せない（inert）。
+    """⤢ で右の列（記憶・知らせ）を画面いっぱいに広げて読む。CSS で広げるだけなので、直す途中の文はそのまま。ほかの列は押せない（inert）。
     ✕・Esc・スマホの幅へ狭めると戻る（文の欄・一行の欄を打っている間と、変換の途中の Esc では戻らない）。広げている間だけ、承認・入力待ちの数を見出しに出す"""
     seed()
     (MEM / "USER.md").write_text(s.hermes.hermes_memory.DELIM.join(["利用者の名前は山田", LONG]))
@@ -538,10 +535,7 @@ def run_reading(page, who):
           (card(1).locator(".text").evaluate("e => e.scrollHeight <= e.clientHeight + 2"), more()), (True, [False, False]))
     check(f"{who} 直している途中の文は、広げても残る", card(0).locator("textarea").input_value(), "広げる前に打った文")
     page.click("#tabSit")
-    check(f"{who} 広げたまま「状況」に替えられる", wait(lambda: page.locator("#situation").is_visible() and "ひな形を作ってください" in (page.text_content("#sitBody") or "")), True)
-    page.focus("#factText")
-    page.keyboard.press("Escape")
-    check(f"{who} 一行の欄（覚えてほしいこと）にいる間の Esc でも戻らない", reading(), True)
+    check(f"{who} 広げたまま「知らせ」に替えられる", wait(lambda: page.locator("#situation").is_visible() and "ひな形を作ってください" in (page.text_content("#sitBody") or "")), True)
     page.click("#tabMem")
     card(0).locator("textarea").focus()
     page.keyboard.press("Escape")
@@ -591,7 +585,7 @@ def run_notice(page, who):
     s.write_json(s.NOTICES_FILE, {"next": 3, "rows": [{"n": 1, "title": "古い知らせ", "text": "", "at": now - 3600},
                                                      {"n": 2, "title": XSS, "text": "一言も" + XSS, "at": now - 60}], "sent": []})
     open_page(page, 1400)
-    check(f"{who} 状況のタブの数に、知らせも入る（提案 1・知らせ 2）", wait(lambda: page.text_content("#sitCount") == "3"), True)
+    check(f"{who} 知らせのタブの数に、知らせの数が出る（2）", wait(lambda: page.text_content("#sitCount") == "2"), True)
     page.click("#tabSit")
     check(f"{who} 知らせは新しい順に、題と一言を文字として出す（タグを解釈しない）",
           wait(lambda: page.locator("#sitBody .notice").count() == 2 and XSS in (page.locator("#sitBody .notice").first.text_content() or "")), True)
@@ -608,7 +602,8 @@ def run_notice(page, who):
           (r.get("push"), wait(lambda: "📨 Hermes からの知らせ（未確認）: 新しい知らせ" in (page.text_content("#log") or ""))), ("visible", True))
     check(f"{who} …そして一覧も取り直す", wait(lambda: page.locator("#sitBody .notice").count() == 2), True)
     page.click("#sitBody .noteAll")
-    check(f"{who} 「すべて消す」で一覧が空になる", wait(lambda: page.locator("#sitBody .notice").count() == 0 and page.text_content("#sitCount") == "1"), True)
+    check(f"{who} 「すべて消す」で一覧が空になり、数の札は隠れ、無いことを一言で出す",
+          wait(lambda: page.locator("#sitBody .notice").count() == 0 and page.is_hidden("#sitCount") and "いまは知らせも承認待ちもありません" in (page.text_content("#sitBody") or "")), True)
     page.close()
 
 
@@ -653,15 +648,10 @@ def run_phone(page, who):
     check(f"{who} PC にして戻すと、元の並びと、閉じた状態に戻る", (page.evaluate(order), visible(page, "#situation"), visible(page, "#tasks")),
           ("side,rec,asks,tasks,situation,log,bar,viewer", False, False))
     page.click("#sitBtn")
-    check(f"{who} 💡 で状況が開く", wait(lambda: visible(page, "#situation") and "ひな形を作ってください" in (page.text_content("#sitBody") or "")), True)
+    check(f"{who} 💡 で知らせが開く", wait(lambda: visible(page, "#situation") and "ひな形を作ってください" in (page.text_content("#sitBody") or "")), True)
     page.click("#tasksBtn")
-    check(f"{who} 📋 を押すと状況は閉じて頼んだ件が開く（今の相互の開閉）", (visible(page, "#tasks"), visible(page, "#situation")), (True, False))
+    check(f"{who} 📋 を押すと知らせは閉じて頼んだ件が開く（今の相互の開閉）", (visible(page, "#tasks"), visible(page, "#situation")), (True, False))
     page.click("#sitBtn")
-    page.fill("#factText", "スマホから覚える")
-    page.press("#factText", "Enter")
-    check(f"{who} スマホに戻したあとも、覚えていることを足せる", wait(lambda: "スマホから覚える" in (page.text_content("#sitBody") or "")), True)
-    page.locator("#sitBody .fact button").first.click()
-    check(f"{who} …そして × で忘れられる", wait(lambda: "スマホから覚える" not in (page.text_content("#sitBody") or "")), True)
     page.set_viewport_size({"width": 1400, "height": 900})
     check(f"{who} スマホで 💡 を開いたまま PC にしても、3 列で両方出る", (wait(lambda: page.evaluate("document.body.classList.contains('wide')")),
                                                           visible(page, "#tasks"), page.evaluate("document.getElementById('situation').parentElement.id")), (True, True, "rec"))

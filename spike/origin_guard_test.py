@@ -71,9 +71,9 @@ BLOCK = [
     {"host": "host.docker.internal:8790", "x-vl-key": "k1", "_path": "/api/hub/sessions", "origin": "http://host.docker.internal:8790"},  # コンテナ経由のブラウザ
     {"host": "host.docker.internal.evil.example:8790", "_path": "/api/hub/sessions"},
     # コンテナの中から Host を偽る（接続のもとは OrbStack など）。Host に関係なく、コンテナとして扱う
-    {"host": "127.0.0.1:8790", "_container": True, "_path": "/api/situation"},  # 画面用の API
+    {"host": "127.0.0.1:8790", "_container": True, "_path": "/api/notices"},  # 画面用の API
     {"host": "127.0.0.1:8790", "_container": True, "_path": "/api/answer", "_method": "POST"},  # 承認に答える（画面の口）
-    {"host": "127.0.0.1:8790", "_container": True, "_path": "/api/facts", "_method": "POST"},
+    {"host": "127.0.0.1:8790", "_container": True, "_path": "/api/notices/dismiss", "_method": "POST"},
     {"host": "127.0.0.1:8790", "_container": True, "x-vl-key": "k1", "_path": "/api/hermes/session/new", "_method": "POST"},  # ハブの会話を新しくする（画面の口）
     {"host": "127.0.0.1:8790", "_container": True, "_path": "/"},  # 画面
     {"host": "127.0.0.1:8790", "_container": True, "x-vl-key": "k1", "_path": "/api/file"},  # 成果物の画像・動画（鍵があっても画面の口）

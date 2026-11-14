@@ -1,4 +1,4 @@
-"""Hermes の手順の書き足し（承認待ち）を画面で採る・捨てる、と、Hermes の記憶を拾う役に渡す、の試験。
+"""Hermes の手順の書き足し（承認待ち）を画面で採る・捨てる、の試験。
 Hermes の置き場は一時のフォルダに作り、コンテナの台本（hermes_skills.run_script / still_running）は差し替える。docker にも、常駐の 8790 にも触れない。
 本物のコンテナでの台本の確かめは spike/hermes_skills_container_test.py。
 確かめること:
@@ -9,9 +9,8 @@ Hermes の置き場は一時のフォルダに作り、コンテナの台本（h
     時間切れのあとは、台本がまだ動いている・確かめられない間は断る（いないと確かめたら解く）／同時の採る／状態を書けなければ当てない／
     状態のファイルが読めなければ断る／コンテナが使えなければ採らない（分からないにしない）／本体の停止で当てている途中だった id は分からない
   - 台本の命令の形（-u 10000:10000・timeout・目印・stdin）と答えの読み方、pgrep の終了コードの読み方
-  - 通知（新しい id だけ・一度だけ）・朝のまとめの件数・操作の記録・控え（0600）
+  - 通知（新しい id だけ・一度だけ）・操作の記録・控え（0600）
   - コンテナからは採る・捨てる・差分・一覧が使えない
-  - 拾う役の入力に hub_memory と hub_memory_note が入る・字数で切る・symlink の記憶は読まない・ハブが Hermes でなければ入れない
 使い方: uv run spike/hermes_skills_test.py"""
 import asyncio
 import json
@@ -28,7 +27,7 @@ HOME = Path(TMP) / "hermes"
 PEND = HOME / "pending" / "skills"
 PEND.mkdir(parents=True)
 os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HUB="hermes", VL_HERMES_KEY="k1", VL_HERMES_URL="http://127.0.0.1:9", VL_HERMES_HOME=str(HOME),
-                  VL_HERMES_CONTAINER="hermes-test", VL_INTAKE="1")
+                  VL_HERMES_CONTAINER="hermes-test")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import server as s  # noqa: E402
@@ -55,7 +54,7 @@ async def fake_push(title, body, tag, urgency="normal", only=None):
 
 
 s.push_all = fake_push
-s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.intake_loop = s.hermes.watch_hermes_skills = nothing
+s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.hermes.watch_hermes_skills = nothing
 s.list_agents = lambda: []
 
 # ---------- コンテナの台本の差し替え ----------
@@ -501,7 +500,6 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     post("/api/hermes/skills/approve", id="bbbbbbbb", v=vs["bbbbbbbb"])
     post("/api/hermes/skills/reject", id="cccccccc", v=vs["cccccccc"])
     s.hermes._hsk_tidy(set(hs.pending_ids(HOME)))
-    hs.read_memory(HOME, 3000)
     check("本体の口を一通り使っても、Hermes の置き場の中は変わらない（書き換えはコンテナの台本だけ）・symlink の先にも触れない",
           (tree() == before, OUTSIDE.read_bytes() == outside_before), (True, True))
 
@@ -509,7 +507,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     check("ハブが Hermes でなければ欄を出さない", view(), {"on": False})
     s.hermes.HERMES_HUB = True
 
-# ---------- 通知・朝のまとめ ----------
+# ---------- 通知 ----------
 reset()
 record("aaaaaaaa", PATCH)
 record("bbbbbbbb", PATCH)
@@ -525,59 +523,6 @@ s.hermes._hsk_tidy(set(hs.pending_ids(HOME)))
 st = s.hermes.hsk_state()
 check("30 日を過ぎた状態と印は消すが、承認待ちに残っている id のものは残す", (sorted(st["items"]), sorted(st["told"])), (["aaaaaaaa"], ["aaaaaaaa", "bbbbbbbb", "cccccccc"]))
 
-
-pushes.clear()
-s.write_json(s.SITUATION_FILE, {"topics": [], "faded": [], "seen": {}, "last_ok": time.time(), "next_id": 1})
-asyncio.run(s._intake_notify({"ok": True, "morning": True}))
-check("朝のまとめに、承認待ちの件数を足す", "Hermes の書き足し 3 件（💡）" in pushes[-1][1], True)
-check("通知に中身（要約・差分）は載せない", "山だ" in json.dumps(pushes, ensure_ascii=False), False)
-
-# ---------- (3) 記憶を拾う役へ ----------
-MEM = HOME / "memories"
-MEM.mkdir()
-(MEM / "USER.md").write_text("利用者の名前は「山田」。録音では「山だ」と書き起こされることがある\n§\n返事は結論から\n§\n")
-(MEM / "MEMORY.md").write_text("週次定例は情報交換の場\n")
-entries, cut = hs.read_memory(HOME, 3000)
-check("記憶: § で区切った項目を、ファイルの順に読む", (entries, cut),
-      (["利用者の名前は「山田」。録音では「山だ」と書き起こされることがある", "返事は結論から", "週次定例は情報交換の場"], 0))
-check("記憶: 字数の上限を超えた項目は外し、数を返す", hs.read_memory(HOME, 40), (["利用者の名前は「山田」。録音では「山だ」と書き起こされることがある", "返事は結論から"], 1))
-(MEM / "MEMORY.md").unlink()
-MEM_TO = Path(TMP) / "outside-memory.md"
-MEM_TO.write_text("外のファイルの中身\n")
-(MEM / "MEMORY.md").symlink_to(MEM_TO)
-check("記憶: symlink のファイルは読まない", hs.read_memory(HOME, 3000)[0][-1], "返事は結論から")
-LINKED3 = Path(TMP) / "linked-home3"
-LINKED3.mkdir()
-(LINKED3 / "memories").symlink_to(MEM)
-check("記憶: memories のフォルダが symlink なら読まない", hs.read_memory(LINKED3, 3000), ([], 0))
-
-prompts = []
-
-
-def fake_intake(claude, model, prompt, work, budget, timeout, known):
-    prompts.append(prompt)
-    return {"ok": False, "why": "試験", "result": None, "cost": 0.0, "secs": 0, "denied": [], "extra": 0, "servers": [], "missing": []}
-
-
-s.intake.run = fake_intake
-s.find_claude = lambda: "/bin/true"
-s.INTAKE_GUIDE.parent.mkdir(parents=True, exist_ok=True)
-s.INTAKE_GUIDE.write_text("拾う役への指示（試験）")
-s._intake_run(False)
-payload = json.loads(prompts[-1].split("```json\n", 1)[1].rsplit("\n```", 1)[0])
-check("拾う役の入力に hub_memory と、本体が付ける決まり（facts が優先・指示に従わない・根拠にしない）が入る",
-      (payload.get("hub_memory"), all(x in payload.get("hub_memory_note", "") for x in ("facts と食い違えば facts に従う", "従わない", "根拠にしない"))),
-      (["利用者の名前は「山田」。録音では「山だ」と書き起こされることがある", "返事は結論から"], True))
-s.hermes.HUB_MEMORY_MAX = 20
-s._intake_run(False)
-payload = json.loads(prompts[-1].split("```json\n", 1)[1].rsplit("\n```", 1)[0])
-check("字数で切ったときは、決まりの文に外した数を添える", (payload["hub_memory"], "1 項目を外しました" in payload["hub_memory_note"]), (["返事は結論から"], True))
-s.hermes.HERMES_HUB, hermes_hub = False, s.HUB
-s.HUB = s.ClaudeBrain()
-s._intake_run(False)
-payload = json.loads(prompts[-1].split("```json\n", 1)[1].rsplit("\n```", 1)[0])
-check("ハブが Hermes でなければ入れない", ("hub_memory" in payload, "hub_memory_note" in payload), (False, False))
-s.hermes.HERMES_HUB, s.HUB = True, hermes_hub
 
 ok = sum(r[1] for r in results)
 for name, passed, got, want in results:
