@@ -911,9 +911,25 @@ def hub_read(pane: str, n: int = 6, full: bool = False, task: str = ""):
                          "messages": [{"role": m["role"], "text": _clip_ends(m["text"], head, tail)} for m in msgs]})
 
 
+def trim_range(msgs: list[dict], cap: int | None = None) -> list[dict]:
+    """吹き出しを cap（既定は TASK_READ_MAX）までに絞る。最初の指示は必ず残し（その前の吹き出しは、収まるときだけ）、残りは新しいほうから。省いた所に印を置く。"""
+    cap = cap or TASK_READ_MAX
+    if len(msgs) <= cap:
+        return msgs
+    def gap(n):
+        return {"role": "gap", "text": f"（ここで {n} 件を略しました）"}
+    i = next((i for i, m in enumerate(msgs) if m.get("this")), None)
+    out, rest = [], msgs
+    if i is not None:
+        out = msgs[:i + 1] if i + 1 < cap else [gap(i), msgs[i]]
+        rest = msgs[i + 1:]
+    room = cap - sum(1 for m in out if m["role"] != "gap")
+    return out + ([gap(len(rest) - room), *rest[len(rest) - room:]] if len(rest) > room else rest)
+
+
 def task_read(a: dict, tid: str, head: int, tail: int) -> JSONResponse:
     """hubctl read --task: この件の範囲（最初の指示を送った位置から今まで）を、発言ごとに区切り、この件の指示に印を付けて返す。
-    吹き出しが多ければ、最初の指示までと新しいほうを残し、あいだを略す（TASK_READ_MAX）。"""
+    吹き出しが多ければ、最初の指示と新しいほうを残し、あいだを略す（trim_range）。"""
     d = TASK_RANGE.get(tid)
     if not d or d["pane"] != a["pane"] or not d.get("text"):
         return JSONResponse({"error": f"この件が見つかりません: {tid}（hubctl tasks で件とセッションを確かめてください）"}, status_code=404)
@@ -926,11 +942,7 @@ def task_read(a: dict, tid: str, head: int, tail: int) -> JSONResponse:
         msgs, _found, _mixed = task_range(Path(d["path"]), chain[0]["offset"] if chain else d["offset"], [e["text"] for e in chain] + [d["text"]])
     except OSError:
         return gone
-    if len(msgs) > TASK_READ_MAX:
-        cut = len(msgs) - TASK_READ_MAX
-        k = next((i + 1 for i, m in enumerate(msgs) if m.get("this")), 0)  # 最初の指示まで（その前の返答も）は残す
-        k = k if k < TASK_READ_MAX else 0
-        msgs = msgs[:k] + [{"role": "gap", "text": f"（ここで {cut} 件を略しました）"}] + msgs[k + cut:]
+    msgs = trim_range(msgs)
     return JSONResponse({"pane": a["pane"], "project": a["cwd"].rsplit("/", 1)[-1], "title": a["title"], "status": a["status"], "task": tid,
                          "messages": [{**m, "text": m["text"] if m["role"] == "gap" else _clip_ends(m["text"], head, tail)} for m in msgs]})
 
@@ -1409,6 +1421,8 @@ def tasks_save():
     rows = sorted(active + ended, key=lambda t: t["started"], reverse=True)
     TASKS.clear()
     TASKS.update({t["id"]: t for t in rows})
+    for old in [k for k in TASK_RANGE if k not in TASKS]:  # 台帳から外れた件は、範囲でも読めなくする
+        TASK_RANGE.pop(old, None)
     try:
         write_json(TASKS_FILE, rows)
     except OSError:
@@ -1425,9 +1439,7 @@ def task_new(d: dict, kind: str) -> str:
     TASKS[tid] = {"id": tid, "kind": kind, "pane": d["pane"], "project": d["project"], "title": d["title"], "text": _clip(d["text"], 300),
                   "started": now, "updated": now, "status": "watching", "note": "", "fp": text_fp(d["text"])}
     tasks_save()
-    TASK_RANGE[tid] = d  # hubctl read --task で、この件の範囲を読むため。台帳から外れた件は、ここからも外す
-    for old in [k for k in TASK_RANGE if k not in TASKS]:
-        TASK_RANGE.pop(old, None)
+    TASK_RANGE[tid] = d  # hubctl read --task で、この件の範囲を読むため。台帳から外れると、tasks_save がここからも外す
     return tid
 
 
