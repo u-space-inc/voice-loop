@@ -31,7 +31,7 @@ router = APIRouter()
 # Hermes を話し相手に足すとき（README「Hermes を話し相手にする」）。鍵を書くと一覧に出る。コンテナの中の API サーバーに送り、
 # 会話は HERMES_SESSION を元にした名前で続く。名前は毎朝 HERMES_RESET_HOUR 時に変わり（前の日の会話は持ち越さない）、画面の「新しくする」でも変わる
 # （hermes_session）。記憶と手順書は Hermes の側に残る。Hermes から本体へは host.docker.internal 経由で、鍵つきの hubctl の口だけ（origin_guard）
-# VL_HUB=hermes にすると、Hermes が Claude Code のハブの代わりにハブになる（読む・送る・答える・立てる・閉じる。守りは本体側で同じ）
+# Hermes がハブ（読む・送る・答える・立てる・閉じる。守りは本体側）。0.22.0 で Claude Code のハブを外し、ハブの頭は Hermes だけになった（VL_HUB は使わない）
 HERMES_URL = os.environ.get("VL_HERMES_URL", "http://127.0.0.1:8642").rstrip("/")
 HERMES_KEY = os.environ.get("VL_HERMES_KEY", "")
 HERMES_SESSION = os.environ.get("VL_HERMES_SESSION", "voice-loop")
@@ -42,7 +42,6 @@ HERMES_RESET_HOUR = int(_reset) if _reset.isdigit() and 0 <= int(_reset) <= 23 e
 HERMES_SESSION_FILE = STATE_DIR / "hermes-session.json"  # いまの会話の印 {"day": "20261026", "token": "a1b2c3"}
 HERMES_PANE = "hermes"  # 画面が話し相手を指す鍵。herdr の pane ではない
 HERMES_DIR = CONFIG_DIR / "hermes"  # Hermes への指示文（hub.md）・道具（hubctl）・鍵。コンテナに /opt/voice-loop として読み取り専用で見せる
-HERMES_HUB = os.environ.get("VL_HUB", "claude").strip().lower() == "hermes"  # ハブの頭が Hermes か
 # Hermes の置き場（ホストの側。コンテナの /opt/data）とコンテナの名前。手順の書き足しを画面で採る・捨てるのに使う
 HERMES_HOME = Path(os.environ.get("VL_HERMES_HOME") or Path.home() / ".hermes").expanduser()
 HERMES_CONTAINER = os.environ.get("VL_HERMES_CONTAINER", "hermes")
@@ -116,9 +115,9 @@ def hermes_session_new(now: datetime | None = None) -> str:
 
 
 def hermes_agent() -> dict:
-    """話し相手の一覧に載せる Hermes の項目。herdr のセッションではないので、pane も key も固定の名前。VL_HUB=hermes ならこれがハブ。"""
-    return {"pane": HERMES_PANE, "key": "hub" if HERMES_HUB else HERMES_PANE, "title": "Hermes", "cwd": "", "kind": "hermes",
-            "session": hermes_session(), "reset_hour": HERMES_RESET_HOUR, "status": "idle", "name": "hermes", "hub": HERMES_HUB, "hermes": True}
+    """話し相手の一覧に載せる Hermes の項目（ハブ）。herdr のセッションではないので、pane も key も固定の名前。"""
+    return {"pane": HERMES_PANE, "key": "hub", "title": "Hermes", "cwd": "", "kind": "hermes",
+            "session": hermes_session(), "reset_hour": HERMES_RESET_HOUR, "status": "idle", "name": "hermes", "hub": True, "hermes": True}
 
 
 # Hermes との会話の記録。Claude Code のセッションが自分で書く記録（JSONL）にあたるものを、本体が状態フォルダに書く。
@@ -173,7 +172,7 @@ def hermes_history(limit: int = 40) -> list[dict]:
     return [{"role": d["role"], "text": d["text"]} for d in records if d["role"] in ("me", "ai", "note", "error") and d["text"]][-limit:]
 
 
-# Hermes がハブのときの、ユーザーの発言と Hermes の返答の台帳。Claude Code のハブでは記録（JSONL）から読むものを、ここでは本体が直接持つ。
+# ユーザーの発言と Hermes（ハブ）の返答の台帳。Hermes は herdr のセッションではないので、本体が直接持つ。
 # 承認に答える・閉じるの守り（「見たあとにユーザーが発言したか」「聞いたときの返答に問いがあるか」）はこの台帳で確かめる。自動通知は載せない。
 # 中身は上の記録にも書き、起動のときに記録から戻す（再起動で消えない。発言の ID は再起動をまたいでも重ならない）。
 # 記録を読めなければ空から始める（守りは「まだ発言が無い」として、新しい発言を待つ側に倒れる）
@@ -312,8 +311,8 @@ HSK_NOTE = {
 
 
 def hsk_on() -> bool:
-    """Hermes がハブで、置き場があるときだけ扱う（無ければ欄を出さない）。"""
-    return HERMES_HUB and HERMES_HOME.is_dir()
+    """Hermes の置き場があるときだけ扱う（無ければ欄を出さない）。"""
+    return HERMES_HOME.is_dir()
 
 
 def hsk_state() -> dict | None:
@@ -773,8 +772,6 @@ def _hsk_tidy(ids: set[str]) -> list[str]:
 
 async def watch_hermes_skills():
     """新しい承認待ちが出たら、どの画面も見えていなければ 1 通知らせる（中身は載せない）。見るのは 1 分おき、ファイルの名前だけ。"""
-    if not HERMES_HUB:
-        return
     while True:
         await asyncio.sleep(60)
         try:
@@ -791,7 +788,7 @@ async def watch_hermes_skills():
 
 
 class Hermes(Brain, Talker):
-    """Hermes。VL_HUB=hermes ならハブ。そうでなくても鍵を書けば、話し相手の 1 人として一覧に出る。"""
+    """Hermes（ハブ）。鍵（VL_HERMES_KEY）を書くと、一覧の先頭に出る。"""
 
     pane = HERMES_PANE
     name = "hermes"
@@ -808,7 +805,7 @@ class Hermes(Brain, Talker):
         return hermes_history()
 
     def sending_text(self) -> str:
-        return ("ハブ" if HERMES_HUB else "Hermes") + "に送りました。考え中…"
+        return "ハブに送りました。考え中…"
 
     async def exchange(self, text: str) -> tuple[str, str, bool]:
         return await hermes_exchange(text)
@@ -816,16 +813,13 @@ class Hermes(Brain, Talker):
     def ask(self, text: str) -> str:
         return ask_hermes(text)
 
-    def doctor_as_talker(self, add):
-        add("Hermes（話し相手）", not hermes_problem(), hermes_problem(), optional=True)
-
     def ensure(self) -> dict:
         """Hermes がハブのときは立てるものが無いので、使える状態かだけ確かめる。"""
         why = hermes_problem()
         return {"ok": False, "reason": "hermes", "detail": why} if why else {"ok": True, "pane": HERMES_PANE, "started": False}
 
     async def boot(self):
-        core.hlog(f"ハブは Hermes（VL_HUB=hermes）: {hermes_problem() or '使えます'}", flush=True)
+        core.hlog(f"ハブは Hermes: {hermes_problem() or '使えます'}", flush=True)
 
     def watchers(self) -> list:
         return [watch_hermes_skills]
@@ -852,7 +846,7 @@ class Hermes(Brain, Talker):
         return hermes_agent() if HERMES_KEY else None
 
     def report_begin(self, headline: str, about: str) -> bool:
-        """Claude Code のハブは自分の記録に残る。Hermes は本体が記録する（画面が無くても、あとで履歴に出る）。"""
+        """Hermes の会話は本体が記録する（画面が無くても、あとで履歴に出る）。"""
         return hermes_log("note", headline, about=about)
 
     async def report_end(self, state: str, reply: str, about: str, saved: bool) -> bool:

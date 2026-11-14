@@ -299,10 +299,10 @@ entered, release, done_order = threading.Event(), threading.Event(), []
 real_scaffold = ctl.scaffold
 
 
-def slow_scaffold(uv):
+def slow_scaffold():
     entered.set()
     release.wait(5)  # startup を、off の確認を通り過ぎた所で待たせる
-    return real_scaffold(uv)
+    return real_scaffold()
 
 
 ctl.scaffold = slow_scaffold

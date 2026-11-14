@@ -36,9 +36,6 @@ DOMAIN = f"gui/{os.getuid()}"
 SEARCH = [HOME / ".local/bin", Path("/opt/homebrew/bin"), Path("/usr/local/bin"), HOME / ".cargo/bin",
           HOME / ".local/share/mise/shims", HOME / ".nix-profile/bin", Path("/opt/local/bin")]  # scripts/ctl.sh と揃える
 VERSION = tomllib.loads((ROOT / "herdr-plugin.toml").read_text())["version"]
-HUB_ALLOW = "Bash(./hubctl:*)"
-HUB_DENY = ["Edit", "Write", "NotebookEdit"]  # ハブは自分でファイルを書かない。hubctl や設定を書き換えさせない
-HUB_GUARD = '"$CLAUDE_PROJECT_DIR"/.claude/hub-guard'
 ACTION = f"herdr plugin action invoke {PLUGIN_ID}."  # 案内に書く命令の頭
 OFF = STATE / "off"  # off の印。on するまで、herdr や Mac を再起動しても上げない。中身は止めたものの記録（JSON）
 PENDING = STATE / "on-pending"  # on で戻しきれなかった部品の記録（JSON）。次の on でもう一度戻す
@@ -79,11 +76,10 @@ def loaded() -> bool:
 
 
 # ---------- 用意 ----------
-def scaffold(uv: str) -> list[str]:
+def scaffold() -> list[str]:
     """設定フォルダに、無いものだけを置く。利用者が書き換えたものは上書きしない。新しく置いたものを返す。"""
     made = []
-    hub = CONFIG / "hub"
-    for d in (CONFIG, STATE, hub, hub / ".claude"):
+    for d in (CONFIG, STATE):
         d.mkdir(parents=True, exist_ok=True)
     env = CONFIG / "config.env"
     if not env.exists():
@@ -94,23 +90,7 @@ def scaffold(uv: str) -> list[str]:
     if not readings.exists():
         shutil.copy(ROOT / "templates/readings.txt", readings)
         made.append(f"読み替えの表 {readings}")
-    for name in ("CLAUDE.md", "speaking.md"):
-        if not (hub / name).exists():
-            shutil.copy(ROOT / "templates/hub" / name, hub / name)
-            made.append(f"ハブへの指示文 {hub / name}")
-    # ハブは自分の作業フォルダから ./hubctl を呼ぶ。本体の場所は入れ直しで変わるので、毎回書き直す
-    wrapper = hub / "hubctl"
-    wrapper.write_text(f'#!/bin/sh\nexec "{uv}" run --quiet --script "{ROOT / "hubctl"}" "$@"\n')
-    wrapper.chmod(0o755)
-    # ハブの Bash を ./hubctl だけに絞る見張り。動かせなかったときは、通さずに止める
-    guard = hub / ".claude/hub-guard"
-    guard.write_text(
-        f'#!/bin/sh\n"{uv}" run --quiet --script "{ROOT / "scripts/hub_guard.py"}"\nrc=$?\n[ "$rc" -eq 0 ] && exit 0\n'
-        f'[ "$rc" -eq 2 ] || echo "ハブの見張りを動かせなかったので、実行を止めました。利用者がプラグインの start をやり直す必要があります。" >&2\nexit 2\n')
-    guard.chmod(0o755)
-    if hub_settings(hub / ".claude/settings.json"):
-        made.append(f"ハブの許可ルール {hub / '.claude/settings.json'}")
-    # Hermes をハブにするときの指示文・道具・鍵。コンテナに /opt/voice-loop として読み取り専用で見せる（README「Hermes をハブにする」）
+    # ハブ（Hermes）への指示文・道具・鍵。コンテナに /opt/voice-loop として読み取り専用で見せる（README「本人の代理（Hermes）」）
     hermes = CONFIG / "hermes"
     hermes.mkdir(parents=True, exist_ok=True)
     if (hermes / "AGENTS.md").exists() and not (hermes / "hub.md").exists():  # 以前の名前。AGENTS.md だと Hermes が会話の始まりに一度だけ読んでしまう
@@ -118,7 +98,7 @@ def scaffold(uv: str) -> list[str]:
     if not (hermes / "hub.md").exists():
         shutil.copy(ROOT / "templates/hermes/hub.md", hermes / "hub.md")
         made.append(f"Hermes への指示文 {hermes / 'hub.md'}")
-    shutil.copy(ROOT / "hubctl", hermes / "hubctl")  # コンテナからは本体のフォルダが見えないので、毎回写す（ハブと同じ道具）
+    shutil.copy(ROOT / "hubctl", hermes / "hubctl")  # コンテナからは本体のフォルダが見えないので、毎回写す
     (hermes / "hubctl").chmod(0o755)
     for stale in ("hubread",):  # 以前の読むだけの道具
         (hermes / stale).unlink(missing_ok=True)
@@ -136,30 +116,6 @@ def _config_value(env: Path, name: str) -> str:
         if line.startswith(name + "="):
             return line.split("=", 1)[1].strip().strip('"').strip("'")
     return ""
-
-
-def hub_settings(path: Path) -> bool:
-    """ハブの作業フォルダに限った Claude Code の設定。新しく作ったら True。
-    ./hubctl は確認なしで通す（毎回聞かれると、声だけでは進めなくなる）。そのかわり、ファイルを書く道具は外し、
-    Bash は見張りを通して ./hubctl だけにする。利用者が足した設定は残し、この3点だけを揃える。"""
-    try:
-        cur, new = json.loads(path.read_text()), False
-    except OSError:
-        cur, new = {}, True
-    except ValueError:  # 壊れていて読めない。作り直す前に控えを取る
-        shutil.copy(path, STATE / f"hub-settings-broken-{time.strftime('%Y%m%d-%H%M%S')}.json")
-        cur, new = {}, True
-    want = json.loads(json.dumps(cur))
-    perms = want.setdefault("permissions", {})
-    for key, items in (("allow", [HUB_ALLOW]), ("deny", HUB_DENY)):
-        have = perms.setdefault(key, [])
-        have.extend(i for i in items if i not in have)
-    pre = want.setdefault("hooks", {}).setdefault("PreToolUse", [])
-    if not any(h.get("command") == HUB_GUARD for entry in pre for h in entry.get("hooks", [])):
-        pre.append({"matcher": "Bash", "hooks": [{"type": "command", "command": HUB_GUARD}]})
-    if want != cur:
-        path.write_text(json.dumps(want, ensure_ascii=False, indent=2) + "\n")
-    return new
 
 
 def wanted_plist(uv: str, herdr: str) -> dict:
@@ -285,7 +241,7 @@ def _start(restart: bool = False, settle: float = 0) -> int:
     if not uv or not herdr:
         print(f"{'uv' if not uv else 'herdr'} が見つかりません。入れてから、もう一度実行してください。")
         return 1
-    made = scaffold(uv)
+    made = scaffold()
     changed = write_plist(uv, herdr)
     bring_up(restart, changed)
     if not wait_server(180):  # 初回は依存の取得で時間がかかる
@@ -304,9 +260,7 @@ def _start(restart: bool = False, settle: float = 0) -> int:
         time.sleep(3)
         doc = api("/api/doctor", timeout=60)
     print_checks(doc)
-    brain = _config_value(CONFIG / "config.env", "VL_HUB").lower()
-    guide = CONFIG / ("hermes/hub.md" if brain == "hermes" else "hub/CLAUDE.md")
-    print(f"\n設定: {CONFIG / 'config.env'}\nハブへの指示文: {guide}（書き換えてかまいません）" + ("\nハブの頭: Hermes（VL_HUB=hermes）" if brain == "hermes" else ""))
+    print(f"\n設定: {CONFIG / 'config.env'}\nハブ（Hermes）への指示文: {CONFIG / 'hermes/hub.md'}（書き換えてかまいません）")
     return 0  # 手でやることが残っていても、起動そのものは済んでいる（herdr の記録を「失敗」にしない）
 
 
@@ -562,7 +516,7 @@ def cmd_status() -> int:
         print(f"ログ: {LOG}")
         return 1
     doc = api("/api/doctor", timeout=60) or {"checks": []}
-    hub = next((c for c in doc["checks"] if c["name"] == "ハブ"), None)
+    hub = next((c for c in doc["checks"] if c["name"] == "ハブ（Hermes）"), None)
     print(f"ハブ: {'います' if hub and hub['ok'] else (hub['todo'] if hub else 'いません')}")
     print(f"語り手: {doc.get('narrator', '不明')}")
     print_urls()
@@ -623,7 +577,7 @@ def cmd_startup() -> int:
         print(f"{'uv' if not uv else 'herdr'} が見つからないので、voice-loop を上げられませんでした。")
         return 1
     # プラグインを入れ直すと本体の場所や版が変わる。plist と、ハブの作業フォルダに置いた呼び出し口を、いまの本体に合わせ直す
-    scaffold(uv)
+    scaffold()
     changed = write_plist(uv, herdr)
     bring_up(restart=False, changed=changed)
     if not wait_server(180 if changed else 60):

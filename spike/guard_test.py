@@ -1,7 +1,8 @@
 """話し相手の取り違え防止の検証（スマホ幅・WebKit）。
 
-選んでいた相手が消えても別のセッションへ自動で切り替わらないこと、ハブが居ないときに画面から立て直せること、
-古い画面から別の相手へ送ろうとするとサーバーが止めることを確かめる。試験用のセッションとハブのタブを作り直す。
+選んでいた相手が消えても別のセッションへ自動で切り替わらないこと、
+古い画面から別の相手へ送ろうとするとサーバーが止めることを確かめる。試験用のセッションを作り直す。
+（ハブが居ないときに「ハブを起動」で立て直す確かめは、Claude Code のハブと一緒に外した（0.22.0）。ハブの Hermes は herdr の外にいる）
 使い方: uv run spike/guard_test.py <残す試験用ペイン> [画像の保存先]
 """
 import json
@@ -98,22 +99,7 @@ with sync_playwright() as p:
     s = state(page)
     check("ハブを選び直せば話せる", s["label"].startswith("ハブ") and s["talk"] and s["want"] == "hub")
 
-    # 5) ハブが居ないとき: 切り替えずに知らせ、「ハブを起動」で立て直せる
-    hub_tab = next(a["tab_id"] for a in herdr("agent", "list")["result"]["agents"] if a["cwd"].endswith("u-space.voice-loop/hub"))
-    herdr("tab", "close", hub_tab)
-    time.sleep(2)
-    refresh(page)
-    s = state(page)
-    check("ハブが居ないと「選び直し」になり、ボタンが出る", s["value"] == "" and not s["talk"] and s["hubBtn"] and "ハブが起動していません" in s["log"], s["log"][:30])
-    page.screenshot(path=f"{OUT}/guard_nohub.png")
-    t0 = time.time()
-    page.click("#hubStart")
-    page.wait_for_function("(document.getElementById('agent').selectedOptions[0] || {textContent: ''}).textContent.startsWith('ハブ')", timeout=150000)
-    page.wait_for_timeout(500)
-    s = state(page)
-    check("「ハブを起動」でハブが立ち、選ばれて話せる", s["talk"] and not s["hubBtn"], f"{time.time() - t0:.0f}秒")
-
-    # 6) 古い画面が別の相手へ送ろうとしたら、サーバーが止める
+    # 5) 古い画面が別の相手へ送ろうとしたら、サーバーが止める
     before = json.loads(urllib.request.urlopen(f"{BASE}/api/history?pane={KEEP_PANE}").read())["messages"]
     r = page.evaluate("""(pane) => new Promise(res => { const w = new WebSocket('ws://' + location.host + '/ws');
         w.onopen = () => w.send(JSON.stringify({type: 'text', text: '届いてはいけない指示', pane, key: 'stale-key', speaker: 888753760}));

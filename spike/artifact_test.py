@@ -4,8 +4,8 @@
 見ること: そのセッションのフォルダの中の画像・動画は返す（相対・絶対・空白や日本語の名前・フォルダの中を指す symlink）。型は拡張子で決め、
 nosniff と sandbox を付ける（中身が HTML の .png も画像として返す）。断るもの: フォルダの外（../・絶対パス・外を指す symlink とフォルダの symlink）、
 隠しフォルダと隠しファイル（symlink で指しても・../ で回り込んでも）、画像と動画のほかの拡張子（SVG・HTML・.txt・.env）、フォルダ、無いファイル、
-空や NUL の入った場所、無いセッション、ホームか / をフォルダにしたセッション。ハブ（Claude Code と Hermes）の会話では、いまあるセッションの
-フォルダの中を指す絶対パスか「フォルダ名/場所」だけ（フォルダ名で始まらない相対・同じフォルダ名が二つ・ハブ自身のフォルダは断る。
+空や NUL の入った場所、無いセッション、ホームか / をフォルダにしたセッション。ハブ（Hermes）の会話では、いまあるセッションの
+フォルダの中を指す絶対パスか「フォルダ名/場所」だけ（フォルダ名で始まらない相対・同じフォルダ名が二つ・セッションの無いフォルダ名は断る。
 フォルダ名は symlink をたどる前の名前で照らし、その名前のフォルダの中だけを見る）。Sec-Fetch-Site が cross-site・same-site なら断り、same-origin・none・
 無しは通す。コンテナからは断る。HEAD と Range（動画の早送り）。画面（/ と /static/index.html）に CSP（画像と動画は自分からだけ）と、
 ほかのページの枠に入れさせないヘッダー（再検証の 304 と複数範囲の 206 にも）。隠しフォルダの中で動くセッションは、そのフォルダから先で見る。
@@ -17,7 +17,7 @@ import tempfile
 from pathlib import Path
 
 TMP = Path(tempfile.mkdtemp()).resolve()
-os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HUB="hermes", VL_HERMES_KEY="k1", VL_HERMES_URL="http://127.0.0.1:9",
+os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HERMES_KEY="k1", VL_HERMES_URL="http://127.0.0.1:9",
                   VL_HERMES_HOME=f"{TMP}/hermes")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -44,7 +44,7 @@ for f in (PROJ / "out" / "a.png", PROJ / "out" / "検証 1.png", PROJ / ".git" /
 (PROJ / "out" / "dirlink").symlink_to(OUTSIDE, target_is_directory=True)
 
 A = lambda pane, cwd, hub=False: {"pane": pane, "title": "t", "cwd": str(cwd), "kind": "claude", "session": pane, "status": "idle", "name": "", "hub": hub}
-AGENTS = [A("w1:p1", PROJ), A("w2:p1", OTHER), A("w3:p1", Path.home()), A("w4:p1", "/"), A("w9:p1", HUBD, hub=True)]
+AGENTS = [A("w1:p1", PROJ), A("w2:p1", OTHER), A("w3:p1", Path.home()), A("w4:p1", "/")]
 s.list_agents = lambda: [dict(a) for a in AGENTS]
 c = TestClient(s.app, base_url="http://127.0.0.1:8790")  # with を使わない（常駐の見張りなどを動かさない）
 results = []
@@ -101,8 +101,6 @@ REFUSE = [
     ("w8:p1", "out/a.png", "そのセッションがありません", "無いセッション"),
     ("w3:p1", "x.png", "見てよいフォルダがありません", "ホームをフォルダにしたセッション"),
     ("w4:p1", "x.png", "見てよいフォルダがありません", "/ をフォルダにしたセッション"),
-    ("w9:p1", "out/a.png", "ハブの会話では、絶対パスか「フォルダ名/場所」だけを見ます（そのフォルダ名のセッションが無いか、二つ以上あります）", "Claude Code のハブの会話で、フォルダ名で始まらない相対の場所"),
-    ("w9:p1", str(HUBD / "h.png"), OUT, "ハブ自身のフォルダ"),
     (s.hermes.HERMES_PANE, "out/a.png", "ハブの会話では、絶対パスか「フォルダ名/場所」だけを見ます（そのフォルダ名のセッションが無いか、二つ以上あります）", "Hermes の会話で、フォルダ名で始まらない相対の場所"),
     (s.hermes.HERMES_PANE, "proj", "ハブの会話では、絶対パスか「フォルダ名/場所」だけを見ます（そのフォルダ名のセッションが無いか、二つ以上あります）", "Hermes の会話で、フォルダ名だけ（場所が無い）"),
     (s.hermes.HERMES_PANE, "proj/.git/x.png", HIDDEN, "Hermes の会話で、フォルダ名からの隠しフォルダ"),
@@ -110,16 +108,15 @@ REFUSE = [
     (s.hermes.HERMES_PANE, "proj/../other/b.png", OUT, "Hermes の会話で、フォルダ名から ../ で別のセッションのフォルダへ（その名前のフォルダの中だけを見る）"),
     (s.hermes.HERMES_PANE, "proj//" + str(OTHER / "b.png"), "ファイルがありません", "Hermes の会話で、フォルダ名のあとに絶対パス（そのフォルダからの場所として読む）"),
     (s.hermes.HERMES_PANE, "proj/out/link_out.png", OUT, "Hermes の会話で、フォルダ名から symlink で外へ"),
-    (s.hermes.HERMES_PANE, "hubdir/h.png", "ハブの会話では、絶対パスか「フォルダ名/場所」だけを見ます（そのフォルダ名のセッションが無いか、二つ以上あります）", "Hermes の会話で、ハブ自身のフォルダ名"),
+    (s.hermes.HERMES_PANE, "hubdir/h.png", "ハブの会話では、絶対パスか「フォルダ名/場所」だけを見ます（そのフォルダ名のセッションが無いか、二つ以上あります）", "Hermes の会話で、セッションの無いフォルダ名（どのセッションのフォルダでもない場所）"),
     (s.hermes.HERMES_PANE, str(PROJ / ".git" / "x.png"), HIDDEN, "Hermes の会話で、セッションの隠しフォルダ"),
     (s.hermes.HERMES_PANE, str(OUTSIDE / "secret.png"), OUT, "Hermes の会話で、どのセッションのフォルダでもない場所"),
 ]
 for pane, path, why, what in REFUSE:
     r = get(pane, path)
     check(f"断る: {what}", (r.status_code, reason(r)), (404, why))
-check("ハブ（Claude Code）の会話では、セッションのフォルダの中を指す絶対パスを返す", get("w9:p1", str(PROJ / "out" / "a.png")).status_code, 200)
 check("ハブ（Hermes）の会話では、セッションのフォルダの中を指す絶対パスを返す", get(s.hermes.HERMES_PANE, str(OTHER / "b.png")).status_code, 200)
-check("ハブの会話では「フォルダ名/フォルダからの場所」も返す（Hermes・Claude Code）", (get(s.hermes.HERMES_PANE, "proj/out/a.png").status_code, get("w9:p1", "other/b.png").status_code), (200, 200))
+check("ハブの会話では「フォルダ名/フォルダからの場所」も返す", (get(s.hermes.HERMES_PANE, "proj/out/a.png").status_code, get(s.hermes.HERMES_PANE, "other/b.png").status_code), (200, 200))
 
 for site, want in (("cross-site", 403), ("same-site", 403), ("same-origin", 200), ("none", 200)):
     check(f"Sec-Fetch-Site が {site} なら {want}", get("w1:p1", "out/a.png", **{"sec-fetch-site": site}).status_code, want)

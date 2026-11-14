@@ -17,7 +17,7 @@ from pathlib import Path
 
 TMP = tempfile.mkdtemp()
 KEY = secrets.token_hex(16)
-os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HUB="claude", VL_HERMES_KEY=KEY)
+os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HERMES_KEY=KEY)
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import urllib.request  # noqa: E402

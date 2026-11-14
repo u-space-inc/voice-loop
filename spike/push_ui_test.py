@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 TMP = tempfile.mkdtemp()
-os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HUB="claude")
+os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import requests  # noqa: E402
@@ -52,8 +52,7 @@ async def nothing(*a, **k):
 s.boot_ensure_hub = nothing
 s.keep_gateway_token = nothing
 s.watch_blocked = nothing
-HUB = {"pane": "w1:p1", "cwd": str(s.HUB_DIR), "kind": "claude", "session": "h", "status": "idle", "title": "hub", "name": "", "hub": True}
-s.list_agents = lambda: [HUB]
+s.list_agents = lambda: [{"pane": "w2:p1", "cwd": "/x/blog", "kind": "claude", "session": "s2", "status": "idle", "title": "記事", "name": "", "hub": False}]
 s.jsonl_path = lambda a: None
 now = time.time()
 s.TASKS.update({
