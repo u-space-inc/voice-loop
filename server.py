@@ -897,16 +897,42 @@ def hub_sessions():
 
 
 @app.get("/api/hub/read")
-def hub_read(pane: str, n: int = 6, full: bool = False):
+def hub_read(pane: str, n: int = 6, full: bool = False, task: str = ""):
     a = _worker(pane)
     if not a:
         return JSONResponse({"error": f"セッションが見つかりません: {pane}"}, status_code=404)
-    path = jsonl_path(a)
-    msgs = history(path, limit=n) if path and path.exists() else []
     # 1ターンの文（途中経過も）は1つにまとめるので、長く働いたターンでは結論が末尾にある。頭だけ残すと結論が落ちるので、頭と末尾を残す
     head, tail = (2000, 6000) if full else (300, 1200)
+    if task:
+        return task_read(a, task, head, tail)
+    path = jsonl_path(a)
+    msgs = history(path, limit=n) if path and path.exists() else []
     return JSONResponse({"pane": pane, "project": a["cwd"].rsplit("/", 1)[-1], "title": a["title"], "status": a["status"],
                          "messages": [{"role": m["role"], "text": _clip_ends(m["text"], head, tail)} for m in msgs]})
+
+
+def task_read(a: dict, tid: str, head: int, tail: int) -> JSONResponse:
+    """hubctl read --task: この件の範囲（最初の指示を送った位置から今まで）を、発言ごとに区切り、この件の指示に印を付けて返す。
+    吹き出しが多ければ、最初の指示までと新しいほうを残し、あいだを略す（TASK_READ_MAX）。"""
+    d = TASK_RANGE.get(tid)
+    if not d or d["pane"] != a["pane"] or not d.get("text"):
+        return JSONResponse({"error": f"この件が見つかりません: {tid}（hubctl tasks で件とセッションを確かめてください）"}, status_code=404)
+    chain = slack_chain(d)
+    gone = JSONResponse({"error": "この件を送ったときのセッションの記録を読めません（セッションが作り直された・記録がまだ無い）。"
+                                  f"いまのセッションの直近のやり取りは hubctl read {a['pane']} で読めます"}, status_code=409)
+    if not d.get("path") or any(e.get("session") != d.get("session") for e in chain) or not same_session(d):
+        return gone
+    try:
+        msgs, _found, _mixed = task_range(Path(d["path"]), chain[0]["offset"] if chain else d["offset"], [e["text"] for e in chain] + [d["text"]])
+    except OSError:
+        return gone
+    if len(msgs) > TASK_READ_MAX:
+        cut = len(msgs) - TASK_READ_MAX
+        k = next((i + 1 for i, m in enumerate(msgs) if m.get("this")), 0)  # 最初の指示まで（その前の返答も）は残す
+        k = k if k < TASK_READ_MAX else 0
+        msgs = msgs[:k] + [{"role": "gap", "text": f"（ここで {cut} 件を略しました）"}] + msgs[k + cut:]
+    return JSONResponse({"pane": a["pane"], "project": a["cwd"].rsplit("/", 1)[-1], "title": a["title"], "status": a["status"], "task": tid,
+                         "messages": [{**m, "text": m["text"] if m["role"] == "gap" else _clip_ends(m["text"], head, tail)} for m in msgs]})
 
 
 @app.get("/api/hub/screen")
@@ -1370,6 +1396,8 @@ TASK_ACTIVE = {"watching", "background", "blocked"}  # 見張りが続いてい�
 TASK_FIELDS = {"id": str, "kind": str, "pane": str, "project": str, "title": str, "text": str, "started": (int, float),
                "updated": (int, float), "status": str, "note": str}
 TASKS: dict[str, dict] = {}
+TASK_RANGE: dict[str, dict] = {}  # 件 → 見張りの d（送った位置・記録・まとめた依頼）。本体の中だけ（台帳のファイルには書かない）
+TASK_READ_MAX = 12  # hubctl read --task で見せる吹き出しの上限（最初の指示までと、新しいほうから）
 
 
 def tasks_save():
@@ -1397,6 +1425,9 @@ def task_new(d: dict, kind: str) -> str:
     TASKS[tid] = {"id": tid, "kind": kind, "pane": d["pane"], "project": d["project"], "title": d["title"], "text": _clip(d["text"], 300),
                   "started": now, "updated": now, "status": "watching", "note": "", "fp": text_fp(d["text"])}
     tasks_save()
+    TASK_RANGE[tid] = d  # hubctl read --task で、この件の範囲を読むため。台帳から外れた件は、ここからも外す
+    for old in [k for k in TASK_RANGE if k not in TASKS]:
+        TASK_RANGE.pop(old, None)
     return tid
 
 
@@ -1689,11 +1720,15 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
     global REPORTING, REPORT_SEQ
     label = _clip(f"{d['project']}｜{d['title']}", 80)
     hub = await HUB.report_target()
-    n, each = 1, ""
-    if kind == "done" and slack_chain(d):  # まとめた件は、最初の指示から今までを読ませ、どの指示の結果かが分かるように報告させる
-        n = await asyncio.to_thread(chain_read_n, d)
-        each = "どの指示の結果かが分かるように、"
-    headline, todo = {"done": ("が完了しました", f"hubctl read {d['pane']} -n {n} --full で結果を確かめ、{each}判断に要る材料（選択肢・おすすめと理由・数字・期限・うまくいかなかったこと）は略さずに、"),
+    # この件の範囲（指示を送った位置から今まで）を読ませ、この指示への答えを、間にあったほかの発言への答えと分けて報告させる。
+    # 範囲を持たない件（承認・質問への答え・送ったときのセッションが分からない件）は、今までどおり最後の吹き出しを読ませる
+    tid = d.get("task")
+    by_task = bool(d["text"] and d.get("session") and d.get("path")) and (tid or "") in TASK_RANGE
+    each = "どの指示の結果かが分かるように、" if slack_chain(d) else ""
+    done = (f"hubctl read {d['pane']} --task {tid} --full で、この指示を送ったところから今までを読み、{each}この指示への答えを結論から、"
+            "判断に要る材料（選択肢・おすすめと理由・数字・期限・うまくいかなかったこと）は略さずに、間にあったほかの発言への答えは混ぜずに（あれば最後に一言で分けて）、"
+            if by_task else f"hubctl read {d['pane']} -n 1 --full で結果を確かめ、判断に要る材料（選択肢・おすすめと理由・数字・期限・うまくいかなかったこと）は略さずに、")
+    headline, todo = {"done": ("が完了しました", done),
                       "more": ("に続きの返答がありました", f"先ほど報告した件の続きです。hubctl read {d['pane']} -n 1 --full で確かめ、判断に要る材料は略さずに、"),
                       "background": ("は裏で作業を続けています", f"しばらくたっても結果が出ていません。hubctl read {d['pane']} で様子を確かめ、まだ動いていることを一言で、"),
                       "blocked": ("が承認・入力待ちで止まっています", f"hubctl screen {d['pane']} で何を聞かれているか確かめ、"),
@@ -1769,8 +1804,9 @@ def _said(content) -> str:
 def user_side(row: dict):
     """記録の 1 行が利用者の側の行なら、その文。違えば None。形が読めなければ _UNREADABLE。
     作業中に届いた発言（端末に打った文・herdr から送った指示・別のエージェントからの発言）は、user の行でなく、
-    queued_command の付け足し（attachment）として残る。裏の作業の完了の知らせ（task-notification）は、Claude Code が出すものなので数えない。"""
-    if row.get("isSidechain"):
+    queued_command の付け足し（attachment）として残る。裏の作業の完了の知らせ（task-notification）は、Claude Code が出すものなので数えない。
+    サブエージェントの行（isSidechain）と、Claude Code が足す行（isMeta・会話の要約の isCompactSummary）も数えない。どれも記録の印で、文の形では見ない。"""
+    if row.get("isSidechain") or row.get("isMeta") or row.get("isCompactSummary"):  # Claude Code が立てる印（打ち込んだ文では立たない）
         return None
     kind = row.get("type")
     if kind == "user":
@@ -1792,68 +1828,49 @@ def user_side(row: dict):
     return None
 
 
-def scan_task(path: Path, offset: int, texts: list[str]) -> tuple[bool, bool]:
-    """記録の offset から、(送った指示の並び（全文が一致するもの）が、その順に最初の利用者の側の行か, そのあとに利用者の側の行が 1 つも無いか)。
-    texts は、同じセッションに続けて送ってまとめた指示（古い順。1 件だけのことが多い）。
-    画面や履歴で使う iter_events は、<system-reminder>・<task-notification>・<bash-input> などで始まる発言と、作業中に届いた発言（queued_command）を
-    飛ばすが、ここでは飛ばさない（端末に直接打たれた文が、その形で始まっていても、作業中に打たれても見落とさない）。
-    道具の結果（tool_result だけの行）と、サブエージェントの行（isSidechain）と、裏の作業の完了の知らせ（queued_command の task-notification）だけは数えない。
-    最初の指示は、新しいターンの始まり（user の行）でなければならない（作業中に届いた形だと、前の別件のターンの返答と分けられない）。
-    読めない行（壊れた・書きかけ）・形の違う行があれば (False, False)。"""
-    want = [" ".join(t.split()) for t in texts]  # 送った指示の全文（先頭が同じ別の指示と取り違えない）
-    seen = 0
+def task_range(path: Path, offset: int, texts: list[str]) -> tuple[list[dict], bool, bool]:
+    """この件の範囲（最初の指示を送った位置 offset から今まで）を、発言ごとに区切る。(吹き出し, found, mixed) を返す。
+    texts は、この件の指示（同じセッションに続けて送ってまとめた件は、古い順に全部。1 件だけのことが多い）。
+    吹き出しは {"role": "me", "this": この件の指示か, "queued": 作業中に届いたか, "text"} か、{"role": "ai", "text"}。
+    返答は、ターンの途中でも、発言の位置で区切る（作業中に届いた指示は、道具の結果のあと・次の返答の前に記録される）。
+    found: この件の指示が全部、その順に記録にある（全文が一致するもの。先頭が同じ別の指示と取り違えない）。
+    mixed: この件の指示と返答のほかに、利用者の側の行がある（端末・画面・声から直接の発言・ほかの件の指示・ほかのセッションやエージェントからの知らせ・
+           読めない行）か、最初の指示が作業中に届いた（別の作業の返答と同じターンに続く）。
+    数えないのは、道具の結果・サブエージェントの行・裏の作業の完了の知らせ・Claude Code が足す行（user_side を見る）。
+    画面の履歴（iter_events）と違い、<system-reminder>・<bash-input> などで始まる発言も飛ばさない（端末に打たれた文が、その形で始まっていても見落とさない）。"""
+    want = [" ".join(t.split()) for t in texts]
+    msgs: list[dict] = []
+    seen, mixed = 0, False
     for line in read_lines(path, offset=offset):
         try:
             row = json.loads(line)
         except json.JSONDecodeError:
-            return False, False  # 読めない行があれば、そのあとの発言の有無を確かめられない
-        if not isinstance(row, dict):
-            return False, False
-        said = user_side(row)
+            row = None  # 壊れた・書きかけの行
+        said = user_side(row) if isinstance(row, dict) else _UNREADABLE
         if said is None:
+            if row.get("type") == "assistant" and not (row.get("isSidechain") or row.get("isMeta")):
+                msg = row.get("message")
+                content = msg.get("content") if isinstance(msg, dict) else None
+                parts = [b["text"].strip() for b in content if isinstance(b, dict) and b.get("type") == "text"
+                         and isinstance(b.get("text"), str) and b["text"].strip()] if isinstance(content, list) else []
+                if parts and msgs and msgs[-1]["role"] == "ai":
+                    msgs[-1]["text"] += "\n\n" + "\n\n".join(parts)
+                elif parts:
+                    msgs.append({"role": "ai", "text": "\n\n".join(parts)})
             continue
         if said is _UNREADABLE:
-            return False, False
-        if seen == len(want):
-            return True, False  # 送った指示のあとの、利用者の側の行（発言・知らせ・メタの行・作業中に届いた発言も）
-        if " ".join(said.split()) != want[seen]:
-            return False, False  # 送った指示の並びの途中か前に、別の利用者の側の行がある（offset は最初の指示を送る直前なので、ふつうは無い）
-        if seen == 0 and row.get("type") != "user":
-            # 最初の指示が、作業中に届いた形（前のターンの途中に混ざった）。ハブが読む吹き出しは前の指示のターンとまとまり、
-            # 別件の返答も入るので、この件の結果だけとは言えない。2 件目からは、最初の指示のターンの中に届いてよい
-            return False, False
-        seen += 1
-    return seen == len(want), seen == len(want)
-
-
-def only_these(path: Path, offset: int, texts: list[str]) -> bool:
-    """Slack に結果の本文を載せてよいか（厳しめ）。記録で、送った指示がその順に見つかり、そのあとに利用者の側の行が 1 つも無いときだけ True。"""
-    found, clean = scan_task(path, offset, texts)
-    return found and clean
-
-
-def only_this_task(path: Path, offset: int, text: str) -> bool:
-    return only_these(path, offset, [text])
-
-
-def chain_read_n(d: dict) -> int:
-    """まとめた件の報告で、ハブに読ませる吹き出しの数（hubctl read の -n）。最初の指示から今までの分（画面の履歴と同じ数え方。上限 12）。
-    作業中に届いた指示は、前の指示のターンの中で答えられ、吹き出しが分かれないことが多い。数えられなければ、件数の 2 倍。"""
-    chain = slack_chain(d)
-    fallback = min(12, 2 * (len(chain) + 1))
-    path = d.get("path")
-    if not (chain and path) or any(e.get("session") != d.get("session") for e in chain):
-        return fallback
-    try:
-        n, last = 0, None
-        for kind, _text in iter_events(read_lines(Path(path), offset=chain[0]["offset"])):
-            if kind == "tool" or (kind == "assistant" and last == "ai"):
-                continue
-            last = "ai" if kind == "assistant" else "me"
-            n += 1
-    except OSError:
-        return fallback
-    return max(1, min(12, n))
+            mixed = True
+            msgs.append({"role": "me", "this": False, "queued": False, "text": "（読めない行）"})
+            continue
+        queued = row.get("type") == "attachment"
+        this = seen < len(want) and " ".join(said.split()) == want[seen]
+        if this:
+            mixed = mixed or (seen == 0 and queued)  # 2 件目からは、最初の指示のターンの中に届いてよい
+            seen += 1
+        else:
+            mixed = True
+        msgs.append({"role": "me", "this": this, "queued": queued, "text": said.strip() or "（空の発言）"})
+    return msgs, seen == len(want), mixed
 
 
 def same_session(d: dict) -> bool:
@@ -1907,10 +1924,13 @@ def post_slack(dest: tuple[str, str], text: str, label: str):
 def relay_slack(d: dict, label: str, headline: str, reply: str, fallback: str = slack_report.NO_REPORT):
     """Slack から頼まれた件なら、報告を同じスレッドにも送る（裏で。声と画面の報告を遅らせない）。送り先は slack_report.origin が決めた DM だけ。
     同じセッションに続けて頼んでまとめた件（chain）は、一番新しい Slack のスレッドに 1 回だけ送り、まとめた依頼を並べる。
-    ハブの報告（reply）を載せるのは、それがこの件（まとめた依頼）の結果だと言えるときだけ。言えなければ定型文にする:
-    - 報告を待つ間に、同じセッションへ次の指示が送られようとした（SENT_GEN。送る前に進む・増えるだけ）か、送る途中でほかの指示と重なった（overlap）
-    - まとめた依頼の間に、画面・声から直接の発言があった（SENT_GEN が続いていない）か、まとめた依頼が別のセッションに送られた
-    - セッションの記録で、送った指示の並びのあとか途中に別の発言がある（端末に直接打たれたもの・作業中に届いたものも）か、記録で指示を見つけられない"""
+    ハブの報告（reply）は、ハブが hubctl read --task でこの件の範囲を読み分けて書いたもの。本文を載せないのは、この件の記録を読めないときだけ
+    （送ったときと別のセッションになった・記録が無い・読めない・送った指示が記録に見つからない）。そのときは定型文にする。
+    この件の範囲に、ほかのやり取りが混ざったら、本文の頭に注意の 1 行を付ける（ハブが別の件の答えと取り違えていたら、あなたが気づけるように）:
+    - セッションの記録で、この件の指示のほかに利用者の側の行がある（端末・画面・声から直接の発言・ほかの件の指示・ほかのセッションやエージェントからの知らせ・読めない行）か、
+      最初の指示が作業中に届いた（別の作業の返答と同じターンに続く）
+    - 報告を待つ間に、同じセッションへ次の指示が送られようとした（SENT_GEN。送る前に進む・増えるだけ）か、送る途中でほかの指示と重なった（overlap）か、
+      まとめた依頼の間に、画面・声から直接の発言があった（SENT_GEN が続いていない）"""
     dest = chain_dest(d)
     d["_slack_pending"] = False
     if not dest:
@@ -1918,26 +1938,27 @@ def relay_slack(d: dict, label: str, headline: str, reply: str, fallback: str = 
     chain = slack_chain(d)
     asks = [(e["text"], slack_report.HERE if e.get("slack") == dest else slack_report.OTHER_THREAD if e.get("slack") else slack_report.FROM_SCREEN)
             for e in [*chain, d]] if chain else ()
-    same = SENT_GEN.get(d["pane"]) == d.get("sent_gen") and not d.get("overlap")
+    quiet = SENT_GEN.get(d["pane"]) == d.get("sent_gen") and not d.get("overlap")  # 報告を待つ間に、同じセッションへほかの送りが無い
     if chain:
         gens = [e.get("sent_gen") for e in chain] + [d.get("sent_gen")]
-        same = (same and not any(e.get("overlap") or e.get("session") != d.get("session") for e in chain)
-                and all(isinstance(g, int) for g in gens) and gens == list(range(gens[0], gens[0] + len(gens))))
+        quiet = (quiet and not any(e.get("overlap") for e in chain)
+                 and all(isinstance(g, int) for g in gens) and gens == list(range(gens[0], gens[0] + len(gens))))
+    one_session = not any(e.get("session") != d.get("session") for e in chain)  # まとめた依頼が同じセッションの記録にある（まとめるときにも確かめている）
+
     async def go():
         text = slack_report.text_for(label, headline, "", fallback, asks)
         if reply.strip():
-            text = slack_report.text_for(label, headline, "", slack_report.REPLACED, asks)
-            if same:
-                text = slack_report.text_for(label, headline, "", slack_report.UNVERIFIED, asks)
-                path = d.get("path")
-                try:
-                    first = chain[0]["offset"] if chain else d["offset"]
-                    texts = [e["text"] for e in chain] + [d["text"]]
-                    if (path and await asyncio.to_thread(same_session, d)
-                            and await asyncio.to_thread(only_these, Path(path), first, texts)):
-                        text = slack_report.text_for(label, headline, reply, asks=asks)
-                except Exception:  # 読めない記録（消えた・読めない）は、本文を載せずに定型文を送る
-                    hlog(f"Slack への報告: 記録を読めません（{label}）", flush=True)
+            text = slack_report.text_for(label, headline, "", slack_report.NOT_FOUND, asks)
+            path = d.get("path")
+            try:
+                first = chain[0]["offset"] if chain else d["offset"]
+                texts = [e["text"] for e in chain] + [d["text"]]
+                if path and one_session and await asyncio.to_thread(same_session, d):
+                    _msgs, found, mixed = await asyncio.to_thread(task_range, Path(path), first, texts)
+                    if found:
+                        text = slack_report.text_for(label, headline, reply, asks=asks, note=slack_report.MIXED if mixed or not quiet else "")
+            except Exception:  # 読めない記録（消えた・読めない）は、本文を載せずに定型文を送る
+                hlog(f"Slack への報告: 記録を読めません（{label}）", flush=True)
         if d.get("_merged_into"):  # 次の件にまとめた件は、自分では送らない（途中経過も。報告は次の件がまとめてする）。送る直前に見る（記録を確かめる間にまとめられることもある）
             return
         r = await asyncio.to_thread(slack_report.post, dest, text)

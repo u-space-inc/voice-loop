@@ -1,11 +1,11 @@
-"""同じセッションに続けて頼んだ件を、まとめて 1 つの報告にする（server.py の merge_open・chain_dest・relay_slack・scan_task、scripts/slack_report.py）の試験。
+"""同じセッションに続けて頼んだ件を、まとめて 1 つの報告にする（server.py の merge_open・chain_dest・relay_slack・task_range、scripts/slack_report.py）の試験。
 本物の Slack・Hermes・docker・herdr には触れない（Slack への送りと herdr とハブは差し替え）。
 確かめること:
 - 前の件の完了を報告する前に、同じセッションへ次の件を送ったら、次の件にまとめる。報告は 1 回、一番新しい Slack のスレッドに、まとめた依頼を並べて送る
 - 行き先のスレッドが変わるときは、前のスレッドに「次の依頼のスレッドで報告します」と一言送る。Slack と voice-loop が混ざっても、Slack のスレッドに届く
 - 声と画面だけの件は、今までどおり（まとめない・ハブへの知らせも変えない）
-- 本文を載せるのは、記録で、まとめた指示がその順に見つかり、そのあとに別の発言が無いときだけ。作業中に届いた発言（queued_command）も数える。裏の作業の完了の知らせは数えない
-- 相手の位置: 途中に端末から別の発言・画面からの直接の発言・重なった送り・別のセッションがあれば本文を載せない。完了の報告を始めた件・見張りを終えた件にはまとめない。まとめと報告が入れ違わない
+- 本文を載せるのは、記録で、まとめた指示がその順に見つかるとき。ほかの発言が混ざったら（作業中に届いた発言 queued_command も数える。裏の作業の完了の知らせは数えない）、注意の 1 行を付ける
+- 相手の位置: 途中に端末から別の発言・画面からの直接の発言・重なった送りがあれば注意を付ける。完了の報告を始めた件・見張りを終えた件・別のセッションにはまとめない。まとめと報告が入れ違わない
 - 送り先は、slack_report.origin が決めた DM だけ（偽った送り元は、まとめても Slack の届け先にならない）
 使い方: uv run spike/slack_merge_test.py"""
 import asyncio
@@ -79,37 +79,49 @@ def append(p: Path, *rows):
         f.write("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
 
 
-check("相手の位置: 最初の指示が作業中に届いた形（前のターンに混ざった）なら、ハブが読む吹き出しに別件の返事が入るので、本文を載せない（1 件だけ・まとめた件とも）",
-      (s.only_this_task(log_of(Q("内訳を出して"), TOOL(), AI("出しました")), 0, "内訳を出して"),
-       s.only_these(log_of(Q("内訳を出して"), Q("期限も調べて"), AI("両方")), 0, ["内訳を出して", "期限も調べて"])), (False, False))
+def scan(p, texts, offset=0):
+    """(この件の指示が全部その順にあるか, ほかのやり取りが混ざったか)"""
+    _msgs, found, mixed = s.task_range(p, offset, texts)
+    return found, mixed
+
+
+check("記録: 最初の指示が作業中に届いた形（前のターンに混ざった）なら、見つかっても混ざった扱い（1 件だけ・まとめた件とも）",
+      (scan(log_of(Q("内訳を出して"), TOOL(), AI("出しました")), ["内訳を出して"]),
+       scan(log_of(Q("内訳を出して"), Q("期限も調べて"), AI("両方")), ["内訳を出して", "期限も調べて"])), ((True, True), (True, True)))
 _x = log_of(U("前の別件"), AI("前からの返事"))
 _off = _x.stat().st_size
-append(_x, Q("内訳を出して"), Q("期限も調べて"), AI("AとBを処理しました"))
-check("相手の位置: 進行中の別件のターンに 2 件とも作業中に届いても、本文を載せない（別件の返事と分けられない）",
-      s.only_these(_x, _off, ["内訳を出して", "期限も調べて"]), False)
-check("相手の位置: この件の指示のあと、作業中に端末から打たれた発言があれば、本文を載せない",
-      s.only_this_task(log_of(U("内訳を出して"), Q("別の案件のことをして"), AI("両方やりました")), 0, "内訳を出して"), False)
-check("相手の位置: 作業中に別のエージェントから届いた発言も、別の発言として数える",
-      s.only_this_task(log_of(U("内訳を出して"), Q("相手からの依頼", kind="peer"), AI("x")), 0, "内訳を出して"), False)
+append(_x, AI("前の別件の続き"), Q("内訳を出して"), Q("期限も調べて"), AI("AとBを処理しました"))
+_m, _f, _mx = s.task_range(_x, _off, ["内訳を出して", "期限も調べて"])
+check("記録: 進行中の別件のターンに届いた指示は、その位置で返答を区切る（前の別件の続き・この件の指示 2 つ・そのあとの返答）",
+      ([(m["role"], m.get("this"), m.get("queued"), m["text"]) for m in _m], _f, _mx),
+      ([("ai", None, None, "前の別件の続き"), ("me", True, True, "内訳を出して"), ("me", True, True, "期限も調べて"), ("ai", None, None, "AとBを処理しました")], True, True))
+check("相手の位置: この件の指示のあと、作業中に端末から打たれた発言があれば、混ざった扱い（ほかの発言として見せる）",
+      (scan(log_of(U("内訳を出して"), Q("別の案件のことをして"), AI("両方やりました")), ["内訳を出して"]),
+       [(m.get("this"), m.get("queued")) for m in s.task_range(log_of(U("内訳を出して"), Q("別の案件のことをして"), AI("x")), 0, ["内訳を出して"])[0] if m["role"] == "me"]),
+      ((True, True), [(True, False), (False, True)]))
+check("相手の位置: 作業中に別のエージェントから届いた発言も、ほかの発言として数える",
+      scan(log_of(U("内訳を出して"), Q("相手からの依頼", kind="peer"), AI("x")), ["内訳を出して"]), (True, True))
 check("記録: 裏の作業の完了の知らせ（task-notification の付け足し）は数えない",
-      [s.only_this_task(log_of(U("内訳を出して"), q, AI("x")), 0, "内訳を出して")
+      [scan(log_of(U("内訳を出して"), q, AI("x")), ["内訳を出して"])
        for q in (Q("<task-notification>..</task-notification>", mode="task-notification", kind="task-notification"),
-                 {"type": "attachment", "attachment": {"type": "queued_command", "prompt": "x", "commandMode": "task-notification"}})], [True, True])
+                 {"type": "attachment", "attachment": {"type": "queued_command", "prompt": "x", "commandMode": "task-notification"}})], [(True, False), (True, False)])
 check("記録: ほかの付け足し（日付・環境など）は数えない",
-      s.only_this_task(log_of(U("内訳を出して"), {"type": "attachment", "attachment": {"type": "date", "date": "2026-11-13"}}, AI("x")), 0, "内訳を出して"), True)
-check("相手の位置: 形の読めない付け足しがあれば、本文を載せない",
-      s.only_this_task(log_of(U("内訳を出して"), {"type": "attachment", "attachment": "?"}, AI("x")), 0, "内訳を出して"), False)
+      scan(log_of(U("内訳を出して"), {"type": "attachment", "attachment": {"type": "date", "date": "2026-11-13"}}, AI("x")), ["内訳を出して"]), (True, False))
+check("相手の位置: 形の読めない付け足し・壊れた行があれば、混ざった扱い（読めない行として見せる）",
+      (scan(log_of(U("内訳を出して"), {"type": "attachment", "attachment": "?"}, AI("x")), ["内訳を出して"]),
+       [m["text"] for m in s.task_range(log_of(U("内訳を出して"), [1, 2], AI("x")), 0, ["内訳を出して"])[0] if m["role"] == "me"]),
+      ((True, True), ["内訳を出して", "（読めない行）"]))
 check("記録: 作業中に届いた発言の文が部品の並びでも読む",
-      s.only_these(log_of(U("内訳を出して"), Q([{"type": "text", "text": "期限も"}, {"type": "image"}, {"type": "text", "text": "調べて"}]), AI("x")), 0,
-                   ["内訳を出して", "期限も 調べて"]), True)
-check("記録: まとめた指示がその順に見つかり、あとに別の発言が無ければ本文を載せる（2 件目は作業中に届いた形）",
-      s.only_these(log_of(U("内訳を出して"), TOOL(), Q("期限も調べて"), AI("両方やりました")), 0, ["内訳を出して", "期限も調べて"]), True)
-check("相手の位置: まとめた指示の間に、端末から別の発言があれば本文を載せない",
-      s.only_these(log_of(U("内訳を出して"), Q("別の案件のことをして"), Q("期限も調べて"), AI("x")), 0, ["内訳を出して", "期限も調べて"]), False)
-check("相手の位置: まとめた指示の順が違えば本文を載せない",
-      s.only_these(log_of(Q("期限も調べて"), U("内訳を出して"), AI("x")), 0, ["内訳を出して", "期限も調べて"]), False)
-check("相手の位置: まとめた指示の一部しか見つからなければ本文を載せない",
-      s.only_these(log_of(U("内訳を出して"), AI("x")), 0, ["内訳を出して", "期限も調べて"]), False)
+      scan(log_of(U("内訳を出して"), Q([{"type": "text", "text": "期限も"}, {"type": "image"}, {"type": "text", "text": "調べて"}]), AI("x")),
+           ["内訳を出して", "期限も 調べて"]), (True, False))
+check("記録: まとめた指示がその順に見つかり、ほかの発言が無ければ混ざっていない（2 件目は作業中に届いた形）",
+      scan(log_of(U("内訳を出して"), TOOL(), Q("期限も調べて"), AI("両方やりました")), ["内訳を出して", "期限も調べて"]), (True, False))
+check("相手の位置: まとめた指示の間に、端末から別の発言があれば、混ざった扱い",
+      scan(log_of(U("内訳を出して"), Q("別の案件のことをして"), Q("期限も調べて"), AI("x")), ["内訳を出して", "期限も調べて"]), (True, True))
+check("相手の位置: まとめた指示の順が違えば、見つからない扱い（本文を載せない）",
+      scan(log_of(Q("期限も調べて"), U("内訳を出して"), AI("x")), ["内訳を出して", "期限も調べて"])[0], False)
+check("相手の位置: まとめた指示の一部しか見つからなければ、見つからない扱い",
+      scan(log_of(U("内訳を出して"), AI("x")), ["内訳を出して", "期限も調べて"])[0], False)
 
 # ---------- 本体（送る・まとめる・報告する） ----------
 posted, notes, started = [], [], []
@@ -206,8 +218,8 @@ check("まとめる: 1 件目では何も送らず、2 件目を送った時点�
 check("まとめる: 報告は 1 回、一番新しいスレッドに、まとめた依頼を並べて本文ごと送る",
       [(p[0], p[1]) for p in posted],
       [(T2, "【lp｜見積が完了しました】（2 件まとめて）\n・内訳を出して（前のスレッドから）\n・期限も調べて（このスレッドから）\n\n両方やりました（ハブの報告）")])
-check("まとめる: ハブへの知らせに、まとめた 2 件の指示と、最初の指示から読む数（吹き出し 2 つ）を書く",
-      ("「内訳を出して」「期限も調べて」" in notes[-1], "-n 2 --full" in notes[-1], "どの指示の結果かが分かるように" in notes[-1]), (True, True, True))
+check("まとめる: ハブへの知らせに、まとめた 2 件の指示と、この件の範囲を読む道具（--task）を書く",
+      ("「内訳を出して」「期限も調べて」" in notes[-1], f"hubctl read w1:p1 --task {b['task']} --full" in notes[-1], "どの指示の結果かが分かるように" in notes[-1]), (True, True, True))
 check("まとめる: 前の件は次の件にまとめた印、次の件の台帳はまとめて報告すると書く",
       (a.get("_merged_into") is b, [e["text"] for e in b["chain"]], "まとめて報告します" in s.TASKS[b["task"]]["note"]), (True, ["内訳を出して"], True))
 
@@ -249,8 +261,8 @@ async def screen_only():
 
 
 b = asyncio.run(screen_only())
-check("声と画面だけの件は今までどおり: Slack に送らない・ハブへの知らせはこの件だけ・読むのは 1 つ",
-      (posted, "あなたが送った指示「期限も調べて」" in notes[-1], "内訳を出して" in notes[-1], "-n 1 --full" in notes[-1], "まとめて" in s.TASKS[b["task"]]["note"]),
+check("声と画面だけの件: Slack に送らない・ハブへの知らせはこの件だけ・読むのはこの件の範囲（--task）",
+      (posted, "あなたが送った指示「期限も調べて」" in notes[-1], "内訳を出して" in notes[-1], f"--task {b['task']} --full" in notes[-1], "まとめて" in s.TASKS[b["task"]]["note"]),
       ([], True, False, True, False))
 
 
@@ -290,7 +302,7 @@ check("3 件: 報告は 3 つ目のスレッドに 1 回、3 件を並べる",
       [(T3, ["【lp｜見積が完了しました】（3 件まとめて）", "・一つ目（前のスレッドから）", "・二つ目（前のスレッドから）", "・三つ目（このスレッドから）"])])
 
 
-# 7) 2 件目が、前の件の答えのあとに別のターンとして届いた（作業中でなかった）: 読む数を 4 にする
+# 7) 2 件目が、前の件の答えのあとに別のターンとして届いた（作業中でなかった）: 最初の指示から読む
 async def separate_turns():
     fresh()
     await send("内訳を出して", T1)
@@ -300,8 +312,8 @@ async def separate_turns():
 
 
 asyncio.run(separate_turns())
-check("読む数: 2 件目が別のターンなら、最初の指示から 4 つ（指示・返事・指示・返事）を読ませる。本文も送る",
-      ("-n 4 --full" in notes[-1], [("両方やりました（ハブの報告）" in p[1]) for p in posted if p[0] == T2]), (True, [True]))
+check("読む範囲: 2 件目が別のターンでも、最初の指示から読ませ（--task）、本文を注意なしで送る",
+      ("--task" in notes[-1], [("両方やりました（ハブの報告）" in p[1], sr.MIXED in p[1]) for p in posted if p[0] == T2]), (True, [(True, False)]))
 
 
 # ---------- 相手の位置 ----------
@@ -318,8 +330,8 @@ async def terminal_between():
 
 
 asyncio.run(terminal_between())
-check("相手の位置: まとめた指示の間に端末から別の発言があれば、本文を載せない（依頼は並べる）",
-      [(p[0], body_of(p), "記録で確かめられませんでした" in p[1], "・期限も調べて（このスレッドから）" in p[1]) for p in posted if p[0] == T2], [(T2, False, True, True)])
+check("相手の位置: まとめた指示の間に端末から別の発言があれば、本文に注意を付ける（依頼は並べる）",
+      [(p[0], body_of(p), sr.MIXED in p[1], "・期限も調べて（このスレッドから）" in p[1]) for p in posted if p[0] == T2], [(T2, True, True, True)])
 
 
 async def screen_direct_between():
@@ -331,8 +343,8 @@ async def screen_direct_between():
 
 
 asyncio.run(screen_direct_between())
-check("相手の位置: まとめた指示の間に、画面・声から直接の発言があれば（送った回数が続いていない）、記録が整って見えても本文を載せない",
-      [(body_of(p), "voice-loop の画面で確かめてください" in p[1]) for p in posted if p[0] == T2], [(False, True)])
+check("相手の位置: まとめた指示の間に、画面・声から直接の発言があれば（送った回数が続いていない）、記録が整って見えても注意を付ける",
+      [(body_of(p), sr.MIXED in p[1]) for p in posted if p[0] == T2], [(True, True)])
 
 
 async def overlapped_first():
@@ -345,7 +357,7 @@ async def overlapped_first():
 
 
 asyncio.run(overlapped_first())
-check("相手の位置: まとめた前の件が重なって送られていたら、本文を載せない", [body_of(p) for p in posted if p[0] == T2], [False])
+check("相手の位置: まとめた前の件が重なって送られていたら、注意を付ける", [(body_of(p), sr.MIXED in p[1]) for p in posted if p[0] == T2], [(True, True)])
 
 
 async def other_session():

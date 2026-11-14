@@ -13,6 +13,9 @@ Hermes の送信コマンド（`hermes send`。Hermes のボットとして投�
 
 同じセッションに続けて頼んだ件（前の件の完了を報告する前に、次の件を送った）は、まとめて 1 つの報告にし、
 一番新しい依頼のスレッドに送る（server.py の merge_open・chain_dest）。前のスレッドには、次の依頼のスレッドで報告すると一言送る。
+
+報告は、ハブがこの件の範囲（指示を送ったところから今まで。hubctl read --task）を読み分けて書いたもの。その範囲にほかのやり取りが
+混ざったときは、本文の頭に注意の 1 行（MIXED）を付ける。この件の記録を読めないときだけ、本文を載せずに定型文（NOT_FOUND）を送る。
 """
 from __future__ import annotations
 
@@ -46,8 +49,8 @@ def origin(raw) -> tuple[str, str] | None:
 
 
 NO_REPORT = "（ハブの報告を受け取れませんでした。voice-loop の画面で確かめてください）"
-REPLACED = "（報告の前に、同じセッションへ次の指示が送られました。この件の結果は voice-loop の画面で確かめてください）"
-UNVERIFIED = "（この件の指示のあとに同じセッションへ別の発言があったか、記録で確かめられませんでした。結果は voice-loop の画面で確かめてください）"
+NOT_FOUND = "（この件の指示を、セッションの記録で見つけられませんでした。結果は voice-loop の画面で確かめてください）"  # セッションが作り直された・記録が読めないなど
+MIXED = "（この件の間に、同じセッションでほかのやり取りがありました。違っていたら、このスレッドで言ってください）"  # ハブが読み分けた報告の頭に付ける
 SCREEN = "（詳しくは voice-loop の画面で確かめてください）"
 # 同じセッションに続けて頼んでまとめた報告で、それぞれの依頼がどこから来たか
 HERE, OTHER_THREAD, FROM_SCREEN = "このスレッドから", "前のスレッドから", "voice-loop から"
@@ -59,10 +62,11 @@ def one_line(text: str, n: int) -> str:
     return t if len(t) <= n else t[: n - 1] + "…"
 
 
-def text_for(label: str, headline: str, reply: str, fallback: str = NO_REPORT, asks=()) -> str:
+def text_for(label: str, headline: str, reply: str, fallback: str = NO_REPORT, asks=(), note: str = "") -> str:
     """Slack に送る文。見出し（案件｜件名と、何が起きたか）と、ハブの報告。報告が無ければ fallback（画面で確かめるよう書く）。
-    asks は、同じセッションに続けて頼んでまとめた依頼の (文, どこから) の並び（古い順）。あれば見出しのあとに並べる。"""
-    body = reply.strip() or fallback
+    asks は、同じセッションに続けて頼んでまとめた依頼の (文, どこから) の並び（古い順）。あれば見出しのあとに並べる。
+    note は、報告の頭に付ける 1 行（この件の間にほかのやり取りが混ざったときの MIXED）。報告が無ければ付けない。"""
+    body = (f"{note}\n{reply.strip()}" if note else reply.strip()) if reply.strip() else fallback
     if asks:
         shown = list(asks)[-ASKS_SHOWN:]
         lines = [f"【{label}{headline}】（{len(asks)} 件まとめて）"]
