@@ -478,6 +478,12 @@ check("手順 9: 日付を除いて比べ、新しく止まったら知らせ・
        "まだ止まっています" in step9, "戻りました" in step9, "`+` も `-` も付いていない「読めない」の行" in step9 and "最後の出力にも書かない" in step9,
        step9.count("`hubctl notice` は使わない"), "「戻りました」の行" in step11 and "「まだ止まっています」" in step11),
       (True, True, True, True, True, 2, True))
+recovered = [l for l in step9.splitlines() if l.lstrip().startswith("- 直った")][0]
+changed = [l for l in step9.splitlines() if l.lstrip().startswith("- 理由だけが変わった")]
+check("手順 9: 戻ったと書くのは、同じ口の「読めない」の行（知らせない理由の行も）がいまの出力に 1 つも無いときだけ。理由が変わっただけなら「戻りました」と書かない",
+      ("同じ口の「読めない」の行が 1 つも無い" in recovered, "知らせない理由の行（取得に失敗・鍵の更新が要る）も数える" in recovered,
+       len(changed), changed and "「戻りました」とは書かない" in changed[0], changed and "「まだ読めません:" in changed[0]),
+      (True, True, 1, True, True))
 check("手順: 日付が付くのは知らせる「読めない」の行だけと、台本と同じことを書いている（`-` の「読めない」の行は手順 9 で見る）",
       ("末尾に今日の日付 `［11/16］` が付きます" in SK, "「読めない」の `-` の行は手順 9 で見ます" in SK, all(n.split(":")[0] in SK for n in vl_watch.NOTIFY)),
       (True, True, True))
