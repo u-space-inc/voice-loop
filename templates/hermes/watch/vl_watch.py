@@ -6,6 +6,8 @@
 
 決まり:
 - 行には、あとから変わる値（既読・ラベル・いまの時刻など）を入れない。入れると、何も来ていないのに起きる。
+  例外は、利用者に知らせる「読めない」の行（Slack の結果の形が崩れた・Teams の口）の末尾の今日の日付（［11/16］の形）だけ。
+  止まり続けている間は、毎朝の最初の回だけ行が変わって Agent が起き、DM に「まだ止まっている」を 1 行出す（2026-11-15 利用者の決定）。
 - 行は出来事の目印（ID と、構造のある時刻）だけ。相手が書ける文（件名・差出人の名前・本文・題）は入れない（Agent の指示に入るため）。
   中身は Agent が道具で読む。
 - 読むだけ。書き込みの道具は呼ばない。鍵の更新もしない（Hermes 本体が持つ）。
@@ -45,6 +47,8 @@ TEAMS_REASON = {"signin": "サインインが要る（Mac の Chrome で Teams �
                 "parse": "一覧の形が読めない（Chrome の Teams で、左の「メンション」を選んだままにする）",
                 "run": "取得に失敗"}
 _HEX16 = re.compile(r"[0-9a-f]{16}")
+# 利用者に知らせる「読めない」の行（手順 9）。この行にだけ、今日の日付を付ける
+NOTIFY = ("slack 読めない: 結果の形が崩れている", "teams 読めない: ")
 
 
 _CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]")
@@ -211,7 +215,13 @@ def teams(now: float | None = None) -> list[str] | None:
     return list(dict.fromkeys(rows))
 
 
-def main() -> None:
+def stamp(rows: list[str], now: float | None = None) -> list[str]:
+    """利用者に知らせる「読めない」の行の末尾に、今日の日付を付ける（ほかの行は変えない）。"""
+    d = dt.datetime.now(JST) if now is None else dt.datetime.fromtimestamp(now, JST)
+    return [f"{r} ［{d.month}/{d.day}］" if r.startswith(NOTIFY) else r for r in rows]
+
+
+def main(now: float | None = None) -> None:
     parts = []
     for name, fn in (("mail", mail), ("cal", calendar), ("slack", slack), ("plaud", plaud), ("teams", teams)):
         try:
@@ -224,7 +234,7 @@ def main() -> None:
             rows = [f"{name} 読めない: 結果の形が崩れている（本文に見出しをまねた行がある可能性。利用者に知らせる）"]
         except Exception:  # noqa: BLE001
             rows = [f"{name} 読めない: 取得に失敗"]
-        parts.append(f"## {name}\n" + "\n".join(sorted(rows)))
+        parts.append(f"## {name}\n" + "\n".join(sorted(stamp(rows, now))))
     print("\n".join(parts))
 
 

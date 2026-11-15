@@ -85,6 +85,11 @@
 - `hermes/hub.md` に、`templates/hermes/hub.md` の「指示を出すときの決まり」の節（入れ替え）と、「セッションの結果を伝えるときの決まり」の節（その次に足す）、「話し方」の最後の 1 文を写します。写さないと、通知の読み方だけが変わり、指示への足しは前のままです。
 - Hermes の手順（スキル）に、前に採った書き足しで「送信しない指示があれば明示」「外部への変更は先に報告して止まる」のような行が残っていると、ハブは足し続けます。画面の「記憶」か Hermes の対話画面で、手順を見直してください。
 
+## 0.22.1（見張りの回が、止まった口を毎回は書かない）
+
+- 見張りの回は、止まった口（Slack の結果の形が崩れた・Teams を読めない）を、止まっている間、起きるたびに届け先へ書き直していました。いまは、止まったとき（`hubctl notice` でも知らせる）・止まったままの日の朝の最初の回・戻ったときに、1 行ずつ書きます。
+- 見張りの回を使っているときは、`templates/hermes/watch/vl_watch.py` を `~/.hermes/scripts/` に、`templates/hermes/watch/voice-loop-watch/SKILL.md` を `~/.hermes/skills/voice-loop/voice-loop-watch/` に写します。2 つは一緒に写します（台本が、知らせる「読めない」の行の末尾に今日の日付を付け、手順がそれを除いて比べます）。
+
 ## 0.22.0（Claude Code のハブを外す）
 
 - herdr の中の Claude Code をハブにする予備の形を外しました。ハブの頭は Hermes だけです。`config.env` の `VL_HUB`・`VL_HUB_MODEL`・`VL_HUB_WORKSPACE`・`VL_HUB_SETTLE` は使いません（書いてあっても無視します）。消してかまいません。
