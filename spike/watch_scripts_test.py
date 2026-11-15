@@ -473,17 +473,23 @@ check("手順 11: 形の合わない行がある回を先に決め、[SILENT] �
        [l for l in step11.splitlines() if "`[SILENT]` だけにする" in l][0].lstrip().startswith("- どれでもない回（形の合わない行が 0 件、手順 9 の知らせも書く行も無く、judge も fyi も 0 件")),
       (True, True))
 step9 = SK.split("\n9. ", 1)[1].split("\n10. ", 1)[0]
-check("手順 9: 日付を除いて比べ、新しく止まったら知らせ・止まったままは朝に 1 行・直ったら 1 行・印の無い行は書かない",
-      ("末尾の日付 `［…］` を除いた文" in step9, "新しく止まった（`+` の行で、同じ文の `-` の行が無い）: 知らせる" in step9,
-       "まだ止まっています" in step9, "戻りました" in step9, "`+` も `-` も付いていない「読めない」の行" in step9 and "最後の出力にも書かない" in step9,
-       step9.count("`hubctl notice` は使わない"), "「戻りました」の行" in step11 and "「まだ止まっています」" in step11),
-      (True, True, True, True, True, 2, True))
-recovered = [l for l in step9.splitlines() if l.lstrip().startswith("- 直った")][0]
-changed = [l for l in step9.splitlines() if l.lstrip().startswith("- 理由だけが変わった")]
-check("手順 9: 戻ったと書くのは、同じ口の「読めない」の行（知らせない理由の行も）がいまの出力に 1 つも無いときだけ。理由が変わっただけなら「戻りました」と書かない",
-      ("同じ口の「読めない」の行が 1 つも無い" in recovered, "知らせない理由の行（取得に失敗・鍵の更新が要る）も数える" in recovered,
-       len(changed), changed and "「戻りました」とは書かない" in changed[0], changed and "「まだ読めません:" in changed[0]),
-      (True, True, 1, True, True))
+bul = [l.lstrip()[2:].split("（", 1)[0] for l in step9.splitlines() if l.startswith("   - ")]
+rule = {k: [l for l in step9.splitlines() if l.startswith("   - " + k)][0] for k in bul}
+check("手順 9: 口ごとに、新しく止まった → 止まったまま → 戻った → 理由だけが変わった → どれでもない、の順で最初に当てはまる 1 つだけ",
+      (bul, "口ごとに、次の順で最初に当てはまる 1 つだけを扱う" in step9, "末尾の日付 `［…］` を除く" in step9),
+      (["新しく止まった", "止まったまま", "戻った", "理由だけが変わった", "上のどれでもない"], True, True))
+check("手順 9: 新しく止まったときだけ hubctl notice。止まったままは「日付を除いて同じ文の - がある」で分け、朝に 1 行だけ",
+      ("日付を除いて同じ文の `-` の行が無い" in rule["新しく止まった"], "hubctl notice \"Teams の見張りが止まっています\"" in step9,
+       "日付を除いて同じ文の `-` の行もある" in rule["止まったまま"], "「まだ止まっています:" in rule["止まったまま"], "`hubctl notice` は使わない" in rule["止まったまま"]),
+      (True, True, True, True, True))
+check("手順 9: 戻ったと書くのは、知らせる行が消え、その口の「読めない」の行（知らせない行も）が 1 つも残らないときだけ。理由だけが変わったら「戻りました」と書かない",
+      ("知らせる行が `-` にあり" in rule["戻った"], "その口の「読めない」の行が 1 つも無い。知らせない行も数える" in rule["戻った"], "「戻りました:" in rule["戻った"],
+       "「戻りました」とは書かない" in rule["理由だけが変わった"], "「まだ読めません:" in rule["理由だけが変わった"]),
+      (True, True, True, True, True))
+check("手順 9・11: 印の無い行と知らせない行だけの変化は書かない・最後の出力に手順 9 の行を並べる",
+      ("知らせず、最後の出力にも書かない" in rule["上のどれでもない"], "知らせない行だけが出た・消えた" in rule["上のどれでもない"],
+       "「戻りました」の行" in step11 and "「まだ止まっています」" in step11),
+      (True, True, True))
 check("手順: 日付が付くのは知らせる「読めない」の行だけと、台本と同じことを書いている（`-` の「読めない」の行は手順 9 で見る）",
       ("末尾に今日の日付 `［11/16］` が付きます" in SK, "「読めない」の `-` の行は手順 9 で見ます" in SK, all(n.split(":")[0] in SK for n in vl_watch.NOTIFY)),
       (True, True, True))
