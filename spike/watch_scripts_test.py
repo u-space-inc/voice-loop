@@ -1,7 +1,8 @@
 """Hermes の見張りの回の台本（templates/hermes/watch/）の試験。ネット・本物の Hermes・Google・Slack・Plaud には触れない（偽物に差し替える）。
 確かめること:
 - vl_watch.py: 出力が安定している（同じ入力なら同じバイト、あとから変わる値を入れない）・出力は ID だけ（相手の文を入れない）・
-  Slack の検索結果の見出しの並びを照らす（本文に見出しをまねた行を入れても架空の出来事を作れない）・口ごとの失敗を 1 行にする。
+  Slack の検索結果の見出しの並びを照らす（本文に見出しをまねた行を入れても架空の出来事を作れない）・口ごとの失敗を 1 行にする・
+  利用者に知らせる「読めない」の行にだけ今日の日付を付ける（止まり続けている間は、毎朝の最初の回だけ行が変わる）。
 - vl_mcp.py: 読むための道具の名前のほかは呼ばない（下書き・送信の道具を呼ぼうとすると止まる）。
 - vl_items.py: 同じ出来事を二度記録しない・判断待ちの一覧・片づけた印・案件の一覧・字数で切る・ESC などの制御文字を落とす・壊れた行を飛ばす。
 - vl_gmail_draft.py: 下書きの API だけを呼び、送信の API を呼ばない・返信の宛先は 1 人（複数の Reply-To や改行での Bcc で宛先を足させない）・件名とスレッドを元のメールから組む。
@@ -204,6 +205,42 @@ def garble():
 
 check("Slack の結果が崩れていたら、その口を変わらない 1 行にする", "slack 読めない: 結果の形が崩れている" in main_with(slack=garble), True)
 check("取得に失敗した口は、変わらない 1 行にする（理由の細部を入れない）", "mail 読めない: 取得に失敗" in main_with(mail=boom), True)
+
+# 利用者に知らせる「読めない」の行（Slack の結果の形・Teams）にだけ、今日の日付を付ける（2026-11-15 利用者の決定）
+import datetime as _dt  # noqa: E402
+_J = _dt.timezone(_dt.timedelta(hours=9))
+D1 = _dt.datetime(2026, 11, 16, 7, 0, tzinfo=_J).timestamp()
+D1B = _dt.datetime(2026, 11, 16, 20, 45, tzinfo=_J).timestamp()
+D2 = _dt.datetime(2026, 11, 17, 7, 0, tzinfo=_J).timestamp()
+SL = "slack 読めない: 結果の形が崩れている（本文に見出しをまねた行がある可能性。利用者に知らせる）"
+TM = "teams 読めない: " + vl_watch.TEAMS_REASON["signin"]
+OTHER = ["mail 読めない: 取得に失敗", "plaud 読めない: 鍵の更新が要る（plaud の道具を一度使うと直る）", vl_watch.CAL_ODD, "slack 読めない: 取得に失敗",
+         "mail m1", "teams " + "a" * 16]
+check("stamp: 知らせる「読めない」の行（Slack の結果の形・Teams）にだけ、末尾に今日の日付を付ける",
+      vl_watch.stamp([SL, TM] + OTHER, D1), [SL + " ［11/16］", TM + " ［11/16］"] + OTHER)
+check("stamp: 同じ日のうちは同じ行（朝 7 時と夜 20:45）・日が変わると行が変わる",
+      (vl_watch.stamp([SL, TM], D1) == vl_watch.stamp([SL, TM], D1B), vl_watch.stamp([SL, TM], D1) == vl_watch.stamp([SL, TM], D2)), (True, False))
+check("stamp: 知らせない「読めない」の行（鍵の更新・取得に失敗・形の合わない予定）と出来事の行は、日が変わっても変えない",
+      vl_watch.stamp(OTHER, D1) == vl_watch.stamp(OTHER, D2) == OTHER, True)
+
+
+def out_at(now):
+    import io
+    from contextlib import redirect_stdout
+    f = io.StringIO()
+    with redirect_stdout(f):
+        vl_watch.main(now)
+    return f.getvalue()
+
+
+_sl = vl_watch.slack
+vl_watch.slack = garble
+o1, o1b, o2 = out_at(D1), out_at(D1B), out_at(D2)
+vl_watch.slack = _sl
+check("main: Slack の結果が崩れたままなら、同じ日の出力は同じバイト（起こさない）・次の日の最初の回だけ変わる（起こす）",
+      (o1 == o1b, o1 == o2, SL + " ［11/16］" in o1.splitlines(), SL + " ［11/17］" in o2.splitlines()), (True, False, True, True))
+check("main: 知らせない口の「読めない」（鍵の更新）は、日が変わっても出力を変えない",
+      [l for l in o1.splitlines() if l.startswith("plaud")] == [l for l in o2.splitlines() if l.startswith("plaud")], True)
 check("clip: 長い文は … で切る・改行と | と ESC を入れない",
       (vl_watch.clip("あ" * 60, 50)[-1], len(vl_watch.clip("あ" * 60, 50)), "|" in vl_watch.clip("a|b", 10), "\n" in vl_watch.clip("a\nb", 10),
        "\x1b" in vl_watch.clip("a\x1b[2Kb", 10)),
@@ -431,10 +468,19 @@ check("手順: Teams の行の形・読む道具・止まったときの知ら�
 check("手順が「形の合わない行」（unseen の数）と「形の合わない予定がある」（台本の 1 行）の扱いを書いている",
       ("「形の合わない行」が 1 件以上なら" in SK, vl_watch.CAL_ODD.split(": ", 1)[1].split("（")[0] in SK), (True, True))
 step11 = SK.split("\n11. ", 1)[1].split("\n## ", 1)[0]
-check("手順 11: 形の合わない行がある回を先に決め、[SILENT] は「形の合わない行・手順 9 の知らせ・judge・fyi がどれも 0」の回だけ",
+check("手順 11: 形の合わない行がある回を先に決め、[SILENT] は「形の合わない行・手順 9 の知らせと行・judge・fyi がどれも 0」の回だけ",
       (step11.index("「形の合わない行」が 1 件以上の回") < step11.index("judge か fyi が 1 件以上の回") < step11.index("どれでもない回"),
-       [l for l in step11.splitlines() if "`[SILENT]` だけにする" in l][0].lstrip().startswith("- どれでもない回（形の合わない行が 0 件、手順 9 の知らせが無く、judge も fyi も 0 件")),
+       [l for l in step11.splitlines() if "`[SILENT]` だけにする" in l][0].lstrip().startswith("- どれでもない回（形の合わない行が 0 件、手順 9 の知らせも書く行も無く、judge も fyi も 0 件")),
       (True, True))
+step9 = SK.split("\n9. ", 1)[1].split("\n10. ", 1)[0]
+check("手順 9: 日付を除いて比べ、新しく止まったら知らせ・止まったままは朝に 1 行・直ったら 1 行・印の無い行は書かない",
+      ("末尾の日付 `［…］` を除いた文" in step9, "新しく止まった（`+` の行で、同じ文の `-` の行が無い）: 知らせる" in step9,
+       "まだ止まっています" in step9, "戻りました" in step9, "`+` も `-` も付いていない「読めない」の行" in step9 and "最後の出力にも書かない" in step9,
+       step9.count("`hubctl notice` は使わない"), "「戻りました」の行" in step11 and "「まだ止まっています」" in step11),
+      (True, True, True, True, True, 2, True))
+check("手順: 日付が付くのは知らせる「読めない」の行だけと、台本と同じことを書いている（`-` の「読めない」の行は手順 9 で見る）",
+      ("末尾に今日の日付 `［11/16］` が付きます" in SK, "「読めない」の `-` の行は手順 9 で見ます" in SK, all(n.split(":")[0] in SK for n in vl_watch.NOTIFY)),
+      (True, True, True))
 step4 = SK.split("\n4. ", 1)[1].split("\n5. ", 1)[0]
 check("手順 4: 人が利用者に宛てて書いた対応不要のもの（fyi）を info と分ける（cc だけ・自動通知・既に返したものは info。迷えば fyi）",
       ("（fyi）" in step4, "cc で名前があるだけのものは除く" in step4, "利用者が既に返したものは info" in step4, "fyi か info かで迷ったら fyi にする" in step4),
