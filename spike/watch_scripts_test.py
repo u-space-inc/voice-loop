@@ -271,6 +271,20 @@ check("items: 宛てて書かれた・対応不要（fyi）を記録でき、判
 run("add", "--source", "mail", "--id", "m9", "--kind", "judge", "--title", "長" * 200 + "\n改行")
 row = [json.loads(l) for l in (TMP / "voice-loop/items.jsonl").read_text().splitlines() if '"m9"' in l][0]
 check("items: 題は 80 字で切り、1 行にする", (len(row["title"]), "\n" in row["title"]), (80, False))
+run("add", "--source", "mail", "--id", "a1", "--kind", "judge", "--title", "古い鳴り", "--prepared", "アラーム名: api-errors／差出人: alerts@example.com／届いた時刻: 11/14 9:00")
+run("add", "--source", "mail", "--id", "a2", "--kind", "info", "--title", "束", "--prepared", "アラーム名: api-errors-2／差出人: alerts@example.com／届いた時刻: 11/14 9:05。[1] と同じ出来事")
+rows = [json.loads(l) for l in (TMP / "voice-loop/items.jsonl").read_text().splitlines()]
+for r in rows:
+    if r.get("id") in ("a1", "a2"):
+        r["at"] -= 7 * 24 * 3600  # 1 週間前の記録にする（recent --hours 48 には出ない）
+(TMP / "voice-loop/items.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+f1, f2 = run("find", "アラーム名: api-errors／差出人: alerts@example.com"), run("find", "アラーム名: api-errors-2／差出人: alerts@example.com")
+check("items find: 古さを問わず、文をそのまま含む記録だけを出す（似た名前は混ぜない・束ねた info も出る）",
+      ("古い鳴り" in f1.stdout, "｜束" in f1.stdout, "｜束" in f2.stdout, "古い鳴り" in f2.stdout, "古い鳴り" in run("recent", "--hours", "48").stdout),
+      (True, False, True, False, False))
+check("items find: 当たらなければそう出す・空の文は断る・正規表現として読まない",
+      (run("find", "アラーム名: none").stdout.strip(), run("find", " ").returncode, "当たる記録はありません" in run("find", "api-errors.*").stdout),
+      ("当たる記録はありません", 2, True))
 run("add", "--source", "mail", "--id", "m10", "--kind", "judge", "--title", "見出し\x1b[1A\x1b[2K偽", "--note", "要る\u202e逆")
 o = run("open").stdout
 check("items: 題・メモの ESC（端末の表示を書き換える）と向きを変える文字は空白にする", ("\x1b" in o, "\u202e" in o, "見出し [1A [2K偽" in o), (False, False, True))
@@ -517,8 +531,9 @@ check("手順 6: 照らすのは差出人のアドレスとアラーム名が一
       (True, True, True))
 rc = blocks["回復の照合"]
 check("手順 6: 回復の照合は OK の件名と ALARM の日付で絞って 50 件まで取り、50 件ちょうどで当たらなければ照らしきれないとして judge（未回復と決めつけない）",
-      ("subject:\"OK\" subject:\"<アラーム名>\" after:<ALARM が届いた日 YYYY/MM/DD>' --max 50" in blocks["回復の照合"],
-       "結果が 50 件ちょうどで、その中に当たるものが無いときは、照らしきれていない。judge にし" in blocks["回復の照合"]), (True, True))
+      ("subject:\"OK\" subject:\"<アラーム名>\" after:<ALARM が届いた時刻の UNIX 秒>' --max 50" in blocks["回復の照合"],
+       "日付の形 `YYYY/MM/DD` は太平洋時間の 0 時として読まれ" in blocks["回復の照合"],
+       "結果が 50 件ちょうどで、その中に当たるものが無いときは、照らしきれていない。judge にし" in blocks["回復の照合"]), (True, True, True))
 check("手順 6: 回復の照合は ALARM を 1 通ずつ、OK の件名とその ALARM より後の時刻で探す。あれば自動通知（info）は info のまま、手順 4 の judge と失敗の分が残りうるものは judge のまま（OK で judge を下げない）、無ければ judge",
       ("ALARM を 1 通ずつ" in rc, "google_api.py gmail search" in rc, "件名が `OK: \"<アラーム名>\"` で始まり、その ALARM より後に届いた" in rc,
        "- あれば回復済み。手順 4 で info に分けていたもの（自動通知）は info のままにし" in rc, "回復しても失敗した分が残りうるもの）は judge のままにし" in rc,
@@ -532,7 +547,7 @@ check("手順 6: 束ねるのは同じ案件・30 分以内の未回復の ALARM
       (True, True, True, True, True, True))
 lo = blocks["後から届いた回復"]
 check("手順 6・11: 後から届いた回復は、OK より前の同じ名と差出人の ALARM を探し、判断待ちなら 1 行書く（束ねた記録は代表で見る）。済の印は付けない・その回は [SILENT] にしない",
-      ("`vl_items.py open`（判断待ち。古さを問わない）と `vl_items.py recent --hours 48`" in lo, "この OK より前に届いた ALARM の記録のうち、いちばん新しいもの" in lo, "代表の記録で見る" in lo,
+      ("`vl_items.py find \"アラーム名: <アラーム名>／差出人: <差出人のアドレス>\"`（古さを問わず探す" in lo, "この OK より前に届いた ALARM の記録のうち、いちばん新しいもの" in lo, "代表の記録で見る" in lo,
        "最後の出力に「回復の知らせ: [<番号>] 案件｜何の件か — 判断待ちのままです」を 1 行書く" in lo, "アラーム名や本文を写さない" in lo,
        "済の印は付けない" in lo, "手順 6 の「回復の知らせ」を書く回" in step11, "vl_items.py done" in alarm),
       (True, True, True, True, True, True, True, False))

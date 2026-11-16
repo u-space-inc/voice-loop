@@ -6,6 +6,7 @@
                                        （fyi は、人が利用者に宛てて書いたが対応の要らないもの。見張りの回が DM に 1 行で知らせる）
   vl_items.py open [--project P]       判断待ち（kind=judge で、まだ片づいていないもの）を新しい順に
   vl_items.py recent [--hours 24]      直近の記録（種類を問わず）を新しい順に
+  vl_items.py find <文> [--limit 20]   題・要ること・準備したことに、その文をそのまま含む記録を、古さを問わず新しい順に（既読扱いは出さない）
   vl_items.py done <番号> [--note N]   判断待ちを片づけた印を付ける（ユーザーが「済んだ」と言ったとき）
   vl_items.py projects                 これまでに使った案件の名前と件数
 
@@ -112,6 +113,7 @@ def main() -> int:
     s.add_argument("--title", required=True); s.add_argument("--note", default=""); s.add_argument("--prepared", default="")
     s = sub.add_parser("open"); s.add_argument("--project")
     s = sub.add_parser("recent"); s.add_argument("--hours", type=float, default=24)
+    s = sub.add_parser("find"); s.add_argument("text"); s.add_argument("--limit", type=int, default=20)
     s = sub.add_parser("done"); s.add_argument("n", type=int); s.add_argument("--note", default="")
     sub.add_parser("projects")
     a = p.parse_args()
@@ -162,6 +164,13 @@ def main() -> int:
     if a.cmd == "recent":
         rs = [r for r in items.values() if time.time() - r["at"] < a.hours * 3600 and r["kind"] != "baseline"]
         print("\n".join(show(r, done) for r in sorted(rs, key=lambda r: -r["at"])) or "記録はありません")
+        return 0
+    if a.cmd == "find":  # 見張りの回が、アラームの記録を古さを問わず照らすため（手順 6）。そのまま含むかだけを見る（正規表現にしない）
+        if not a.text.strip():
+            print("探す文が空です")
+            return 2
+        rs = [r for r in items.values() if r["kind"] != "baseline" and any(a.text in (r.get(k) or "") for k in ("title", "note", "prepared"))]
+        print("\n".join(show(r, done) for r in sorted(rs, key=lambda r: -r["at"])[:max(1, a.limit)]) or "当たる記録はありません")
         return 0
     if a.cmd == "done":
         if a.n not in items:
