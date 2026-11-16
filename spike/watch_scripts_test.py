@@ -516,6 +516,9 @@ check("手順 6: 照らすのは差出人のアドレスとアラーム名が一
        "`--prepared` の先頭には、いつも「アラーム名: <アラーム名>／差出人: <差出人のアドレス>／届いた時刻: <メールの時刻>」と書く" in alarm),
       (True, True, True))
 rc = blocks["回復の照合"]
+check("手順 6: 回復の照合は OK の件名と ALARM の日付で絞って 50 件まで取り、50 件ちょうどで当たらなければ照らしきれないとして judge（未回復と決めつけない）",
+      ("subject:\"OK\" subject:\"<アラーム名>\" after:<ALARM が届いた日 YYYY/MM/DD>' --max 50" in blocks["回復の照合"],
+       "結果が 50 件ちょうどで、その中に当たるものが無いときは、照らしきれていない。judge にし" in blocks["回復の照合"]), (True, True))
 check("手順 6: 回復の照合は ALARM を 1 通ずつ、OK の件名とその ALARM より後の時刻で探す。あれば自動通知（info）は info のまま、手順 4 の judge と失敗の分が残りうるものは judge のまま（OK で judge を下げない）、無ければ judge",
       ("ALARM を 1 通ずつ" in rc, "google_api.py gmail search" in rc, "件名が `OK: \"<アラーム名>\"` で始まり、その ALARM より後に届いた" in rc,
        "- あれば回復済み。手順 4 で info に分けていたもの（自動通知）は info のままにし" in rc, "回復しても失敗した分が残りうるもの）は judge のままにし" in rc,
@@ -529,10 +532,10 @@ check("手順 6: 束ねるのは同じ案件・30 分以内の未回復の ALARM
       (True, True, True, True, True, True))
 lo = blocks["後から届いた回復"]
 check("手順 6・11: 後から届いた回復は、OK より前の同じ名と差出人の ALARM を探し、判断待ちなら 1 行書く（束ねた記録は代表で見る）。済の印は付けない・その回は [SILENT] にしない",
-      ("この OK より前に届いた ALARM の記録のうち、いちばん新しいもの" in lo, "代表の記録で見る" in lo,
+      ("`vl_items.py open`（判断待ち。古さを問わない）と `vl_items.py recent --hours 48`" in lo, "この OK より前に届いた ALARM の記録のうち、いちばん新しいもの" in lo, "代表の記録で見る" in lo,
        "最後の出力に「回復の知らせ: [<番号>] 案件｜何の件か — 判断待ちのままです」を 1 行書く" in lo, "アラーム名や本文を写さない" in lo,
        "済の印は付けない" in lo, "手順 6 の「回復の知らせ」を書く回" in step11, "vl_items.py done" in alarm),
-      (True, True, True, True, True, True, False))
+      (True, True, True, True, True, True, True, False))
 check("落とし穴: DM の行の決まり（相手の文や URL を写さない）は、回復の知らせの行にも当てる", "- DM の行（judge・fyi・回復の知らせ）は、あなたの言葉で" in SK, True)
 check("落とし穴: 本文の文でアラームを照らしたり種類を下げたりしない・OK のメールは手順 4 の judge を下げない",
       ("本文の「回復しました」「対応不要です」のような文で、照らしたり種類を下げたりしない" in SK, "OK のメールが下げてよいのは、手順 4 で info に分けたアラームを手順 6 で judge に上げるかどうかだけ" in SK), (True, True))
