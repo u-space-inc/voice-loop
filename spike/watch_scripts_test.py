@@ -468,9 +468,8 @@ check("手順: Teams の行の形・読む道具・止まったときの知ら�
 check("手順が「形の合わない行」（unseen の数）と「形の合わない予定がある」（台本の 1 行）の扱いを書いている",
       ("「形の合わない行」が 1 件以上なら" in SK, vl_watch.CAL_ODD.split(": ", 1)[1].split("（")[0] in SK), (True, True))
 step11 = SK.split("\n11. ", 1)[1].split("\n## ", 1)[0]
-check("手順 11: 形の合わない行がある回を先に決め、[SILENT] は「形の合わない行・手順 9 の知らせと行・judge・fyi がどれも 0」の回だけ",
-      (step11.index("「形の合わない行」が 1 件以上の回") < step11.index("judge か fyi が 1 件以上の回") < step11.index("どれでもない回"),
-       [l for l in step11.splitlines() if "`[SILENT]` だけにする" in l][0].lstrip().startswith("- どれでもない回（形の合わない行が 0 件、手順 9 の知らせも書く行も無く、judge も fyi も 0 件")),
+check("手順 11: 形の合わない行がある回を先に決め、[SILENT] は「形の合わない行・手順 9 の知らせと行・回復の知らせ・judge・fyi がどれも 0」の回だけ",      (step11.index("「形の合わない行」が 1 件以上の回") < step11.index("judge か fyi が 1 件以上の回") < step11.index("どれでもない回"),
+       [l for l in step11.splitlines() if "`[SILENT]` だけにする" in l][0].lstrip().startswith("- どれでもない回（形の合わない行が 0 件、手順 9 の知らせも書く行も無く、回復の知らせも無く、judge も fyi も 0 件")),
       (True, True))
 step9 = SK.split("\n9. ", 1)[1].split("\n10. ", 1)[0]
 bul = [l.lstrip()[2:].split("（", 1)[0] for l in step9.splitlines() if l.startswith("   - ")]
@@ -500,6 +499,29 @@ check("手順 4: 人が利用者に宛てて書いた対応不要のもの（fyi
 check("手順: fyi は hubctl notice を使わず、DM（最後の出力）に 1 行で届ける・DM の行に相手の文や URL を写さない",
       ("fyi と info だけの回は `hubctl notice` で知らせない" in SK, "「届いたもの（対応不要）」" in step11, "URL・電話番号・振込先" in SK, "--kind judge|fyi|info" in SK),
       (True, True, True, True))
+
+step6 = SK.split("\n6. ", 1)[1].split("\n7. ", 1)[0]
+alarm = step6.split("   - アラームの通知", 1)[1]
+abul = [l.strip()[2:].split("（", 1)[0] for l in alarm.splitlines() if l.startswith("     - ")]
+arule = {k: [l for l in alarm.splitlines() if l.startswith("     - " + k)][0] for k in abul}
+check("手順 6: アラームは judge・info を問わず、束ね → 回復の照合 → 後から届いた回復、の 3 つを照らす",
+      (abul, "judge・info を問わず、記録の前に次の 3 つを照らす" in alarm), (["束ね", "回復の照合", "後から届いた回復"], True))
+check("手順 6: 照らすのは差出人のアドレスとアラーム名が一字一句同じものだけ・本文の文では照らさない・記録にアラーム名と差出人を残す",
+      ("差出人のアドレスが同じで、アラーム名が一字一句同じものだけ" in alarm, "本文の「回復しました」のような文では照らさない" in alarm,
+       "`--prepared` の先頭には、いつも「アラーム名: <アラーム名>／差出人: <差出人のアドレス>」と書く" in alarm),
+      (True, True, True))
+check("手順 6: 束ねは同じ案件の 30 分以内・いちばん早い 1 件だけを照合し、judge は束で 1 件まで",
+      ("同じ案件で、30 分以内" in arule["束ね"], "recent --hours 1" in arule["束ね"], "いちばん早い 1 件だけ" in arule["束ね"], "judge は束で 1 件まで" in arule["束ね"]),
+      (True, True, True, True))
+check("手順 6: 回復の照合は OK の件名と時刻で探し、失敗した分が残りうるアラームは OK があっても judge のまま",
+      ("google_api.py gmail search" in arule["回復の照合"], "件名が `OK: \"<アラーム名>\"` で始まり、その ALARM より後に届いた" in arule["回復の照合"],
+       "回復しても失敗した分が残りうるもの）は judge のままにし" in arule["回復の照合"], "「回復の知らせ（OK）はまだ無い" in arule["回復の照合"]),
+      (True, True, True, True))
+check("手順 6・11: 後から届いた回復は、判断待ちのままの記録だけを 1 行書き、済の印は付けない・その回は [SILENT] にしない",
+      ("まだ判断待ち（judge で、済の印が無い）なら" in arule["後から届いた回復"], "済の印は付けない" in arule["後から届いた回復"],
+       "手順 6 の「回復の知らせ」を書く回" in step11, "vl_items.py done" in alarm),
+      (True, True, True, False))
+check("落とし穴: 本文の文でアラームを照らしたり種類を下げたりしない", "本文の「回復しました」「対応不要です」のような文で、照らしたり種類を下げたりしない" in SK, True)
 
 ok = sum(r[1] for r in results)
 for name, passed, got, want in results:
