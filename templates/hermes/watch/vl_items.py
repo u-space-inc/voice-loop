@@ -2,13 +2,14 @@
 
   vl_items.py seen <source> <id>        記録にあれば 0 で終わる（無ければ 1）。同じ出来事を二度扱わないために使う
   vl_items.py unseen ["<行>" ...]       見張りの行（引数か標準入力。先頭の + は外す）から、まだ記録に無い出来事の行だけを出す
-  vl_items.py add --source mail --id X --project P --kind judge|fyi|info|baseline --title T [--note N] [--prepared 準備したこと] [--key 照合の鍵]
+  vl_items.py add --source mail --id X --project P --kind judge|fyi|info|baseline --title T [--note N] [--prepared 準備したこと] [--key 照合の鍵] [--sent 届いた時刻]
+                                       （--sent はメールなどが届いた時刻の UNIX 秒。find の --before と並びに使う）
                                        （fyi は、人が利用者に宛てて書いたが対応の要らないもの。見張りの回が DM に 1 行で知らせる）
   vl_items.py open [--project P]       判断待ち（kind=judge で、まだ片づいていないもの）を新しい順に
   vl_items.py recent [--hours 24]      直近の記録（種類を問わず）を新しい順に
   vl_items.py find --key K [--before T] [--limit 20]
                                        照合の鍵が K と一字一句同じ記録を、古さを問わず新しい順に（既読扱いは出さない。アラームの照合に使う）。
-                                       --before は UNIX 秒で、それより前に記録したものだけ（絞ってから数を切る。切ったら「ほかに N 件」と出す）
+                                       --before は UNIX 秒で、それより前に届いたもの（--sent。無い記録は記録した時刻）だけ（絞ってから数を切る。切ったら「ほかに N 件」と出す）
   vl_items.py done <番号> [--note N]   判断待ちを片づけた印を付ける（ユーザーが「済んだ」と言ったとき）
   vl_items.py projects                 これまでに使った案件の名前と件数
 
@@ -20,6 +21,7 @@ import argparse
 import datetime as dt
 import fcntl
 import json
+import math
 import os
 import re
 import sys
@@ -123,6 +125,7 @@ def main() -> int:
     s.add_argument("--source", required=True, choices=sorted(SOURCES)); s.add_argument("--id", required=True)
     s.add_argument("--project", default="未振り分け"); s.add_argument("--kind", required=True, choices=sorted(KINDS))
     s.add_argument("--title", required=True); s.add_argument("--note", default=""); s.add_argument("--prepared", default=""); s.add_argument("--key", default="")
+    s.add_argument("--sent", type=float)
     s = sub.add_parser("open"); s.add_argument("--project")
     s = sub.add_parser("recent"); s.add_argument("--hours", type=float, default=24)
     s = sub.add_parser("find"); s.add_argument("--key", required=True); s.add_argument("--before", type=float); s.add_argument("--limit", type=int, default=20)
@@ -170,7 +173,8 @@ def main() -> int:
             return 0
         r = _append({"op": "add", "at": time.time(), "source": a.source, "id": a.id, "project": clip(a.project, "project") or "未振り分け",
                      "kind": a.kind, "title": clip(a.title, "title"), "note": clip(a.note, "note"), "prepared": clip(a.prepared, "prepared"),
-                     **({"key": raw_key(a.key)} if raw_key(a.key) else {})})
+                     **({"key": raw_key(a.key)} if raw_key(a.key) else {}),
+                     **({"sent": a.sent} if a.sent is not None and math.isfinite(a.sent) and a.sent > 0 else {})})
         print(f"記録しました [{r['n']}]")
         return 0
     if a.cmd == "open":
@@ -186,8 +190,9 @@ def main() -> int:
         if not k.strip():
             print("照合の鍵が空です")
             return 2
-        rs = sorted((r for r in items.values() if r["kind"] != "baseline" and r.get("key") == k and (a.before is None or r["at"] < a.before)),
-                    key=lambda r: -r["at"])
+        when = lambda r: r.get("sent") if isinstance(r.get("sent"), (int, float)) else r["at"]  # 届いた時刻（無ければ記録した時刻）
+        rs = sorted((r for r in items.values() if r["kind"] != "baseline" and r.get("key") == k and (a.before is None or when(r) < a.before)),
+                    key=lambda r: -when(r))
         n = max(1, a.limit)
         print("\n".join([show(r, done) for r in rs[:n]] + ([f"ほかに {len(rs) - n} 件（--limit で増やせます）"] if len(rs) > n else [])) or "当たる記録はありません")
         return 0

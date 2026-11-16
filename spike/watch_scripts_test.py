@@ -295,6 +295,13 @@ old_at = [json.loads(l)["at"] for l in (TMP / "voice-loop/items.jsonl").read_tex
 for i in range(25):  # OK のあとに、同じ鍵の ALARM が上限より多く鳴り直した
     run("add", "--source", "mail", "--id", f"re{i}", "--kind", "info", "--title", "鳴り直し", "--key", "alarm alerts@example.com api  errors")
 fb, fa = run("find", "--key", "alarm alerts@example.com api  errors", "--before", str(old_at + 1)), run("find", "--key", "alarm alerts@example.com api  errors")
+run("add", "--source", "mail", "--id", "late", "--kind", "judge", "--title", "遅れて記録", "--key", "alarm late@example.com x", "--sent", "1700000000")
+check("items find: --before は届いた時刻（--sent）で比べる（OK のあとに記録した ALARM でも、届いたのが前なら出る）・届いた時刻の形が変なら残さない",
+      ("遅れて記録" in run("find", "--key", "alarm late@example.com x", "--before", "1700000960").stdout,
+       "遅れて記録" in run("find", "--key", "alarm late@example.com x", "--before", "1699999999").stdout,
+       run("add", "--source", "mail", "--id", "nan", "--kind", "info", "--title", "x", "--sent", "nan").returncode == 0 and
+       "sent" not in [json.loads(l) for l in (TMP / "voice-loop/items.jsonl").read_text().splitlines() if '"nan"' in l][0]),
+      (True, False, True))
 check("items find: --before で時刻を絞ってから数を切る（あとで鳴り直した分に、目当ての記録を押し出されない）・切ったら「ほかに N 件」",
       ("古い鳴り" in fb.stdout, "鳴り直し" in fb.stdout, "古い鳴り" in fa.stdout, "ほかに 6 件" in fa.stdout), (True, False, False, True))
 long_a, long_b = "alarm a@example.com " + "x" * 990 + "A", "alarm a@example.com " + "x" * 990 + "B"
@@ -571,11 +578,12 @@ check("手順 6: 束ねるのは同じ案件・30 分以内の未回復の ALARM
       (True, True, True, True, True, True))
 lo = blocks["後から届いた回復"]
 check("手順 6・11: 後から届いた回復は、OK より前の同じ名と差出人の ALARM を探し、判断待ちなら 1 行書く（束ねた記録は代表で見る）。済の印は付けない・その回は [SILENT] にしない",
-      ("`vl_items.py find --key \"alarm <差出人のアドレス> <アラーム名>\" --before <この OK が届いた時刻の UNIX 秒>`（古さを問わず、鍵の一字一句の一致で、OK より前に記録したもの" in lo,
+      ("`vl_items.py find --key \"alarm <差出人のアドレス> <アラーム名>\" --before <この OK が届いた時刻の UNIX 秒>`（古さを問わず、鍵の一字一句の一致で、OK より前に届いたもの（記録の --sent）" in lo,
+       "`--sent <メールが届いた時刻の UNIX 秒>`" in alarm,
        "この決まりの前の記録（照合の鍵の無いもの）を照らす: `vl_items.py open` の判断待ちのうち" in lo, "この OK より前に届いた ALARM の記録のうち、いちばん新しいもの" in lo, "代表の記録で見る" in lo,
        "最後の出力に「回復の知らせ: [<番号>] 案件｜何の件か — 判断待ちのままです」を 1 行書く" in lo, "アラーム名や本文を写さない" in lo,
        "済の印は付けない" in lo, "手順 6 の「回復の知らせ」を書く回" in step11, "vl_items.py done" in alarm),
-      (True, True, True, True, True, True, True, True, False))
+      (True, True, True, True, True, True, True, True, True, False))
 check("落とし穴: DM の行の決まり（相手の文や URL を写さない）は、回復の知らせの行にも当てる", "- DM の行（judge・fyi・回復の知らせ）は、あなたの言葉で" in SK, True)
 check("落とし穴: 本文の文でアラームを照らしたり種類を下げたりしない・OK のメールは手順 4 の judge を下げない",
       ("本文の「回復しました」「対応不要です」のような文で、照らしたり種類を下げたりしない" in SK, "OK のメールが下げてよいのは、手順 4 で info に分けたアラームを手順 6 で judge に上げるかどうかだけ" in SK), (True, True))
