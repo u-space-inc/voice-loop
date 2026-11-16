@@ -330,6 +330,11 @@ asyncio.run(s.hermes.hermes_exchange("テストの承認どうなってる？"))
 screen()  # ハブは問い Q を返した（最後に聞いた文は Q）
 s.hermes.ask_hermes = lambda text: "わかりました"
 asyncio.run(s.hermes.hermes_exchange("はい", 99.5))  # 返信先の報告が見つからない → 送らずに断る
+recs = [json.loads(l) for l in s.hermes.HERMES_LOG.read_text().splitlines()][-2:]
+check("返信: 断った発言は、記録に発言と断りの理由を同じ発言の ID で残す（聞いた文は空）",
+      ([r["role"] for r in recs], recs[0].get("turn") == recs[1].get("turn") and bool(recs[0].get("turn")), recs[0]["text"],
+       recs[1]["text"].startswith("返信先の報告が見つかりませんでした"), s.hermes.HERMES_TURNS[-1][3]),
+      (["me", "error"], True, "はい", True, ""))
 begin("はい")  # 案内どおり、ふつうの発言で送り直した
 check("返信: 返信先が見つからずに断ったあとは、前に聞いた問いへの答えに、送り直しの「はい」を使わせない（聞き直し）", answer(), ("not_asked", []))
 s.hermes.hermes_turn_end(s.hub_human_turn(), "わかりました")
