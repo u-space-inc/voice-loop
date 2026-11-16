@@ -584,9 +584,9 @@ def hub_reply_to(turn: str | None) -> str:
     return HUB.reply_to(turn) if turn else ""
 
 
-def hub_replying(turn: str | None) -> bool:
-    """発言 turn が、画面の「返信」で報告を指したものか。"""
-    return HUB.replying(turn) if turn else False
+def hub_replying(turn: str | None) -> str | None:
+    """発言 turn が、画面の「返信」で報告を指したものなら、その報告のセッション（分からなければ空）。返信でなければ None。"""
+    return HUB.replying(turn) if turn else None
 
 
 def agent_updated(a: dict) -> float | None:
@@ -1648,7 +1648,7 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
             REPORTING = False
             report_idle().set()
         hlog(f"報告 {kind}: {label} → {state}（画面 {len(CLIENTS)}）", flush=True)
-        saved = await HUB.report_end(state, reply, label, saved)
+        saved = await HUB.report_end(state, reply, label, saved, str(d.get("pane", "")))
         if state != "done" or not reply.strip():
             relay_slack(d, label, headline, "")
             if kind in ("done", "more", "gone"):
@@ -2017,6 +2017,9 @@ async def _hub_answer(body: dict):
         if answer.isdigit() and (prompt["kind"] != "question" or int(answer) not in prompt["options"]):
             return JSONResponse({"ok": False, "reason": "bad_choice", "kind": prompt["kind"], "options": prompt["options"]})
         heard = await asyncio.to_thread(hub_heard, turn)
+        rp = await asyncio.to_thread(hub_replying, turn)
+        if rp is not None and rp != pane:  # 返信先の報告が別のセッションのもの（同じプロジェクトの別のセッションも含む）なら答えない
+            return JSONResponse({"ok": False, "reason": "reply_other", "project": project, "screen": text})
         if not consent.asks(heard, project):  # ユーザーは、この相手の問いだと分かる文を聞いていない
             return JSONResponse({"ok": False, "reason": "not_asked", "project": project, "screen": text})
         if not (consent.affirms(utter, "answer", project) if answer in ("yes", "y") else consent.chooses(utter, int(answer), prompt["options"], project)):
@@ -2331,7 +2334,8 @@ async def hub_close(body: dict):
     held = CLOSING.get(pane)
     (now, said), (before, _) = (await asyncio.to_thread(hub_turns, 2) + [(None, "")] * 2)[:2]
     heard = await asyncio.to_thread(hub_reply_to, held[1]) if confirmed and held and held[1] else ""
-    if heard and now and await asyncio.to_thread(hub_replying, now):  # 返信の発言なら、聞いた文は返信先の報告（古い報告への「はい」で、閉じるの問いに答えない）
+    rp = await asyncio.to_thread(hub_replying, now) if now else None
+    if heard and rp is not None:  # 返信の発言なら、聞いた文は返信先の報告（古い報告への「はい」で、閉じるの問いに答えない）
         heard = await asyncio.to_thread(hub_heard, now)
     a = await asyncio.to_thread(_worker, pane)  # 相手は最後に見る（閉じるまでに入れ替わる隙を小さくする）。ハブ自身は閉じない
     if not a:
@@ -2344,6 +2348,8 @@ async def hub_close(body: dict):
         if held[1] == now:  # 聞いたのと同じ発言の中 = ユーザーはまだ何を閉じるか聞いていない
             return JSONResponse({"ok": False, "reason": "same_turn"})
         if now and held[1] and held[1] == before:
+            if rp is not None and rp != pane:  # 返信先の報告が別のセッションのもの（同じプロジェクトの別のセッションも含む）なら閉じない
+                return JSONResponse({"ok": False, "reason": "reply_other"})
             if not asks_to_close(heard, project):
                 why = "not_asked"
             elif not consent.affirms(said, "close", project):

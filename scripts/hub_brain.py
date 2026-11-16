@@ -47,8 +47,9 @@ class Brain:
         """発言 turn へのハブの返答。"""
         raise NotImplementedError
 
-    def replying(self, turn: str) -> bool:
-        """発言 turn が、画面の「返信」で報告を指したものか（そのときの「直前に聞いた文」は返信先の報告。heard）。"""
+    def replying(self, turn: str) -> str | None:
+        """発言 turn が、画面の「返信」で報告を指したものなら、その報告のセッション（分からなければ空）。返信でなければ None。
+        返信の発言の「直前に聞いた文」（heard）は返信先の報告。答える・閉じるは、相手がこのセッションのときだけ。"""
         raise NotImplementedError
 
     async def report_target(self) -> dict | None:
@@ -59,7 +60,7 @@ class Brain:
         """報告の前。頭が記録を持たないときだけ、本体が見出しを記録する。記録に書けたら True。"""
         return True
 
-    async def report_end(self, state: str, reply: str, about: str, saved: bool) -> bool:
+    async def report_end(self, state: str, reply: str, about: str, saved: bool, pane: str = "") -> bool:
         """報告のあと。記録に書けたかを返す。"""
         return saved
 

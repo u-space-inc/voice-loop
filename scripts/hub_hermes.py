@@ -186,34 +186,36 @@ def hermes_history(limit: int = 40) -> list[dict]:
 _REF_DROP = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ud800-\udfff〔〕]")
 
 
-def report_ref(at) -> tuple[str, str]:
-    """画面の「返信」が指した報告の (名前, 報告の文)。記録にある報告（ハブからの自発的な報告）を、記録の時刻で探す（名前は画面から受け取らない）。
-    名前は 1 行・80 字にし、制御文字・向きを変える文字・〔〕は空白にする（発言の前置きの形を崩せないように）。見つからなければ ("", "")。"""
+def report_ref(at) -> tuple[str, str, str]:
+    """画面の「返信」が指した報告の (名前, 報告の文, どのセッションの報告か)。記録にある報告（ハブからの自発的な報告）を、記録の時刻で探す（名前は画面から受け取らない）。
+    名前は 1 行・80 字にし、制御文字・向きを変える文字・〔〕は空白にする（発言の前置きの形を崩せないように）。見つからなければ ("", "", "")。
+    セッションは、0.25.0 より前の報告には無い（空。返信の守りは、空なら答える・閉じるを断る）。"""
     if isinstance(at, bool) or not isinstance(at, (int, float)):
-        return "", ""
+        return "", "", ""
     for d in reversed(hermes_records() or []):
         if d.get("role") == "ai" and d.get("report") and d.get("at") == at:
-            return core._clip(" ".join(_REF_DROP.sub(" ", str(d.get("about") or "")).split()), 80), str(d.get("text") or "")
-    return "", ""
+            return (core._clip(" ".join(_REF_DROP.sub(" ", str(d.get("about") or "")).split()), 80), str(d.get("text") or ""),
+                    str(d.get("pane") or ""))
+    return "", "", ""
 
 
 # ユーザーの発言と Hermes（ハブ）の返答の台帳。Hermes は herdr のセッションではないので、本体が直接持つ。
 # 承認に答える・閉じるの守り（「見たあとにユーザーが発言したか」「聞いたときの返答に問いがあるか」）はこの台帳で確かめる。自動通知は載せない。
 # 中身は上の記録にも書き、起動のときに記録から戻す（再起動で消えない。発言の ID は再起動をまたいでも重ならない）。
 # 記録を読めなければ空から始める（守りは「まだ発言が無い」として、新しい発言を待つ側に倒れる）
-HERMES_TURNS: deque = deque(maxlen=50)  # (発言の ID, ユーザーの文, Hermes の返答, 発言の直前に聞いた Hermes の返答, 返信先の報告の名前（返信でなければ空）)
+HERMES_TURNS: deque = deque(maxlen=50)  # (発言の ID, ユーザーの文, Hermes の返答, 発言の直前に聞いた Hermes の返答, 返信先の報告の名前（返信でなければ空）, 返信先の報告のセッション)
 # ハブ（Hermes）の最後の出力（発言への返答か、自動通知への報告）。利用者の発言が始まるときに台帳の行へ写す（承認に答えるの守りの heard）。
 # 記録（hermes-log.jsonl）からは取らない（書けなかった報告で、古い問いを拾わないため）。Hermes とのやり取りの鍵（pane_lock）の中で置き換え・写す
 HERMES_HEARD = {"text": ""}
 _unsaved: set[str] = set()  # 記録に書けなかった発言の ID（画面に「記録に残っていない」と知らせるため）
 
 
-def hermes_turn_begin(text: str, reply_to: str = "", heard: str | None = None) -> str:
+def hermes_turn_begin(text: str, reply_to: str = "", heard: str | None = None, reply_pane: str = "") -> str:
     """発言を台帳と記録に載せる。返信のときは heard に返信先の報告の文を渡す: 承認に答える・閉じるの守りが「発言の直前に聞いた文」として見るのは、
     最後に届いた返事ではなく、利用者が返信を押した報告になる（古い報告への「はい」が、そのあとに届いた別件の問いへの答えにならない）。"""
     turn = f"h{os.urandom(6).hex()}"
-    HERMES_TURNS.append([turn, text, "", HERMES_HEARD["text"] if heard is None else heard, reply_to])  # 守りの台帳は、利用者の言葉のまま（返信の前置きは入れない）
-    if not hermes_log("me", text, turn=turn, **({"reply_to": reply_to} if reply_to else {})):
+    HERMES_TURNS.append([turn, text, "", HERMES_HEARD["text"] if heard is None else heard, reply_to, reply_pane])  # 守りの台帳は、利用者の言葉のまま（返信の前置きは入れない）
+    if not hermes_log("me", text, turn=turn, **({"reply_to": reply_to, "reply_pane": reply_pane} if reply_to else {})):
         _unsaved.add(turn)
     return turn
 
@@ -238,7 +240,7 @@ def _load_hermes_turns():
         if not isinstance(turn, str):
             continue
         if d["role"] == "me":
-            rows[turn] = [turn, d["text"], "", None, str(d.get("reply_to") or "")]  # 直前に聞いた返答の写しは記録から作らない（承認に答えるときは聞き直してもらう）
+            rows[turn] = [turn, d["text"], "", None, str(d.get("reply_to") or ""), str(d.get("reply_pane") or "")]  # 直前に聞いた返答の写しは記録から作らない（承認に答えるときは聞き直してもらう）
         elif d["role"] == "ai" and turn in rows:
             rows[turn][2] = d["text"]
     HERMES_TURNS.extend(rows.values())
@@ -252,10 +254,10 @@ async def hermes_exchange(text: str, reply_at: float | None = None) -> tuple[str
     返信なのに報告が見つからない（記録が回った・読めない・報告でない）ときは、送らずに止める（ふつうの発言として送ると、守りが最後に聞いた
     別件の問いを見てしまう）。返信先は、やり取りの鍵の中で読む（あとから届いた発言と順が入れ替わらないように）。"""
     async with core.pane_lock(HERMES_PANE):
-        ref, ref_text = await asyncio.to_thread(report_ref, reply_at) if reply_at is not None else ("", "")
+        ref, ref_text, ref_pane = await asyncio.to_thread(report_ref, reply_at) if reply_at is not None else ("", "", "")
         if reply_at is not None and not ref:
             return "", "返信先の報告が見つかりませんでした（記録が回ったか、読めません）。送っていません。返信を選び直すか、返信をやめて送ってください", True
-        turn = hermes_turn_begin(text, ref, ref_text if ref else None)  # 発言の台帳。承認に答える・閉じるの守りが「見たあとの発言か」を見る
+        turn = hermes_turn_begin(text, ref, ref_text if ref else None, ref_pane)  # 発言の台帳。承認に答える・閉じるの守りが「見たあとの発言か」を見る
         try:
             reply = await asyncio.to_thread(ask_hermes, f"〔返信: {ref} の報告〕\n{text}" if ref else text)
         except Exception as e:
@@ -876,8 +878,8 @@ class Hermes(Brain, Talker):
     def reply_to(self, turn: str) -> str:
         return next((row[2] for row in HERMES_TURNS if row[0] == turn), "")
 
-    def replying(self, turn: str) -> bool:
-        return next((bool(row[4]) for row in HERMES_TURNS if row[0] == turn and len(row) > 4), False)
+    def replying(self, turn: str) -> str | None:
+        return next((row[5] if len(row) > 5 else "" for row in HERMES_TURNS if row[0] == turn and len(row) > 4 and row[4]), None)
 
     async def report_target(self) -> dict | None:
         return hermes_agent() if HERMES_KEY else None
@@ -886,11 +888,11 @@ class Hermes(Brain, Talker):
         """Hermes の会話は本体が記録する（画面が無くても、あとで履歴に出る）。"""
         return hermes_log("note", headline, about=about)
 
-    async def report_end(self, state: str, reply: str, about: str, saved: bool) -> bool:
+    async def report_end(self, state: str, reply: str, about: str, saved: bool, pane: str = "") -> bool:
         # 利用者が次に聞くのはこの報告（受け取れなければ本体の失敗の知らせ）。記録に書けたかに関係なく、ここで置き換える
         HERMES_HEARD["text"] = reply if state == "done" and reply.strip() else ""
         if state == "done" and reply.strip():
-            return hermes_log("ai", reply, report=True, about=about) and saved
+            return hermes_log("ai", reply, report=True, about=about, pane=pane) and saved  # pane: どのセッションの報告か（返信の守りが照らす）
         failed = f"ハブから報告を受け取れませんでした: {core._clip(reply, 200) or '返事が空でした'}"
         saved = hermes_log("error", failed, about=about) and saved
         for c in list(core.CLIENTS):  # 開いている画面には、いま知らせる（記録に書けなければ、ここでしか伝わらない）
