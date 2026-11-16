@@ -18,6 +18,8 @@ PC の見た目（Chromium）: 頼んだ件を「動いている」「終わっ�
 代理からの知らせ（Chromium）: 💡 の一覧に文字として出す（タグを解釈しない）・知らせの数に入る・× とすべて消す・開いている画面に一行で出す。
 キー（Chromium）: PC の幅で Space が話す（押し続けの繰り返し・変換の途中・文字の欄の中では効かない。押しているボタンの既定の動きは止める）・
 Esc が停止（文字の欄の中でも効く・ほかの欄の中では効かない）・広げて読んでいる間は Esc で戻るだけ・スマホの幅では効かない。
+添付（Chromium）: 📎 で選ぶと入力の上に並ぶ（文字の欄の上・同じ幅）・扱えない種類と 6 つ目は断る・✕ で外す・送ると本体に置いて id を発言に付け、
+欄を空にする・吹き出しに名前を出す。
 報告への返信（Chromium）: ハブの報告に件と「↩ 返信」を出す（件は文字として）・押すと入力の上に返信先・次の発言に報告の時刻だけを付けて送る・
 送った発言に返信先を出す・送る・✕・相手を替えると外れる。
 使い方: uv run spike/pc_ui_test.py"""
@@ -679,6 +681,37 @@ def run_reading(page, who):
     check(f"{who} PC の幅に戻すと 3 列（広げてはいない）", (wait(lambda: page.evaluate("document.body.classList.contains('wide')")), reading()), (True, False))
 
 
+def run_attach(page, who):
+    """📎 で選んだファイルを、送るときに本体へ置き（/api/attach）、返った id を発言に付ける"""
+    seed()
+    open_page(page, 1400)
+    page.select_option("#agent", "w1:p1")
+    wait(lambda: "このセッションにはまだ会話がありません" in (page.text_content("#log") or ""))
+    page.evaluate("(() => { window.__sent = []; const o = ws.send.bind(ws); ws.send = m => { window.__sent.push(m); if (typeof m !== 'string' || JSON.parse(m).type !== 'text') o(m); }; })()")
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    f = lambda n, mime="image/png", data=png: {"name": n, "mimeType": mime, "buffer": data}
+    chips = lambda: page.eval_on_selector_all("#attachBar .chip span", "els => els.map(e => e.textContent)")
+    page.set_input_files("#attachInput", files=[f("a.png"), f("b.svg", "image/svg+xml", b"<svg/>")])
+    check(f"{who} 📎 で選ぶと入力の上に並ぶ。扱えない種類は並べずに断る",
+          (chips(), "b.svg は添付できません" in (page.text_content("#log") or "")), (["📎 a.png"], True))
+    ab, tf = page.locator("#attachBar").bounding_box(), page.locator("#typedForm").bounding_box()
+    check(f"{who} PC の幅では、添付の欄は文字の欄のすぐ上に、同じ幅で出す", (ab["y"] + ab["height"] <= tf["y"] + 1, abs(ab["width"] - tf["width"]) <= 2), (True, True))
+    page.set_input_files("#attachInput", files=[f(f"p{i}.png") for i in range(5)])
+    check(f"{who} 1 回に 5 つまで（6 つ目は断る）", (len(chips()), "添付は 1 回に 5 つまでです" in (page.text_content("#log") or "")), (5, True))
+    page.locator("#attachBar .chip button").nth(1).click()
+    page.locator("#attachBar .chip button").nth(1).click()
+    check(f"{who} ✕ で外す", chips(), ["📎 a.png", "📎 p2.png", "📎 p3.png"])
+    page.fill("#typed", "これを見て")
+    page.press("#typed", "Enter")
+    sent = lambda: page.evaluate("window.__sent.map(m => JSON.parse(m)).filter(m => m.type === 'text')")
+    check(f"{who} 送ると本体に置き、返った id を発言に付ける。欄は空になり、吹き出しに名前を出す",
+          wait(lambda: len(sent()) == 1) and (len(sent()[0].get("attachments", [])), sent()[0]["text"], chips(), visible(page, "#attachBar"),
+                                               page.locator("#log .msg.me").last.inner_text()),
+          (3, "これを見て", [], False, "これを見て\n📎 a.png、p2.png、p3.png"))
+    ids = sent()[0]["attachments"]
+    check(f"{who} 返った id は本体が覚えている（場所は画面に返さない）", (all(i in s.ATTACHED for i in ids), "path" in json.dumps(sent()[0])), (True, False))
+
+
 def run_reply(page, who):
     """ハブの会話の報告に「↩ 返信」。押すと入力の上に返信先が出て、次の発言に報告の記録の時刻（reply_at）だけを付けて送る（件の名前は送らない）"""
     seed()
@@ -826,6 +859,7 @@ with sync_playwright() as pw:
     run_notice(b.new_page(), "Chromium（知らせ）:")
     run_keys(b.new_page(), "Chromium（キー）:")
     run_reply(b.new_page(), "Chromium（報告への返信）:")
+    run_attach(b.new_page(), "Chromium（添付）:")
     b.close()
     b = pw.webkit.launch()
     # デスクトップの設定の WebKit は、headless のこの試験では、PC の形と関係なく画面が固まる（main の画面でも同じ。2026-10-26 に確かめた）。

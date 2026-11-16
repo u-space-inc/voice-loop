@@ -18,6 +18,7 @@ import json
 import math
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -46,6 +47,7 @@ from origin_guard import SameOriginOnly  # noqa: E402  接続元の確かめ
 import consent  # noqa: E402  利用者の発言が、許す・選ぶの答えになっているか（承認に答える・閉じるの守り）
 import ask_form  # noqa: E402  選択肢の問い（AskUserQuestion）に、画面と Slack から答える
 from places import CONFIG_DIR, STATE_DIR  # noqa: E402  端末ごとの設定と状態の置き場
+import attach  # noqa: E402  画面から添付したファイル
 
 
 def _load_config_env():
@@ -597,6 +599,77 @@ def agent_updated(a: dict) -> float | None:
         return path.stat().st_mtime if path else None
     except OSError:
         return None
+
+
+# ---------- 添付（画面から話し相手に渡すファイル。部品は scripts/attach.py） ----------
+ATTACH_DIR = STATE_DIR / "attachments"
+ATTACHED: dict[str, dict] = {}  # 画面に返した添付の id → {path, file, name, at}。発言に付いた id だけを、この中から引く（場所は画面から受け取らない）
+ATTACH_ID_KEEP = 86400
+
+
+@app.post("/api/attach")
+async def api_attach(request: Request, name: str = ""):
+    """画面から添付するファイルを 1 つ受け取る（本文がそのままファイルの中身）。名前は拡張子と表示にだけ使い、置く名前は本体が付ける。
+    受け取ったら id を返す。発言（text・turn）の attachments にその id を並べると、本体が場所を発言の末尾に書いて渡す。"""
+    ext = attach.ext_of(name)
+    if ext not in attach.TYPES:
+        return JSONResponse({"ok": False, "reason": "type", "why": "画像（png・jpg・gif・webp・heic）・PDF・テキスト（txt・md・csv）だけ添付できます"}, status_code=400)
+    data = bytearray()
+    async for chunk in request.stream():
+        data += chunk
+        if len(data) > attach.MAX:
+            return JSONResponse({"ok": False, "reason": "too_big", "why": f"1 つ {attach.MAX // (1024 * 1024)}MB までです"}, status_code=413)
+    if not data:
+        return JSONResponse({"ok": False, "reason": "empty", "why": "中身がありません"}, status_code=400)
+    why = attach.content_problem(ext, bytes(data))
+    if why:
+        return JSONResponse({"ok": False, "reason": "content", "why": why}, status_code=400)
+    file = attach.new_name(ext)
+    try:
+        path = await asyncio.to_thread(attach.save, ATTACH_DIR, file, bytes(data))
+    except (OSError, ValueError) as e:
+        traceback.print_exc()
+        return JSONResponse({"ok": False, "reason": "state", "why": f"置けませんでした（{type(e).__name__}）"}, status_code=500)
+    aid = secrets.token_urlsafe(12)
+    now = time.time()
+    for k in [k for k, v in ATTACHED.items() if now - v["at"] > ATTACH_ID_KEEP]:
+        ATTACHED.pop(k, None)
+    ATTACHED[aid] = {"path": path, "file": file, "name": attach.shown_name(name), "at": now}
+    await asyncio.to_thread(attach.tidy, ATTACH_DIR)
+    hlog(f"添付を受け取りました: {file}（{len(data)} バイト）", flush=True)
+    return JSONResponse({"ok": True, "id": aid, "name": ATTACHED[aid]["name"], "size": len(data)})
+
+
+def attachments_of(d: dict) -> list[str] | None:
+    """発言に付いた添付の id。付いていなければ []。形が違う・多すぎるなら None（送らずに断る）。"""
+    v = d.get("attachments")
+    if v is None:
+        return []
+    if not isinstance(v, list) or len(v) > attach.COUNT or not all(isinstance(x, str) and len(x) <= 64 for x in v):
+        return None
+    return v
+
+
+async def attachment_lines(ids: list[str], talker) -> tuple[str, str]:
+    """発言の末尾に足す「添付（画面から）」の行と、断る理由。セッションには状態フォルダの場所、herdr の外の話し相手（ハブ）には、
+    その相手が置いた場所（Hermes ならコンテナの中）を書く。"""
+    if not ids:
+        return "", ""
+    items = [ATTACHED.get(i) for i in ids]
+    if any(it is None for it in items):
+        return "", "添付が見つかりません（本体を起動し直したか、時間がたちました）。送っていません。添付を選び直してください"
+    lines = []
+    for it in items:
+        if talker is None:
+            where = str(it["path"])
+        else:
+            try:
+                data = await asyncio.to_thread(Path(it["path"]).read_bytes)
+                where = await asyncio.to_thread(talker.put_attachment, it["file"], data)
+            except (OSError, RuntimeError) as e:
+                return "", f"添付を渡せませんでした（{_clip(str(e), 120)}）。送っていません"
+        lines.append(f"- {where}（{it['name']}）")
+    return "\n\n添付（画面から）:\n" + "\n".join(lines), ""
 
 
 def reply_at_of(d: dict) -> float | None:
@@ -2546,9 +2619,16 @@ async def ws(sock: WebSocket):
     current: asyncio.Task | None = None
     send = client.send
 
-    async def turn(text: str, pane: str, cancel: asyncio.Event, key: str | None, reply_at: float | None = None):
+    async def turn(text: str, pane: str, cancel: asyncio.Event, key: str | None, reply_at: float | None = None, files: list[str] | None = None):
         try:
-            await run_turn(text, pane, cancel, key, reply_at)
+            if files is None:  # 添付の形が違う・多すぎる
+                await send(type="error", text=f"添付の形が違うか、多すぎます（1 回に {attach.COUNT} つまで）。送っていません")
+                return
+            extra, why = await attachment_lines(files, TALKERS.get(pane))
+            if why:
+                await send(type="error", text=why)
+                return
+            await run_turn(text + extra, pane, cancel, key, reply_at)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # 語り手・音声合成・herdr の失敗を黙って止めず、画面とログに出す
@@ -2603,14 +2683,14 @@ async def ws(sock: WebSocket):
                 await send(type="reply", pane=pane, text=reply)
                 await speak_to([client], reply, cancel)
 
-    def start_turn(text: str, pane: str, speaker: int, key: str | None, reply_at: float | None = None):
+    def start_turn(text: str, pane: str, speaker: int, key: str | None, reply_at: float | None = None, files: list[str] | None = None):
         nonlocal cancel, current
         client.speaker = speaker
         cancel.set()  # 前のターンの読み上げが残っていれば止める
         if current and not current.done():
             current.cancel()
         cancel = asyncio.Event()
-        current = asyncio.create_task(turn(text, pane, cancel, key, reply_at))
+        current = asyncio.create_task(turn(text, pane, cancel, key, reply_at, files))
 
     pending: dict = {}
     try:
@@ -2637,7 +2717,7 @@ async def ws(sock: WebSocket):
                     continue
                 pending = d  # {"type":"turn", pane, speaker, filename} → 次のバイナリが音声
                 if d["type"] == "text":
-                    start_turn(d["text"], d["pane"], int(d["speaker"]), d.get("key"), reply_at_of(d))
+                    start_turn(d["text"], d["pane"], int(d["speaker"]), d.get("key"), reply_at_of(d), attachments_of(d))
                 continue
             if msg.get("bytes") is not None and pending.get("type") == "turn":
                 await send(type="status", text="聞き取り中…")
@@ -2646,7 +2726,7 @@ async def ws(sock: WebSocket):
                     await send(type="error", text="聞き取れませんでした")
                     continue
                 await send(type="transcript", pane=pending["pane"], text=text)
-                start_turn(text, pending["pane"], int(pending["speaker"]), pending.get("key"), reply_at_of(pending))
+                start_turn(text, pending["pane"], int(pending["speaker"]), pending.get("key"), reply_at_of(pending), attachments_of(pending))
     except WebSocketDisconnect:
         pass
     finally:

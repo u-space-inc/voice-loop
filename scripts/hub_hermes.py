@@ -20,6 +20,7 @@ from pathlib import Path
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
+import attach  # 画面から添付したファイルを Hermes のコンテナの中に置く
 import hermes_memory  # Hermes の記憶を画面（PC の「記憶」）で足す・直す・消す
 import hermes_skills  # Hermes の手順の書き足しを画面で採る・捨てる、Hermes の記憶を読む
 from hub_brain import Brain, Talker
@@ -857,6 +858,10 @@ class Hermes(Brain, Talker):
 
     def ask(self, text: str) -> str:
         return ask_hermes(text)
+
+    def put_attachment(self, name: str, data: bytes) -> str:
+        """Hermes はコンテナの中なので、コンテナの中の置き場（/opt/data/voice-loop/attachments/）に、固定の台本で置く（ホストからは書かない）。"""
+        return attach.put_container(hermes_skills.docker_bin(), HERMES_CONTAINER, hermes_skills.USER, hermes_skills.PY, name, data)
 
     def ensure(self) -> dict:
         """Hermes がハブのときは立てるものが無いので、使える状態かだけ確かめる。"""

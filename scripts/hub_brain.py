@@ -92,6 +92,10 @@ class Talker:
         """ユーザーの発言を 1 往復する。(返事, 失敗の理由, 記録に書けたか)。reply_at は、画面の「返信」が指した報告の記録の時刻（無ければ None）。"""
         raise NotImplementedError
 
+    def put_attachment(self, name: str, data: bytes) -> str:
+        """画面から添付したファイルを、この話し相手が開ける場所に置き、その場所を返す（置けなければ RuntimeError）。名前は本体が付けたもの。"""
+        raise NotImplementedError
+
     def ask(self, text: str) -> str:
         """1 往復して返事を返す（自動通知など。失敗は例外）。"""
         raise NotImplementedError
