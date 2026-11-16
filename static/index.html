@@ -308,7 +308,7 @@
   <div id="bar">
     <div id="status"><span id="conn" class="dot"></span><span id="statusText">接続中…</span><button id="hubStart">ハブを起動</button><button id="tap">▶ タップして再生</button><button id="sitBtn" aria-pressed="false" aria-label="知らせと承認" title="知らせと承認">💡</button><button id="tasksBtn" aria-pressed="false" aria-label="頼んだ件" title="頼んだ件">📋</button><button id="bell" aria-pressed="false" hidden>🔔</button><button id="mute" aria-pressed="false">🔇</button><button id="reload" aria-label="最新の画面を読み込み直す" title="最新の画面を読み込み直す">↻</button></div>
     <div class="row"><select id="agent" aria-label="セッション"></select><select id="speaker" aria-label="声"></select></div>
-    <div class="row"><button id="talk">タップして話す</button><button id="stop">停止</button></div>
+    <div class="row"><button id="talk" title="PC では Space でも話せます（文字の欄の外で）">タップして話す</button><button id="stop" title="PC では Esc でも止められます">停止</button></div>
     <form id="typedForm" class="row"><textarea id="typed" rows="1" placeholder="文字で送る" autocomplete="off"></textarea><button id="send" type="submit">送る</button></form>
   </div>
   <div id="viewer" hidden role="dialog" aria-modal="true" aria-labelledby="vName"><div class="vhead"><span id="vName"></span><span id="vPos"></span><button id="vPrev" aria-label="前の成果物">←</button><button id="vNext" aria-label="次の成果物">→</button><button id="vClose">✕ 閉じる</button></div><div id="vStage"></div><div id="vPath"></div></div>
@@ -1089,6 +1089,11 @@ function closeViewer() {  // 押したサムネイルに戻る（消えていれ
 $('vPrev').onclick = () => stepViewer(-1);
 $('vNext').onclick = () => stepViewer(1);
 $('vClose').onclick = closeViewer;
+// PC の幅だけ（2026-11-16 本人が推奨を選んだ）: Space で話す（押すたびに切り替え。話すボタンと同じ）、Esc で停止（停止ボタンと同じ）。
+// 変換の途中・画像を見ている間・広げて読んでいる間・ほかの部品がもう処理したキー（defaultPrevented。頼んだ件の開閉など）は今までどおり。Space は文字の欄（文の欄・一行の欄・選ぶ欄・書ける要素）の中では効かせない。
+// Esc は文字の欄（#typed）の中でも効くが、ほかの欄（記憶を直す欄など）の中では効かせない（その欄の取り消しなどに残す）。修飾キー付き（⌘・Ctrl・Option・Shift）は見ない
+const FIELD = 'textarea, input, select, [contenteditable=""], [contenteditable="true"]';
+let spaceTalk = false;  // Space で話すを押した（離したときの、押しているボタンの既定の動きも止める）
 document.addEventListener('keydown', e => {
   if (e.isComposing) return;
   if (viewer) {
@@ -1096,9 +1101,15 @@ document.addEventListener('keydown', e => {
     else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && e.target.tagName !== 'VIDEO') { e.preventDefault(); stepViewer(e.key === 'ArrowLeft' ? -1 : 1); }
     return;
   }
+  if (wide && !reading && !e.defaultPrevented && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+    const field = e.target.closest ? e.target.closest(FIELD) : null;
+    if (e.key === ' ' && !field) { e.preventDefault(); spaceTalk = true; if (!e.repeat && !$('talk').disabled) $('talk').click(); return; }
+    if (e.key === 'Escape' && (!field || field.id === 'typed')) { e.preventDefault(); $('stop').click(); return; }
+  }
   if (e.key !== 'Escape' || !reading || (e.target.closest && e.target.closest('textarea, input'))) return;
   setReading(false); $('readBtn').focus();
 });
+document.addEventListener('keyup', e => { if (e.key === ' ' && spaceTalk) { spaceTalk = false; e.preventDefault(); } });
 function setRecTab(t) {
   recTab = t; try { localStorage.setItem('vl.recTab', t); } catch {}
   $('rec').dataset.tab = t;

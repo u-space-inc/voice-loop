@@ -16,6 +16,8 @@ PC の見た目（Chromium）: 頼んだ件を「動いている」「終わっ�
 広げて読む（Chromium）: ⤢ で右の列を画面いっぱいに・ほかの列は inert・長い記憶を切らずに出す・直す途中の文が残る・Esc（文の欄・一行の欄・
 変換の途中では効かない）・✕・狭めると戻る・広げている間だけ承認・入力待ちの数を出し、押すと戻ってカードのボタンへ。
 代理からの知らせ（Chromium）: 💡 の一覧に文字として出す（タグを解釈しない）・知らせの数に入る・× とすべて消す・開いている画面に一行で出す。
+キー（Chromium）: PC の幅で Space が話す（押し続けの繰り返し・変換の途中・文字の欄の中では効かない。押しているボタンの既定の動きは止める）・
+Esc が停止（文字の欄の中でも効く・ほかの欄の中では効かない）・広げて読んでいる間は Esc で戻るだけ・スマホの幅では効かない。
 使い方: uv run spike/pc_ui_test.py"""
 import json
 import os
@@ -554,6 +556,57 @@ def run_sessions_nostore(page, who):
     AGENTS[:] = saved
 
 
+def run_keys(page, who):
+    """PC の幅の Space（話す）と Esc（停止）。押したことは、話す・停止のボタンが受けた click の数で見る（マイクと本体には届かせない）"""
+    seed()
+    open_page(page, 1400)
+    page.wait_for_function("!document.getElementById('talk').disabled")
+    page.evaluate("""window.__n = { talk: 0, stop: 0 };
+      for (const id of ['talk', 'stop']) document.getElementById(id).addEventListener('click', e => { window.__n[id]++; e.stopImmediatePropagation(); }, true);""")
+    n = lambda: page.evaluate("[window.__n.talk, window.__n.stop]")
+    key = lambda k, **o: page.evaluate(f"document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {{ key: {json.dumps(k)}, bubbles: true, cancelable: true, ...{json.dumps(o)} }}))")
+    page.evaluate("document.activeElement.blur()")
+    page.keyboard.press(" ")
+    page.keyboard.press(" ")
+    check(f"{who} 文字の欄の外で Space を押すたびに、話すボタンと同じことをする", n(), [2, 0])
+    key(" ", repeat=True)
+    key(" ", isComposing=True)
+    page.keyboard.press("Shift+Space")
+    page.keyboard.press("Shift+Escape")
+    check(f"{who} 押し続けの繰り返し・変換の途中・Shift 付き（上へのスクロール）では、話さない・止めない", n(), [2, 0])
+    page.focus("#typed")
+    page.keyboard.press(" ")
+    check(f"{who} 文字の欄の中の Space は、ふつうに空白を打つ（話さない）", (n(), page.input_value("#typed")), ([2, 0], " "))
+    page.keyboard.press("Escape")
+    check(f"{who} 文字の欄の中でも、Esc で停止する", n(), [2, 1])
+    page.focus("#agent")
+    page.keyboard.press("Escape")
+    check(f"{who} ほかの欄（選ぶ欄）の中の Esc では止めない", n(), [2, 1])
+    page.fill("#typed", "")
+    before = page.input_value("#agent")
+    other = page.locator("#sessions .sess:not(.on)").nth(0)  # いま話している相手ではないセッション（押されると相手が替わる）
+    other.focus()
+    page.keyboard.press(" ")
+    check(f"{who} 一覧のボタンにいるときの Space も話す（ボタンは押さない）", (n(), page.input_value("#agent")), ([3, 1], before))
+    page.evaluate("""const t = document.createElement('div'); t.id = 'own'; t.tabIndex = 0; document.getElementById('log').appendChild(t);
+      t.addEventListener('keydown', e => { if (e.key === ' ' || e.key === 'Escape') e.preventDefault(); });""")
+    page.focus("#own")
+    page.keyboard.press(" ")
+    page.keyboard.press("Escape")
+    check(f"{who} ほかの部品がもう処理したキー（頼んだ件の開閉など）では、話さない・止めない", n(), [3, 1])
+    page.click("#readBtn")
+    page.evaluate("document.activeElement.blur()")
+    page.keyboard.press(" ")
+    page.keyboard.press("Escape")
+    check(f"{who} 広げて読んでいる間は、Space で話さず、Esc は広げたのを戻すだけ", (n(), page.evaluate("document.body.classList.contains('reading')")), ([3, 1], False))
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.wait_for_function("!wide")
+    page.evaluate("document.activeElement.blur()")
+    page.keyboard.press(" ")
+    page.keyboard.press("Escape")
+    check(f"{who} スマホの幅では、Space も Esc も効かせない", n(), [3, 1])
+
+
 def run_reading(page, who):
     """⤢ で右の列（記憶・知らせ）を画面いっぱいに広げて読む。CSS で広げるだけなので、直す途中の文はそのまま。ほかの列は押せない（inert）。
     ✕・Esc・スマホの幅へ狭めると戻る（文の欄・一行の欄を打っている間と、変換の途中の Esc では戻らない）。広げている間だけ、承認・入力待ちの数を見出しに出す"""
@@ -727,6 +780,7 @@ with sync_playwright() as pw:
     run_reading(b.new_page(), "Chromium（広げて読む）:")
     run_phone(b.new_page(), "Chromium（スマホ）:")
     run_notice(b.new_page(), "Chromium（知らせ）:")
+    run_keys(b.new_page(), "Chromium（キー）:")
     b.close()
     b = pw.webkit.launch()
     # デスクトップの設定の WebKit は、headless のこの試験では、PC の形と関係なく画面が固まる（main の画面でも同じ。2026-10-26 に確かめた）。
