@@ -84,9 +84,12 @@ def _append(row: dict) -> dict:
 _CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ud800-\udfff]")
 
 
+KEY_MAX = 1000  # 照合の鍵の長さの上限。切ると末尾だけが違う鍵どうしが同じになるので、切らずに断る
+
+
 def raw_key(v: str | None) -> str:
-    """照合の鍵。空白はそのまま残し（一字一句で照らすため）、制御文字と向きを変える文字だけを外して、300 字で切る。"""
-    return _CTRL.sub("", str(v or ""))[:300]
+    """照合の鍵。空白はそのまま残し（一字一句で照らすため）、制御文字と向きを変える文字だけを外す（切らない。長さは呼び出し側で断る）。"""
+    return _CTRL.sub("", str(v or ""))
 
 
 def clip(v: str | None, key: str) -> str:
@@ -153,6 +156,9 @@ def main() -> int:
                 new.append(line)
         print("\n".join(new + [f"新しい出来事 {len(new)} 件（扱い済み {old} 件・形の合わない行 {odd} 件）"]))
         return 0
+    if a.cmd in ("add", "find") and len(raw_key(a.key)) > KEY_MAX:
+        print(f"照合の鍵が長すぎます（{KEY_MAX} 字まで。切らずに断ります）")
+        return 2
     if a.cmd == "add":
         if not _RECORD_ID.fullmatch(a.id):
             print("id の形が合いません（見張りの行の 2 つ目の語を、そのまま渡してください）")

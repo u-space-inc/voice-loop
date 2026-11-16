@@ -288,6 +288,15 @@ check("items: 照合の鍵は空白を変えずに残し、一覧に「照合の
       ([json.loads(l).get("key") for l in (TMP / "voice-loop/items.jsonl").read_text().splitlines() if '"a1"' in l][0], "照合の鍵: alarm alerts@example.com api  errors" in f1.stdout,
        "照合の鍵:" in run("find", "--key", "alarm alerts@example.com api errors 2").stdout, "前の形の鳴り" in run("open").stdout and "照合の鍵:" in run("open").stdout.split("前の形の鳴り", 1)[1].split("\n[", 1)[0]),
       ("alarm alerts@example.com api  errors", True, True, False))
+for i in range(25):  # 同じアラームの回復（OK）の記録が多くても、ALARM の鍵で探せば ALARM の記録が出る
+    run("add", "--source", "mail", "--id", f"ok{i}", "--kind", "info", "--title", "回復", "--key", "ok alerts@example.com api  errors")
+check("items find: OK の記録が上限より多くても、ALARM の鍵で ALARM の記録を探せる", "古い鳴り" in run("find", "--key", "alarm alerts@example.com api  errors").stdout, True)
+long_a, long_b = "alarm a@example.com " + "x" * 990 + "A", "alarm a@example.com " + "x" * 990 + "B"
+check("items: 長すぎる鍵は切らずに断る（末尾だけ違う鍵どうしを同じにしない）・上限までは一字一句で残す",
+      (run("add", "--source", "mail", "--id", "L1", "--kind", "info", "--title", "長い", "--key", long_a).returncode,
+       run("find", "--key", long_b).returncode, run("add", "--source", "mail", "--id", "L2", "--kind", "info", "--title", "上限", "--key", "alarm " + "y" * 994).returncode,
+       "上限" in run("find", "--key", "alarm " + "y" * 994).stdout, "上限" in run("find", "--key", "alarm " + "y" * 993).stdout),
+      (2, 2, 0, True, False))
 run("add", "--source", "mail", "--id", "a4", "--kind", "info", "--title", "制御", "--key", "alarm x\x1b[2Ky\u202ez")
 check("items find: 鍵の制御文字・向きを変える文字は外して残し、同じように外して照らす・空の鍵は断る・正規表現として読まない",
       ("制御" in run("find", "--key", "alarm x\x1b[2Ky\u202ez").stdout, "制御" in run("find", "--key", "alarm x[2Kyz").stdout, run("find", "--key", " ").returncode,
@@ -536,7 +545,7 @@ check("手順 6: アラームは judge・info を問わず、回復の照合 →
 check("手順 6: 照らすのは差出人のアドレスとアラーム名が一字一句同じものだけ・本文の文では照らさない・記録にアラーム名と差出人と時刻を残す",
       ("差出人のアドレスが同じで、アラーム名が一字一句同じものだけ" in alarm, "本文の「回復しました」のような文では照らさない" in alarm,
        "`--prepared` の先頭に「アラーム名: <アラーム名>／差出人: <差出人のアドレス>／届いた時刻: <メールの時刻>」と書く" in alarm,
-       "いつも `--key \"alarm <差出人のアドレス> <アラーム名>\"`（照合の鍵。アラーム名は件名から一字一句そのまま。空白も変えない）を付け" in alarm),
+       "ALARM は `--key \"alarm <差出人のアドレス> <アラーム名>\"`、OK は `--key \"ok <差出人のアドレス> <アラーム名>\"`（アラーム名は件名から一字一句そのまま。空白も変えない。ALARM と OK で鍵を分ける" in alarm),
       (True, True, True, True))
 rc = blocks["回復の照合"]
 check("手順 6: 回復の照合は OK の件名と ALARM の日付で絞って 50 件まで取り、50 件ちょうどで当たらなければ照らしきれないとして judge（未回復と決めつけない）",
