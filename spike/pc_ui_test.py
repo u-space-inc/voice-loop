@@ -586,6 +586,12 @@ def run_keys(page, who):
     other.focus()
     page.keyboard.press(" ")
     check(f"{who} 一覧のボタンにいるときの Space も話す（ボタンは押さない）", (n(), page.input_value("#agent")), ([3, 1], before))
+    page.evaluate("""const t = document.createElement('div'); t.id = 'own'; t.tabIndex = 0; document.getElementById('log').appendChild(t);
+      t.addEventListener('keydown', e => { if (e.key === ' ' || e.key === 'Escape') e.preventDefault(); });""")
+    page.focus("#own")
+    page.keyboard.press(" ")
+    page.keyboard.press("Escape")
+    check(f"{who} ほかの部品がもう処理したキー（頼んだ件の開閉など）では、話さない・止めない", n(), [3, 1])
     page.click("#readBtn")
     page.evaluate("document.activeElement.blur()")
     page.keyboard.press(" ")
