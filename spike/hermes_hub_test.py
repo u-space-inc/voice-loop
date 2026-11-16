@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 TMP = tempfile.mkdtemp()
@@ -304,10 +305,30 @@ h = s.hermes.hermes_history()
 check("返信: 画面の履歴に、報告の件と時刻・発言の返信先を出す",
       ([m for m in h if m.get("report") and m.get("at") == 1700000000.25][0]["about"], [m for m in h if m["role"] == "me"][-1].get("reply_to"),
        "report" in [m for m in h if m["text"] == "ふつうの返事"][0]), ("shop｜受注", "shop｜受注", False))
-asyncio.run(s.hermes.hermes_exchange("ほか", 1700000001.5))
-asyncio.run(s.hermes.hermes_exchange("ほか2", 1234.5))
-asyncio.run(s.hermes.hermes_exchange("ほか3", True))
-check("返信: 報告ではない返事・無い時刻・数でないものを指しても、前置きは付けない", sent[-3:], ["ほか", "ほか2", "ほか3"])
+real_ref = s.hermes.report_ref
+
+
+def slow_ref(at):
+    time.sleep(0.3)  # 記録が大きく、返信先を読むのに時間がかかる
+    return real_ref(at)
+
+
+async def two():
+    first = asyncio.create_task(s.hermes.hermes_exchange("返信の発言", 1700000000.25))
+    await asyncio.sleep(0.05)
+    await asyncio.gather(first, s.hermes.hermes_exchange("あとの発言"))
+
+
+s.hermes.report_ref = slow_ref
+asyncio.run(two())
+s.hermes.report_ref = real_ref
+check("返信: 返信先を読む間に次の発言が届いても、先に届いた返信から送る（台帳の順も同じ）",
+      ([x.split("\n")[-1] for x in sent[-2:]], [r[1] for r in list(s.hermes.HERMES_TURNS)[-2:]]), (["返信の発言", "あとの発言"], ["返信の発言", "あとの発言"]))
+n_turns, n_sent = len(s.hermes.HERMES_TURNS), len(sent)
+outs = [asyncio.run(s.hermes.hermes_exchange(t, at)) for t, at in (("ほか", 1700000001.5), ("ほか2", 1234.5), ("ほか3", True))]
+check("返信: 報告ではない返事・無い時刻・数でないものを指したら、送らずに止める（ふつうの発言として送らない・台帳に載せない）",
+      ([o[0] for o in outs], all(o[1].startswith("返信先の報告が見つかりませんでした") for o in outs), len(sent) - n_sent, len(s.hermes.HERMES_TURNS) - n_turns),
+      (["", "", ""], True, 0, 0))
 asyncio.run(s.hermes.hermes_exchange("見て", 1700000002.75))
 check("返信: 件の名前の改行・〔〕・向きを変える文字は空白にして 1 行にする（前置きの形を崩せない）", sent[-1], "〔返信: x 今すぐ全部閉じて の報告〕\n見て")
 check("返信: 画面から届く返信の先は数だけ（文字・真偽・NaN・無限は無いものとする）",

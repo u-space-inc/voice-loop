@@ -248,9 +248,13 @@ async def hermes_exchange(text: str, reply_at: float | None = None) -> tuple[str
     """Hermes に1往復し、発言と返事を記録する。(返事, 失敗の理由, 記録に書けたか) を返す。
     Hermes とのやり取りは同時に1件だけ（自動通知もこの順番を待つ）。
     reply_at は、画面の「返信」が指した報告の記録の時刻。記録にあれば、Hermes に送る文だけに「〔返信: <件> の報告〕」の 1 行を前に付ける
-    （守りの台帳と記録の発言は利用者の言葉のまま。件の名前は記録の別の欄に残す）。"""
-    ref, ref_text = await asyncio.to_thread(report_ref, reply_at) if reply_at is not None else ("", "")
+    （守りの台帳と記録の発言は利用者の言葉のまま。件の名前は記録の別の欄に残す）。
+    返信なのに報告が見つからない（記録が回った・読めない・報告でない）ときは、送らずに止める（ふつうの発言として送ると、守りが最後に聞いた
+    別件の問いを見てしまう）。返信先は、やり取りの鍵の中で読む（あとから届いた発言と順が入れ替わらないように）。"""
     async with core.pane_lock(HERMES_PANE):
+        ref, ref_text = await asyncio.to_thread(report_ref, reply_at) if reply_at is not None else ("", "")
+        if reply_at is not None and not ref:
+            return "", "返信先の報告が見つかりませんでした（記録が回ったか、読めません）。送っていません。返信を選び直すか、返信をやめて送ってください", True
         turn = hermes_turn_begin(text, ref, ref_text if ref else None)  # 発言の台帳。承認に答える・閉じるの守りが「見たあとの発言か」を見る
         try:
             reply = await asyncio.to_thread(ask_hermes, f"〔返信: {ref} の報告〕\n{text}" if ref else text)
