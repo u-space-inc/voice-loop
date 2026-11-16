@@ -506,8 +506,9 @@ function applyTarget() {
 const byUpdated = list => list.map((a, i) => [a, i]).sort((x, y) => (y[0].hub - x[0].hub) || ((y[0].updated ?? -1) - (x[0].updated ?? -1)) || x[1] - y[1]).map(x => x[0]);
 async function loadAgents() {
   let list; try { list = await (await fetch('/api/agents')).json(); } catch { return; }
-  // 相手を選ぶ欄（スマホではこれだけ）は更新順。並びが変わったときだけ作り直す（時刻だけ動いても作り直さない）。Hermes は会話の名前が変わる（💡 に出す）
-  const sig = JSON.stringify(byUpdated(list).map(a => [a.pane, a.key, a.title, a.status, a.hermes ? a.session : '']));
+  // 相手を選ぶ欄（スマホではこれだけ）は更新順。herdr の順（PC の一覧の「herdr の順」・状態順の中の並び）か更新順の並びが変わったときだけ
+  // 作り直す（時刻だけ動いても作り直さない）。Hermes は会話の名前が変わる（💡 に出す）
+  const sig = JSON.stringify([list.map(a => [a.pane, a.key, a.title, a.status, a.hermes ? a.session : '']), byUpdated(list).map(a => a.pane)]);
   if (sig === agentsSig) return;
   agents = list; agentsSig = sig;
   setTimeout(renderSessions);  // PC の左の一覧（select を作ったあとで、選んでいるものに印を付ける）

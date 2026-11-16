@@ -521,6 +521,11 @@ def run_updated(page, who):
     wait(lambda: len(rows()) == 6)
     page.click(".side-h .sort")
     check(f"{who} PC の左の一覧の更新順も同じ並び", (rows(), sort()), (["ハブ（Hermes）", "shop", "api", "infra", "blog", "docs"], "並び: 更新順"))
+    page.click(".side-h .sort")
+    AGENTS[0], AGENTS[1] = AGENTS[1], AGENTS[0]  # herdr の上で blog と api の順だけが入れ替わる（更新順の並びは同じ）
+    page.evaluate("loadAgents()")
+    check(f"{who} herdr の順だけが変わっても、取り直しで「herdr の順」が追従する",
+          wait(lambda: rows() == ["ハブ（Hermes）", "api", "blog", "shop", "docs", "infra"]) and sort(), "並び: herdr の順")
     UPDATED.clear()
     AGENTS[:] = saved
 
