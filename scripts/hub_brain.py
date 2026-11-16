@@ -92,8 +92,9 @@ class Talker:
         """ユーザーの発言を 1 往復する。(返事, 失敗の理由, 記録に書けたか)。reply_at は、画面の「返信」が指した報告の記録の時刻（無ければ None）。"""
         raise NotImplementedError
 
-    def refused(self):
-        """利用者の発言を、本体が送らずに断った（添付の形・宛先など）。利用者が最後に聞いたのは本体の断りなので、承認・閉じるの文脈を失効させる。"""
+    def refused(self, text: str, why: str):
+        """利用者の発言 text を、本体が送らずに断った（添付の形・宛先など。理由 why）。断った発言も台帳と記録に載せ、承認・閉じるの文脈を失効させる
+        （利用者が最後に聞いたのは本体の断り。前の問い・確認への答えに、次の発言を使わせない）。"""
         raise NotImplementedError
 
     def put_attachment(self, name: str, data: bytes) -> str:

@@ -859,8 +859,11 @@ class Hermes(Brain, Talker):
     def ask(self, text: str) -> str:
         return ask_hermes(text)
 
-    def refused(self):
+    def refused(self, text: str, why: str):
+        turn = hermes_turn_begin(text, heard="")  # 断った発言も台帳に載せる（「すぐ次の発言」を進め、保留中の確認を失効させる）
         HERMES_HEARD["text"] = ""  # 利用者が聞くのは本体の断り（前に聞いた問いへの答えに、次の発言を使わせない。失敗のときと同じ）
+        hermes_log("error", why[:300], turn=turn)
+        _unsaved.discard(turn)  # 画面には断りをそのまま出すので、記録に書けたかは返さない
 
     def put_attachment(self, name: str, data: bytes) -> str:
         """Hermes はコンテナの中なので、コンテナの中の置き場（/opt/data/voice-loop/attachments/）に、固定の台本で置く（ホストからは書かない）。"""

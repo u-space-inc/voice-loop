@@ -2632,7 +2632,7 @@ async def ws(sock: WebSocket):
                 extra, why = await attachment_lines(files, TALKERS.get(pane), pane)
             if why:  # 送らずに断る。ハブには、利用者が最後に聞いたのは本体の断りだと伝える（前の問いへの答えに、次の発言を使わせない）
                 if pane in TALKERS:
-                    TALKERS[pane].refused()
+                    await asyncio.to_thread(TALKERS[pane].refused, text, why)
                 await send(type="error", text=why)
                 return
             await run_turn(text + extra, pane, cancel, key, reply_at)
