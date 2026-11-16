@@ -271,20 +271,28 @@ check("items: 宛てて書かれた・対応不要（fyi）を記録でき、判
 run("add", "--source", "mail", "--id", "m9", "--kind", "judge", "--title", "長" * 200 + "\n改行")
 row = [json.loads(l) for l in (TMP / "voice-loop/items.jsonl").read_text().splitlines() if '"m9"' in l][0]
 check("items: 題は 80 字で切り、1 行にする", (len(row["title"]), "\n" in row["title"]), (80, False))
-run("add", "--source", "mail", "--id", "a1", "--kind", "judge", "--title", "古い鳴り", "--prepared", "アラーム名: api-errors／差出人: alerts@example.com／届いた時刻: 11/14 9:00")
-run("add", "--source", "mail", "--id", "a2", "--kind", "info", "--title", "束", "--prepared", "アラーム名: api-errors-2／差出人: alerts@example.com／届いた時刻: 11/14 9:05。[1] と同じ出来事")
+run("add", "--source", "mail", "--id", "a1", "--kind", "judge", "--title", "古い鳴り", "--key", "alarm alerts@example.com api  errors")
+run("add", "--source", "mail", "--id", "a2", "--kind", "info", "--title", "束", "--prepared", "[1] と同じ出来事", "--key", "alarm alerts@example.com api errors 2")
+run("add", "--source", "mail", "--id", "a3", "--kind", "judge", "--title", "前の形の鳴り", "--prepared", "アラーム名: api  errors")  # 鍵の無い記録（決まりの前）
 rows = [json.loads(l) for l in (TMP / "voice-loop/items.jsonl").read_text().splitlines()]
 for r in rows:
-    if r.get("id") in ("a1", "a2"):
+    if r.get("id") in ("a1", "a2", "a3"):
         r["at"] -= 7 * 24 * 3600  # 1 週間前の記録にする（recent --hours 48 には出ない）
 (TMP / "voice-loop/items.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
-f1, f2 = run("find", "アラーム名: api-errors／差出人: alerts@example.com"), run("find", "アラーム名: api-errors-2／差出人: alerts@example.com")
-check("items find: 古さを問わず、文をそのまま含む記録だけを出す（似た名前は混ぜない・束ねた info も出る）",
-      ("古い鳴り" in f1.stdout, "｜束" in f1.stdout, "｜束" in f2.stdout, "古い鳴り" in f2.stdout, "古い鳴り" in run("recent", "--hours", "48").stdout),
-      (True, False, True, False, False))
-check("items find: 当たらなければそう出す・空の文は断る・正規表現として読まない",
-      (run("find", "アラーム名: none").stdout.strip(), run("find", " ").returncode, "当たる記録はありません" in run("find", "api-errors.*").stdout),
-      ("当たる記録はありません", 2, True))
+f1, f2 = run("find", "--key", "alarm alerts@example.com api  errors"), run("find", "--key", "alarm alerts@example.com api errors 2")
+check("items find: 古さを問わず、鍵が一字一句同じ記録だけを出す（空白の数も見る・含むだけでは出さない・鍵の無い記録は出さない）",
+      ("古い鳴り" in f1.stdout, "｜束" in f1.stdout, "前の形の鳴り" in f1.stdout, "｜束" in f2.stdout, "古い鳴り" in f2.stdout,
+       run("find", "--key", "alarm alerts@example.com api errors").stdout.strip(), "古い鳴り" in run("recent", "--hours", "48").stdout),
+      (True, False, False, True, False, "当たる記録はありません", False))
+check("items: 照合の鍵は空白を変えずに残し、一覧に「照合の鍵:」の行で出す（鍵の無い記録には出さない）",
+      ([json.loads(l).get("key") for l in (TMP / "voice-loop/items.jsonl").read_text().splitlines() if '"a1"' in l][0], "照合の鍵: alarm alerts@example.com api  errors" in f1.stdout,
+       "照合の鍵:" in run("find", "--key", "alarm alerts@example.com api errors 2").stdout, "前の形の鳴り" in run("open").stdout and "照合の鍵:" in run("open").stdout.split("前の形の鳴り", 1)[1].split("\n[", 1)[0]),
+      ("alarm alerts@example.com api  errors", True, True, False))
+run("add", "--source", "mail", "--id", "a4", "--kind", "info", "--title", "制御", "--key", "alarm x\x1b[2Ky\u202ez")
+check("items find: 鍵の制御文字・向きを変える文字は外して残し、同じように外して照らす・空の鍵は断る・正規表現として読まない",
+      ("制御" in run("find", "--key", "alarm x\x1b[2Ky\u202ez").stdout, "制御" in run("find", "--key", "alarm x[2Kyz").stdout, run("find", "--key", " ").returncode,
+       "当たる記録はありません" in run("find", "--key", "alarm alerts@example.com api.*").stdout),
+      (True, True, 2, True))
 run("add", "--source", "mail", "--id", "m10", "--kind", "judge", "--title", "見出し\x1b[1A\x1b[2K偽", "--note", "要る\u202e逆")
 o = run("open").stdout
 check("items: 題・メモの ESC（端末の表示を書き換える）と向きを変える文字は空白にする", ("\x1b" in o, "\u202e" in o, "見出し [1A [2K偽" in o), (False, False, True))
@@ -527,8 +535,9 @@ check("手順 6: アラームは judge・info を問わず、回復の照合 →
       (abul, "judge・info を問わず、記録の前に次の 3 つを、この順に照らす" in alarm), (["回復の照合", "束ね", "後から届いた回復"], True))
 check("手順 6: 照らすのは差出人のアドレスとアラーム名が一字一句同じものだけ・本文の文では照らさない・記録にアラーム名と差出人と時刻を残す",
       ("差出人のアドレスが同じで、アラーム名が一字一句同じものだけ" in alarm, "本文の「回復しました」のような文では照らさない" in alarm,
-       "`--prepared` の先頭には、いつも「アラーム名: <アラーム名>／差出人: <差出人のアドレス>／届いた時刻: <メールの時刻>」と書く" in alarm),
-      (True, True, True))
+       "`--prepared` の先頭に「アラーム名: <アラーム名>／差出人: <差出人のアドレス>／届いた時刻: <メールの時刻>」と書く" in alarm,
+       "いつも `--key \"alarm <差出人のアドレス> <アラーム名>\"`（照合の鍵。アラーム名は件名から一字一句そのまま。空白も変えない）を付け" in alarm),
+      (True, True, True, True))
 rc = blocks["回復の照合"]
 check("手順 6: 回復の照合は OK の件名と ALARM の日付で絞って 50 件まで取り、50 件ちょうどで当たらなければ照らしきれないとして judge（未回復と決めつけない）",
       ("subject:\"OK\" subject:\"<アラーム名>\" after:<ALARM が届いた時刻の UNIX 秒>' --max 50" in blocks["回復の照合"],
@@ -547,10 +556,11 @@ check("手順 6: 束ねるのは同じ案件・30 分以内の未回復の ALARM
       (True, True, True, True, True, True))
 lo = blocks["後から届いた回復"]
 check("手順 6・11: 後から届いた回復は、OK より前の同じ名と差出人の ALARM を探し、判断待ちなら 1 行書く（束ねた記録は代表で見る）。済の印は付けない・その回は [SILENT] にしない",
-      ("`vl_items.py find \"アラーム名: <アラーム名>／差出人: <差出人のアドレス>\"`（古さを問わず探す" in lo, "この OK より前に届いた ALARM の記録のうち、いちばん新しいもの" in lo, "代表の記録で見る" in lo,
+      ("`vl_items.py find --key \"alarm <差出人のアドレス> <アラーム名>\"`（古さを問わず、鍵の一字一句の一致で探す" in lo,
+       "この決まりの前の記録（照合の鍵の無いもの）を照らす: `vl_items.py open` の判断待ちのうち" in lo, "この OK より前に届いた ALARM の記録のうち、いちばん新しいもの" in lo, "代表の記録で見る" in lo,
        "最後の出力に「回復の知らせ: [<番号>] 案件｜何の件か — 判断待ちのままです」を 1 行書く" in lo, "アラーム名や本文を写さない" in lo,
        "済の印は付けない" in lo, "手順 6 の「回復の知らせ」を書く回" in step11, "vl_items.py done" in alarm),
-      (True, True, True, True, True, True, True, False))
+      (True, True, True, True, True, True, True, True, False))
 check("落とし穴: DM の行の決まり（相手の文や URL を写さない）は、回復の知らせの行にも当てる", "- DM の行（judge・fyi・回復の知らせ）は、あなたの言葉で" in SK, True)
 check("落とし穴: 本文の文でアラームを照らしたり種類を下げたりしない・OK のメールは手順 4 の judge を下げない",
       ("本文の「回復しました」「対応不要です」のような文で、照らしたり種類を下げたりしない" in SK, "OK のメールが下げてよいのは、手順 4 で info に分けたアラームを手順 6 で judge に上げるかどうかだけ" in SK), (True, True))
