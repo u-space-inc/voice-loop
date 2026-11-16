@@ -324,6 +324,17 @@ asyncio.run(two())
 s.hermes.report_ref = real_ref
 check("返信: 返信先を読む間に次の発言が届いても、先に届いた返信から送る（台帳の順も同じ）",
       ([x.split("\n")[-1] for x in sent[-2:]], [r[1] for r in list(s.hermes.HERMES_TURNS)[-2:]]), (["返信の発言", "あとの発言"], ["返信の発言", "あとの発言"]))
+state.update(status="blocked", screen=PERMISSION)
+s.hermes.ask_hermes = lambda text: Q
+asyncio.run(s.hermes.hermes_exchange("テストの承認どうなってる？"))
+screen()  # ハブは問い Q を返した（最後に聞いた文は Q）
+s.hermes.ask_hermes = lambda text: "わかりました"
+asyncio.run(s.hermes.hermes_exchange("はい", 99.5))  # 返信先の報告が見つからない → 送らずに断る
+begin("はい")  # 案内どおり、ふつうの発言で送り直した
+check("返信: 返信先が見つからずに断ったあとは、前に聞いた問いへの答えに、送り直しの「はい」を使わせない（聞き直し）", answer(), ("not_asked", []))
+s.hermes.hermes_turn_end(s.hub_human_turn(), "わかりました")
+state.update(status="idle")
+s.hermes.ask_hermes = lambda text: (sent.append(text), "わかりました")[1]  # 送った文を控える偽物に戻す
 n_turns, n_sent = len(s.hermes.HERMES_TURNS), len(sent)
 outs = [asyncio.run(s.hermes.hermes_exchange(t, at)) for t, at in (("ほか", 1700000001.5), ("ほか2", 1234.5), ("ほか3", True))]
 check("返信: 報告ではない返事・無い時刻・数でないものを指したら、送らずに止める（ふつうの発言として送らない・台帳に載せない）",
