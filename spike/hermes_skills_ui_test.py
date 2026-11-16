@@ -220,6 +220,9 @@ def run_learned(page, who):
                          {"added": ["朝は 7 時に起きる"], "removed": []})
     s.hermes._hlearn_add({"kind": "skill", "auto": True, "pid": "dddddddd", "summary": "戻せない手順", "can_undo": False, "note": "当てたあとの中身を読めなかったので、戻せません"},
                          {"diff": "", "before": {}, "expect": {}})
+    st = json.loads(s.hermes.HLEARN_FILE.read_text())
+    st["days"] = {s.hermes._hlearn_day(time.time()): 2}  # 今日自動で当てた（当てようとした）のは 2 件
+    s.hermes.HLEARN_FILE.write_text(json.dumps(st))
     open_panel(page)
     page.wait_for_selector("#sitBody .learn")
     cards = page.locator("#sitBody .learn")
