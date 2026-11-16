@@ -193,11 +193,38 @@ SCALLS.clear()
 check("自動: 上限に届いた日は、もう当てない（残りは承認待ちに残る）", (asyncio.run(s.hermes._learn_skills()), [m for m, p in SCALLS if m == "approve"],
       sorted(p.stem for p in PEND.glob("aaaa*.json"))[-2:]), (0, [], ["aaaa0005", "aaaa0006"]))
 st = json.loads(s.hermes.HLEARN_FILE.read_text())
-for e in st["entries"]:
-    e["at"] -= 86400  # 前の日に当てたことにする
+st["entries"] = [e for e in st["entries"] if e["kind"] != "skill"] + [e for e in st["entries"] if e["kind"] == "skill"][:0]
+saved_entries = json.loads(s.hermes.HLEARN_FILE.read_text())["entries"]
+s.hermes.HLEARN_FILE.write_text(json.dumps(st))
+SCALLS.clear()
+check("自動: 日ごとの数は跡とは別に持つ（跡が消えても・押し出されても、同じ日にもう当てない）", (asyncio.run(s.hermes._learn_skills()), [m for m, p in SCALLS if m == "approve"]), (0, []))
+st["entries"] = saved_entries
+today = s.hermes._hlearn_day(time.time())
+st["days"] = {s.hermes._hlearn_day(time.time() - 86400): st["days"][today]}  # 前の日に当てたことにする
 s.hermes.HLEARN_FILE.write_text(json.dumps(st))
 check("自動: 次の日（日本時間）には、残りを当てる。当てた id は二度当てない", (asyncio.run(s.hermes._learn_skills()), sorted(p for m, p in SCALLS if m == "approve")),
       (2, ["aaaa0005", "aaaa0006"]))
+record("tttttt01", "t1")
+record("tttttt02", "t2")
+real_skills_run = s.hermes.hermes_skills.run_script
+s.hermes.hermes_skills.run_script = lambda c, mode, pid, raw, wait=90, env=None: (SCALLS.append((mode, pid)), {"result": "timeout", "why": "時間切れ"})[1] if mode == "approve" else real_skills_run(c, mode, pid, raw, wait, env)
+SCALLS.clear()
+asyncio.run(s.hermes._learn_skills())
+tl = [e for e in learned()["entries"] if e.get("pid") == "tttttt01"]
+check("自動: 当てて時間切れになったら、その回はもう当てない（終わりを確かめるまで）。跡は「分からない」で残し、戻せない",
+      ([p for m, p in SCALLS if m == "approve"], [(e["state"], e["can_undo"]) for e in tl]), (["tttttt01"], [("unknown", False)]))
+s.hermes.hermes_skills.run_script = real_skills_run
+RUNNING["v"] = False
+SCALLS.clear()
+asyncio.run(s.hermes._learn_skills())  # 終わりを確かめたあと（台本はいない）の回で、残りを当てる
+check("自動: 終わりを確かめたあとの回で、残りを当てる", [p for m, p in SCALLS if m == "approve"], ["tttttt02"])
+real_write = s.write_json
+s.write_json = lambda path, data: (_ for _ in ()).throw(OSError("書けない")) if "hermes-learned" in str(path) else real_write(path, data)
+record("ffffffff", "f1")
+SCALLS.clear()
+check("自動: 控えと跡を書けなければ、当てない（当てる前に書く）", (asyncio.run(s.hermes._learn_skills()), [m for m, p in SCALLS if m == "approve"]), (0, []))
+s.write_json = real_write
+(PEND / "ffffffff.json").unlink()
 LOUT["snap"] = {"result": "unsupported", "why": "手順のフォルダに symlink か通常でないファイルがあります"}
 record("cccccccc", "odd")
 SCALLS.clear()
@@ -220,6 +247,58 @@ asyncio.run(s.hermes._learn_skills())
 odd = [e for e in learned()["entries"] if e["pid"] == "cccccccc"][0]
 check("自動: 当てたあとの中身を読めなければ、当てた跡は残し、戻せない印にする", (odd["can_undo"], odd["note"]), (False, "当てたあとの中身を読めなかったので、戻せません"))
 del LOUT["snap"]
+
+# ---------- 2b. コンテナの中の台本の入口（Hermes の部品を偽物にして、台本そのものを動かす） ----------
+import subprocess  # noqa: E402
+FAKE = Path(TMP) / "fake-hermes"
+(FAKE / "tools").mkdir(parents=True)
+(FAKE / "tools" / "__init__.py").write_text("")
+(FAKE / "tools" / "skill_manager_tool.py").write_text("""import os
+from pathlib import Path
+ROOT = Path(os.environ["VL_TEST_SKILLS"])
+def _skills_dir():
+    return ROOT
+def _find_skill(name):
+    for p in ROOT.rglob("SKILL.md"):
+        if p.parent.name == name and not p.parent.is_symlink():
+            return {"path": p.parent}
+    return {"path": Path(os.environ["VL_TEST_OUTSIDE"])} if name == "outside" else None
+def _resolve_skill_dir(name, category=None):
+    return ROOT / (category or "") / name
+""")
+SK2 = Path(TMP) / "skills2"
+(SK2 / "voice-loop" / "hub").mkdir(parents=True)
+(SK2 / "voice-loop" / "hub" / "SKILL.md").write_text("前\n")
+
+
+def script(mode, req):
+    p = subprocess.run([sys.executable, "-c", hl.SCRIPT, hl.CHECK_MARK if mode == "snap" else hl.MARK, mode], input=json.dumps(req).encode(),
+                       capture_output=True, cwd=FAKE, env={**os.environ, "PYTHONPATH": str(FAKE), "VL_TEST_SKILLS": str(SK2), "VL_TEST_OUTSIDE": str(OUTSIDE)}, timeout=60)
+    return s.hermes.hermes_skills.read_result(p)
+
+
+op = lambda name, **k: {"action": "batch", "operations": [{"action": "patch", "name": name, "old_string": "a", "new_string": "b", **k}]}
+sn = script("snap", {"payload": op("hub")})
+check("台本の入口: snap は置き場の根からの場所ごとに中身を返す・作る手順は exists が False・置き場の外の手順は扱わない",
+      (sn.get("result"), sorted(sn.get("skills", {})), script("snap", {"payload": op("new", category="voice-loop")}).get("skills"),
+       script("snap", {"payload": op("outside")}).get("result")),
+      ("snap", ["voice-loop/hub"], {"voice-loop/new": {"exists": False, "files": {}}}, "unsupported"))
+(SK2 / "voice-loop" / "hub" / "SKILL.md").write_text("後\n")
+after2 = hl.snap_dir(str(SK2), "voice-loop/hub")
+check("台本の入口: restore は指紋が違えば何も書かずに changed、合えば戻して restored",
+      (script("restore", {"skills": {"voice-loop/hub": {"before": sn["skills"]["voice-loop/hub"], "expect": hl.digest(sn["skills"]["voice-loop/hub"])}}}).get("result"),
+       (SK2 / "voice-loop" / "hub" / "SKILL.md").read_text(),
+       script("restore", {"skills": {"voice-loop/hub": {"before": sn["skills"]["voice-loop/hub"], "expect": hl.digest(after2)}}}).get("result"),
+       (SK2 / "voice-loop" / "hub" / "SKILL.md").read_text()),
+      ("changed", "後\n", "restored", "前\n"))
+(SK2 / "voice-loop" / "hub" / "SKILL.md").write_text("後\n")
+moved = Path(TMP) / "moved-hub"
+held = hl._ident(str(SK2), ["voice-loop", "hub"])
+dfd = hl._open_parent(str(SK2), ["voice-loop", "hub", "SKILL.md"])
+os.rename(SK2 / "voice-loop" / "hub", moved)  # 開いたあとに、手順のフォルダを置き場の外へ移す
+check("戻す: 開いたあとに手順のフォルダを移されたら、書かずに断る", raises(lambda: hl._same(str(SK2), ["voice-loop", "hub"], held, dfd, ["voice-loop", "hub", "SKILL.md"])), True)
+os.close(dfd)
+os.rename(moved, SK2 / "voice-loop" / "hub")
 
 # ---------- 3. 戻す ----------
 with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:

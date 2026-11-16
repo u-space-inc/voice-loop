@@ -58,6 +58,35 @@ def _open_parent(root: str, parts: list[str], make: bool = False) -> int | None:
         raise
 
 
+def _ident(root: str, parts: list[str]) -> tuple | None:
+    """根から parts を symlink をたどらずに開いたときの、各段のフォルダの (dev, inode) の並び。途中が無ければ None。"""
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    out = []
+    try:
+        for p in parts:
+            try:
+                nfd = os.open(p, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            except FileNotFoundError:
+                return None
+            os.close(fd)
+            fd = nfd
+            st = os.fstat(fd)
+            out.append((st.st_dev, st.st_ino))
+        return tuple(out)
+    finally:
+        os.close(fd)
+
+
+def _same(root: str, base: list[str], held, dfd: int, parts: list[str]):
+    """書く・消す直前に、根から手順のフォルダまでが、戻し始めたときと同じフォルダか（held）、書くフォルダ dfd が根からたどったものと同じかを確かめる。
+    違えば ValueError（置き場の外へ移されたフォルダに書かない）。"""
+    if held is not None and _ident(root, base) != held:
+        raise ValueError("戻す途中で手順のフォルダが移されました")
+    st, now = os.fstat(dfd), _ident(root, parts[:-1])
+    if not now or now[-1] != (st.st_dev, st.st_ino):
+        raise ValueError("戻す途中で手順のフォルダが移されました")
+
+
 def snap_dir(root: str, rel: str) -> dict:
     """置き場の根 root の下の rel（手順のフォルダ）の中身: {"exists": bool, "files": {フォルダからの場所: base64}}。
     symlink・通常でないもの・大きすぎるものがあれば ValueError（読めない手順は自動で当てない・戻さない）。"""
@@ -86,8 +115,11 @@ def snap_dir(root: str, rel: str) -> dict:
             elif stat.S_ISREG(st.st_mode) and st.st_nlink == 1:
                 if st.st_size > SNAP_FILE_MAX or len(files) >= SNAP_FILES_MAX:
                     raise ValueError("手順のフォルダが大きすぎます")
-                ffd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dfd)
+                ffd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
                 with os.fdopen(ffd, "rb") as f:
+                    fst = os.fstat(ffd)  # 調べてから開くまでに差し替えられていないか（hardlink・FIFO・別のファイル）
+                    if not stat.S_ISREG(fst.st_mode) or fst.st_nlink != 1 or (fst.st_dev, fst.st_ino) != (st.st_dev, st.st_ino):
+                        raise ValueError("手順のフォルダのファイルが読む途中で差し替えられました")
                     data = f.read(SNAP_FILE_MAX + 1)
                 total[0] += len(data)
                 if len(data) > SNAP_FILE_MAX or total[0] > SNAP_TOTAL_MAX:
@@ -118,11 +150,13 @@ def restore_dir(root: str, rel: str, before: dict, expect: str) -> str:
     for k in want:
         _parts(k)
     base = _parts(rel)
+    held = _ident(root, base)  # 戻し始めるときの手順のフォルダ（と途中のフォルダ）。書くたびに、根から同じものをたどれるかを確かめる
     for k in sorted(set(now["files"]) - set(want), key=lambda p: -p.count("/")):  # 当てたときに増えたファイルを消す
         parts = base + _parts(k)
         dfd = _open_parent(root, parts)
         if dfd is not None:
             try:
+                _same(root, base, held, dfd, parts)
                 os.unlink(parts[-1], dir_fd=dfd)
             finally:
                 os.close(dfd)
@@ -130,6 +164,7 @@ def restore_dir(root: str, rel: str, before: dict, expect: str) -> str:
         parts = base + _parts(k)
         dfd = _open_parent(root, parts, make=True)
         try:
+            _same(root, base, held if held else _ident(root, base), dfd, parts)
             tmp = f".vl-restore-{os.getpid()}-{parts[-1]}"
             tfd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=dfd)
             with os.fdopen(tfd, "wb") as f:
@@ -137,6 +172,8 @@ def restore_dir(root: str, rel: str, before: dict, expect: str) -> str:
             os.replace(tmp, parts[-1], src_dir_fd=dfd, dst_dir_fd=dfd)
         finally:
             os.close(dfd)
+    if held and _ident(root, base) != held:  # 書き終えたあとも、手順のフォルダが置き場の同じ場所にあるか（移されていれば戻せたとは言わない）
+        raise ValueError("戻す途中で手順のフォルダが移されました")
     if not before.get("exists"):  # 当てたときに作られた手順: 空になったフォルダを、深いほうから消す
         dirs = sorted({"/".join(_parts(k)[:i]) for k in now["files"] for i in range(1, len(_parts(k)))}, key=lambda p: -p.count("/"))
         for d in dirs + [""]:
@@ -205,7 +242,7 @@ done(result="error", why="知らない種類です")
 '''
 SCRIPT = ("import base64, hashlib, json, os, stat\n"
           + f"SNAP_FILE_MAX = {SNAP_FILE_MAX}\nSNAP_TOTAL_MAX = {SNAP_TOTAL_MAX}\nSNAP_FILES_MAX = {SNAP_FILES_MAX}\n"
-          + "".join(inspect.getsource(f) + "\n" for f in (_parts, _open_parent, snap_dir, digest, restore_dir)) + _SCRIPT_MAIN)
+          + "".join(inspect.getsource(f) + "\n" for f in (_parts, _open_parent, _ident, _same, snap_dir, digest, restore_dir)) + _SCRIPT_MAIN)
 
 
 def command(container: str, mode: str, env: dict | None = None) -> list[str] | None:

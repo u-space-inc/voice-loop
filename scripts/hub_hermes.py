@@ -835,8 +835,7 @@ def _hsk_tidy(ids: set[str]) -> list[str]:
 # 跡と控え（当てる前の手順の中身・当てた直後の指紋）は、Hermes が書けない側（状態フォルダの hermes-learned/）に置く
 HLEARN_DIR = STATE_DIR / "hermes-learned"
 HLEARN_FILE = HLEARN_DIR / "state.json"
-HLEARN_KEEP = 30 * 86400
-HLEARN_MAX = 200  # 跡の数の上限（古いものから捨てる）
+HLEARN_KEEP = 365 * 86400  # 跡は 1 年残す（数では切らない。日ごとの当てた数は跡とは別の欄 days に持つので、記憶の跡が増えても数え直しにならない）
 HLEARN_LOCK = asyncio.Lock()  # 当てる・戻すは一度にひとつ
 _hlearn_lock = threading.Lock()  # 状態のファイルを書き換えるのは一度にひとつ
 _HLEARN_SKIP: set[tuple[str, str]] = set()  # 中身を読めなかった書き足し（id, 指紋）。この版は、本体を起動し直すまで自動では試し直さない
@@ -853,12 +852,16 @@ def hlearn_state() -> dict | None:
         return None
     if not isinstance(d, dict) or not isinstance(d.get("entries"), list) or not (d.get("memory") is None or isinstance(d.get("memory"), dict)):
         return None
+    d.setdefault("days", {})
+    if not isinstance(d["days"], dict) or not all(isinstance(v, int) for v in d["days"].values()):
+        return None
     return d
 
 
 def _hlearn_save(d: dict):
     now = time.time()
-    d["entries"] = [e for e in d["entries"] if now - e.get("at", 0) < HLEARN_KEEP][-HLEARN_MAX:]
+    d["entries"] = [e for e in d["entries"] if now - e.get("at", 0) < HLEARN_KEEP]
+    d["days"] = {k: v for k, v in d.get("days", {}).items() if k >= _hlearn_day(now - 31 * 86400)}
     keep = {e["id"] for e in d["entries"]}
     core.write_json(HLEARN_FILE, d)
     for p in HLEARN_DIR.glob("l*.json"):  # 捨てた跡の控え
@@ -899,13 +902,49 @@ def _hlearn_set(eid: str, **kw):
 
 
 def _hlearn_today() -> int:
-    """今日（日本時間）自動で当てた手順の書き足しの数（戻したものも数える）。"""
+    """今日（日本時間）自動で当てようとした手順の書き足しの数（当てた・失敗・分からない・戻した、を全部数える。跡とは別の欄 days）。"""
     with _hlearn_lock:
         d = hlearn_state()
     if d is None:
         return hermes_learn.LIMIT  # 読めなければ当てない
-    today = _hlearn_day(time.time())
-    return sum(1 for e in d["entries"] if e.get("kind") == "skill" and e.get("auto") and _hlearn_day(e["at"]) == today)
+    return d["days"].get(_hlearn_day(time.time()), 0)
+
+
+def _hlearn_reserve(entry: dict, detail: dict) -> dict | None:
+    """当てる前に、今日の枠を 1 つ使い、跡（当てている途中）と控え（前の中身・差分）を書く。上限に届いている・書けないときは None（当てない）。"""
+    eid = f"l{os.urandom(6).hex()}"
+    with _hlearn_lock:
+        d = hlearn_state()
+        if d is None:
+            return None
+        day = _hlearn_day(time.time())
+        if d["days"].get(day, 0) >= hermes_learn.LIMIT:
+            return None
+        entry = {"id": eid, "at": time.time(), "state": "applying", "note": "", **entry}
+        try:
+            core.write_json(HLEARN_DIR / f"{eid}.json", detail)
+            d["days"][day] = d["days"].get(day, 0) + 1
+            d["entries"].append(entry)
+            _hlearn_save(d)
+        except OSError:
+            traceback.print_exc()
+            with suppress(OSError):
+                (HLEARN_DIR / f"{eid}.json").unlink()
+            return None
+    return entry
+
+
+def _hlearn_finish(eid: str, expect: dict | None, **kw):
+    """当てた結果を跡に書く。expect（当てた直後の指紋）があれば控えに足す（戻せる）。書けなければ戻せない印のまま。"""
+    if expect is not None:
+        try:
+            det = json.loads((HLEARN_DIR / f"{eid}.json").read_text())
+            det["expect"] = expect
+            core.write_json(HLEARN_DIR / f"{eid}.json", det)
+        except (OSError, ValueError):
+            traceback.print_exc()
+            kw.update(can_undo=False, note="控えに当てた直後の中身を書けなかったので、戻せません")
+    _hlearn_set(eid, **kw)
 
 
 async def _learn_skills() -> int:
@@ -935,6 +974,8 @@ async def _learn_skills() -> int:
         if await asyncio.to_thread(_hsk_problem):
             return 0
         for r in todo[:left]:
+            if await asyncio.to_thread(_hsk_settled):  # 前の書き足しの台本の終わりを確かめられなければ、この回はやめる
+                break
             pid, v, raw = r["id"], r["v"], r["raw"]
             rec = hermes_skills.parse_record(raw, pid)
             payload = json.loads(raw.decode("utf-8-sig"))["payload"]
@@ -944,7 +985,14 @@ async def _learn_skills() -> int:
                 hsk_log(id=pid, act="auto", summary=rec["summary"][:120], result="skipped", why=str(before.get("why") or before.get("result"))[:200])
                 continue
             diff = await asyncio.to_thread(hermes_skills.run_script, HERMES_CONTAINER, "diff", pid, raw, 40)
+            entry = await asyncio.to_thread(_hlearn_reserve, {
+                "kind": "skill", "auto": True, "pid": pid, "summary": rec["summary"][:300], "origin": r["origin"],
+                "places": sorted(before["skills"]), "can_undo": False},
+                {"diff": str(diff.get("diff") or "")[:hermes_skills.DIFF_MAX] if diff.get("result") == "diff" else "", "before": before["skills"], "expect": {}})
+            if entry is None:  # 上限に届いた・控えを書けない: 当てない
+                break
             if await asyncio.to_thread(_hsk_begin, pid, v, rec, raw):
+                await asyncio.to_thread(_hlearn_set, entry["id"], state="skipped", note="当てる前に止めました（ほかの処理と重なりました）")
                 continue
             try:
                 out = await asyncio.to_thread(hermes_skills.run_script, HERMES_CONTAINER, "approve", pid, raw)
@@ -953,20 +1001,17 @@ async def _learn_skills() -> int:
                 out = {"result": "error", "why": f"本体の問題（{type(e).__name__}）"}
             res = await asyncio.to_thread(_hsk_finish, pid, v, rec, raw, out)
             if not res.get("ok"):
+                await asyncio.to_thread(_hlearn_set, entry["id"], state="failed" if out.get("result") in ("changed", "unsupported") else "unknown",
+                                        note=f"当てられませんでした（{core._clip(str(out.get('why') or out.get('result')), 120)}）")
+                if out.get("result") not in ("changed", "unsupported"):  # 時間切れ・分からない: 終わりを確かめるまで、この回はもう当てない
+                    break
                 continue
             after = await asyncio.to_thread(hermes_learn.run_script, HERMES_CONTAINER, "snap", {"payload": payload})
             ok_after = after.get("result") == "snap" and isinstance(after.get("skills"), dict) and set(after["skills"]) == set(before["skills"])
-            try:
-                await asyncio.to_thread(_hlearn_add, {
-                    "kind": "skill", "auto": True, "pid": pid, "summary": rec["summary"][:300], "origin": r["origin"],
-                    "places": sorted(before["skills"]), "can_undo": ok_after,
-                    "note": "" if ok_after else "当てたあとの中身を読めなかったので、戻せません"},
-                    {"diff": str(diff.get("diff") or "")[:hermes_skills.DIFF_MAX] if diff.get("result") == "diff" else "",
-                     "before": before["skills"], "expect": {k: hermes_learn.digest(v) for k, v in after["skills"].items()} if ok_after else {}})
-            except OSError:
-                traceback.print_exc()
+            await asyncio.to_thread(_hlearn_finish, entry["id"], {k: hermes_learn.digest(x) for k, x in after["skills"].items()} if ok_after else None,
+                                    state="applied", can_undo=ok_after, note="" if ok_after else "当てたあとの中身を読めなかったので、戻せません")
             applied += 1
-            core.hlog(f"Hermes の書き足し {pid} を自動で当てました（今日 {hermes_learn.LIMIT - left + applied}/{hermes_learn.LIMIT}）", flush=True)
+            core.hlog(f"Hermes の書き足し {pid} を自動で当てました（今日 {await asyncio.to_thread(_hlearn_today)}/{hermes_learn.LIMIT}）", flush=True)
     return applied
 
 
