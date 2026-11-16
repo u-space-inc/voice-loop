@@ -291,6 +291,12 @@ check("items: 照合の鍵は空白を変えずに残し、一覧に「照合の
 for i in range(25):  # 同じアラームの回復（OK）の記録が多くても、ALARM の鍵で探せば ALARM の記録が出る
     run("add", "--source", "mail", "--id", f"ok{i}", "--kind", "info", "--title", "回復", "--key", "ok alerts@example.com api  errors")
 check("items find: OK の記録が上限より多くても、ALARM の鍵で ALARM の記録を探せる", "古い鳴り" in run("find", "--key", "alarm alerts@example.com api  errors").stdout, True)
+old_at = [json.loads(l)["at"] for l in (TMP / "voice-loop/items.jsonl").read_text().splitlines() if '"a1"' in l][0]
+for i in range(25):  # OK のあとに、同じ鍵の ALARM が上限より多く鳴り直した
+    run("add", "--source", "mail", "--id", f"re{i}", "--kind", "info", "--title", "鳴り直し", "--key", "alarm alerts@example.com api  errors")
+fb, fa = run("find", "--key", "alarm alerts@example.com api  errors", "--before", str(old_at + 1)), run("find", "--key", "alarm alerts@example.com api  errors")
+check("items find: --before で時刻を絞ってから数を切る（あとで鳴り直した分に、目当ての記録を押し出されない）・切ったら「ほかに N 件」",
+      ("古い鳴り" in fb.stdout, "鳴り直し" in fb.stdout, "古い鳴り" in fa.stdout, "ほかに 6 件" in fa.stdout), (True, False, False, True))
 long_a, long_b = "alarm a@example.com " + "x" * 990 + "A", "alarm a@example.com " + "x" * 990 + "B"
 check("items: 長すぎる鍵は切らずに断る（末尾だけ違う鍵どうしを同じにしない）・上限までは一字一句で残す",
       (run("add", "--source", "mail", "--id", "L1", "--kind", "info", "--title", "長い", "--key", long_a).returncode,
@@ -565,7 +571,7 @@ check("手順 6: 束ねるのは同じ案件・30 分以内の未回復の ALARM
       (True, True, True, True, True, True))
 lo = blocks["後から届いた回復"]
 check("手順 6・11: 後から届いた回復は、OK より前の同じ名と差出人の ALARM を探し、判断待ちなら 1 行書く（束ねた記録は代表で見る）。済の印は付けない・その回は [SILENT] にしない",
-      ("`vl_items.py find --key \"alarm <差出人のアドレス> <アラーム名>\"`（古さを問わず、鍵の一字一句の一致で探す" in lo,
+      ("`vl_items.py find --key \"alarm <差出人のアドレス> <アラーム名>\" --before <この OK が届いた時刻の UNIX 秒>`（古さを問わず、鍵の一字一句の一致で、OK より前に記録したもの" in lo,
        "この決まりの前の記録（照合の鍵の無いもの）を照らす: `vl_items.py open` の判断待ちのうち" in lo, "この OK より前に届いた ALARM の記録のうち、いちばん新しいもの" in lo, "代表の記録で見る" in lo,
        "最後の出力に「回復の知らせ: [<番号>] 案件｜何の件か — 判断待ちのままです」を 1 行書く" in lo, "アラーム名や本文を写さない" in lo,
        "済の印は付けない" in lo, "手順 6 の「回復の知らせ」を書く回" in step11, "vl_items.py done" in alarm),
