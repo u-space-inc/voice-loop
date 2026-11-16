@@ -49,7 +49,7 @@ class Brain:
 
     def replying(self, turn: str) -> str | None:
         """発言 turn が、画面の「返信」で報告を指したものなら、その報告のセッション（分からなければ空）。返信でなければ None。
-        返信の発言の「直前に聞いた文」（heard）は返信先の報告。答える・閉じるは、相手がこのセッションのときだけ。"""
+        返信の発言の「直前に聞いた文」（heard）は返信先の報告。返信の発言は、承認・質問への答えと閉じる許可には使わない（本体が断る）。"""
         raise NotImplementedError
 
     async def report_target(self) -> dict | None:

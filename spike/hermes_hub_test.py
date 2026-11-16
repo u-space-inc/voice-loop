@@ -361,6 +361,16 @@ for at, why in ((1700000005.5, "同じプロジェクトの別のセッション
     screen()
     asyncio.run(s.hermes.hermes_exchange("はい", at))
     check(f"返信: {why}への返信の「はい」では、このセッションの問いに答えない", answer()[0], "reply")
+state.update(status="blocked", screen=QUESTION)
+s.SEEN_PROMPT.clear()
+asyncio.run(s.hermes.hermes_exchange("質問なんだっけ"))
+screen()  # ハブはこの発言の間に、選択式の質問の画面を見た
+s.hermes.hermes_log("ai", CQ, report=True, about="proj｜テスト", at=1700000008.5, pane="w9:p1")
+asyncio.run(s.hermes.hermes_exchange("じゃあ2番で", 1700000008.5))
+check("返信: 選択式の質問への番号の答えも、返信の発言なら送らない（キーも送らない）", answer(answer="2"), ("reply", []))
+asyncio.run(s.hermes.hermes_exchange("やっぱりやめる", 1700000008.5))
+check("返信: いいえ（取り消し）は、返信の発言でも今までどおり送れる", answer(answer="no")[0], "ok")
+state.update(status="idle", screen=PERMISSION)
 CLOSE_Q = "proj の「テスト」のセッションを閉じていいですか。"
 s.CLOSING.clear()
 s.hermes.ask_hermes = lambda text: CLOSE_Q
