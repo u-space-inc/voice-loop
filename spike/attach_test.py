@@ -122,6 +122,11 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         mx = say(w, s.hermes.HERMES_PANE, "これを見て", [rid["id"]])
     check("渡す: セッション宛てに置いた添付は、ハブ（ほかの相手）への発言には付けない（送らずに断る・コンテナにも置かない）",
           (mx["type"], mx["text"].startswith("添付を置いたときと、送る相手が違います"), len(ASKED) - k0, len(PUT)), ("error", True, 0, 0))
+    s.hermes.HERMES_HEARD["text"] = "proj の「テスト」が許可を求めています。許可しますか？"
+    with c.websocket_connect("ws://127.0.0.1:8790/ws") as w:
+        mr = say(w, s.hermes.HERMES_PANE, "はい", ["nosuchid"])
+    check("渡す: ハブへの発言を添付のせいで断ったら、前に聞いた問いを失効させる（送り直しの「はい」を、その問いへの答えに使わせない）",
+          (mr["type"], s.hermes.HERMES_HEARD["text"]), ("error", ""))
     hid = up("写真.png", PNG, pane=s.hermes.HERMES_PANE).json()["id"]
     with c.websocket_connect("ws://127.0.0.1:8790/ws") as w:
         m = say(w, s.hermes.HERMES_PANE, "これを見て", [hid])

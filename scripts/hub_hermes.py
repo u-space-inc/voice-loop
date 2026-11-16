@@ -859,6 +859,9 @@ class Hermes(Brain, Talker):
     def ask(self, text: str) -> str:
         return ask_hermes(text)
 
+    def refused(self):
+        HERMES_HEARD["text"] = ""  # 利用者が聞くのは本体の断り（前に聞いた問いへの答えに、次の発言を使わせない。失敗のときと同じ）
+
     def put_attachment(self, name: str, data: bytes) -> str:
         """Hermes はコンテナの中なので、コンテナの中の置き場（/opt/data/voice-loop/attachments/）に、固定の台本で置く（ホストからは書かない）。"""
         return attach.put_container(hermes_skills.docker_bin(), HERMES_CONTAINER, hermes_skills.USER, hermes_skills.PY, name, data)

@@ -2626,11 +2626,13 @@ async def ws(sock: WebSocket):
 
     async def turn(text: str, pane: str, cancel: asyncio.Event, key: str | None, reply_at: float | None = None, files: list[str] | None = None):
         try:
-            if files is None:  # 添付の形が違う・多すぎる
-                await send(type="error", text=f"添付の形が違うか、多すぎます（1 回に {attach.COUNT} つまで）。送っていません")
-                return
-            extra, why = await attachment_lines(files, TALKERS.get(pane), pane)
-            if why:
+            why = f"添付の形が違うか、多すぎます（1 回に {attach.COUNT} つまで）。送っていません" if files is None else ""
+            extra = ""
+            if not why:
+                extra, why = await attachment_lines(files, TALKERS.get(pane), pane)
+            if why:  # 送らずに断る。ハブには、利用者が最後に聞いたのは本体の断りだと伝える（前の問いへの答えに、次の発言を使わせない）
+                if pane in TALKERS:
+                    TALKERS[pane].refused()
                 await send(type="error", text=why)
                 return
             await run_turn(text + extra, pane, cancel, key, reply_at)
