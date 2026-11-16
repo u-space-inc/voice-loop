@@ -9,8 +9,10 @@
 PC の見た目（Chromium）: 頼んだ件を「動いている」「終わった」に分け、状態の色の帯・指示の文は 2 行で切って押すと全文（取り直しても開いたまま）・
 ハブの返事の行頭の【見出し】を太く・記憶の上限との棒・長い項目は 4 行で切って「続きを表示」・直す・消すはマウスを載せた項目と消すの確かめ中だけ出す・
 入力は文字の欄が上で、話す・停止は相手と声と同じ行に小さく。
-左の一覧（Chromium）: 状態の札で絞り込む・状態順と herdr の順の並べ方・開き直しても覚えている（覚えておけない端末でも止まらない）・ハブはいつも先頭・
+左の一覧（Chromium）: 状態の札で絞り込む・状態順 → 更新順 → herdr の順の並べ方・開き直しても覚えている（覚えておけない端末でも止まらない）・ハブはいつも先頭・
 いま話している相手は絞り込みの外でも出す。
+更新順（Chromium）: 相手を選ぶ欄（スマホの幅）はいつも更新順（ハブが先頭・記録の無いものは後ろ）・並びが変わると選んだ相手のまま並べ直す・
+時刻だけ動いて並びが同じなら作り直さない・PC の左の一覧の更新順も同じ並び。
 広げて読む（Chromium）: ⤢ で右の列を画面いっぱいに・ほかの列は inert・長い記憶を切らずに出す・直す途中の文が残る・Esc（文の欄・一行の欄・
 変換の途中では効かない）・✕・狭めると戻る・広げている間だけ承認・入力待ちの数を出し、押すと戻ってカードのボタンへ。
 代理からの知らせ（Chromium）: 💡 の一覧に文字として出す（タグを解釈しない）・知らせの数に入る・× とすべて消す・開いている画面に一行で出す。
@@ -71,6 +73,8 @@ AGENTS = [{"pane": "w1:p1", "title": "記事", "cwd": "/x/blog", "kind": "claude
           {"pane": "w2:p1", "title": "受注", "cwd": "/x/shop", "kind": "claude", "session": "s2", "status": "blocked", "name": "", "hub": False}]
 s.list_agents = lambda: [dict(a) for a in AGENTS]
 s.jsonl_path = lambda a: None
+UPDATED: dict = {}  # セッションが最後に動いた時刻（pane → UNIX 秒）。無いものは記録の無いセッション
+s.agent_updated = lambda a: UPDATED.get(a["pane"])
 s.read_prompt = lambda pane: "Do you want to proceed?\n ❯ 1. Yes\n   2. No"
 CALLS, OUT, STILL = [], {}, {"v": False}
 
@@ -472,7 +476,9 @@ def run_sessions(page, who):
     page.select_option("#agent", "w1:p1")
     check(f"{who} 絞り込みの外でも、いま話している相手は薄くして出す", wait(lambda: rows() == ["ハブ（Hermes）", "api", "docs", "blog（外）"]), True)
     page.click(".side-h .sort")
-    check(f"{who} 並べ方を herdr の順に替えられる", (rows(), sort()), (["ハブ（Hermes）", "blog（外）", "api", "docs"], "並び: herdr の順"))
+    check(f"{who} 「並び」を押すと更新順になる（時刻が無ければ herdr の順と同じ並び）", (rows(), sort()), (["ハブ（Hermes）", "blog（外）", "api", "docs"], "並び: 更新順"))
+    page.click(".side-h .sort")
+    check(f"{who} もう一度押すと herdr の順になる", (rows(), sort()), (["ハブ（Hermes）", "blog（外）", "api", "docs"], "並び: herdr の順"))
     page.reload()
     page.wait_for_function("document.getElementById('conn').classList.contains('on')")
     check(f"{who} 絞り込みと並べ方は、開き直しても覚えている", wait(lambda: rows() == ["ハブ（Hermes）", "blog（外）", "api", "docs"]) and (chips()[2][1], sort()), ("true", "並び: herdr の順"))
@@ -483,6 +489,39 @@ def run_sessions(page, who):
     page.locator("#sessTools button", has_text="完了").click()
     check(f"{who} 当てはまるセッションが無ければ、そう出す（いま話している相手は出したまま）", (rows(), page.text_content("#sessions .sessNone")),
           (["ハブ（Hermes）", "blog（外）"], "完了のセッションはありません"))
+    AGENTS[:] = saved
+
+
+def run_updated(page, who):
+    """更新順: 相手を選ぶ欄（スマホではこれだけ）はいつも更新順。PC の左の一覧も「並び」で更新順にできる"""
+    seed()
+    saved = list(AGENTS)
+    AGENTS[:] = sess5(saved)
+    now = time.time()
+    UPDATED.clear()
+    UPDATED.update({"w1:p1": now - 600, "w3:p1": now - 60, "w4:p1": now - 3000, "w5:p1": now - 120})  # shop（w2:p1）は記録が無い
+    opts = lambda: page.eval_on_selector_all("#agent option:not([disabled])", "els => els.map(e => e.textContent.split('｜')[0])")
+    open_page(page, 390)
+    check(f"{who} スマホの幅で、相手を選ぶ欄はハブが先頭、ほかは最後に動いた順（記録の無いものは後ろ）", wait(lambda: len(opts()) == 6) and opts(),
+          ["ハブ（Hermes）", "api", "infra", "blog", "docs", "shop"])
+    page.select_option("#agent", "w4:p1")
+    UPDATED["w2:p1"] = now
+    page.evaluate("loadAgents()")
+    check(f"{who} 並びが変われば並べ直し、選んでいた相手はそのまま", wait(lambda: opts()[1] == "shop") and (opts(), page.input_value("#agent")),
+          (["ハブ（Hermes）", "shop", "api", "infra", "blog", "docs"], "w4:p1"))
+    page.evaluate("document.querySelector('#agent option[value=\"w2:p1\"]').dataset.mark = '1'")
+    UPDATED["w3:p1"] = now - 30
+    page.evaluate("loadAgents()")
+    time.sleep(0.3)
+    check(f"{who} 時刻だけ動いて並びが同じなら、欄を作り直さない（選んでいる途中を崩さない）",
+          (opts(), page.evaluate("document.querySelector('#agent option[value=\"w2:p1\"]').dataset.mark || ''")),
+          (["ハブ（Hermes）", "shop", "api", "infra", "blog", "docs"], "1"))
+    page.set_viewport_size({"width": 1400, "height": 900})
+    rows, chips, sort = sess_view(page)
+    wait(lambda: len(rows()) == 6)
+    page.click(".side-h .sort")
+    check(f"{who} PC の左の一覧の更新順も同じ並び", (rows(), sort()), (["ハブ（Hermes）", "shop", "api", "infra", "blog", "docs"], "並び: 更新順"))
+    UPDATED.clear()
     AGENTS[:] = saved
 
 
@@ -503,6 +542,7 @@ def run_sessions_nostore(page, who):
     check(f"{who} 覚えておけなくても、既定（すべて・状態順）で出る", wait(lambda: len(rows()) == 6) and (rows(), chips()[0][1], sort()),
           (["ハブ（Hermes）", "shop", "api", "docs", "infra", "blog"], "true", "並び: 状態順"))
     page.locator("#sessTools button", has_text="作業中").click()
+    page.click(".side-h .sort")
     page.click(".side-h .sort")
     check(f"{who} 覚えておけなくても、絞り込みと並べ方はその場で効き、画面のエラーは出ない", (rows(), chips()[2][1], sort(), errors),
           (["ハブ（Hermes）", "api", "docs"], "true", "並び: herdr の順", []))
@@ -678,6 +718,7 @@ with sync_playwright() as pw:
     run_design(b.new_page(), "Chromium（見た目）:")
     run_sessions(b.new_page(), "Chromium（一覧の絞り込み）:")
     run_sessions_nostore(b.new_page(), "Chromium（一覧・覚えておけない端末）:")
+    run_updated(b.new_page(), "Chromium（更新順）:")
     run_reading(b.new_page(), "Chromium（広げて読む）:")
     run_phone(b.new_page(), "Chromium（スマホ）:")
     run_notice(b.new_page(), "Chromium（知らせ）:")

@@ -583,9 +583,18 @@ def hub_reply_to(turn: str | None) -> str:
     return HUB.reply_to(turn) if turn else ""
 
 
+def agent_updated(a: dict) -> float | None:
+    """そのセッションが最後に動いた時刻（会話の記録が最後に書き込まれた時刻、UNIX 秒）。記録の無いセッションは None。画面の「更新順」に使う。"""
+    path = jsonl_path(a)
+    try:
+        return path.stat().st_mtime if path else None
+    except OSError:
+        return None
+
+
 @app.get("/api/agents")
 def api_agents():
-    out = [{**a, "key": agent_key(a)} for a in list_agents()]
+    out = [{**a, "key": agent_key(a), "updated": agent_updated(a)} for a in list_agents()]
     out.extend(t.entry() for t in TALKERS.values() if t.on())
     return JSONResponse(sorted(out, key=lambda a: not a["hub"]))  # ハブを先頭に
 

@@ -502,9 +502,12 @@ function applyTarget() {
   if (!ok && linked()) setStatus('話し相手を選んでください');
   else if (ok && linked() && (shown === '話し相手を選んでください' || shown === UNREACHABLE)) setStatus('準備できました'); // つながったあとで一覧が届いたとき
 }
+// 更新順: ハブを先頭に、ほかは最後に動いた時刻（本体が返す updated。会話の記録が最後に書き込まれた時刻）の新しい順。記録の無いものは後ろ、同じなら herdr の順
+const byUpdated = list => list.map((a, i) => [a, i]).sort((x, y) => (y[0].hub - x[0].hub) || ((y[0].updated ?? -1) - (x[0].updated ?? -1)) || x[1] - y[1]).map(x => x[0]);
 async function loadAgents() {
   let list; try { list = await (await fetch('/api/agents')).json(); } catch { return; }
-  const sig = JSON.stringify(list.map(a => [a.pane, a.key, a.title, a.status, a.hermes ? a.session : '']));  // Hermes は会話の名前が変わる（💡 に出す）
+  // 相手を選ぶ欄（スマホではこれだけ）は更新順。並びが変わったときだけ作り直す（時刻だけ動いても作り直さない）。Hermes は会話の名前が変わる（💡 に出す）
+  const sig = JSON.stringify(byUpdated(list).map(a => [a.pane, a.key, a.title, a.status, a.hermes ? a.session : '']));
   if (sig === agentsSig) return;
   agents = list; agentsSig = sig;
   setTimeout(renderSessions);  // PC の左の一覧（select を作ったあとで、選んでいるものに印を付ける）
@@ -512,7 +515,7 @@ async function loadAgents() {
   const want = saved === null ? 'hub' : saved; // 初めて開いたときはハブ
   const sel = $('agent'); sel.innerHTML = '';
   const ph = document.createElement('option'); ph.value = ''; ph.disabled = true; ph.textContent = '話し相手を選んでください'; sel.appendChild(ph);
-  for (const a of list) {
+  for (const a of byUpdated(list)) {
     const o = document.createElement('option'); o.value = a.pane;
     o.textContent = a.hub ? `ハブ${a.hermes ? '（Hermes）' : ''}｜全セッションを統括 [${a.status}]` : a.hermes ? 'Hermes｜話し相手（試験中）' : `${a.cwd.split('/').pop()}｜${a.title} [${a.status}]`;
     sel.appendChild(o);
@@ -1105,14 +1108,15 @@ $('tabMem').onclick = () => setRecTab('mem');
 $('tabSit').onclick = () => setRecTab('sit');
 
 // セッションの一覧（PC の左）。押すと、下の select の値を替えて change を送るだけ（選ぶ処理・覚える・履歴の読み直しは今のまま 1 つ）
-// 状態で絞り込める（札は 1 つだけ選ぶ）。並べ方は「状態順」（承認・入力待ち → 作業中 → 完了 → 待機。同じ状態の中は herdr の順）か「herdr の順」。
+// 状態で絞り込める（札は 1 つだけ選ぶ）。並べ方は「状態順」（承認・入力待ち → 作業中 → 完了 → 待機。同じ状態の中は herdr の順）・「更新順」（byUpdated）・「herdr の順」。
 // どちらも端末ごとに覚える。ハブはいつも先頭に出し、札の数にも入れない。絞り込みの外でも、いま話している相手は薄くして出す
 const SESS_ST = { idle: '待機', working: '作業中', blocked: '承認・入力待ち', done: '完了' };
 const SESS_F = [['all', 'すべて'], ['blocked', '承認待ち'], ['working', '作業中'], ['done', '完了'], ['idle', '待機']];
 const SESS_RANK = { blocked: 0, working: 1, done: 2, idle: 3 };
 const SESS_LANE = { blocked: 'wait', working: 'run', done: 'done' };
 let sessFilter = (() => { try { const v = localStorage.getItem('vl.sessFilter'); return SESS_F.some(f => f[0] === v) ? v : 'all'; } catch { return 'all'; } })();
-let sessSort = (() => { try { return localStorage.getItem('vl.sessSort') === 'herdr' ? 'herdr' : 'state'; } catch { return 'state'; } })();
+const SESS_SORT = [['state', '状態順'], ['updated', '更新順'], ['herdr', 'herdr の順']];  // 「並び」を押すたびに、この順に替わる
+let sessSort = (() => { try { const v = localStorage.getItem('vl.sessSort'); return SESS_SORT.some(x => x[0] === v) ? v : 'state'; } catch { return 'state'; } })();
 function setSessView(k, v) {
   if (k === 'filter') sessFilter = v; else sessSort = v;
   try { localStorage.setItem(k === 'filter' ? 'vl.sessFilter' : 'vl.sessSort', v); } catch {}
@@ -1121,9 +1125,10 @@ function setSessView(k, v) {
 function renderSessions() {
   if (!wide) return;
   const box = $('sessions'); box.innerHTML = '';
-  const sort = node('button', 'sort', sessSort === 'state' ? '並び: 状態順' : '並び: herdr の順');
+  const si = SESS_SORT.findIndex(x => x[0] === sessSort);
+  const sort = node('button', 'sort', `並び: ${SESS_SORT[si][1]}`);
   sort.title = `並べ方を切り替える（いまは${sort.textContent}）`; sort.setAttribute('aria-label', sort.title);
-  sort.onclick = () => setSessView('sort', sessSort === 'state' ? 'herdr' : 'state');
+  sort.onclick = () => setSessView('sort', SESS_SORT[(si + 1) % SESS_SORT.length][0]);
   $('side').querySelector('.side-h').replaceChildren('セッション', node('span', 'n', `${agents.length}`), sort);
   const rest = agents.filter(a => !a.hub), tools = $('sessTools'); tools.replaceChildren();
   for (const [k, label] of SESS_F) {
@@ -1134,7 +1139,8 @@ function renderSessions() {
     tools.appendChild(f);
   }
   const rank = a => (a.hub ? -1 : SESS_RANK[a.status] ?? 4);
-  const list = sessSort === 'state' ? agents.map((a, i) => [a, i]).sort((x, y) => rank(x[0]) - rank(y[0]) || x[1] - y[1]).map(x => x[0]) : agents;
+  const list = sessSort === 'state' ? agents.map((a, i) => [a, i]).sort((x, y) => rank(x[0]) - rank(y[0]) || x[1] - y[1]).map(x => x[0])
+    : sessSort === 'updated' ? byUpdated(agents) : agents;
   let hits = 0;
   for (const a of list) {
     const cur = a.pane === $('agent').value, hit = a.hub || sessFilter === 'all' || a.status === sessFilter;
