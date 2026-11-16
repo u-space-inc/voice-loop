@@ -1,0 +1,232 @@
+"""Hermes の学び（手順の書き足しと記憶）を自動で当て、変わった跡を残し、画面の「戻す」で戻すための部品（2026-11-16 本人が推奨を選んだ）。
+
+これまでは、手順の書き足しを画面の 💡 で本人が採っていた（承認）。本人の決定（2026-11-07・11-10・11-16）は「学びは自動で当てる。承認待ちを作らない。
+見たいときに見る画面と『戻す』だけ」。そこで、本体が 1 日 LIMIT 件まで自動で当て、当てる前の中身を控えて、画面の「学んだこと」から戻せるようにする。
+
+守り（README「守り」）。相手は外の文面に乗せられた Hermes で、置き場（ホストの ~/.hermes = コンテナの /opt/data）を同じ利用者で書ける:
+  - 当てる処理は hermes_skills の台本のまま（Hermes 自身の apply_skill_pending）。自動で当てるのは 1 日 LIMIT 件まで。超えた分は承認待ちに残し、次の日に回す
+  - 当てる前と後の手順のフォルダの中身は、コンテナの中の固定の台本（SCRIPT）で読む。前の中身と、後の中身の指紋は、本体の側（Hermes が書けない状態フォルダ）に控える
+  - 戻すのは画面の「戻す」（2 段）だけ。戻す台本は、いまの中身の指紋が当てた直後と同じときだけ書き戻す（あとで変わっていれば何もしない）。
+    手順の置き場の外・symlink・通常でないファイル・「..」の場所には触れない（ホストの側は、置き場で何も書かない）
+  - 記憶は Hermes が直接書く。本体は 1 分おきに読み（hermes_memory の読み方。symlink をたどらない）、足された・消えた項目を跡に残す。戻すは記憶の台本で
+"""
+import base64
+import hashlib
+import inspect
+import json
+import os
+import stat
+import subprocess
+
+import hermes_skills
+from hermes_skills import CHECK_MARK, HOST_WAIT, MARK, PY, RUN_LIMIT, USER, WORKDIR, docker_bin
+
+LIMIT = 5  # 1 日（日本時間）に自動で当てる手順の書き足しの数
+SNAP_FILE_MAX = 256 * 1024  # 手順のフォルダの中の 1 ファイルの上限
+SNAP_TOTAL_MAX = 1024 * 1024  # 1 つの手順のフォルダの合計の上限
+SNAP_FILES_MAX = 200
+
+
+def _parts(rel: str) -> list[str]:
+    """置き場の根からの場所を、段ごとに分ける。空・「.」「..」・絶対の場所・バックスラッシュは断る（ValueError）。"""
+    if not isinstance(rel, str) or not rel or rel.startswith("/") or "\\" in rel or "\x00" in rel:
+        raise ValueError("場所の形が違います")
+    parts = rel.split("/")
+    if any(p in ("", ".", "..") for p in parts):
+        raise ValueError("場所の形が違います")
+    return parts
+
+
+def _open_parent(root: str, parts: list[str], make: bool = False) -> int | None:
+    """根から parts の手前の段までを、symlink をたどらずに開いた fd。make なら無い段を作る。途中が無ければ None。"""
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for p in parts[:-1]:
+            try:
+                nfd = os.open(p, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            except FileNotFoundError:
+                if not make:
+                    os.close(fd)
+                    return None
+                os.mkdir(p, 0o755, dir_fd=fd)
+                nfd = os.open(p, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = nfd
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def snap_dir(root: str, rel: str) -> dict:
+    """置き場の根 root の下の rel（手順のフォルダ）の中身: {"exists": bool, "files": {フォルダからの場所: base64}}。
+    symlink・通常でないもの・大きすぎるものがあれば ValueError（読めない手順は自動で当てない・戻さない）。"""
+    parts = _parts(rel)
+    parent = _open_parent(root, parts)
+    if parent is None:
+        return {"exists": False, "files": {}}
+    try:
+        try:
+            fd = os.open(parts[-1], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        except FileNotFoundError:
+            return {"exists": False, "files": {}}
+    finally:
+        os.close(parent)
+    files, total = {}, [0]
+
+    def walk(dfd: int, prefix: str):
+        for name in sorted(os.listdir(dfd)):
+            st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+            if stat.S_ISDIR(st.st_mode):
+                sub = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dfd)
+                try:
+                    walk(sub, prefix + name + "/")
+                finally:
+                    os.close(sub)
+            elif stat.S_ISREG(st.st_mode) and st.st_nlink == 1:
+                if st.st_size > SNAP_FILE_MAX or len(files) >= SNAP_FILES_MAX:
+                    raise ValueError("手順のフォルダが大きすぎます")
+                ffd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dfd)
+                with os.fdopen(ffd, "rb") as f:
+                    data = f.read(SNAP_FILE_MAX + 1)
+                total[0] += len(data)
+                if len(data) > SNAP_FILE_MAX or total[0] > SNAP_TOTAL_MAX:
+                    raise ValueError("手順のフォルダが大きすぎます")
+                files[prefix + name] = base64.b64encode(data).decode()
+            else:
+                raise ValueError("手順のフォルダに symlink か通常でないファイルがあります")
+
+    try:
+        walk(fd, "")
+    finally:
+        os.close(fd)
+    return {"exists": True, "files": files}
+
+
+def digest(snap: dict) -> str:
+    """中身の指紋（あるか・ファイルの場所と中身）。"""
+    return hashlib.sha256(json.dumps([bool(snap.get("exists")), sorted((snap.get("files") or {}).items())]).encode()).hexdigest()
+
+
+def restore_dir(root: str, rel: str, before: dict, expect: str) -> str:
+    """rel の中身を before に戻す。いまの中身の指紋が expect（当てた直後）と違えば、何も書かずに "changed"。戻したら "restored"。
+    before のファイルの場所も、根からの場所と同じ決まりで確かめる（「..」・絶対の場所は断る）。"""
+    now = snap_dir(root, rel)
+    if digest(now) != expect:
+        return "changed"
+    want = {k: base64.b64decode(v, validate=True) for k, v in (before.get("files") or {}).items()} if before.get("exists") else {}
+    for k in want:
+        _parts(k)
+    base = _parts(rel)
+    for k in sorted(set(now["files"]) - set(want), key=lambda p: -p.count("/")):  # 当てたときに増えたファイルを消す
+        parts = base + _parts(k)
+        dfd = _open_parent(root, parts)
+        if dfd is not None:
+            try:
+                os.unlink(parts[-1], dir_fd=dfd)
+            finally:
+                os.close(dfd)
+    for k, data in want.items():  # 前の中身を書く（いったん隣に書いてから置き換える）
+        parts = base + _parts(k)
+        dfd = _open_parent(root, parts, make=True)
+        try:
+            tmp = f".vl-restore-{os.getpid()}-{parts[-1]}"
+            tfd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=dfd)
+            with os.fdopen(tfd, "wb") as f:
+                f.write(data)
+            os.replace(tmp, parts[-1], src_dir_fd=dfd, dst_dir_fd=dfd)
+        finally:
+            os.close(dfd)
+    if not before.get("exists"):  # 当てたときに作られた手順: 空になったフォルダを、深いほうから消す
+        dirs = sorted({"/".join(_parts(k)[:i]) for k in now["files"] for i in range(1, len(_parts(k)))}, key=lambda p: -p.count("/"))
+        for d in dirs + [""]:
+            parts = base + (_parts(d) if d else [])
+            dfd = _open_parent(root, parts)
+            if dfd is not None:
+                try:
+                    os.rmdir(parts[-1], dir_fd=dfd)
+                except OSError:
+                    pass  # 空でない（Hermes がほかのファイルを置いた）なら残す
+                finally:
+                    os.close(dfd)
+    return "restored"
+
+
+# ---------- コンテナの中の台本 ----------
+# 引数は「目印 種類」。要求の JSON を stdin で受け取り、結果を「VLRESULT {JSON}」の 1 行で返す（hermes_skills と同じ読み方）。
+#   snap    … 承認待ちの記録の payload が触る手順のフォルダの中身（置き場の根からの場所ごと）。置き場の外の手順は unsupported
+#   restore … {"skills": {場所: {"before": 中身, "expect": 指紋}}}。全部の指紋が合うときだけ、前の中身に戻す（合わなければ changed で何もしない）
+_SCRIPT_MAIN = r'''
+import json, os, sys
+from pathlib import Path
+
+
+def done(**kw):
+    sys.stdout.write("\nVLRESULT " + json.dumps(kw, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+    os._exit(0)
+
+
+mode = sys.argv[2]
+req = json.loads(sys.stdin.buffer.read().decode("utf-8-sig"))
+from tools import skill_manager_tool as sm
+root = str(sm._skills_dir())
+real_root = os.path.realpath(root)
+if mode == "snap":
+    payload = req.get("payload") or {}
+    ops = payload.get("operations") if payload.get("action") == "batch" else [payload]
+    out = {}
+    try:
+        for op in ops:
+            found = sm._find_skill(op["name"])
+            p = Path(found["path"]) if found else sm._resolve_skill_dir(op["name"], op.get("category"))
+            real = os.path.realpath(str(p))
+            if real == real_root or not real.startswith(real_root + os.sep):
+                done(result="unsupported", why="手順の置き場の外の手順です")
+            rel = os.path.relpath(real, real_root)
+            if rel not in out:
+                out[rel] = snap_dir(root, rel)
+    except Exception as e:  # 読めない形（symlink・大きすぎる）や、Hermes の探し方の失敗。自動では当てない
+        done(result="unsupported", why=(type(e).__name__ + ": " + str(e))[:200])
+    done(result="snap", skills=out)
+if mode == "restore":
+    skills = req.get("skills") or {}
+    try:
+        for rel, it in skills.items():
+            if digest(snap_dir(root, rel)) != it["expect"]:
+                done(result="changed", why="当てたあとに手順が変わっています")
+        for rel, it in skills.items():
+            if restore_dir(root, rel, it["before"], it["expect"]) != "restored":
+                done(result="changed", why="戻す途中で手順が変わりました")
+    except (ValueError, OSError) as e:
+        done(result="failed", why=type(e).__name__ + ": " + str(e)[:200])
+    done(result="restored")
+done(result="error", why="知らない種類です")
+'''
+SCRIPT = ("import base64, hashlib, json, os, stat\n"
+          + f"SNAP_FILE_MAX = {SNAP_FILE_MAX}\nSNAP_TOTAL_MAX = {SNAP_TOTAL_MAX}\nSNAP_FILES_MAX = {SNAP_FILES_MAX}\n"
+          + "".join(inspect.getsource(f) + "\n" for f in (_parts, _open_parent, snap_dir, digest, restore_dir)) + _SCRIPT_MAIN)
+
+
+def command(container: str, mode: str, env: dict | None = None) -> list[str] | None:
+    """台本を動かす命令。戻す（書く）は当てる・捨てると同じ目印（終わったかの確かめに数える）、読むは確かめの目印。"""
+    exe = docker_bin()
+    if not exe:
+        return None
+    extra = [a for k, v in (env or {}).items() for a in ("-e", f"{k}={v}")]
+    return [exe, "exec", "-i", "-u", USER, "-w", WORKDIR, *extra, container,
+            "timeout", "--kill-after=5", str(RUN_LIMIT), PY, "-c", SCRIPT, MARK if mode == "restore" else CHECK_MARK, mode]
+
+
+def run_script(container: str, mode: str, req: dict, wait: float = HOST_WAIT, env: dict | None = None) -> dict:
+    """台本を動かして結果を返す（{"result": …}）。読み方は hermes_skills.run_script と同じ。"""
+    cmd = command(container, mode, env)
+    if not cmd:
+        return {"result": "error", "why": "docker が見つかりません（config.env の VL_DOCKER に場所を書けます）"}
+    try:
+        p = subprocess.run(cmd, input=json.dumps(req, ensure_ascii=False).encode(), capture_output=True, timeout=wait)
+    except subprocess.TimeoutExpired:
+        return {"result": "timeout", "why": f"{wait:.0f} 秒待っても終わりませんでした"}
+    except OSError as e:
+        return {"result": "error", "why": f"docker を動かせません（{type(e).__name__}）"}
+    return hermes_skills.read_result(p)

@@ -94,7 +94,7 @@ head, _, routes = out.stdout.partition("\n")
 check("VL_HUB=claude が残っていても、頭は Hermes", head, "Hermes")
 here = "\n".join(sorted(f'{sorted(getattr(r, "methods", []) or [])} {r.path}' for r in s.app.routes))
 check("VL_HUB=claude が残っていても、本体の口の一覧は同じ", routes.strip(), here)
-check("口の数は分ける前と同じ（画面の /api/hermes/ の 9 個を含む）", sum(1 for line in here.splitlines() if "/api/hermes/" in line), 9)
+check("画面の /api/hermes/ の口は 12 個（9 個に、学んだことの一覧・中身・戻すの 3 個を足した。0.26.0）", sum(1 for line in here.splitlines() if "/api/hermes/" in line), 12)
 
 ok = sum(r[1] for r in results)
 for name, passed, got, want in results:

@@ -1,0 +1,320 @@
+"""学んだこと（Hermes の手順の書き足しを自動で当て、記憶の変化とあわせて跡を残し、画面の「戻す」で戻す）の試験。
+Hermes の置き場と手順の置き場は一時のフォルダに作り、コンテナの台本（hermes_skills.run_script・hermes_learn.run_script・hermes_memory.run_script・
+still_running）は差し替える。docker にも、常駐の 8790 にも触れない。
+確かめること:
+  - 手順のフォルダを読む・戻す（コンテナの中の台本に写す関数）: 中身と指紋・symlink のフォルダとファイル・通常でないファイル・hardlink・大きすぎる・
+    「..」と絶対の場所・当てた直後から変わっていたら書かない・増えたファイルを消し前の中身を書く・当てて作られた手順はフォルダごと消す（ほかに置かれたら残す）
+  - 自動で当てる: 1 日（日本時間）5 件まで（超えた分は承認待ちに残り、次の日に当たる）・扱えない形・当てた／分からない id・中身を読めない手順は当てない
+    （読めない版は試し直さない）・控え（前の中身・当てた直後の指紋）は状態フォルダに 0600 で、Hermes の置き場には書かない・当てたあとの中身を読めなければ戻せない印
+  - 戻す: 前の中身と指紋を台本に渡す・戻したら印・二度は戻さない・変わっていたら戻さない・分からないときは戻せない印・前の処理の終わりを確かめられなければ断る
+  - 記憶: 初めは跡を残さない・足された・消えた項目を跡に・画面で書いたものは跡にしない・戻すは足された項目を消し消えた項目を足し直す（もう変わった項目は飛ばす）
+  - 画面の口: 一覧（新しい順・今日の数と上限）・中身・コンテナからは使えない
+使い方: uv run spike/hermes_learn_test.py"""
+import asyncio
+import base64
+import json
+import os
+import stat
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+TMP = tempfile.mkdtemp()
+HOME = Path(TMP) / "hermes"
+PEND = HOME / "pending" / "skills"
+PEND.mkdir(parents=True)
+(HOME / "memories").mkdir(parents=True)
+os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HERMES_KEY="k1", VL_HERMES_URL="http://127.0.0.1:9", VL_HERMES_HOME=str(HOME),
+                  VL_HERMES_CONTAINER="hermes-test")
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+import server as s  # noqa: E402
+import hermes_learn as hl  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+results = []
+
+
+def check(name, got, want):
+    results.append((name, got == want, got, want))
+
+
+async def nothing(*a, **k):
+    return None
+
+
+pushes = []
+
+
+async def fake_push(title, body, tag, urgency="normal", only=None):
+    pushes.append(body)
+    return "sent"
+
+
+s.push_all = fake_push
+s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.hermes.watch_hermes_skills = nothing
+s.list_agents = lambda: []
+
+# ---------- 1. 手順のフォルダを読む・戻す（コンテナの中で動く関数を、ここで直に） ----------
+SK = Path(TMP) / "skills"
+(SK / "voice-loop" / "hub" / "references").mkdir(parents=True)
+(SK / "voice-loop" / "hub" / "SKILL.md").write_text("前の手順\n")
+(SK / "voice-loop" / "hub" / "references" / "a.md").write_text("参考\n")
+before = hl.snap_dir(str(SK), "voice-loop/hub")
+check("読む: フォルダの中のファイルを、場所ごとに base64 で", (before["exists"], sorted(before["files"]), base64.b64decode(before["files"]["SKILL.md"]).decode()),
+      (True, ["SKILL.md", "references/a.md"], "前の手順\n"))
+check("読む: 無い手順は exists が False", hl.snap_dir(str(SK), "voice-loop/none"), {"exists": False, "files": {}})
+(SK / "voice-loop" / "hub" / "SKILL.md").write_text("当てたあとの手順\n")
+(SK / "voice-loop" / "hub" / "references" / "b.md").write_text("足された\n")
+after = hl.snap_dir(str(SK), "voice-loop/hub")
+check("指紋: 中身が変われば変わる・同じなら同じ", (hl.digest(before) != hl.digest(after), hl.digest(after) == hl.digest(hl.snap_dir(str(SK), "voice-loop/hub"))), (True, True))
+check("戻す: いまの中身が当てた直後と違えば、何も書かない", (hl.restore_dir(str(SK), "voice-loop/hub", before, hl.digest(before)),
+      (SK / "voice-loop" / "hub" / "SKILL.md").read_text()), ("changed", "当てたあとの手順\n"))
+check("戻す: 前の中身を書き、当てたときに増えたファイルを消す", (hl.restore_dir(str(SK), "voice-loop/hub", before, hl.digest(after)),
+      (SK / "voice-loop" / "hub" / "SKILL.md").read_text(), (SK / "voice-loop" / "hub" / "references" / "b.md").exists(), hl.digest(hl.snap_dir(str(SK), "voice-loop/hub")) == hl.digest(before)),
+      ("restored", "前の手順\n", False, True))
+(SK / "voice-loop" / "new" / "scripts").mkdir(parents=True)
+(SK / "voice-loop" / "new" / "SKILL.md").write_text("作られた\n")
+(SK / "voice-loop" / "new" / "scripts" / "x.py").write_text("print(1)\n")
+made = hl.snap_dir(str(SK), "voice-loop/new")
+check("戻す: 当てて作られた手順は、フォルダごと消す", (hl.restore_dir(str(SK), "voice-loop/new", {"exists": False, "files": {}}, hl.digest(made)),
+      (SK / "voice-loop" / "new").exists(), (SK / "voice-loop").exists()), ("restored", False, True))
+(SK / "voice-loop" / "new2").mkdir()
+(SK / "voice-loop" / "new2" / "SKILL.md").write_text("作られた\n")
+made2 = hl.snap_dir(str(SK), "voice-loop/new2")
+(SK / "voice-loop" / "new2" / "other").mkdir()  # 指紋に入らない空のフォルダ（Hermes がほかに置いたもの）
+check("戻す: 作られた手順のフォルダに、ほかのものが置かれていれば、フォルダは残す（ファイルだけ消す）",
+      (hl.restore_dir(str(SK), "voice-loop/new2", {"exists": False, "files": {}}, hl.digest(made2)), (SK / "voice-loop" / "new2" / "SKILL.md").exists(),
+       (SK / "voice-loop" / "new2" / "other").exists()), ("restored", False, True))
+OUTSIDE = Path(TMP) / "outside"
+OUTSIDE.mkdir()
+(OUTSIDE / "secret.txt").write_text("外のファイル")
+(SK / "voice-loop" / "hub" / "link.md").symlink_to(OUTSIDE / "secret.txt")
+
+
+def raises(fn):
+    try:
+        fn()
+    except (ValueError, OSError):
+        return True
+    return False
+
+
+check("読む: フォルダの中の symlink は断る（たどらない）", raises(lambda: hl.snap_dir(str(SK), "voice-loop/hub")), True)
+(SK / "voice-loop" / "hub" / "link.md").unlink()
+(SK / "voice-loop" / "linked").symlink_to(OUTSIDE, target_is_directory=True)
+check("読む: 手順のフォルダそのものが symlink なら断る", raises(lambda: hl.snap_dir(str(SK), "voice-loop/linked")), True)
+(SK / "cat").symlink_to(SK / "voice-loop", target_is_directory=True)
+check("読む: 途中のフォルダが symlink なら断る", raises(lambda: hl.snap_dir(str(SK), "cat/hub")), True)
+os.mkfifo(SK / "voice-loop" / "hub" / "fifo")
+check("読む: 通常でないファイル（FIFO）は断る", raises(lambda: hl.snap_dir(str(SK), "voice-loop/hub")), True)
+(SK / "voice-loop" / "hub" / "fifo").unlink()
+os.link(SK / "voice-loop" / "hub" / "SKILL.md", OUTSIDE / "hard.md")
+check("読む: ほかの名前からも指されるファイル（hardlink）は断る", raises(lambda: hl.snap_dir(str(SK), "voice-loop/hub")), True)
+(OUTSIDE / "hard.md").unlink()
+(SK / "voice-loop" / "hub" / "big.md").write_bytes(b"x" * (hl.SNAP_FILE_MAX + 1))
+check("読む: 大きすぎるファイルは断る", raises(lambda: hl.snap_dir(str(SK), "voice-loop/hub")), True)
+(SK / "voice-loop" / "hub" / "big.md").unlink()
+check("場所: 「..」・絶対の場所・空の段・バックスラッシュは断る",
+      [raises(lambda r=r: hl.snap_dir(str(SK), r)) for r in ("../outside", "/etc", "voice-loop//hub", "voice-loop\\hub", "voice-loop/./hub")], [True] * 5)
+cur = hl.snap_dir(str(SK), "voice-loop/hub")
+evil = {"exists": True, "files": {"../../outside/secret.txt": base64.b64encode(b"x").decode()}}
+check("戻す: 前の中身のファイルの場所に「..」があれば、何も書かず・何も消さずに断る", (raises(lambda: hl.restore_dir(str(SK), "voice-loop/hub", evil, hl.digest(cur))),
+      (OUTSIDE / "secret.txt").read_text(), hl.digest(hl.snap_dir(str(SK), "voice-loop/hub")) == hl.digest(cur)), (True, "外のファイル", True))
+check("台本: コンテナの中で動く台本は、ここの関数をそのまま写す（Python として読める・上限の数が同じ）",
+      (compile(hl.SCRIPT, "learn", "exec") is not None, f"SNAP_FILE_MAX = {hl.SNAP_FILE_MAX}" in hl.SCRIPT, "def restore_dir" in hl.SCRIPT), (True, True, True))
+cmd = hl.command("hermes-test", "restore")
+check("台本の命令: Hermes の利用者・時間切れ・戻すは当てると同じ目印（終わりの確かめに数える）・読むは確かめの目印",
+      (cmd[cmd.index("-u") + 1], "timeout" in cmd, cmd[-2:], hl.command("hermes-test", "snap")[-2:]) if cmd else None,
+      ("10000:10000", True, [hl.MARK, "restore"], [hl.CHECK_MARK, "snap"]) if cmd else None)
+
+# ---------- 2. 自動で当てる ----------
+SNAPS: dict = {}  # 手順の場所 → いまの中身（偽のコンテナ）
+LCALLS: list = []
+LOUT: dict = {}
+SCALLS: list = []
+RUNNING = {"v": False}
+
+
+def fake_skills_run(container, mode, pid, raw, wait=90, env=None):
+    SCALLS.append((mode, pid))
+    if mode == "approve":  # 当てると、手順の中身が変わる（偽）
+        place = json.loads(raw)["payload"]["operations"][0]["name"]
+        SNAPS[place] = {"exists": True, "files": {"SKILL.md": base64.b64encode(f"{pid} を当てた".encode()).decode()}}
+        return {"result": "applied", "discarded": True}
+    return {"result": "ok"} if mode == "check" else {"result": "diff", "diff": f"差分 {pid}"} if mode == "diff" else {"result": "rejected", "discarded": True}
+
+
+def fake_learn_run(container, mode, req, wait=90, env=None):
+    LCALLS.append((mode, json.loads(json.dumps(req))))
+    if mode in LOUT:
+        r = LOUT[mode]
+        return r(req) if callable(r) else dict(r)
+    if mode == "snap":
+        names = [op["name"] for op in req["payload"]["operations"]]
+        return {"result": "snap", "skills": {n: SNAPS.get(n, {"exists": False, "files": {}}) for n in names}}
+    return {"result": "restored"}
+
+
+s.hermes.hermes_skills.run_script = fake_skills_run
+s.hermes.hermes_skills.still_running = lambda container: RUNNING["v"]
+s.hermes.hermes_learn.run_script = fake_learn_run
+
+
+def record(pid, name, payload=None, at=None):
+    payload = payload or {"action": "batch", "operations": [{"action": "patch", "name": name, "old_string": "a", "new_string": "a\nb"}]}
+    raw = json.dumps({"id": pid, "subsystem": "skills", "action": "batch", "summary": f"{name} に足す", "origin": "background_review",
+                      "created_at": at or time.time(), "payload": payload}, ensure_ascii=False).encode()
+    (PEND / f"{pid}.json").write_bytes(raw)
+
+
+def learned():
+    with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+        return c.get("/api/hermes/learned").json()
+
+
+SNAPS["hub"] = {"exists": True, "files": {"SKILL.md": base64.b64encode("前".encode()).decode()}}
+for i in range(7):
+    record(f"aaaa{i:04d}", "hub" if i == 0 else f"s{i}", at=time.time() + i)
+record("bbbbbbbb", "del", {"action": "delete", "name": "x"})  # 扱えない形
+n = asyncio.run(s.hermes._learn_skills())
+lr = learned()
+check("自動: 1 日 5 件まで当てる（古い順）。扱えない形は当てない", (n, sorted(p for m, p in SCALLS if m == "approve")), (5, [f"aaaa{i:04d}" for i in range(5)]))
+check("自動: 跡に、今日の数と上限・手順の要約・戻せる印", (lr["today"], lr["limit"], len(lr["entries"]), all(e["can_undo"] and e["kind"] == "skill" for e in lr["entries"])),
+      (5, 5, 5, True))
+first = [e for e in lr["entries"] if e["pid"] == "aaaa0000"][0]
+det = json.loads((s.hermes.HLEARN_DIR / f"{first['id']}.json").read_text())
+check("自動: 控えは状態フォルダに 0600 で（前の中身・当てた直後の指紋・差分）。Hermes の置き場には何も書かない",
+      (stat.S_IMODE((s.hermes.HLEARN_DIR / f"{first['id']}.json").stat().st_mode), det["before"]["hub"]["files"]["SKILL.md"], det["expect"]["hub"] == hl.digest(SNAPS["hub"]),
+       det["diff"], sorted(p.name for p in HOME.rglob("*") if p.is_file() and "pending" not in p.parts)),
+      (0o600, base64.b64encode("前".encode()).decode(), True, "差分 aaaa0000", []))
+SCALLS.clear()
+check("自動: 上限に届いた日は、もう当てない（残りは承認待ちに残る）", (asyncio.run(s.hermes._learn_skills()), [m for m, p in SCALLS if m == "approve"],
+      sorted(p.stem for p in PEND.glob("aaaa*.json"))[-2:]), (0, [], ["aaaa0005", "aaaa0006"]))
+st = json.loads(s.hermes.HLEARN_FILE.read_text())
+for e in st["entries"]:
+    e["at"] -= 86400  # 前の日に当てたことにする
+s.hermes.HLEARN_FILE.write_text(json.dumps(st))
+check("自動: 次の日（日本時間）には、残りを当てる。当てた id は二度当てない", (asyncio.run(s.hermes._learn_skills()), sorted(p for m, p in SCALLS if m == "approve")),
+      (2, ["aaaa0005", "aaaa0006"]))
+LOUT["snap"] = {"result": "unsupported", "why": "手順のフォルダに symlink か通常でないファイルがあります"}
+record("cccccccc", "odd")
+SCALLS.clear()
+check("自動: 中身を読めない手順は当てない（承認待ちに残す）", (asyncio.run(s.hermes._learn_skills()), [m for m, p in SCALLS if m == "approve"]), (0, []))
+lc = len(LCALLS)
+asyncio.run(s.hermes._learn_skills())
+check("自動: 読めなかった版は、本体を起動し直すまで試し直さない", len(LCALLS), lc)
+del LOUT["snap"]
+s.hermes._HLEARN_SKIP.clear()
+RUNNING["v"] = True
+st = json.loads(s.hermes.HSK_FILE.read_text())
+st["verify"] = True
+s.hermes.HSK_FILE.write_text(json.dumps(st))
+SCALLS.clear()
+check("自動: 前の処理の終わりを確かめられない間は当てない", (asyncio.run(s.hermes._learn_skills()), [m for m, p in SCALLS if m == "approve"]), (0, []))
+RUNNING["v"] = False
+seq = iter([{"result": "snap", "skills": {"odd": {"exists": True, "files": {}}}}, {"result": "error", "why": "読めない"}])
+LOUT["snap"] = lambda req: next(seq)
+asyncio.run(s.hermes._learn_skills())
+odd = [e for e in learned()["entries"] if e["pid"] == "cccccccc"][0]
+check("自動: 当てたあとの中身を読めなければ、当てた跡は残し、戻せない印にする", (odd["can_undo"], odd["note"]), (False, "当てたあとの中身を読めなかったので、戻せません"))
+del LOUT["snap"]
+
+# ---------- 3. 戻す ----------
+with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+    undo = lambda eid: c.post("/api/hermes/learned/undo", json={"id": eid}).json()
+    LCALLS.clear()
+    r1 = undo(first["id"])
+    sent = [r for m, r in LCALLS if m == "restore"]
+    check("戻す: 台本に前の中身と当てた直後の指紋を渡し、戻したら印を付ける",
+          (r1, sent[0]["skills"]["hub"]["before"]["files"]["SKILL.md"], sent[0]["skills"]["hub"]["expect"] == det["expect"]["hub"],
+           [e["state"] for e in learned()["entries"] if e["id"] == first["id"]]),
+          ({"ok": True}, base64.b64encode("前".encode()).decode(), True, ["undone"]))
+    check("戻す: 二度は戻さない", undo(first["id"]), {"ok": False, "reason": "done"})
+    second = [e for e in learned()["entries"] if e["pid"] == "aaaa0001"][0]
+    LOUT["restore"] = {"result": "changed", "why": "当てたあとに手順が変わっています"}
+    check("戻す: 当てた直後から変わっていれば戻さず、そう書く（戻すはまだ押せる）",
+          (undo(second["id"]), [(e["state"], e["note"], e["can_undo"]) for e in learned()["entries"] if e["id"] == second["id"]]),
+          ({"ok": False, "reason": "changed"}, [("applied", "当てたあとに手順が変わっているので、戻せませんでした", True)]))
+    LOUT["restore"] = {"result": "timeout", "why": "時間切れ"}
+    third = [e for e in learned()["entries"] if e["pid"] == "aaaa0002"][0]
+    r3 = undo(third["id"])
+    check("戻す: 分からない（時間切れ）ときは、戻せない印にし、前の処理の終わりを確かめるまで当てる・戻すを断る",
+          (r3["reason"], [e["can_undo"] for e in learned()["entries"] if e["id"] == third["id"]], json.loads(s.hermes.HSK_FILE.read_text())["verify"]),
+          ("unknown", [False], True))
+    RUNNING["v"] = True
+    fourth = [e for e in learned()["entries"] if e["pid"] == "aaaa0003"][0]
+    check("戻す: 前の処理がまだ動いている間は断る", undo(fourth["id"])["reason"], "busy")
+    RUNNING["v"] = False
+    del LOUT["restore"]
+    check("戻す: 無い跡は断る", undo("lnone"), {"ok": False, "reason": "gone"})
+    check("中身: 手順は差分を返す", c.post("/api/hermes/learned/detail", json={"id": fourth["id"]}).json(), {"ok": True, "diff": "差分 aaaa0003"})
+    check("一覧: 新しい順", [e["at"] for e in learned()["entries"]] == sorted((e["at"] for e in learned()["entries"]), reverse=True), True)
+    check("画面の口: コンテナからは使えない（一覧・中身・戻す）",
+          [c.request(m, u, json={"id": first["id"]} if m == "POST" else None, headers={"Origin": "http://127.0.0.1:8790"},
+                     ).status_code for m, u in [("GET", "/api/hermes/learned"), ("POST", "/api/hermes/learned/detail"), ("POST", "/api/hermes/learned/undo")]] ==
+          [200, 200, 200] and __import__("origin_guard").DOCKER_ALLOWED.isdisjoint({("GET", "/api/hermes/learned"), ("POST", "/api/hermes/learned/detail"), ("POST", "/api/hermes/learned/undo")}),
+          True)
+
+# ---------- 4. 記憶 ----------
+MEM = HOME / "memories"
+D = s.hermes.hermes_memory.DELIM
+(MEM / "USER.md").write_text(D.join(["名前は山田", "朝は 7 時に起きる"]))
+(MEM / "MEMORY.md").write_text("週次定例は情報交換の場")
+MCALLS = []
+
+
+def fake_mem_run(container, op, req=None, wait=90, env=None):
+    if op == "limits":
+        return {"result": "limits", "limits": {"user": 1375, "memory": 2200}}
+    MCALLS.append((op, dict(req or {})))
+    path = MEM / s.hermes.hermes_memory.TARGETS[req["target"]]
+    items = [x for x in path.read_text().split(D) if x]
+    if op == "remove":
+        items = [x for x in items if x != req["entry"]]
+    elif op == "add":
+        items.append(req["content"])
+    path.write_text(D.join(items))
+    return {"result": "applied"}
+
+
+s.hermes.hermes_memory.run_script = fake_mem_run
+s.hermes.hermes_memory.still_running = lambda container: False
+count = lambda: len([e for e in learned()["entries"] if e["kind"] == "memory"])
+before_n = count()
+asyncio.run(s.hermes._learn_memory())
+check("記憶: 初めて読んだときは跡に残さない（今の中身を覚えるだけ）", count(), before_n)
+(MEM / "USER.md").write_text(D.join(["名前は山田", "返事は短く"]))
+asyncio.run(s.hermes._learn_memory())
+mem = [e for e in learned()["entries"] if e["kind"] == "memory"][0]
+with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+    md = c.post("/api/hermes/learned/detail", json={"id": mem["id"]}).json()
+check("記憶: 足された・消えた項目を跡に残す（数と中身）", (mem["target"], mem["added"], mem["removed"], md), ("user", 1, 1, {"ok": True, "added": ["返事は短く"], "removed": ["朝は 7 時に起きる"]}))
+with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+    s.hermes.HMEM_SHOWN.clear()
+    c.get("/api/hermes/memory")
+    c.post("/api/hermes/memory/add", json={"target": "memory", "content": "画面で足した"})
+check("記憶: 画面で書いたものは、Hermes の学びとして跡に残さない", count(), before_n + 1)
+with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+    MCALLS.clear()
+    ru = c.post("/api/hermes/learned/undo", json={"id": mem["id"]}).json()
+check("記憶の戻す: 足された項目を消し、消えた項目を足し直す。戻したら印。戻したことは跡にしない",
+      (ru, [(op, r.get("entry") or r.get("content")) for op, r in MCALLS], [x for x in (MEM / "USER.md").read_text().split(D) if x],
+       [e["state"] for e in learned()["entries"] if e["id"] == mem["id"]], count()),
+      ({"ok": True, "skipped": 0}, [("remove", "返事は短く"), ("add", "朝は 7 時に起きる")], ["名前は山田", "朝は 7 時に起きる"], ["undone"], before_n + 1))
+(MEM / "USER.md").write_text(D.join(["名前は山田", "朝は 7 時に起きる", "新しい項目"]))
+asyncio.run(s.hermes._learn_memory())
+mem2 = [e for e in learned()["entries"] if e["kind"] == "memory" and e["state"] == "applied"][0]
+(MEM / "USER.md").write_text(D.join(["名前は山田", "朝は 7 時に起きる"]))  # Hermes がもう消した
+asyncio.run(s.hermes._learn_memory(silent=True))
+with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+    MCALLS.clear()
+    ru2 = c.post("/api/hermes/learned/undo", json={"id": mem2["id"]}).json()
+check("記憶の戻す: もう変わっていた項目は飛ばす（書かない）", (ru2, MCALLS), ({"ok": True, "skipped": 1}, []))
+
+ok = sum(r[1] for r in results)
+for name, passed, got, want in results:
+    print(("✓ " if passed else "✗ ") + name + ("" if passed else f"\n    得た値: {got!r}\n    期待:   {want!r}"))
+print(f"\n{ok}/{len(results)} 件が期待どおり")
+sys.exit(0 if ok == len(results) else 1)

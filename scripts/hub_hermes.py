@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse
 
 import attach  # 画面から添付したファイルを Hermes のコンテナの中に置く
 import hermes_memory  # Hermes の記憶を画面（PC の「記憶」）で足す・直す・消す
+import hermes_learn  # Hermes の学びを自動で当て、跡を残し、画面の「戻す」で戻す
 import hermes_skills  # Hermes の手順の書き足しを画面で採る・捨てる、Hermes の記憶を読む
 from hub_brain import Brain, Talker
 from places import CONFIG_DIR, STATE_DIR
@@ -740,6 +741,29 @@ def _hmem_mark(verify: bool) -> bool:
         return False
 
 
+async def _hmem_run(op: str, req: dict) -> dict:
+    """記憶の台本を 1 回動かす（一度にひとつ。前の処理の終わりを確かめてから）。動かせなければ result が state・busy・unverifiable。"""
+    async with HMEM_LOCK:
+        st = await asyncio.to_thread(hmem_state)
+        if st is None:
+            return {"result": "state"}
+        if st["verify"]:
+            running = await asyncio.to_thread(hermes_memory.still_running, HERMES_CONTAINER)
+            if running is True:
+                return {"result": "busy"}
+            if running is None:
+                return {"result": "unverifiable"}
+            if not await asyncio.to_thread(_hmem_mark, False):
+                return {"result": "state"}
+        if not await asyncio.to_thread(_hmem_mark, True):  # 台本の前に「終わり未確認」を書く（書けなければ動かさない）
+            return {"result": "state"}
+        out = await asyncio.to_thread(hermes_memory.run_script, HERMES_CONTAINER, op, req)
+        if out.get("result") in HMEM_DONE:
+            await asyncio.to_thread(_hmem_mark, False)
+    core.hlog(f"Hermes の記憶: {op} {req.get('target')} → {out.get('result')}" + (f"（{core._clip(str(out.get('why', '')), 80)}）" if out.get("why") else ""), flush=True)
+    return out
+
+
 async def _hmem_write(op: str, body: dict) -> JSONResponse:
     if not hsk_on():
         return JSONResponse({"ok": False, "reason": "off"})
@@ -757,25 +781,11 @@ async def _hmem_write(op: str, body: dict) -> JSONResponse:
         if not shown or shown[0] != target:
             return JSONResponse({"ok": False, "reason": "stale"})
         req["entry"] = shown[1]
-    async with HMEM_LOCK:
-        st = await asyncio.to_thread(hmem_state)
-        if st is None:
-            return JSONResponse({"ok": False, "reason": "state"})
-        if st["verify"]:
-            running = await asyncio.to_thread(hermes_memory.still_running, HERMES_CONTAINER)
-            if running is True:
-                return JSONResponse({"ok": False, "reason": "busy"})
-            if running is None:
-                return JSONResponse({"ok": False, "reason": "unverifiable"})
-            if not await asyncio.to_thread(_hmem_mark, False):
-                return JSONResponse({"ok": False, "reason": "state"})
-        if not await asyncio.to_thread(_hmem_mark, True):  # 台本の前に「終わり未確認」を書く（書けなければ動かさない）
-            return JSONResponse({"ok": False, "reason": "state"})
-        out = await asyncio.to_thread(hermes_memory.run_script, HERMES_CONTAINER, op, req)
-        res = out.get("result")
-        if res in HMEM_DONE:
-            await asyncio.to_thread(_hmem_mark, False)
-    core.hlog(f"Hermes の記憶: {op} {target} → {res}" + (f"（{core._clip(str(out.get('why', '')), 80)}）" if out.get("why") else ""), flush=True)
+    out = await _hmem_run(op, req)
+    res = out.get("result")
+    if res in ("state", "busy", "unverifiable"):
+        return JSONResponse({"ok": False, "reason": res})
+    await _learn_memory(silent=True)  # 画面で書いたものは、Hermes の学びとして跡に残さない
     if res == "applied":
         return JSONResponse({"ok": True, "shape": out.get("shape", "")})
     if res in HMEM_DONE:
@@ -820,8 +830,295 @@ def _hsk_tidy(ids: set[str]) -> list[str]:
     return new
 
 
+# ---------- 学んだこと（Hermes の手順の書き足しを自動で当て、記憶の変化とあわせて跡を残し、画面の「戻す」で戻す） ----------
+# 2026-11-16 本人が推奨を選んだ（学びは承認待ちを作らずに自動で当てる・見たいときに見る画面と「戻す」だけ）。部品は scripts/hermes_learn.py。
+# 跡と控え（当てる前の手順の中身・当てた直後の指紋）は、Hermes が書けない側（状態フォルダの hermes-learned/）に置く
+HLEARN_DIR = STATE_DIR / "hermes-learned"
+HLEARN_FILE = HLEARN_DIR / "state.json"
+HLEARN_KEEP = 30 * 86400
+HLEARN_MAX = 200  # 跡の数の上限（古いものから捨てる）
+HLEARN_LOCK = asyncio.Lock()  # 当てる・戻すは一度にひとつ
+_hlearn_lock = threading.Lock()  # 状態のファイルを書き換えるのは一度にひとつ
+_HLEARN_SKIP: set[tuple[str, str]] = set()  # 中身を読めなかった書き足し（id, 指紋）。この版は、本体を起動し直すまで自動では試し直さない
+
+
+def hlearn_state() -> dict | None:
+    """跡の状態。無ければ空。あるのに読めない・形が違うときは None（当てない・戻さない）。"""
+    try:
+        d = json.loads(HLEARN_FILE.read_text())
+    except FileNotFoundError:
+        d = {"entries": [], "memory": None}
+    except (OSError, ValueError, RecursionError):
+        traceback.print_exc()
+        return None
+    if not isinstance(d, dict) or not isinstance(d.get("entries"), list) or not (d.get("memory") is None or isinstance(d.get("memory"), dict)):
+        return None
+    return d
+
+
+def _hlearn_save(d: dict):
+    now = time.time()
+    d["entries"] = [e for e in d["entries"] if now - e.get("at", 0) < HLEARN_KEEP][-HLEARN_MAX:]
+    keep = {e["id"] for e in d["entries"]}
+    core.write_json(HLEARN_FILE, d)
+    for p in HLEARN_DIR.glob("l*.json"):  # 捨てた跡の控え
+        if p.stem not in keep:
+            with suppress(OSError):
+                p.unlink()
+
+
+def _hlearn_day(t: float) -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime(t + 9 * 3600))  # 日本時間の日付
+
+
+def _hlearn_add(entry: dict, detail: dict) -> dict:
+    """跡を 1 つ足す（控えは別のファイル、0600）。書けなければ OSError。"""
+    entry = {"id": f"l{os.urandom(6).hex()}", "at": time.time(), "state": "applied", "note": "", **entry}
+    core.write_json(HLEARN_DIR / f"{entry['id']}.json", detail)
+    with _hlearn_lock:
+        d = hlearn_state()
+        if d is None:
+            raise OSError("跡の状態を読めません")
+        d["entries"].append(entry)
+        _hlearn_save(d)
+    return entry
+
+
+def _hlearn_set(eid: str, **kw):
+    with _hlearn_lock:
+        d = hlearn_state()
+        if d is None:
+            return
+        for e in d["entries"]:
+            if e["id"] == eid:
+                e.update(kw)
+        try:
+            _hlearn_save(d)
+        except OSError:
+            traceback.print_exc()
+
+
+def _hlearn_today() -> int:
+    """今日（日本時間）自動で当てた手順の書き足しの数（戻したものも数える）。"""
+    with _hlearn_lock:
+        d = hlearn_state()
+    if d is None:
+        return hermes_learn.LIMIT  # 読めなければ当てない
+    today = _hlearn_day(time.time())
+    return sum(1 for e in d["entries"] if e.get("kind") == "skill" and e.get("auto") and _hlearn_day(e["at"]) == today)
+
+
+async def _learn_skills() -> int:
+    """承認待ちの手順の書き足しを、今日の上限まで自動で当てる。当てた数を返す。扱えない形・当てた／分からない id・読めない手順は当てない（承認待ちに残す）。"""
+    if not hsk_on():
+        return 0
+    applied = 0
+    async with HSK_LOCK:  # 画面の「採る」「捨てる」と同時に動かさない
+        if await asyncio.to_thread(_hsk_settled):
+            return 0
+        try:
+            got = await asyncio.to_thread(hermes_skills.list_pending, HERMES_HOME)
+        except OSError:
+            return 0
+        with _hsk_lock:
+            st = hsk_state()
+        if st is None:
+            return 0
+        todo = [r for r in got["records"] if not r["why"] and st["items"].get(r["id"], {}).get("state") not in HSK_BLOCK
+                and (r["id"], r["v"]) not in _HLEARN_SKIP]
+        if not todo:
+            return 0
+        left = hermes_learn.LIMIT - await asyncio.to_thread(_hlearn_today)
+        if left <= 0:
+            return 0
+        core._probes.pop("hermes-skills", None)
+        if await asyncio.to_thread(_hsk_problem):
+            return 0
+        for r in todo[:left]:
+            pid, v, raw = r["id"], r["v"], r["raw"]
+            rec = hermes_skills.parse_record(raw, pid)
+            payload = json.loads(raw.decode("utf-8-sig"))["payload"]
+            before = await asyncio.to_thread(hermes_learn.run_script, HERMES_CONTAINER, "snap", {"payload": payload})
+            if before.get("result") != "snap" or not isinstance(before.get("skills"), dict):
+                _HLEARN_SKIP.add((pid, v))
+                hsk_log(id=pid, act="auto", summary=rec["summary"][:120], result="skipped", why=str(before.get("why") or before.get("result"))[:200])
+                continue
+            diff = await asyncio.to_thread(hermes_skills.run_script, HERMES_CONTAINER, "diff", pid, raw, 40)
+            if await asyncio.to_thread(_hsk_begin, pid, v, rec, raw):
+                continue
+            try:
+                out = await asyncio.to_thread(hermes_skills.run_script, HERMES_CONTAINER, "approve", pid, raw)
+            except Exception as e:
+                traceback.print_exc()
+                out = {"result": "error", "why": f"本体の問題（{type(e).__name__}）"}
+            res = await asyncio.to_thread(_hsk_finish, pid, v, rec, raw, out)
+            if not res.get("ok"):
+                continue
+            after = await asyncio.to_thread(hermes_learn.run_script, HERMES_CONTAINER, "snap", {"payload": payload})
+            ok_after = after.get("result") == "snap" and isinstance(after.get("skills"), dict) and set(after["skills"]) == set(before["skills"])
+            try:
+                await asyncio.to_thread(_hlearn_add, {
+                    "kind": "skill", "auto": True, "pid": pid, "summary": rec["summary"][:300], "origin": r["origin"],
+                    "places": sorted(before["skills"]), "can_undo": ok_after,
+                    "note": "" if ok_after else "当てたあとの中身を読めなかったので、戻せません"},
+                    {"diff": str(diff.get("diff") or "")[:hermes_skills.DIFF_MAX] if diff.get("result") == "diff" else "",
+                     "before": before["skills"], "expect": {k: hermes_learn.digest(v) for k, v in after["skills"].items()} if ok_after else {}})
+            except OSError:
+                traceback.print_exc()
+            applied += 1
+            core.hlog(f"Hermes の書き足し {pid} を自動で当てました（今日 {hermes_learn.LIMIT - left + applied}/{hermes_learn.LIMIT}）", flush=True)
+    return applied
+
+
+async def _learn_memory(silent: bool = False):
+    """記憶を読み、前に読んだときから足された・消えた項目を跡に残す。silent は跡に残さず、読んだ中身だけを覚える
+    （画面で足す・直す・消したとき、学んだことを戻したとき）。読めない記憶のファイルは比べない。"""
+    if not hsk_on():
+        return
+    got = await asyncio.to_thread(hermes_memory.read_targets, HERMES_HOME)
+    cur = {t: v["entries"] for t, v in got.items() if v["status"] in ("ok", "missing")}
+    with _hlearn_lock:
+        d = hlearn_state()
+        if d is None:
+            return
+        prev = d.get("memory")
+        d["memory"] = {**(prev or {}), **cur}
+        changes = []
+        if prev is not None and not silent:
+            for t, now in cur.items():
+                if t not in prev:
+                    continue
+                added, removed = [e for e in now if e not in prev[t]], [e for e in prev[t] if e not in now]
+                if added or removed:
+                    changes.append({"kind": "memory", "target": t, "added": len(added), "removed": len(removed),
+                                    "summary": core._clip(added[0] if added else removed[0], 120), "can_undo": True}, )
+                    changes[-1]["_detail"] = {"added": added, "removed": removed}
+        try:
+            _hlearn_save(d)
+        except OSError:
+            traceback.print_exc()
+            return
+    for c in changes:
+        detail = c.pop("_detail")
+        try:
+            await asyncio.to_thread(_hlearn_add, c, detail)
+        except OSError:
+            traceback.print_exc()
+
+
+def _hlearn_detail(eid: str) -> dict | None:
+    try:
+        d = json.loads((HLEARN_DIR / f"{eid}.json").read_text())
+    except (OSError, ValueError, RecursionError):
+        return None
+    return d if isinstance(d, dict) else None
+
+
+def _hlearn_read() -> dict | None:
+    with _hlearn_lock:
+        return hlearn_state()
+
+
+def _hlearn_entry(eid: str) -> dict | None:
+    d = _hlearn_read()
+    return next((e for e in (d or {}).get("entries", []) if e.get("id") == eid), None)
+
+
+@router.get("/api/hermes/learned")
+async def api_hermes_learned():
+    """画面の「学んだこと」。跡（新しい順）と、今日自動で当てた数。ハブ（コンテナ）からは使えない口。"""
+    if not hsk_on():
+        return JSONResponse({"on": False})
+    d = await asyncio.to_thread(_hlearn_read)
+    if d is None:
+        return JSONResponse({"on": True, "problem": f"学んだことの状態（{HLEARN_FILE}）を読めません", "entries": []})
+    return JSONResponse({"on": True, "today": await asyncio.to_thread(_hlearn_today), "limit": hermes_learn.LIMIT,
+                         "entries": sorted(d["entries"], key=lambda e: -e.get("at", 0))})
+
+
+@router.post("/api/hermes/learned/detail")
+async def api_hermes_learned_detail(body: dict):
+    """跡の中身（手順なら差分、記憶なら足した・消した項目）。"""
+    eid = str(body.get("id", ""))
+    e = await asyncio.to_thread(_hlearn_entry, eid)
+    det = await asyncio.to_thread(_hlearn_detail, eid) if e else None
+    if not e or det is None:
+        return JSONResponse({"ok": False, "reason": "gone"})
+    if e.get("kind") == "skill":
+        return JSONResponse({"ok": True, "diff": det.get("diff", "")})
+    return JSONResponse({"ok": True, "added": det.get("added", []), "removed": det.get("removed", [])})
+
+
+@router.post("/api/hermes/learned/undo")
+async def api_hermes_learned_undo(body: dict):
+    """画面の「戻す」（2 段の押しの 2 段目）。手順は、当てた直後から変わっていないときだけ前の中身に戻す。記憶は、足された項目を消し、
+    消えた項目を足し直す（もう無い・もうある項目は飛ばす）。ハブ（コンテナ）からは使えない口。"""
+    eid = str(body.get("id", ""))
+    if not hsk_on():
+        return JSONResponse({"ok": False, "reason": "off"})
+    async with HLEARN_LOCK:
+        e = await asyncio.to_thread(_hlearn_entry, eid)
+        det = await asyncio.to_thread(_hlearn_detail, eid) if e else None
+        if not e or det is None:
+            return JSONResponse({"ok": False, "reason": "gone"})
+        if e.get("state") != "applied" or not e.get("can_undo"):
+            return JSONResponse({"ok": False, "reason": "done" if e.get("state") == "undone" else "cannot"})
+        if e["kind"] == "skill":
+            async with HSK_LOCK:
+                why = await asyncio.to_thread(_hsk_settled)
+                if why:
+                    return JSONResponse({"ok": False, "reason": "busy", "why": why})
+                if not await asyncio.to_thread(_hsk_mark_running):
+                    return JSONResponse({"ok": False, "reason": "state"})
+                skills = {k: {"before": det["before"][k], "expect": det["expect"][k]} for k in det.get("expect", {}) if k in det.get("before", {})}
+                out = await asyncio.to_thread(hermes_learn.run_script, HERMES_CONTAINER, "restore", {"skills": skills}) if skills else {"result": "failed", "why": "控えがありません"}
+                if out.get("result") != "timeout":
+                    with _hsk_lock:
+                        d = hsk_state()
+                        if d is not None:
+                            d["verify"] = False
+                            with suppress(OSError):
+                                core.write_json(HSK_FILE, d)
+            res = out.get("result")
+            hsk_log(id=e.get("pid", ""), act="undo", summary=e.get("summary", "")[:120], result=res, why=str(out.get("why") or "")[:200])
+            if res == "restored":
+                await asyncio.to_thread(_hlearn_set, eid, state="undone", undone_at=time.time(), note="")
+                return JSONResponse({"ok": True})
+            if res == "changed":
+                await asyncio.to_thread(_hlearn_set, eid, note="当てたあとに手順が変わっているので、戻せませんでした")
+                return JSONResponse({"ok": False, "reason": "changed"})
+            await asyncio.to_thread(_hlearn_set, eid, note=f"戻せたか分かりません（{core._clip(str(out.get('why') or res), 120)}）", can_undo=False)
+            return JSONResponse({"ok": False, "reason": "unknown", "why": str(out.get("why") or res)[:200]})
+        got = await asyncio.to_thread(hermes_memory.read_targets, HERMES_HOME)
+        t = e.get("target")
+        if t not in hermes_memory.TARGETS or got.get(t, {}).get("status") not in ("ok", "missing"):
+            return JSONResponse({"ok": False, "reason": "unreadable"})
+        now, skipped, failed = got[t]["entries"], 0, []
+        for x in det.get("added", []):
+            if x not in now:
+                skipped += 1
+                continue
+            out = await _hmem_run("remove", {"target": t, "entry": x})
+            if out.get("result") != "applied":
+                failed.append(str(out.get("result")))
+        for x in det.get("removed", []):
+            if x in now or hermes_memory.text_problem(x):
+                skipped += 1
+                continue
+            out = await _hmem_run("add", {"target": t, "content": x})
+            if out.get("result") != "applied":
+                failed.append(str(out.get("result")))
+        await _learn_memory(silent=True)
+        if failed:
+            await asyncio.to_thread(_hlearn_set, eid, note=f"一部を戻せませんでした（{', '.join(failed)[:80]}）")
+            return JSONResponse({"ok": False, "reason": "partial", "why": ", ".join(failed)[:200]})
+        await asyncio.to_thread(_hlearn_set, eid, state="undone", undone_at=time.time(), note=f"もう変わっていた {skipped} 項目は飛ばしました" if skipped else "")
+        return JSONResponse({"ok": True, "skipped": skipped})
+
+
 async def watch_hermes_skills():
-    """新しい承認待ちが出たら、どの画面も見えていなければ 1 通知らせる（中身は載せない）。見るのは 1 分おき、ファイルの名前だけ。"""
+    """1 分おきに: 承認待ちの手順の書き足しを、今日の上限まで自動で当てる（学んだこと）。記憶の変化を跡に残す。
+    当てたら、どの画面も見えていなければ 1 通知らせる（中身は載せない）。当てずに残った新しい承認待ちも 1 通知らせる。"""
     while True:
         await asyncio.sleep(60)
         try:
@@ -829,8 +1126,12 @@ async def watch_hermes_skills():
             if ids is None:
                 continue
             new = await asyncio.to_thread(_hsk_tidy, set(ids))
-            if new:
-                await core.push_all("voice-loop｜Hermes", f"ハブが手順への書き足しを {len(new)} 件出しました（💡 で見て、採るか決められます）", "hermes-skills")
+            applied = await _learn_skills() if ids else 0
+            await _learn_memory()
+            if applied:
+                await core.push_all("voice-loop｜Hermes", f"ハブが手順を {applied} 件書き足しました（💡 の「学んだこと」で見て、戻せます）", "hermes-skills")
+            elif new and await asyncio.to_thread(hermes_skills.pending_ids, HERMES_HOME):
+                await core.push_all("voice-loop｜Hermes", f"ハブが手順への書き足しを {len(new)} 件出しました（今日の自動の上限か、画面で扱えない形です。💡 で見られます）", "hermes-skills")
         except asyncio.CancelledError:
             raise
         except Exception:

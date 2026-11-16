@@ -265,6 +265,11 @@ def run_script(container: str, mode: str, pid: str, raw: bytes, wait: float = HO
         return {"result": "timeout", "why": f"{wait:.0f} 秒待っても終わりませんでした"}
     except OSError as e:
         return {"result": "error", "why": f"docker を動かせません（{type(e).__name__}）"}
+    return read_result(p)
+
+
+def read_result(p: subprocess.CompletedProcess) -> dict:
+    """台本の答え（最後の「VLRESULT {JSON}」の行）を読む。打ち切り → timeout、動かせない・形の違う答え → error（why つき）。"""
     if p.returncode in (124, 137):  # timeout が打ち切った
         return {"result": "timeout", "why": "コンテナの中で時間切れになりました"}
     line = next((l for l in reversed(p.stdout.decode("utf-8", "replace").splitlines()) if l.startswith("VLRESULT ")), "")
