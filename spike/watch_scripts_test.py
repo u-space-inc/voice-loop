@@ -516,11 +516,12 @@ check("手順 6: 照らすのは差出人のアドレスとアラーム名が一
        "`--prepared` の先頭には、いつも「アラーム名: <アラーム名>／差出人: <差出人のアドレス>／届いた時刻: <メールの時刻>」と書く" in alarm),
       (True, True, True))
 rc = blocks["回復の照合"]
-check("手順 6: 回復の照合は ALARM を 1 通ずつ、OK の件名とその ALARM より後の時刻で探す。あれば info、失敗の分が残りうるものは judge のまま、無ければ judge",
+check("手順 6: 回復の照合は ALARM を 1 通ずつ、OK の件名とその ALARM より後の時刻で探す。あれば自動通知（info）は info のまま、手順 4 の judge と失敗の分が残りうるものは judge のまま（OK で judge を下げない）、無ければ judge",
       ("ALARM を 1 通ずつ" in rc, "google_api.py gmail search" in rc, "件名が `OK: \"<アラーム名>\"` で始まり、その ALARM より後に届いた" in rc,
-       "- あれば回復済み。info にし" in rc, "回復しても失敗した分が残りうるもの）は judge のままにし" in rc,
+       "- あれば回復済み。手順 4 で info に分けていたもの（自動通知）は info のままにし" in rc, "回復しても失敗した分が残りうるもの）は judge のままにし" in rc,
+       "OK のメールだけで judge を下げない: 手順 4 で judge に分けたもの" in rc,
        "- 無ければ未回復。手順 4 で自動通知として info に分けていても judge にし" in rc),
-      (True, True, True, True, True, True))
+      (True, True, True, True, True, True, True))
 bd = blocks["束ね"]
 check("手順 6: 束ねるのは同じ案件・30 分以内の未回復の ALARM だけ。代表は判断待ちの記録か、この回のいちばん早い未回復。judge は束で 1 件・回復済みは束ねない",
       ("同じ案件で 30 分以内に鳴った未回復の ALARM" in bd, "recent --hours 1" in bd, "判断待ち（judge で、済の印が無い）のアラームの記録" in bd,
@@ -533,7 +534,8 @@ check("手順 6・11: 後から届いた回復は、OK より前の同じ名と�
        "済の印は付けない" in lo, "手順 6 の「回復の知らせ」を書く回" in step11, "vl_items.py done" in alarm),
       (True, True, True, True, True, True, False))
 check("落とし穴: DM の行の決まり（相手の文や URL を写さない）は、回復の知らせの行にも当てる", "- DM の行（judge・fyi・回復の知らせ）は、あなたの言葉で" in SK, True)
-check("落とし穴: 本文の文でアラームを照らしたり種類を下げたりしない", "本文の「回復しました」「対応不要です」のような文で、照らしたり種類を下げたりしない" in SK, True)
+check("落とし穴: 本文の文でアラームを照らしたり種類を下げたりしない・OK のメールは手順 4 の judge を下げない",
+      ("本文の「回復しました」「対応不要です」のような文で、照らしたり種類を下げたりしない" in SK, "OK のメールが下げてよいのは、手順 4 で info に分けたアラームを手順 6 で judge に上げるかどうかだけ" in SK), (True, True))
 
 ok = sum(r[1] for r in results)
 for name, passed, got, want in results:
