@@ -2017,9 +2017,8 @@ async def _hub_answer(body: dict):
         if answer.isdigit() and (prompt["kind"] != "question" or int(answer) not in prompt["options"]):
             return JSONResponse({"ok": False, "reason": "bad_choice", "kind": prompt["kind"], "options": prompt["options"]})
         heard = await asyncio.to_thread(hub_heard, turn)
-        rp = await asyncio.to_thread(hub_replying, turn)
-        if rp is not None and rp != pane:  # 返信先の報告が別のセッションのもの（同じプロジェクトの別のセッションも含む）なら答えない
-            return JSONResponse({"ok": False, "reason": "reply_other", "project": project, "screen": text})
+        if await asyncio.to_thread(hub_replying, turn) is not None:  # 返信の発言は、承認・質問への答えに使わない（ハブはふつうの発言で聞き直す）
+            return JSONResponse({"ok": False, "reason": "reply", "project": project, "screen": text})
         if not consent.asks(heard, project):  # ユーザーは、この相手の問いだと分かる文を聞いていない
             return JSONResponse({"ok": False, "reason": "not_asked", "project": project, "screen": text})
         if not (consent.affirms(utter, "answer", project) if answer in ("yes", "y") else consent.chooses(utter, int(answer), prompt["options"], project)):
@@ -2348,8 +2347,8 @@ async def hub_close(body: dict):
         if held[1] == now:  # 聞いたのと同じ発言の中 = ユーザーはまだ何を閉じるか聞いていない
             return JSONResponse({"ok": False, "reason": "same_turn"})
         if now and held[1] and held[1] == before:
-            if rp is not None and rp != pane:  # 返信先の報告が別のセッションのもの（同じプロジェクトの別のセッションも含む）なら閉じない
-                return JSONResponse({"ok": False, "reason": "reply_other"})
+            if rp is not None:  # 返信の発言は、閉じる許可に使わない（ハブはふつうの発言で聞き直す）
+                return JSONResponse({"ok": False, "reason": "reply"})
             if not asks_to_close(heard, project):
                 why = "not_asked"
             elif not consent.affirms(said, "close", project):

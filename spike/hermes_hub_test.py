@@ -348,19 +348,19 @@ asyncio.run(s.hermes.hermes_exchange("テストの承認どうなってる？"))
 screen()  # ハブはこの発言の間に画面を見て、問い Q を返した（最後に聞いた文は Q）
 s.hermes.ask_hermes = lambda text: "わかりました"
 asyncio.run(s.hermes.hermes_exchange("はい", 1700000000.25))  # 問いの無い古い報告に「↩ 返信」して「はい」
-check("返信: 最後に聞いたのが別件の問いでも、問いの無い古い報告への返信の「はい」では答えない（守りが見る聞いた文は返信先の報告）",
-      (s.hermes.HERMES_TURNS[-1][3], answer()), ("shop の件が終わりました。続けますか？", ("not_asked", [])))
+check("返信: 返信の発言の「直前に聞いた文」は返信先の報告。返信の「はい」では答えない",
+      (s.hermes.HERMES_TURNS[-1][3], answer()), ("shop の件が終わりました。続けますか？", ("reply", [])))
 s.hermes.hermes_log("ai", Q, report=True, about="proj｜テスト", at=1700000003.5, pane="w9:p1")
 s.hermes.HERMES_HEARD["text"] = "blog の件が終わりました"  # 最後に聞いたのは問いの無い報告
 screen()
 asyncio.run(s.hermes.hermes_exchange("はい", 1700000003.5))
-check("返信: 問いのある報告に返信した「はい」は、最後に聞いた文に関係なく、その問いへの答えとして通る", answer(), ("ok", ["1"]))
+check("返信: 問いのある報告に返信した「はい」でも、答えには使わない（ハブがふつうの発言で聞き直す）", answer(), ("reply", []))
 s.hermes.hermes_log("ai", Q, report=True, about="proj｜別のセッション", at=1700000005.5, pane="w8:p1")  # 同じプロジェクトの別のセッションの報告
 s.hermes.hermes_log("ai", Q, report=True, about="proj｜テスト", at=1700000006.5)  # セッションの無い（前の版の）報告
 for at, why in ((1700000005.5, "同じプロジェクトの別のセッションの報告"), (1700000006.5, "どのセッションの報告か分からない（前の版の）報告")):
     screen()
     asyncio.run(s.hermes.hermes_exchange("はい", at))
-    check(f"返信: {why}への返信の「はい」では、このセッションの問いに答えない", answer()[0], "reply_other")
+    check(f"返信: {why}への返信の「はい」では、このセッションの問いに答えない", answer()[0], "reply")
 CLOSE_Q = "proj の「テスト」のセッションを閉じていいですか。"
 s.CLOSING.clear()
 s.hermes.ask_hermes = lambda text: CLOSE_Q
@@ -368,19 +368,19 @@ asyncio.run(s.hermes.hermes_exchange("proj を閉じて"))
 close()  # 1 回目（閉じる相手を返す）。ハブはこの発言への返事で、閉じていいかを聞いた
 s.hermes.ask_hermes = lambda text: "わかりました"
 asyncio.run(s.hermes.hermes_exchange("はい", 1700000000.25))  # 閉じるの問いのすぐ次の発言だが、問いの無い古い報告への返信
-check("返信: 閉じていいかを聞かれた直後でも、問いの無い古い報告への返信の「はい」では閉じない", close(confirmed=True), ("not_asked", []))
+check("返信: 閉じていいかを聞かれた直後でも、返信の「はい」では閉じない", close(confirmed=True), ("reply", []))
 s.CLOSING.clear()
 s.hermes.hermes_log("ai", CLOSE_Q, report=True, about="proj｜テスト", at=1700000004.5, pane="w9:p1")
 asyncio.run(s.hermes.hermes_exchange("proj を閉じて"))
 close()
 asyncio.run(s.hermes.hermes_exchange("はい、お願い", 1700000004.5))
-check("返信: 閉じていいかを問う報告への返信の「はい」は、すぐ次の発言なら閉じる", close(confirmed=True), ("ok", ["w9:p1"]))
+check("返信: 閉じていいかを問う報告への返信の「はい」でも、閉じない（ハブがふつうの発言で聞き直す）", close(confirmed=True), ("reply", []))
 s.CLOSING.clear()
 s.hermes.hermes_log("ai", CLOSE_Q, report=True, about="proj｜別のセッション", at=1700000007.5, pane="w8:p1")
 asyncio.run(s.hermes.hermes_exchange("proj を閉じて"))
 close()
 asyncio.run(s.hermes.hermes_exchange("はい、お願い", 1700000007.5))
-check("返信: 同じプロジェクトの別のセッションの報告への返信の「はい」では閉じない", close(confirmed=True), ("reply_other", []))
+check("返信: 同じプロジェクトの別のセッションの報告への返信の「はい」でも閉じない", close(confirmed=True), ("reply", []))
 s.CLOSING.clear()
 s.hermes.ask_hermes = lambda text: CLOSE_Q
 asyncio.run(s.hermes.hermes_exchange("proj を閉じて"))
