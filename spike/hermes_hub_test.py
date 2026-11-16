@@ -391,6 +391,10 @@ close()  # 1 回目（閉じる相手を返す）。ハブはこの発言への�
 s.hermes.ask_hermes = lambda text: "わかりました"
 asyncio.run(s.hermes.hermes_exchange("はい", 1700000000.25))  # 閉じるの問いのすぐ次の発言だが、問いの無い古い報告への返信
 check("返信: 閉じていいかを聞かれた直後でも、返信の「はい」では閉じない", close(confirmed=True), ("reply", []))
+s.hermes.hermes_turn_end(s.hub_human_turn(), CLOSE_Q)  # ハブは、返信の「はい」を受けて、ふつうの発言で聞き直した
+asyncio.run(s.hermes.hermes_exchange("はい、お願い"))
+check("返信: 返信の「はい」で断ったあと、ハブが聞き直して、ふつうの発言で「はい」と答えれば、1 回で閉じる（余分な確認を求めない）", close(confirmed=True), ("ok", ["w9:p1"]))
+s.CLOSING.clear()
 s.CLOSING.clear()
 s.hermes.hermes_log("ai", CLOSE_Q, report=True, about="proj｜テスト", at=1700000004.5, pane="w9:p1")
 asyncio.run(s.hermes.hermes_exchange("proj を閉じて"))

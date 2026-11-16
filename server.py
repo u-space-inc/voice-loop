@@ -2347,9 +2347,9 @@ async def hub_close(body: dict):
         if held[1] == now:  # 聞いたのと同じ発言の中 = ユーザーはまだ何を閉じるか聞いていない
             return JSONResponse({"ok": False, "reason": "same_turn"})
         if now and held[1] and held[1] == before:
-            if rp is not None:  # 返信の発言は、閉じる許可に使わない（ハブはふつうの発言で聞き直す）
-                return JSONResponse({"ok": False, "reason": "reply"})
-            if not asks_to_close(heard, project):
+            if rp is not None:  # 返信の発言は、閉じる許可に使わない。ハブはふつうの発言で聞き直す（聞き直しの起点は、いまの発言に移す）
+                why = "reply"
+            elif not asks_to_close(heard, project):
                 why = "not_asked"
             elif not consent.affirms(said, "close", project):
                 why = "not_yes"
