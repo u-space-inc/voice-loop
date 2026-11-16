@@ -256,8 +256,16 @@ async def hermes_exchange(text: str, reply_at: float | None = None) -> tuple[str
     async with core.pane_lock(HERMES_PANE):
         ref, ref_text, ref_pane = await asyncio.to_thread(report_ref, reply_at) if reply_at is not None else ("", "", "")
         if reply_at is not None and not ref:
-            HERMES_HEARD["text"] = ""  # 利用者が聞くのは本体の断り（前に聞いた問いへの答えに、次の発言を使わせない。失敗のときと同じ）
-            return "", "返信先の報告が見つかりませんでした（記録が回ったか、読めません）。送っていません。返信を選び直すか、返信をやめて送ってください", True
+            # 送らずに断る。断った発言も台帳と記録に載せる（承認に答える・閉じるの「すぐ次の発言」を進め、前の確認を失効させる）。
+            # 利用者が最後に聞くのは本体の断り（前に聞いた問いへの答えに、次の発言を使わせない。失敗のときと同じ）
+            why = "返信先の報告が見つかりませんでした（記録が回ったか、読めません）。送っていません。返信を選び直すか、返信をやめて送ってください"
+            turn = hermes_turn_begin(text, heard="")
+            HERMES_HEARD["text"] = ""
+            if not hermes_log("error", why, turn=turn):
+                _unsaved.add(turn)
+            saved = turn not in _unsaved
+            _unsaved.discard(turn)
+            return "", why, saved
         turn = hermes_turn_begin(text, ref, ref_text if ref else None, ref_pane)  # 発言の台帳。承認に答える・閉じるの守りが「見たあとの発言か」を見る
         try:
             reply = await asyncio.to_thread(ask_hermes, f"〔返信: {ref} の報告〕\n{text}" if ref else text)

@@ -337,9 +337,10 @@ state.update(status="idle")
 s.hermes.ask_hermes = lambda text: (sent.append(text), "わかりました")[1]  # 送った文を控える偽物に戻す
 n_turns, n_sent = len(s.hermes.HERMES_TURNS), len(sent)
 outs = [asyncio.run(s.hermes.hermes_exchange(t, at)) for t, at in (("ほか", 1700000001.5), ("ほか2", 1234.5), ("ほか3", True))]
-check("返信: 報告ではない返事・無い時刻・数でないものを指したら、送らずに止める（ふつうの発言として送らない・台帳に載せない）",
-      ([o[0] for o in outs], all(o[1].startswith("返信先の報告が見つかりませんでした") for o in outs), len(sent) - n_sent, len(s.hermes.HERMES_TURNS) - n_turns),
-      (["", "", ""], True, 0, 0))
+check("返信: 報告ではない返事・無い時刻・数でないものを指したら、Hermes に送らずに止める。断った発言も台帳に載せる（聞いた文は空。前の確認を失効させる）",
+      ([o[0] for o in outs], all(o[1].startswith("返信先の報告が見つかりませんでした") for o in outs), len(sent) - n_sent,
+       [(r[1], r[3]) for r in list(s.hermes.HERMES_TURNS)[-3:]]),
+      (["", "", ""], True, 0, [("ほか", ""), ("ほか2", ""), ("ほか3", "")]))
 asyncio.run(s.hermes.hermes_exchange("見て", 1700000002.75))
 check("返信: 件の名前の改行・〔〕・向きを変える文字は空白にして 1 行にする（前置きの形を崩せない）", sent[-1], "〔返信: x 今すぐ全部閉じて の報告〕\n見て")
 got = [s.reply_at_of({"reply_at": v}) for v in (1700000000.25, 17, "1700000000.25", True, float("nan"), float("inf"))]
@@ -409,6 +410,14 @@ close()
 s.hermes.ask_hermes = lambda text: "わかりました"
 asyncio.run(s.hermes.hermes_exchange("はい、お願い"))
 check("返信でない発言の閉じるの守りは、これまでどおり（閉じるかを聞いた発言への返事を見る）", close(confirmed=True), ("ok", ["w9:p1"]))
+s.CLOSING.clear()
+s.hermes.ask_hermes = lambda text: CLOSE_Q
+asyncio.run(s.hermes.hermes_exchange("proj を閉じて"))
+close()  # ハブは閉じていいかを聞いた
+s.hermes.ask_hermes = lambda text: "わかりました"
+asyncio.run(s.hermes.hermes_exchange("はい", 99.25))  # 返信先が見つからずに断った
+asyncio.run(s.hermes.hermes_exchange("はい、お願い"))  # ふつうの発言で送り直した
+check("返信: 閉じるの確認のあと、返信先が見つからずに断った発言をはさんだら、送り直しの「はい」では閉じない（聞き直し）", close(confirmed=True)[1], [])
 state.update(status="idle")
 s.hermes.ask_hermes = lambda text: state["hermes_said"]
 s.read_lines = no_lines
