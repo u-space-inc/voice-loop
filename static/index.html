@@ -1091,7 +1091,7 @@ $('vNext').onclick = () => stepViewer(1);
 $('vClose').onclick = closeViewer;
 // PC の幅だけ（2026-11-16 本人が推奨を選んだ）: Space で話す（押すたびに切り替え。話すボタンと同じ）、Esc で停止（停止ボタンと同じ）。
 // 変換の途中・画像を見ている間・広げて読んでいる間・ほかの部品がもう処理したキー（defaultPrevented。頼んだ件の開閉など）は今までどおり。Space は文字の欄（文の欄・一行の欄・選ぶ欄・書ける要素）の中では効かせない。
-// Esc は文字の欄（#typed）の中でも効くが、ほかの欄（記憶を直す欄など）の中では効かせない（その欄の取り消しなどに残す）。修飾キー付きは見ない
+// Esc は文字の欄（#typed）の中でも効くが、ほかの欄（記憶を直す欄など）の中では効かせない（その欄の取り消しなどに残す）。修飾キー付き（⌘・Ctrl・Option・Shift）は見ない
 const FIELD = 'textarea, input, select, [contenteditable=""], [contenteditable="true"]';
 let spaceTalk = false;  // Space で話すを押した（離したときの、押しているボタンの既定の動きも止める）
 document.addEventListener('keydown', e => {
@@ -1101,7 +1101,7 @@ document.addEventListener('keydown', e => {
     else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && e.target.tagName !== 'VIDEO') { e.preventDefault(); stepViewer(e.key === 'ArrowLeft' ? -1 : 1); }
     return;
   }
-  if (wide && !reading && !e.defaultPrevented && !e.metaKey && !e.ctrlKey && !e.altKey) {
+  if (wide && !reading && !e.defaultPrevented && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
     const field = e.target.closest ? e.target.closest(FIELD) : null;
     if (e.key === ' ' && !field) { e.preventDefault(); spaceTalk = true; if (!e.repeat && !$('talk').disabled) $('talk').click(); return; }
     if (e.key === 'Escape' && (!field || field.id === 'typed')) { e.preventDefault(); $('stop').click(); return; }
