@@ -7,7 +7,9 @@
   - 当てる処理は hermes_skills の台本のまま（Hermes 自身の apply_skill_pending）。自動で当てるのは 1 日 LIMIT 件まで。超えた分は承認待ちに残し、次の日に回す
   - 当てる前と後の手順のフォルダの中身は、コンテナの中の固定の台本（SCRIPT）で読む。前の中身と、後の中身の指紋は、本体の側（Hermes が書けない状態フォルダ）に控える
   - 戻すのは画面の「戻す」（2 段）だけ。戻す台本は、いまの中身の指紋が当てた直後と同じときだけ書き戻す（あとで変わっていれば何もしない）。
-    手順の置き場の外・symlink・通常でないファイル・「..」の場所には触れない（ホストの側は、置き場で何も書かない）
+    symlink・通常でないファイル・hardlink・「..」の場所はたどらず、フォルダを作る・ファイルを書く・消す・空のフォルダを消す直前に、手順のフォルダが
+    戻し始めたときと同じ場所にあるかを確かめる。ただし台本は Hermes と同じ利用者で動くので、同じ利用者が確かめと書き込みの間にフォルダを移す競り合いは
+    防ぎ切れない（届くのは Hermes がもともと書ける場所だけ。本体のホスト側の処理は置き場に書かない。コンテナからの書き込みはホストの ~/.hermes に反映される）
   - 記憶は Hermes が直接書く。本体は 1 分おきに読み（hermes_memory の読み方。symlink をたどらない）、足された・消えた項目を跡に残す。戻すは記憶の台本で
 """
 import base64
@@ -162,6 +164,8 @@ def restore_dir(root: str, rel: str, before: dict, expect: str) -> str:
                 os.close(dfd)
     for k, data in want.items():  # 前の中身を書く（いったん隣に書いてから置き換える）
         parts = base + _parts(k)
+        if held is not None and _ident(root, base) != held:  # フォルダを作る前にも確かめる
+            raise ValueError("戻す途中で手順のフォルダが移されました")
         dfd = _open_parent(root, parts, make=True)
         try:
             _same(root, base, held if held else _ident(root, base), dfd, parts)
@@ -181,6 +185,15 @@ def restore_dir(root: str, rel: str, before: dict, expect: str) -> str:
             dfd = _open_parent(root, parts)
             if dfd is not None:
                 try:
+                    if d:  # 中のフォルダ: 手順のフォルダが同じ場所にあるか
+                        _same(root, base, held, dfd, parts)
+                    else:  # 手順のフォルダそのもの: 手順のフォルダが同じ場所にあり、消す親（dfd）が根からたどった親と同じか
+                        if held is not None and _ident(root, base) != held:
+                            raise ValueError("戻す途中で手順のフォルダが移されました")
+                        st = os.fstat(dfd)
+                        up = _ident(root, base[:-1]) if base[:-1] else ((os.stat(root, follow_symlinks=False).st_dev, os.stat(root, follow_symlinks=False).st_ino),)
+                        if not up or up[-1] != (st.st_dev, st.st_ino):
+                            raise ValueError("戻す途中で手順のフォルダが移されました")
                     os.rmdir(parts[-1], dir_fd=dfd)
                 except OSError:
                     pass  # 空でない（Hermes がほかのファイルを置いた）なら残す

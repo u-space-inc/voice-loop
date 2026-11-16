@@ -80,6 +80,11 @@ check("戻す: 前の中身を書き、当てたときに増えたファイル�
 made = hl.snap_dir(str(SK), "voice-loop/new")
 check("戻す: 当てて作られた手順は、フォルダごと消す", (hl.restore_dir(str(SK), "voice-loop/new", {"exists": False, "files": {}}, hl.digest(made)),
       (SK / "voice-loop" / "new").exists(), (SK / "voice-loop").exists()), ("restored", False, True))
+(SK / "flat").mkdir()  # 分類の無い手順（置き場の根の真下）
+(SK / "flat" / "SKILL.md").write_text("作られた\n")
+flat = hl.snap_dir(str(SK), "flat")
+check("戻す: 置き場の根の真下に作られた手順も、フォルダごと消す", (hl.restore_dir(str(SK), "flat", {"exists": False, "files": {}}, hl.digest(flat)), (SK / "flat").exists()),
+      ("restored", False))
 (SK / "voice-loop" / "new2").mkdir()
 (SK / "voice-loop" / "new2" / "SKILL.md").write_text("作られた\n")
 made2 = hl.snap_dir(str(SK), "voice-loop/new2")
@@ -211,8 +216,8 @@ s.hermes.hermes_skills.run_script = lambda c, mode, pid, raw, wait=90, env=None:
 SCALLS.clear()
 asyncio.run(s.hermes._learn_skills())
 tl = [e for e in learned()["entries"] if e.get("pid") == "tttttt01"]
-check("自動: 当てて時間切れになったら、その回はもう当てない（終わりを確かめるまで）。跡は「分からない」で残し、戻せない",
-      ([p for m, p in SCALLS if m == "approve"], [(e["state"], e["can_undo"]) for e in tl]), (["tttttt01"], [("unknown", False)]))
+check("自動: 当てて時間切れになったら、その回はもう当てない（終わりを確かめるまで）。跡は「分からない」で残し、戻せない。注記も「分からない」",
+      ([p for m, p in SCALLS if m == "approve"], [(e["state"], e["can_undo"], e["note"].startswith("当たったか分かりません")) for e in tl]), (["tttttt01"], [("unknown", False, True)]))
 s.hermes.hermes_skills.run_script = real_skills_run
 RUNNING["v"] = False
 SCALLS.clear()

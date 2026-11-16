@@ -1006,8 +1006,12 @@ async def _learn_skills() -> int:
                 out = {"result": "error", "why": f"本体の問題（{type(e).__name__}）"}
             res = await asyncio.to_thread(_hsk_finish, pid, v, rec, raw, out)
             if not res.get("ok"):
-                await asyncio.to_thread(_hlearn_set, entry["id"], state="failed" if out.get("result") in ("changed", "unsupported") else "unknown",
-                                        note=f"当てられませんでした（{core._clip(str(out.get('why') or out.get('result')), 120)}）")
+                why = core._clip(str(out.get("why") or out.get("result")), 120)
+                if out.get("result") in ("changed", "unsupported"):
+                    await asyncio.to_thread(_hlearn_set, entry["id"], state="failed", note=f"当てられませんでした（{why}）")
+                else:
+                    await asyncio.to_thread(_hlearn_set, entry["id"], state="unknown",
+                                            note=f"当たったか分かりません（{why}）。手順のファイルか Hermes の対話画面で確かめてください")
                 if out.get("result") not in ("changed", "unsupported"):  # 時間切れ・分からない: 終わりを確かめるまで、この回はもう当てない
                     break
                 continue
