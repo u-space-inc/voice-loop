@@ -313,6 +313,20 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     check("回した分は hermes-log.1.jsonl に", "再起動のあと" in old.read_text() if old.exists() else None, True)
     check("回したあとの履歴は新しい記録から", history()["messages"], [{"role": "me", "text": "回したあと"}])
 
+    # ---- 声で返信する（「turn」の見出し＋音声のバイナリ）: 文字のときと同じく、Hermes への文にだけ前置きを付ける
+    s.hermes.hermes_log("ai", "shop の件が終わりました", report=True, about="shop｜受注", at=1700000100.5)
+    real_tr = s.transcribe
+    s.transcribe = lambda data, name: "続けて"
+    plan.append((0, "わかりました"))
+    with c.websocket_connect(WS) as w:
+        w.send_json({"type": "turn", "pane": s.hermes.HERMES_PANE, "speaker": 0, "filename": "rec.webm", "reply_at": 1700000100.5})
+        w.send_bytes(b"x" * 3000)
+        until(w, "reply")
+    s.transcribe = real_tr
+    check("声の返信: 見出しの reply_at を通し、Hermes への文に前置きを付ける", calls[-1], "〔返信: shop｜受注 の報告〕\n続けて")
+    check("声の返信: 守りの台帳と記録の発言は利用者の言葉のまま、返信先は記録の別の欄",
+          (s.hermes.HERMES_TURNS[-1][1], [d for d in s.hermes.hermes_records() if d["role"] == "me"][-1].get("reply_to")), ("続けて", "shop｜受注"))
+
     # ---- Hermes 以外の相手の履歴は、これまでどおり
     check("記録を読めない相手は none", c.get("/api/history", params={"pane": "w9:p9"}).json(), {"source": "none", "messages": []})
 

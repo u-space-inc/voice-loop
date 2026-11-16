@@ -47,6 +47,10 @@ class Brain:
         """発言 turn へのハブの返答。"""
         raise NotImplementedError
 
+    def replying(self, turn: str) -> bool:
+        """発言 turn が、画面の「返信」で報告を指したものか（そのときの「直前に聞いた文」は返信先の報告。heard）。"""
+        raise NotImplementedError
+
     async def report_target(self) -> dict | None:
         """頼んだ件の報告を受ける相手（一覧の項目と同じ形）。居なければ None。"""
         raise NotImplementedError
@@ -83,8 +87,8 @@ class Talker:
         """送ったときの状態の文。"""
         raise NotImplementedError
 
-    async def exchange(self, text: str) -> tuple[str, str, bool]:
-        """ユーザーの発言を 1 往復する。(返事, 失敗の理由, 記録に書けたか)。"""
+    async def exchange(self, text: str, reply_at: float | None = None) -> tuple[str, str, bool]:
+        """ユーザーの発言を 1 往復する。(返事, 失敗の理由, 記録に書けたか)。reply_at は、画面の「返信」が指した報告の記録の時刻（無ければ None）。"""
         raise NotImplementedError
 
     def ask(self, text: str) -> str:

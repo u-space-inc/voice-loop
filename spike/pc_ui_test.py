@@ -18,6 +18,8 @@ PC の見た目（Chromium）: 頼んだ件を「動いている」「終わっ�
 代理からの知らせ（Chromium）: 💡 の一覧に文字として出す（タグを解釈しない）・知らせの数に入る・× とすべて消す・開いている画面に一行で出す。
 キー（Chromium）: PC の幅で Space が話す（押し続けの繰り返し・変換の途中・文字の欄の中では効かない。押しているボタンの既定の動きは止める）・
 Esc が停止（文字の欄の中でも効く・ほかの欄の中では効かない）・広げて読んでいる間は Esc で戻るだけ・スマホの幅では効かない。
+報告への返信（Chromium）: ハブの報告に件と「↩ 返信」を出す（件は文字として）・押すと入力の上に返信先・次の発言に報告の時刻だけを付けて送る・
+送った発言に返信先を出す・送る・✕・相手を替えると外れる。
 使い方: uv run spike/pc_ui_test.py"""
 import json
 import os
@@ -676,6 +678,47 @@ def run_reading(page, who):
     check(f"{who} PC の幅に戻すと 3 列（広げてはいない）", (wait(lambda: page.evaluate("document.body.classList.contains('wide')")), reading()), (True, False))
 
 
+def run_reply(page, who):
+    """ハブの会話の報告に「↩ 返信」。押すと入力の上に返信先が出て、次の発言に報告の記録の時刻（reply_at）だけを付けて送る（件の名前は送らない）"""
+    seed()
+    s.hermes.hermes_log("ai", "shop の件が終わりました", report=True, about="shop｜受注", at=1700000000.25)
+    s.hermes.hermes_log("ai", "別の件", report=True, about="<img src=x onerror=alert(1)>", at=1700000001.5)
+    open_page(page, 1400)
+    page.select_option("#agent", s.hermes.HERMES_PANE)
+    page.wait_for_selector("#log .msg.ai .rep")
+    reps = lambda: page.eval_on_selector_all("#log .msg.ai .rep", "els => els.map(e => [e.querySelector('.about').textContent, e.querySelector('button')?.textContent])")
+    check(f"{who} 報告には「報告｜件」と「↩ 返信」を出す（件は文字として。タグを解釈しない）",
+          (reps()[-2:], page.locator("#log img").count()), ([["報告｜shop｜受注", "↩ 返信"], ["報告｜<img src=x onerror=alert(1)>", "↩ 返信"]], 0))
+    asked = []
+    real_ask = s.hermes.ask_hermes
+    s.hermes.ask_hermes = lambda text: (asked.append(text), "わかりました")[1]  # Hermes に届いた文で、返信の前置きを見る
+    page.locator("#log .msg.ai .rep button").nth(-2).click()
+    check(f"{who} 「↩ 返信」で、入力の上に返信先を出し、文字の欄へ移る",
+          (visible(page, "#replyBar"), page.text_content("#replyTo"), page.evaluate("document.activeElement.id")), (True, "↩ shop｜受注 の報告に返信", "typed"))
+    rb, tf = page.locator("#replyBar").bounding_box(), page.locator("#typedForm").bounding_box()
+    check(f"{who} PC の幅では、返信先の欄は文字の欄のすぐ上に、文字の欄と同じ幅で出す",
+          (rb["y"] + rb["height"] <= tf["y"] + 1, abs(rb["width"] - tf["width"]) <= 2, abs(rb["x"] - tf["x"]) <= 2), (True, True, True))
+    page.fill("#typed", "続けて")
+    page.press("#typed", "Enter")
+    check(f"{who} 送ると、本体が記録から件を引いて Hermes への文に前置きを付ける・送ると返信先は外れる",
+          wait(lambda: len(asked) == 1) and (asked[0], visible(page, "#replyBar")), ("〔返信: shop｜受注 の報告〕\n続けて", False))
+    check(f"{who} 送った発言の吹き出しに、返信先を出す", page.locator("#log .msg.me .rep").last.text_content(), "↩ shop｜受注 の報告へ")
+    rec = lambda: [json.loads(l) for l in s.hermes.HERMES_LOG.read_text().splitlines() if '"role": "me"' in l or '"role":"me"' in l]
+    check(f"{who} 本体は記録の発言に返信先（記録から引いた件の名前）を残す", wait(lambda: rec() and rec()[-1]["text"] == "続けて") and rec()[-1].get("reply_to"), "shop｜受注")
+    page.locator("#log .msg.ai .rep button").nth(0).click()
+    page.click("#replyClear")
+    check(f"{who} ✕ で返信先を外す", visible(page, "#replyBar"), False)
+    page.locator("#log .msg.ai .rep button").nth(0).click()
+    page.select_option("#agent", "w1:p1")
+    check(f"{who} 相手を替えると返信先は外れる", visible(page, "#replyBar"), False)
+    page.select_option("#agent", s.hermes.HERMES_PANE)
+    page.wait_for_selector("#log .msg.ai .rep")
+    page.fill("#typed", "ふつうの話")
+    page.press("#typed", "Enter")
+    check(f"{who} 返信先が無ければ、前置きは付かない", wait(lambda: len(asked) == 2) and asked[1], "ふつうの話")
+    s.hermes.ask_hermes = real_ask
+
+
 def run_notice(page, who):
     """代理（Hermes）からの知らせ: 💡 の一覧に文字として出す・数に入る・× と「すべて消す」・開いている画面に一行で出す。"""
     seed()
@@ -781,6 +824,7 @@ with sync_playwright() as pw:
     run_phone(b.new_page(), "Chromium（スマホ）:")
     run_notice(b.new_page(), "Chromium（知らせ）:")
     run_keys(b.new_page(), "Chromium（キー）:")
+    run_reply(b.new_page(), "Chromium（報告への返信）:")
     b.close()
     b = pw.webkit.launch()
     # デスクトップの設定の WebKit は、headless のこの試験では、PC の形と関係なく画面が固まる（main の画面でも同じ。2026-10-26 に確かめた）。

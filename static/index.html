@@ -25,6 +25,13 @@
   .msg.ai.speaking { border-color: var(--ok); }
   .msg.pending { opacity:.6; }
   .sys { align-self:center; color:var(--mute); font-size:12px; text-align:center; }
+  .msg .rep { display:flex; align-items:center; gap:8px; margin:0 0 6px; font-size:12px; color:var(--mute); white-space:normal; }
+  .msg .rep .about { overflow-wrap:anywhere; }
+  .msg .rep button { flex:none; border:1px solid #3a3a3a; border-radius:12px; background:none; color:inherit; font-size:12px; line-height:1; padding:4px 9px; }
+  #replyBar { align-items:center; gap:8px; font-size:12px; color:var(--mute); }
+  #replyBar:not([hidden]) { display:flex; }
+  #replyBar #replyTo { flex:1; overflow-wrap:anywhere; }
+  #replyBar button { flex:none; border:1px solid #3a3a3a; border-radius:12px; background:none; color:inherit; font-size:12px; line-height:1; padding:4px 9px; }
   /* エージェントの返信（Markdown） */
   .md > :first-child { margin-top:0; } .md > :last-child { margin-bottom:0; }
   .md p { margin:.5em 0; }
@@ -198,10 +205,10 @@
   body.wide .lead { font-weight:700; color:#fff; }
   body.wide .sys { max-width:46em; color:var(--w-t3); }
   /* 入力。文字の欄を主に、話す・停止は小さく、相手と声と同じ行に */
-  body.wide #bar { grid-area:bar; display:grid; grid-template-columns:minmax(0,3fr) minmax(0,2fr) auto auto; grid-template-areas:"st st st st" "ty ty ty ty" "ag vo tk sb";
+  body.wide #bar { grid-area:bar; display:grid; grid-template-columns:minmax(0,3fr) minmax(0,2fr) auto auto; grid-template-areas:"st st st st" "rp rp rp rp" "ty ty ty ty" "ag vo tk sb";
     gap:8px; padding:10px 32px 16px; background:var(--w-bg); border-top:1px solid var(--w-rule); }
   body.wide #bar > .row:not(#typedForm) { display:contents; }
-  body.wide #status { grid-area:st; } body.wide #typedForm { grid-area:ty; }
+  body.wide #status { grid-area:st; } body.wide #replyBar { grid-area:rp; } body.wide #typedForm { grid-area:ty; }
   body.wide #agent { grid-area:ag; } body.wide #speaker { grid-area:vo; } body.wide #talk { grid-area:tk; } body.wide #stop { grid-area:sb; }
   body.wide #agent, body.wide #speaker { height:36px; padding:0 10px; background:var(--w-field); border-color:var(--w-rule); color:var(--w-t2); }
   body.wide #talk, body.wide #stop { height:36px; padding:0 16px; font-size:14px; border-radius:8px; border:1px solid var(--w-line); background:var(--w-field); color:var(--w-t1); }
@@ -308,6 +315,7 @@
   <div id="bar">
     <div id="status"><span id="conn" class="dot"></span><span id="statusText">接続中…</span><button id="hubStart">ハブを起動</button><button id="tap">▶ タップして再生</button><button id="sitBtn" aria-pressed="false" aria-label="知らせと承認" title="知らせと承認">💡</button><button id="tasksBtn" aria-pressed="false" aria-label="頼んだ件" title="頼んだ件">📋</button><button id="bell" aria-pressed="false" hidden>🔔</button><button id="mute" aria-pressed="false">🔇</button><button id="reload" aria-label="最新の画面を読み込み直す" title="最新の画面を読み込み直す">↻</button></div>
     <div class="row"><select id="agent" aria-label="セッション"></select><select id="speaker" aria-label="声"></select></div>
+    <div id="replyBar" hidden><span id="replyTo"></span><button id="replyClear" type="button" aria-label="返信をやめる">✕</button></div>
     <div class="row"><button id="talk" title="PC では Space でも話せます（文字の欄の外で）">タップして話す</button><button id="stop" title="PC では Esc でも止められます">停止</button></div>
     <form id="typedForm" class="row"><textarea id="typed" rows="1" placeholder="文字で送る" autocomplete="off"></textarea><button id="send" type="submit">送る</button></form>
   </div>
@@ -474,8 +482,30 @@ function localPush(role, text) { if (threadSource !== 'none') return; try { loca
 function renderThread(msgs) {
   clearLog();
   if (!msgs.length) sys('このセッションにはまだ会話がありません');
-  msgs.forEach(m => m.role === 'note' ? sys('通知: ' + m.text) : m.role === 'error' ? sys('⚠ ' + m.text) : bubble(m.role, m.text)); // note = ハブへの自動通知（頼んだ件が片づいた等）。error = Hermes に届かなかった・返事が無かった
+  msgs.forEach(m => m.role === 'note' ? sys('通知: ' + m.text) : m.role === 'error' ? sys('⚠ ' + m.text) : decorate(bubble(m.role, m.text), m)); // note = ハブへの自動通知（頼んだ件が片づいた等）。error = Hermes に届かなかった・返事が無かった
 }
+// ハブの会話の吹き出しに、どの件の報告か（report・about）と「↩ 返信」、報告への返信として送った発言には返信先（reply_to）を出す。文字としてだけ入れる
+function decorate(el, m) {
+  if (m.role === 'ai' && m.report) {
+    const h = node('div', 'rep'); h.appendChild(node('span', 'about', '報告｜' + (m.about || '')));
+    if (typeof m.at === 'number') {
+      const b = node('button', 'reply', '↩ 返信'); b.type = 'button'; b.title = 'この報告への返事として送る（次に話す・打つ発言に付けます）';
+      b.onclick = () => setReplyTarget({ at: m.at, about: m.about || '' });
+      h.appendChild(b);
+    }
+    el.prepend(h);
+  } else if (m.role === 'me' && m.reply_to) el.prepend(node('div', 'rep', '↩ ' + m.reply_to + ' の報告へ'));
+  return el;
+}
+// 返信先の報告（{ at, about }）。ハブの会話のときだけ付けて送り、送ったら外す。相手を替えたら外す
+let replyTarget = null;
+function setReplyTarget(t) {
+  replyTarget = t;
+  $('replyBar').hidden = !t;
+  $('replyTo').textContent = t ? '↩ ' + t.about + ' の報告に返信' : '';
+  if (t && wide) $('typed').focus();
+}
+const replyFields = () => { const a = curAgent(); return replyTarget && a && a.hub ? { reply_at: replyTarget.at } : {}; };
 async function loadThread() {
   const pane = $('agent').value; if (!pane) return;
   const seq = ++loadSeq;
@@ -546,7 +576,8 @@ async function showSetup(seq) {
   sys(`準備があと ${todo.length} つ残っています。`);
   todo.forEach((c, i) => sys(`${i + 1}. ${c.name}: ${c.todo}`));
 }
-$('agent').onchange = () => { localStorage.setItem(WANT, curKey()); shownPane = $('agent').value; applyTarget(); setStatus(linked() ? '準備できました' : UNREACHABLE); loadThread(); };
+$('replyClear').onclick = () => setReplyTarget(null);
+$('agent').onchange = () => { setReplyTarget(null); localStorage.setItem(WANT, curKey()); shownPane = $('agent').value; applyTarget(); setStatus(linked() ? '準備できました' : UNREACHABLE); loadThread(); };
 
 // ---------- 承認で止まっているセッションへの返答（ボタン） ----------
 // 話し相手（ハブなど）の画面のまま、承認で止まっているセッションをすべて画面の上に並べる（名前・聞かれている中身・許可（今回だけ）・断る）。
@@ -1401,7 +1432,8 @@ async function startRec() {
     if (blob.size < 2000) { setStatus('短すぎました'); return; }
     sendTurnStart();
     if (!$('agent').value) { setStatus('話し相手を選んでください'); return; }
-    ws.send(JSON.stringify({ type: 'turn', pane: $('agent').value, key: curKey(), speaker: $('speaker').value, filename: 'rec.' + ext }));
+    ws.send(JSON.stringify({ type: 'turn', pane: $('agent').value, key: curKey(), speaker: $('speaker').value, filename: 'rec.' + ext, ...replyFields() }));
+    setReplyTarget(null);
     ws.send(await blob.arrayBuffer());
     setStatus('聞き取り中…');
   };
@@ -1426,8 +1458,10 @@ $('typedForm').onsubmit = e => {
   // Enter の requestSubmit() はボタンの無効を見ないので、ここでボタンと同じ可否（applyTarget）を確かめる
   e.preventDefault(); const t = $('typed').value.trim(); if (!t || $('send').disabled || !$('agent').value || !linked()) return;
   sendTurnStart(); prime();
-  $('typed').value = ''; fitTyped(); bubble('me', t, 'pending'); localPush('me', t);
-  ws.send(JSON.stringify({ type: 'text', text: t, pane: $('agent').value, key: curKey(), speaker: $('speaker').value }));
+  const rf = replyFields();
+  $('typed').value = ''; fitTyped(); decorate(bubble('me', t, 'pending'), { role: 'me', reply_to: rf.reply_at !== undefined ? replyTarget.about : '' }); localPush('me', t);
+  ws.send(JSON.stringify({ type: 'text', text: t, pane: $('agent').value, key: curKey(), speaker: $('speaker').value, ...rf }));
+  setReplyTarget(null);
   setStatus('エージェントに送りました。考え中…');
 };
 

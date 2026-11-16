@@ -169,24 +169,51 @@ def hermes_history(limit: int = 40) -> list[dict]:
     records = hermes_records()
     if records is None:
         return [{"role": "error", "text": f"Hermes との会話の記録を読めませんでした（{HERMES_LOG.name}。本体のログを見てください）"}]
-    return [{"role": d["role"], "text": d["text"]} for d in records if d["role"] in ("me", "ai", "note", "error") and d["text"]][-limit:]
+    out = []
+    for d in records:
+        if d["role"] not in ("me", "ai", "note", "error") or not d["text"]:
+            continue
+        m = {"role": d["role"], "text": d["text"]}
+        if d["role"] == "ai" and d.get("report"):  # 頼んだ件の報告: 画面が「どの件の報告か」を出し、返信で記録の時刻を指す
+            m.update(report=True, about=str(d.get("about") or ""), at=d.get("at"))
+        if d["role"] == "me" and d.get("reply_to"):  # 報告への返信として送った発言
+            m["reply_to"] = str(d["reply_to"])
+        out.append(m)
+    return out[-limit:]
+
+
+# 返信先の報告の名前（件の題。セッションの題などから本体が作ったもの）に入れない文字: 制御文字・向きを変える文字・前置きの括弧
+_REF_DROP = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ud800-\udfff〔〕]")
+
+
+def report_ref(at) -> tuple[str, str]:
+    """画面の「返信」が指した報告の (名前, 報告の文)。記録にある報告（ハブからの自発的な報告）を、記録の時刻で探す（名前は画面から受け取らない）。
+    名前は 1 行・80 字にし、制御文字・向きを変える文字・〔〕は空白にする（発言の前置きの形を崩せないように）。見つからなければ ("", "")。"""
+    if isinstance(at, bool) or not isinstance(at, (int, float)):
+        return "", ""
+    for d in reversed(hermes_records() or []):
+        if d.get("role") == "ai" and d.get("report") and d.get("at") == at:
+            return core._clip(" ".join(_REF_DROP.sub(" ", str(d.get("about") or "")).split()), 80), str(d.get("text") or "")
+    return "", ""
 
 
 # ユーザーの発言と Hermes（ハブ）の返答の台帳。Hermes は herdr のセッションではないので、本体が直接持つ。
 # 承認に答える・閉じるの守り（「見たあとにユーザーが発言したか」「聞いたときの返答に問いがあるか」）はこの台帳で確かめる。自動通知は載せない。
 # 中身は上の記録にも書き、起動のときに記録から戻す（再起動で消えない。発言の ID は再起動をまたいでも重ならない）。
 # 記録を読めなければ空から始める（守りは「まだ発言が無い」として、新しい発言を待つ側に倒れる）
-HERMES_TURNS: deque = deque(maxlen=50)  # (発言の ID, ユーザーの文, Hermes の返答, 発言の直前に聞いた Hermes の返答)
+HERMES_TURNS: deque = deque(maxlen=50)  # (発言の ID, ユーザーの文, Hermes の返答, 発言の直前に聞いた Hermes の返答, 返信先の報告の名前（返信でなければ空）)
 # ハブ（Hermes）の最後の出力（発言への返答か、自動通知への報告）。利用者の発言が始まるときに台帳の行へ写す（承認に答えるの守りの heard）。
 # 記録（hermes-log.jsonl）からは取らない（書けなかった報告で、古い問いを拾わないため）。Hermes とのやり取りの鍵（pane_lock）の中で置き換え・写す
 HERMES_HEARD = {"text": ""}
 _unsaved: set[str] = set()  # 記録に書けなかった発言の ID（画面に「記録に残っていない」と知らせるため）
 
 
-def hermes_turn_begin(text: str) -> str:
+def hermes_turn_begin(text: str, reply_to: str = "", heard: str | None = None) -> str:
+    """発言を台帳と記録に載せる。返信のときは heard に返信先の報告の文を渡す: 承認に答える・閉じるの守りが「発言の直前に聞いた文」として見るのは、
+    最後に届いた返事ではなく、利用者が返信を押した報告になる（古い報告への「はい」が、そのあとに届いた別件の問いへの答えにならない）。"""
     turn = f"h{os.urandom(6).hex()}"
-    HERMES_TURNS.append([turn, text, "", HERMES_HEARD["text"]])
-    if not hermes_log("me", text, turn=turn):
+    HERMES_TURNS.append([turn, text, "", HERMES_HEARD["text"] if heard is None else heard, reply_to])  # 守りの台帳は、利用者の言葉のまま（返信の前置きは入れない）
+    if not hermes_log("me", text, turn=turn, **({"reply_to": reply_to} if reply_to else {})):
         _unsaved.add(turn)
     return turn
 
@@ -211,19 +238,22 @@ def _load_hermes_turns():
         if not isinstance(turn, str):
             continue
         if d["role"] == "me":
-            rows[turn] = [turn, d["text"], "", None]  # 直前に聞いた返答の写しは記録から作らない（承認に答えるときは聞き直してもらう）
+            rows[turn] = [turn, d["text"], "", None, str(d.get("reply_to") or "")]  # 直前に聞いた返答の写しは記録から作らない（承認に答えるときは聞き直してもらう）
         elif d["role"] == "ai" and turn in rows:
             rows[turn][2] = d["text"]
     HERMES_TURNS.extend(rows.values())
 
 
-async def hermes_exchange(text: str) -> tuple[str, str, bool]:
+async def hermes_exchange(text: str, reply_at: float | None = None) -> tuple[str, str, bool]:
     """Hermes に1往復し、発言と返事を記録する。(返事, 失敗の理由, 記録に書けたか) を返す。
-    Hermes とのやり取りは同時に1件だけ（自動通知もこの順番を待つ）。"""
+    Hermes とのやり取りは同時に1件だけ（自動通知もこの順番を待つ）。
+    reply_at は、画面の「返信」が指した報告の記録の時刻。記録にあれば、Hermes に送る文だけに「〔返信: <件> の報告〕」の 1 行を前に付ける
+    （守りの台帳と記録の発言は利用者の言葉のまま。件の名前は記録の別の欄に残す）。"""
+    ref, ref_text = await asyncio.to_thread(report_ref, reply_at) if reply_at is not None else ("", "")
     async with core.pane_lock(HERMES_PANE):
-        turn = hermes_turn_begin(text)  # 発言の台帳。承認に答える・閉じるの守りが「見たあとの発言か」を見る
+        turn = hermes_turn_begin(text, ref, ref_text if ref else None)  # 発言の台帳。承認に答える・閉じるの守りが「見たあとの発言か」を見る
         try:
-            reply = await asyncio.to_thread(ask_hermes, text)
+            reply = await asyncio.to_thread(ask_hermes, f"〔返信: {ref} の報告〕\n{text}" if ref else text)
         except Exception as e:
             why = str(e) if isinstance(e, RuntimeError) else f"{type(e).__name__}: {e}"
             if not isinstance(e, RuntimeError):
@@ -807,8 +837,8 @@ class Hermes(Brain, Talker):
     def sending_text(self) -> str:
         return "ハブに送りました。考え中…"
 
-    async def exchange(self, text: str) -> tuple[str, str, bool]:
-        return await hermes_exchange(text)
+    async def exchange(self, text: str, reply_at: float | None = None) -> tuple[str, str, bool]:
+        return await hermes_exchange(text, reply_at)
 
     def ask(self, text: str) -> str:
         return ask_hermes(text)
@@ -841,6 +871,9 @@ class Hermes(Brain, Talker):
 
     def reply_to(self, turn: str) -> str:
         return next((row[2] for row in HERMES_TURNS if row[0] == turn), "")
+
+    def replying(self, turn: str) -> bool:
+        return next((bool(row[4]) for row in HERMES_TURNS if row[0] == turn and len(row) > 4), False)
 
     async def report_target(self) -> dict | None:
         return hermes_agent() if HERMES_KEY else None
