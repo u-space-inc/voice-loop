@@ -15,6 +15,7 @@ import base64
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -583,6 +584,11 @@ def hub_reply_to(turn: str | None) -> str:
     return HUB.reply_to(turn) if turn else ""
 
 
+def hub_replying(turn: str | None) -> str | None:
+    """発言 turn が、画面の「返信」で報告を指したものなら、その報告のセッション（分からなければ空）。返信でなければ None。"""
+    return HUB.replying(turn) if turn else None
+
+
 def agent_updated(a: dict) -> float | None:
     """そのセッションが最後に動いた時刻（会話の記録が最後に書き込まれた時刻、UNIX 秒）。記録の無いセッションは None。画面の「更新順」に使う。"""
     path = jsonl_path(a)
@@ -590,6 +596,16 @@ def agent_updated(a: dict) -> float | None:
         return path.stat().st_mtime if path else None
     except OSError:
         return None
+
+
+def reply_at_of(d: dict) -> float | None:
+    """画面の発言に付いた「返信」の先（報告の記録の時刻）。名前は受け取らない（頭が記録から引く）。
+    付いていない（キーが無い・null）なら None（ふつうの発言）。付いているのに有限の数でない（真偽・文字・NaN・無限）なら NaN
+    （どの報告とも一致しないので、頭は「返信先が見つからない」として送らずに止める。ふつうの発言にすり替えない）。"""
+    v = d.get("reply_at")
+    if v is None:
+        return None
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else math.nan
 
 
 @app.get("/api/agents")
@@ -1632,7 +1648,7 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
             REPORTING = False
             report_idle().set()
         hlog(f"報告 {kind}: {label} → {state}（画面 {len(CLIENTS)}）", flush=True)
-        saved = await HUB.report_end(state, reply, label, saved)
+        saved = await HUB.report_end(state, reply, label, saved, str(d.get("pane", "")))
         if state != "done" or not reply.strip():
             relay_slack(d, label, headline, "")
             if kind in ("done", "more", "gone"):
@@ -2001,6 +2017,8 @@ async def _hub_answer(body: dict):
         if answer.isdigit() and (prompt["kind"] != "question" or int(answer) not in prompt["options"]):
             return JSONResponse({"ok": False, "reason": "bad_choice", "kind": prompt["kind"], "options": prompt["options"]})
         heard = await asyncio.to_thread(hub_heard, turn)
+        if await asyncio.to_thread(hub_replying, turn) is not None:  # 返信の発言は、承認・質問への答えに使わない（ハブはふつうの発言で聞き直す）
+            return JSONResponse({"ok": False, "reason": "reply", "project": project, "screen": text})
         if not consent.asks(heard, project):  # ユーザーは、この相手の問いだと分かる文を聞いていない
             return JSONResponse({"ok": False, "reason": "not_asked", "project": project, "screen": text})
         if not (consent.affirms(utter, "answer", project) if answer in ("yes", "y") else consent.chooses(utter, int(answer), prompt["options"], project)):
@@ -2315,6 +2333,9 @@ async def hub_close(body: dict):
     held = CLOSING.get(pane)
     (now, said), (before, _) = (await asyncio.to_thread(hub_turns, 2) + [(None, "")] * 2)[:2]
     heard = await asyncio.to_thread(hub_reply_to, held[1]) if confirmed and held and held[1] else ""
+    rp = await asyncio.to_thread(hub_replying, now) if now else None
+    if heard and rp is not None:  # 返信の発言なら、聞いた文は返信先の報告（古い報告への「はい」で、閉じるの問いに答えない）
+        heard = await asyncio.to_thread(hub_heard, now)
     a = await asyncio.to_thread(_worker, pane)  # 相手は最後に見る（閉じるまでに入れ替わる隙を小さくする）。ハブ自身は閉じない
     if not a:
         return JSONResponse({"ok": False, "reason": "gone"}, status_code=404)
@@ -2326,7 +2347,9 @@ async def hub_close(body: dict):
         if held[1] == now:  # 聞いたのと同じ発言の中 = ユーザーはまだ何を閉じるか聞いていない
             return JSONResponse({"ok": False, "reason": "same_turn"})
         if now and held[1] and held[1] == before:
-            if not asks_to_close(heard, project):
+            if rp is not None:  # 返信の発言は、閉じる許可に使わない。ハブはふつうの発言で聞き直す（聞き直しの起点は、いまの発言に移す）
+                why = "reply"
+            elif not asks_to_close(heard, project):
                 why = "not_asked"
             elif not consent.affirms(said, "close", project):
                 why = "not_yes"
@@ -2470,16 +2493,16 @@ async def ws(sock: WebSocket):
     current: asyncio.Task | None = None
     send = client.send
 
-    async def turn(text: str, pane: str, cancel: asyncio.Event, key: str | None):
+    async def turn(text: str, pane: str, cancel: asyncio.Event, key: str | None, reply_at: float | None = None):
         try:
-            await run_turn(text, pane, cancel, key)
+            await run_turn(text, pane, cancel, key, reply_at)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # 語り手・音声合成・herdr の失敗を黙って止めず、画面とログに出す
             traceback.print_exc()
             await send(type="error", text=f"{type(e).__name__}: {e}"[:300])
 
-    async def run_turn(text: str, pane: str, cancel: asyncio.Event, key: str | None):
+    async def run_turn(text: str, pane: str, cancel: asyncio.Event, key: str | None, reply_at: float | None = None):
         talker = TALKERS.get(pane)
         if talker:  # herdr のセッションではなく、本体の外の話し相手
             if not talker.on():
@@ -2488,7 +2511,7 @@ async def ws(sock: WebSocket):
             await send(type="status", text=talker.sending_text())
             # 画面が閉じても、止めても、返事は最後まで待って記録する（相手は答えて覚えているので、記録が欠けると画面と食い違う）。
             # ハブが自動通知に応答している最中なら、それが終わってから送る
-            job = asyncio.create_task(talker.exchange(text))
+            job = asyncio.create_task(talker.exchange(text, reply_at))  # reply_at: 画面の「返信」が指した報告（herdr のセッションには使わない）
             _tasks.add(job)
             job.add_done_callback(_tasks.discard)
             reply, why, saved = await asyncio.shield(job)
@@ -2527,14 +2550,14 @@ async def ws(sock: WebSocket):
                 await send(type="reply", pane=pane, text=reply)
                 await speak_to([client], reply, cancel)
 
-    def start_turn(text: str, pane: str, speaker: int, key: str | None):
+    def start_turn(text: str, pane: str, speaker: int, key: str | None, reply_at: float | None = None):
         nonlocal cancel, current
         client.speaker = speaker
         cancel.set()  # 前のターンの読み上げが残っていれば止める
         if current and not current.done():
             current.cancel()
         cancel = asyncio.Event()
-        current = asyncio.create_task(turn(text, pane, cancel, key))
+        current = asyncio.create_task(turn(text, pane, cancel, key, reply_at))
 
     pending: dict = {}
     try:
@@ -2561,7 +2584,7 @@ async def ws(sock: WebSocket):
                     continue
                 pending = d  # {"type":"turn", pane, speaker, filename} → 次のバイナリが音声
                 if d["type"] == "text":
-                    start_turn(d["text"], d["pane"], int(d["speaker"]), d.get("key"))
+                    start_turn(d["text"], d["pane"], int(d["speaker"]), d.get("key"), reply_at_of(d))
                 continue
             if msg.get("bytes") is not None and pending.get("type") == "turn":
                 await send(type="status", text="聞き取り中…")
@@ -2570,7 +2593,7 @@ async def ws(sock: WebSocket):
                     await send(type="error", text="聞き取れませんでした")
                     continue
                 await send(type="transcript", pane=pending["pane"], text=text)
-                start_turn(text, pending["pane"], int(pending["speaker"]), pending.get("key"))
+                start_turn(text, pending["pane"], int(pending["speaker"]), pending.get("key"), reply_at_of(pending))
     except WebSocketDisconnect:
         pass
     finally:

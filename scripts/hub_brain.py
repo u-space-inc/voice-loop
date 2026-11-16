@@ -47,6 +47,11 @@ class Brain:
         """発言 turn へのハブの返答。"""
         raise NotImplementedError
 
+    def replying(self, turn: str) -> str | None:
+        """発言 turn が、画面の「返信」で報告を指したものなら、その報告のセッション（分からなければ空）。返信でなければ None。
+        返信の発言の「直前に聞いた文」（heard）は返信先の報告。返信の発言は、承認・質問への答えと閉じる許可には使わない（本体が断る）。"""
+        raise NotImplementedError
+
     async def report_target(self) -> dict | None:
         """頼んだ件の報告を受ける相手（一覧の項目と同じ形）。居なければ None。"""
         raise NotImplementedError
@@ -55,7 +60,7 @@ class Brain:
         """報告の前。頭が記録を持たないときだけ、本体が見出しを記録する。記録に書けたら True。"""
         return True
 
-    async def report_end(self, state: str, reply: str, about: str, saved: bool) -> bool:
+    async def report_end(self, state: str, reply: str, about: str, saved: bool, pane: str = "") -> bool:
         """報告のあと。記録に書けたかを返す。"""
         return saved
 
@@ -83,8 +88,8 @@ class Talker:
         """送ったときの状態の文。"""
         raise NotImplementedError
 
-    async def exchange(self, text: str) -> tuple[str, str, bool]:
-        """ユーザーの発言を 1 往復する。(返事, 失敗の理由, 記録に書けたか)。"""
+    async def exchange(self, text: str, reply_at: float | None = None) -> tuple[str, str, bool]:
+        """ユーザーの発言を 1 往復する。(返事, 失敗の理由, 記録に書けたか)。reply_at は、画面の「返信」が指した報告の記録の時刻（無ければ None）。"""
         raise NotImplementedError
 
     def ask(self, text: str) -> str:

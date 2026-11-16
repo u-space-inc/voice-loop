@@ -313,6 +313,42 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     check("回した分は hermes-log.1.jsonl に", "再起動のあと" in old.read_text() if old.exists() else None, True)
     check("回したあとの履歴は新しい記録から", history()["messages"], [{"role": "me", "text": "回したあと"}])
 
+    # ---- 声で返信する（「turn」の見出し＋音声のバイナリ）: 文字のときと同じく、Hermes への文にだけ前置きを付ける
+    s.hermes.hermes_log("ai", "shop の件が終わりました", report=True, about="shop｜受注", at=1700000100.5)
+    real_tr = s.transcribe
+    s.transcribe = lambda data, name: "続けて"
+    plan.append((0, "わかりました"))
+    with c.websocket_connect(WS) as w:
+        w.send_json({"type": "turn", "pane": s.hermes.HERMES_PANE, "speaker": 0, "filename": "rec.webm", "reply_at": 1700000100.5})
+        w.send_bytes(b"x" * 3000)
+        until(w, "reply")
+    s.transcribe = real_tr
+    check("声の返信: 見出しの reply_at を通し、Hermes への文に前置きを付ける", calls[-1], "〔返信: shop｜受注 の報告〕\n続けて")
+    check("声の返信: 守りの台帳と記録の発言は利用者の言葉のまま、返信先は記録の別の欄",
+          (s.hermes.HERMES_TURNS[-1][1], [d for d in s.hermes.hermes_records() if d["role"] == "me"][-1].get("reply_to")), ("続けて", "shop｜受注"))
+
+    # ---- 返信先が変な値（真偽・文字）なら、文字でも声でも送らずに止める（ふつうの発言にすり替えない）
+    def settle(w):
+        """返事かエラーのどちらかが来るまで受け取り、エラーならその文、返事なら「送られた」を返す（止めなければ返事が来る）。"""
+        while True:
+            m = w.receive_json()
+            if m["type"] in ("error", "reply"):
+                return m["text"] if m["type"] == "error" else "送られた"
+
+    n_calls, n_turns = len(calls), len(s.hermes.HERMES_TURNS)
+    s.transcribe = lambda data, name: "はい"
+    with c.websocket_connect(WS) as w:
+        w.send_json({"type": "text", "text": "はい", "pane": s.hermes.HERMES_PANE, "speaker": 0, "reply_at": True})
+        e1 = settle(w)
+        w.send_json({"type": "turn", "pane": s.hermes.HERMES_PANE, "speaker": 0, "filename": "rec.webm", "reply_at": "1700000100.5"})
+        w.send_bytes(b"x" * 3000)
+        e2 = settle(w)
+    s.transcribe = real_tr
+    check("変な返信先: 文字でも声でも、Hermes に送らず、選び直しを頼む（断った発言は台帳に載せ、聞いた文は空）",
+          (e1.startswith("返信先の報告が見つかりませんでした"), e2.startswith("返信先の報告が見つかりませんでした"), len(calls) - n_calls,
+           [(r[1], r[3]) for r in list(s.hermes.HERMES_TURNS)[-2:]]),
+          (True, True, 0, [("はい", ""), ("はい", "")]))
+
     # ---- Hermes 以外の相手の履歴は、これまでどおり
     check("記録を読めない相手は none", c.get("/api/history", params={"pane": "w9:p9"}).json(), {"source": "none", "messages": []})
 
