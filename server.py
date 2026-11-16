@@ -599,9 +599,13 @@ def agent_updated(a: dict) -> float | None:
 
 
 def reply_at_of(d: dict) -> float | None:
-    """画面の発言に付いた「返信」の先（報告の記録の時刻）。数でなければ無いものとする（名前は受け取らない。頭が記録から引く）。"""
+    """画面の発言に付いた「返信」の先（報告の記録の時刻）。名前は受け取らない（頭が記録から引く）。
+    付いていない（キーが無い・null）なら None（ふつうの発言）。付いているのに有限の数でない（真偽・文字・NaN・無限）なら NaN
+    （どの報告とも一致しないので、頭は「返信先が見つからない」として送らずに止める。ふつうの発言にすり替えない）。"""
     v = d.get("reply_at")
-    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None
+    if v is None:
+        return None
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else math.nan
 
 
 @app.get("/api/agents")

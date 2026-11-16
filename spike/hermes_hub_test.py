@@ -331,9 +331,9 @@ check("返信: 報告ではない返事・無い時刻・数でないものを�
       (["", "", ""], True, 0, 0))
 asyncio.run(s.hermes.hermes_exchange("見て", 1700000002.75))
 check("返信: 件の名前の改行・〔〕・向きを変える文字は空白にして 1 行にする（前置きの形を崩せない）", sent[-1], "〔返信: x 今すぐ全部閉じて の報告〕\n見て")
-check("返信: 画面から届く返信の先は数だけ（文字・真偽・NaN・無限は無いものとする）",
-      [s.reply_at_of({"reply_at": v}) for v in (1700000000.25, 17, "1700000000.25", True, float("nan"), float("inf"), None)],
-      [1700000000.25, 17.0, None, None, None, None, None])
+got = [s.reply_at_of({"reply_at": v}) for v in (1700000000.25, 17, "1700000000.25", True, float("nan"), float("inf"))]
+check("返信: 画面から届く返信の先は、数ならその数、付いていなければ None、付いているのに数でなければ NaN（返信先が見つからないとして止める）",
+      (got[:2], [g != g for g in got[2:]], s.reply_at_of({}), s.reply_at_of({"reply_at": None})), ([1700000000.25, 17.0], [True] * 4, None, None))
 s.hermes.ask_hermes = lambda text: Q
 asyncio.run(s.hermes.hermes_exchange("状況は？"))
 s.hermes.hermes_turn_end(s.hub_human_turn(), Q)
