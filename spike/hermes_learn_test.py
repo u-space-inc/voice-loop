@@ -336,6 +336,18 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
           [200, 200, 200] and __import__("origin_guard").DOCKER_ALLOWED.isdisjoint({("GET", "/api/hermes/learned"), ("POST", "/api/hermes/learned/detail"), ("POST", "/api/hermes/learned/undo")}),
           True)
 
+st = json.loads(s.hermes.HLEARN_FILE.read_text())
+old = [e for e in st["entries"] if e.get("kind") == "skill" and e.get("can_undo")][0]
+for e in st["entries"]:
+    if e["id"] == old["id"]:
+        e["at"] -= 400 * 86400  # 400 日前の跡にする
+s.hermes.HLEARN_FILE.write_text(json.dumps(st))
+s.hermes._hlearn_set("lnone")  # 書き直しのきっかけ
+kept = [e for e in learned()["entries"] if e["id"] == old["id"]]
+odet = json.loads((s.hermes.HLEARN_DIR / f"{old['id']}.json").read_text())
+check("跡: 古い跡も消さない（変わった跡は全部残す）。90 日を過ぎたら戻すための控えだけを片づけ、戻せない印にする（差分は残す）",
+      (len(kept), kept[0]["can_undo"] if kept else None, "before" in odet, bool(odet.get("diff"))), (1, False, False, True))
+
 # ---------- 4. 記憶 ----------
 MEM = HOME / "memories"
 D = s.hermes.hermes_memory.DELIM

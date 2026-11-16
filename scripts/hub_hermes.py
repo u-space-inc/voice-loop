@@ -835,7 +835,7 @@ def _hsk_tidy(ids: set[str]) -> list[str]:
 # 跡と控え（当てる前の手順の中身・当てた直後の指紋）は、Hermes が書けない側（状態フォルダの hermes-learned/）に置く
 HLEARN_DIR = STATE_DIR / "hermes-learned"
 HLEARN_FILE = HLEARN_DIR / "state.json"
-HLEARN_KEEP = 365 * 86400  # 跡は 1 年残す（数では切らない。日ごとの当てた数は跡とは別の欄 days に持つので、記憶の跡が増えても数え直しにならない）
+HLEARN_UNDO_KEEP = 90 * 86400  # 戻すための控え（当てる前の手順の中身）を持つ期間。跡そのもの（いつ・何を・差分）は消さない（変わった跡は全部残す）
 HLEARN_LOCK = asyncio.Lock()  # 当てる・戻すは一度にひとつ
 _hlearn_lock = threading.Lock()  # 状態のファイルを書き換えるのは一度にひとつ
 _HLEARN_SKIP: set[tuple[str, str]] = set()  # 中身を読めなかった書き足し（id, 指紋）。この版は、本体を起動し直すまで自動では試し直さない
@@ -859,15 +859,20 @@ def hlearn_state() -> dict | None:
 
 
 def _hlearn_save(d: dict):
+    """跡を書く。跡は消さない。90 日を過ぎた手順の跡は、戻すための控え（当てる前の中身・指紋）だけを控えのファイルから外し、戻せない印にする
+    （差分は残す）。日ごとの数（days）は 31 日分。"""
     now = time.time()
-    d["entries"] = [e for e in d["entries"] if now - e.get("at", 0) < HLEARN_KEEP]
     d["days"] = {k: v for k, v in d.get("days", {}).items() if k >= _hlearn_day(now - 31 * 86400)}
-    keep = {e["id"] for e in d["entries"]}
+    for e in d["entries"]:
+        if e.get("kind") == "skill" and e.get("can_undo") and now - e.get("at", 0) >= HLEARN_UNDO_KEEP:
+            path = HLEARN_DIR / f"{e['id']}.json"
+            with suppress(OSError, ValueError):
+                det = json.loads(path.read_text())
+                det.pop("before", None)
+                det.pop("expect", None)
+                core.write_json(path, det)
+            e.update(can_undo=False, note="90 日を過ぎたので、戻すための控えを片づけました（跡と差分は残ります）")
     core.write_json(HLEARN_FILE, d)
-    for p in HLEARN_DIR.glob("l*.json"):  # 捨てた跡の控え
-        if p.stem not in keep:
-            with suppress(OSError):
-                p.unlink()
 
 
 def _hlearn_day(t: float) -> str:

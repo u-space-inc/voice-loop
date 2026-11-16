@@ -220,6 +220,8 @@ def run_learned(page, who):
                          {"added": ["朝は 7 時に起きる"], "removed": []})
     s.hermes._hlearn_add({"kind": "skill", "auto": True, "pid": "dddddddd", "summary": "戻せない手順", "can_undo": False, "note": "当てたあとの中身を読めなかったので、戻せません"},
                          {"diff": "", "before": {}, "expect": {}})
+    s.hermes._hlearn_add({"kind": "skill", "auto": True, "pid": "eeeeeeee", "summary": "分からない手順", "state": "unknown", "can_undo": False}, {"diff": ""})
+    s.hermes._hlearn_add({"kind": "skill", "auto": True, "pid": "ffffffff", "summary": "当てられなかった手順", "state": "failed", "can_undo": False}, {"diff": ""})
     st = json.loads(s.hermes.HLEARN_FILE.read_text())
     st["days"] = {s.hermes._hlearn_day(time.time()): 2}  # 今日自動で当てた（当てようとした）のは 2 件
     s.hermes.HLEARN_FILE.write_text(json.dumps(st))
@@ -230,7 +232,11 @@ def run_learned(page, who):
     check(f"{who} 学んだことの欄に、手順と記憶の跡を出す（文字として。今日の数と上限）",
           (any(h.startswith("学んだこと（Hermes。今日自動で当てた手順 2/5）") for h in heads(page)), sorted(texts),
            page.locator("#sitBody .learn b").count()),
-          (True, sorted(["手順｜<b>返事</b>を短くする手順", "記憶（あなたについて）｜足した 1・消した 0：朝は 7 時に起きる", "手順｜戻せない手順"]), 0))
+          (True, sorted(["手順｜<b>返事</b>を短くする手順", "記憶（あなたについて）｜足した 1・消した 0：朝は 7 時に起きる", "手順｜戻せない手順", "手順｜分からない手順", "手順｜当てられなかった手順"]), 0))
+    meta = lambda t: cards.filter(has_text=t).first.locator(".sitMeta").text_content() or ""
+    check(f"{who} 状態ごとに出し分ける（当てた・分からない・当てられなかった・記憶）",
+          [w in meta(t) for t, w in (("返事", "自動で当てました"), ("分からない手順", "当たったか分かりません"), ("当てられなかった", "当てられませんでした"), ("朝は", "Hermes が書きました"))],
+          [True] * 4)
     skill = cards.filter(has_text="返事").first
     skill.locator("summary").click()
     check(f"{who} 中身を開くと、手順は差分", wait(lambda: "+短い" in (skill.locator("pre.diff").text_content() or "")), True)

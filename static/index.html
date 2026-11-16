@@ -1087,7 +1087,8 @@ function learnCard(e) {
   const memName = { user: 'あなたについて', memory: 'メモ' }[e.target] || e.target;
   c.appendChild(node('div', 'text', e.kind === 'skill' ? '手順｜' + (e.summary || '（要約なし）')
     : `記憶（${memName}）｜足した ${e.added}・消した ${e.removed}${e.summary ? '：' + e.summary : ''}`));
-  c.appendChild(node('div', 'sitMeta', stamp(e.at) + '・' + (e.state === 'undone' ? '戻しました' : e.kind === 'skill' ? '自動で当てました' : 'Hermes が書きました')));
+  const stateText = { applying: '当てている途中', unknown: '当たったか分かりません', failed: '当てられませんでした', skipped: '当てる前に止めました', undone: '戻しました' };
+  c.appendChild(node('div', 'sitMeta', stamp(e.at) + '・' + (stateText[e.state] || (e.kind === 'skill' ? '自動で当てました' : 'Hermes が書きました'))));
   if (e.note) c.appendChild(node('div', 'risky', e.note));
   const det = document.createElement('details');
   det.appendChild(node('summary', null, '中身を見る'));
