@@ -710,6 +710,18 @@ def run_attach(page, who):
           (3, "これを見て", [], False, "これを見て\n📎 a.png、p2.png、p3.png"))
     ids = sent()[0]["attachments"]
     check(f"{who} 返った id は本体が覚えている（場所は画面に返さない）", (all(i in s.ATTACHED for i in ids), "path" in json.dumps(sent()[0])), (True, False))
+    hold = []
+    page.route("**/api/attach*", lambda route: hold.append(route))  # 添付を置く答えを止めておく
+    page.set_input_files("#attachInput", files=[f("c.png")])
+    page.fill("#typed", "途中で相手を替える")
+    page.press("#typed", "Enter")
+    wait(lambda: len(hold) == 1)
+    page.select_option("#agent", s.hermes.HERMES_PANE)
+    hold[0].continue_()
+    page.unroute("**/api/attach*")
+    check(f"{who} 添付を置いている間に相手を替えたら送らず、文と添付は残す（宛先をずらさない）",
+          wait(lambda: "相手が替わったので、送っていません" in (page.text_content("#log") or "")) and (len(sent()), page.input_value("#typed"), chips()),
+          (1, "途中で相手を替える", ["📎 c.png"]))
 
 
 def run_reply(page, who):

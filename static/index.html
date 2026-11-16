@@ -536,10 +536,10 @@ function addAttach(list) {
   renderAttach();
 }
 // 選んだ添付を本体に送り、id の並びを返す。1 つでも送れなければ null（発言は送らない。添付は外さずに残す）
-async function uploadAttach() {
+async function uploadAttach(pane) {
   const ids = [];
   for (const f of attachFiles) {
-    let r; try { r = await (await fetch('/api/attach?name=' + encodeURIComponent(f.name), { method: 'POST', body: f })).json(); } catch { r = { ok: false, why: '本体に届きません' }; }
+    let r; try { r = await (await fetch('/api/attach?name=' + encodeURIComponent(f.name) + '&pane=' + encodeURIComponent(pane), { method: 'POST', body: f })).json(); } catch { r = { ok: false, why: '本体に届きません' }; }
     if (!r.ok) { sys(`添付 ${f.name} を送れませんでした: ${r.why || r.reason}`); return null; }
     ids.push(r.id);
   }
@@ -627,7 +627,7 @@ async function showSetup(seq) {
 $('replyClear').onclick = () => setReplyTarget(null);
 $('attachBtn').onclick = () => $('attachInput').click();
 $('attachInput').onchange = () => { addAttach([...$('attachInput').files]); $('attachInput').value = ''; };
-$('agent').onchange = () => { setReplyTarget(null); attachFiles = []; renderAttach(); localStorage.setItem(WANT, curKey()); shownPane = $('agent').value; applyTarget(); setStatus(linked() ? '準備できました' : UNREACHABLE); loadThread(); };
+$('agent').onchange = () => { setReplyTarget(null); localStorage.setItem(WANT, curKey()); shownPane = $('agent').value; applyTarget(); setStatus(linked() ? '準備できました' : UNREACHABLE); loadThread(); };
 
 // ---------- 承認で止まっているセッションへの返答（ボタン） ----------
 // 話し相手（ハブなど）の画面のまま、承認で止まっているセッションをすべて画面の上に並べる（名前・聞かれている中身・許可（今回だけ）・断る）。
@@ -1522,10 +1522,14 @@ async function startRec() {
     if (blob.size < 2000) { setStatus('短すぎました'); return; }
     sendTurnStart();
     if (!$('agent').value) { setStatus('話し相手を選んでください'); return; }
+    const pane = $('agent').value, key = curKey(), rf = replyFields();  // 宛先は話し終えた時点で固定する（添付を置いている間に相手が替わっても、ずらさない）
     let files = [];
-    if (attachFiles.length) { setStatus('添付を送っています…'); files = await uploadAttach(); if (!files) { setStatus('添付を送れなかったので、話した内容は送っていません'); return; } }
-    ws.send(JSON.stringify({ type: 'turn', pane: $('agent').value, key: curKey(), speaker: $('speaker').value, filename: 'rec.' + ext, ...replyFields(),
-                             ...(files.length ? { attachments: files } : {}) }));
+    if (attachFiles.length) {
+      setStatus('添付を送っています…'); files = await uploadAttach(pane);
+      if (!files) { setStatus('添付を送れなかったので、話した内容は送っていません'); return; }
+      if ($('agent').value !== pane) { setStatus('添付を置いている間に相手が替わったので、送っていません'); return; }
+    }
+    ws.send(JSON.stringify({ type: 'turn', pane, key, speaker: $('speaker').value, filename: 'rec.' + ext, ...rf, ...(files.length ? { attachments: files } : {}) }));
     setReplyTarget(null); attachFiles = []; renderAttach();
     ws.send(await blob.arrayBuffer());
     setStatus('聞き取り中…');
@@ -1550,12 +1554,17 @@ $('typedForm').onsubmit = async e => {
   // 「送る」を押せない間（届かない・声がまだ決まっていない）は、Enter でも送らず、打った文をそのまま残す。
   // Enter の requestSubmit() はボタンの無効を見ないので、ここでボタンと同じ可否（applyTarget）を確かめる。添付だけでも送れる
   e.preventDefault(); const t = $('typed').value.trim(); if ((!t && !attachFiles.length) || $('send').disabled || !$('agent').value || !linked()) return;
+  const pane = $('agent').value, key = curKey(), rf = replyFields(), names = attachFiles.map(f => f.name);  // 宛先は押した時点で固定する
   let files = [];
-  if (attachFiles.length) { setStatus('添付を送っています…'); files = await uploadAttach(); if (!files) { setStatus(''); return; } }  // 送れなければ、文も添付も残す
+  if (attachFiles.length) {
+    setStatus('添付を送っています…'); files = await uploadAttach(pane);
+    if (!files) { setStatus(''); return; }  // 送れなければ、文も添付も残す
+    if ($('agent').value !== pane) { sys('添付を置いている間に相手が替わったので、送っていません（文と添付は残しています）'); setStatus(''); return; }
+  }
   sendTurnStart(); prime();
-  const rf = replyFields(), names = attachFiles.map(f => f.name), shown = t + (names.length ? (t ? '\n' : '') + '📎 ' + names.join('、') : '');
+  const shown = t + (names.length ? (t ? '\n' : '') + '📎 ' + names.join('、') : '');
   $('typed').value = ''; fitTyped(); decorate(bubble('me', shown, 'pending'), { role: 'me', reply_to: rf.reply_at !== undefined ? replyTarget.about : '' }); localPush('me', shown);
-  ws.send(JSON.stringify({ type: 'text', text: t, pane: $('agent').value, key: curKey(), speaker: $('speaker').value, ...rf, ...(files.length ? { attachments: files } : {}) }));
+  ws.send(JSON.stringify({ type: 'text', text: t, pane, key, speaker: $('speaker').value, ...rf, ...(files.length ? { attachments: files } : {}) }));
   setReplyTarget(null); attachFiles = []; renderAttach();
   setStatus('エージェントに送りました。考え中…');
 };

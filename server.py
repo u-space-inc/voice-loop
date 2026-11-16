@@ -608,9 +608,12 @@ ATTACH_ID_KEEP = 86400
 
 
 @app.post("/api/attach")
-async def api_attach(request: Request, name: str = ""):
+async def api_attach(request: Request, name: str = "", pane: str = ""):
     """画面から添付するファイルを 1 つ受け取る（本文がそのままファイルの中身）。名前は拡張子と表示にだけ使い、置く名前は本体が付ける。
-    受け取ったら id を返す。発言（text・turn）の attachments にその id を並べると、本体が場所を発言の末尾に書いて渡す。"""
+    受け取ったら id を返す。発言（text・turn）の attachments にその id を並べると、本体が場所を発言の末尾に書いて渡す。
+    pane は、置くときの宛先（話し相手）。その id は、同じ宛先への発言にしか付けられない（セッション宛ての添付を Hermes に渡さない）。"""
+    if not pane or len(pane) > 64:
+        return JSONResponse({"ok": False, "reason": "pane", "why": "宛先がありません"}, status_code=400)
     ext = attach.ext_of(name)
     if ext not in attach.TYPES:
         return JSONResponse({"ok": False, "reason": "type", "why": "画像（png・jpg・gif・webp・heic）・PDF・テキスト（txt・md・csv）だけ添付できます"}, status_code=400)
@@ -634,7 +637,7 @@ async def api_attach(request: Request, name: str = ""):
     now = time.time()
     for k in [k for k, v in ATTACHED.items() if now - v["at"] > ATTACH_ID_KEEP]:
         ATTACHED.pop(k, None)
-    ATTACHED[aid] = {"path": path, "file": file, "name": attach.shown_name(name), "at": now}
+    ATTACHED[aid] = {"path": path, "file": file, "name": attach.shown_name(name), "at": now, "pane": pane}
     await asyncio.to_thread(attach.tidy, ATTACH_DIR)
     hlog(f"添付を受け取りました: {file}（{len(data)} バイト）", flush=True)
     return JSONResponse({"ok": True, "id": aid, "name": ATTACHED[aid]["name"], "size": len(data)})
@@ -650,7 +653,7 @@ def attachments_of(d: dict) -> list[str] | None:
     return v
 
 
-async def attachment_lines(ids: list[str], talker) -> tuple[str, str]:
+async def attachment_lines(ids: list[str], talker, pane: str = "") -> tuple[str, str]:
     """発言の末尾に足す「添付（画面から）」の行と、断る理由。セッションには状態フォルダの場所、herdr の外の話し相手（ハブ）には、
     その相手が置いた場所（Hermes ならコンテナの中）を書く。"""
     if not ids:
@@ -658,6 +661,8 @@ async def attachment_lines(ids: list[str], talker) -> tuple[str, str]:
     items = [ATTACHED.get(i) for i in ids]
     if any(it is None for it in items):
         return "", "添付が見つかりません（本体を起動し直したか、時間がたちました）。送っていません。添付を選び直してください"
+    if any(it["pane"] != pane for it in items):
+        return "", "添付を置いたときと、送る相手が違います（途中で相手を替えましたか）。送っていません。添付を選び直してください"
     lines = []
     for it in items:
         if talker is None:
@@ -2624,7 +2629,7 @@ async def ws(sock: WebSocket):
             if files is None:  # 添付の形が違う・多すぎる
                 await send(type="error", text=f"添付の形が違うか、多すぎます（1 回に {attach.COUNT} つまで）。送っていません")
                 return
-            extra, why = await attachment_lines(files, TALKERS.get(pane))
+            extra, why = await attachment_lines(files, TALKERS.get(pane), pane)
             if why:
                 await send(type="error", text=why)
                 return

@@ -67,7 +67,7 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 HDR = {"Origin": "http://127.0.0.1:8790"}
 
 with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
-    up = lambda name, data, **h: c.post("/api/attach", params={"name": name}, content=data, headers={**HDR, **h})
+    up = lambda name, data, pane="w9:p1", **h: c.post("/api/attach", params={"name": name, "pane": pane}, content=data, headers={**HDR, **h})
     r = up("写真.png", PNG)
     rid = r.json()
     files = [p for p in (Path(TMP) / "state" / "attachments").rglob("*") if p.is_file()]
@@ -103,10 +103,11 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             if m["type"] in ("reply", "error"):
                 return m
 
+    check("受け取る: 宛先（pane）の無い添付は断る", up("a.png", PNG, pane="").json().get("reason"), "pane")
     a2 = up("資料.pdf", b"%PDF-1.7\n...").json()["id"]
     with c.websocket_connect("ws://127.0.0.1:8790/ws") as w:
         m = say(w, "w9:p1", "これを見て", [rid["id"], a2])
-    path1 = str(next(p for p in sorted((Path(TMP) / "state" / "attachments").rglob("*")) if p.is_file() and p.read_bytes() == PNG and "passwd" not in p.name))
+    path1 = str(s.ATTACHED[rid["id"]]["path"])  # 同じ秒に置いた添付は名前の並びが乱数で決まるので、本体の控えから引く
     check("渡す: セッションには、状態フォルダの場所と表示の名前を、発言の末尾に書く",
           (m["type"], SENT[-1][0], SENT[-1][1].split("\n\n")[0], "添付（画面から）:" in SENT[-1][1], f"- {path1}（写真.png）" in SENT[-1][1], "（資料.pdf）" in SENT[-1][1]),
           ("reply", "w9:p1", "これを見て", True, True, True))
@@ -116,15 +117,21 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         e2 = say(w, "w9:p1", "x", [rid["id"]] * 6)
         e3 = say(w, "w9:p1", "x", "notalist")
     check("渡す: 知らない id・多すぎる・形の違う添付は、送らずに断る", ([e["type"] for e in (e1, e2, e3)], len(SENT) - n), (["error"] * 3, 0))
+    k0 = len(ASKED)
     with c.websocket_connect("ws://127.0.0.1:8790/ws") as w:
-        m = say(w, s.hermes.HERMES_PANE, "これを見て", [rid["id"]])
+        mx = say(w, s.hermes.HERMES_PANE, "これを見て", [rid["id"]])
+    check("渡す: セッション宛てに置いた添付は、ハブ（ほかの相手）への発言には付けない（送らずに断る・コンテナにも置かない）",
+          (mx["type"], mx["text"].startswith("添付を置いたときと、送る相手が違います"), len(ASKED) - k0, len(PUT)), ("error", True, 0, 0))
+    hid = up("写真.png", PNG, pane=s.hermes.HERMES_PANE).json()["id"]
+    with c.websocket_connect("ws://127.0.0.1:8790/ws") as w:
+        m = say(w, s.hermes.HERMES_PANE, "これを見て", [hid])
     check("渡す: ハブ（Hermes）には、コンテナの中に置いた場所を書く（中身はそのまま渡す）",
           (m["type"], PUT[-1][1] == PNG, bool(attach.NAME_RE.fullmatch(PUT[-1][0])), f"- /opt/data/voice-loop/attachments/{PUT[-1][0]}（写真.png）" in ASKED[-1]),
           ("reply", True, True, True))
     PUT_FAIL["v"] = True
     k = len(ASKED)
     with c.websocket_connect("ws://127.0.0.1:8790/ws") as w:
-        m = say(w, s.hermes.HERMES_PANE, "これを見て", [rid["id"]])
+        m = say(w, s.hermes.HERMES_PANE, "これを見て", [hid])
     PUT_FAIL["v"] = False
     check("渡す: コンテナに置けなければ、送らない", (m["type"], m["text"].startswith("添付を渡せませんでした"), len(ASKED) - k), ("error", True, 0))
     s.transcribe = lambda data, name: "声で頼む"
