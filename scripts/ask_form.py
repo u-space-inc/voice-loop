@@ -9,7 +9,7 @@
 キーの動き（2026-11-17 に Claude Code 2.1.326 の実画面で確かめた）:
 - 1 つ選ぶ（見本なし）: 数字キーで選ばれ、次の問いへ進む（問いが 1 つだけなら、そのまま送られる）
 - 1 つ選ぶ（見本つき）: 数字キーはカーソルを動かすだけ。Enter で選ばれて進む
-- 自由記入（「Type something.」。見本なしの 1 つ選ぶ問いだけ）: 空の欄の番号で入力欄に入り、文字を打って Enter で進む
+- 自由記入（「Type something.」。見本なしの 1 つ選ぶ問いだけ）: ↓↑ で欄まで移ると入力中になり、文字を打って Enter で進む
 - 複数選ぶ: 数字キーで印を付け外しする。Tab で次の問い（最後なら確認の画面）へ
 - 確認の画面（問いが 2 つ以上か、複数選ぶ問いのとき）: 「1」で送る
 """
@@ -59,8 +59,12 @@ def step(text: str) -> dict:
     if not lines:
         return {"stage": "gone"}
     is_opt = lambda l, n, label: (m := _OPT.match(l)) is not None and int(m.group(2)) == n and m.group(3).strip() == label  # noqa: E731
-    foot = lines[-1]
-    qfoot = "Enter to select" in foot and "Esc to cancel" in foot
+    # 操作案内（いちばん下）。ペインの幅が狭いと 2〜3 行に折り返す（「Enter to select …」で始まる行から下）
+    fstart = next((i for i in range(len(lines) - 1, max(-1, len(lines) - 4), -1) if lines[i].startswith("Enter to select")), None)
+    foot = " ".join(lines[fstart:]) if fstart is not None else lines[-1]
+    qfoot = fstart is not None and "Esc to cancel" in foot
+    if qfoot:
+        lines = lines[:fstart] + [foot]  # 折り返しを 1 行にそろえる
     review = len(lines) >= 3 and is_opt(lines[-2], 1, "Submit answers") and is_opt(lines[-1], 2, "Cancel")
     if not qfoot and not review:
         # いちばん下が、質問の操作案内でも確認の画面の終わりでもない。Claude の入力欄（「❯」だけ、か「❯ 文」の行）が下にあれば、問いは閉じた。
@@ -124,6 +128,8 @@ def step(text: str) -> dict:
     if any(_OPT.match(l) or _RULE.match(l) or _BAR.match(l) or l.lstrip().startswith(("❯", "↓", "↑")) for l in asked):
         return {"stage": "unknown", "why": "suspicious"}
     question = " ".join(l.strip() for l in asked)
+    if not question:  # 問いの文が無い（選択肢をまねた 1 行の問いが、選択肢のかたまりに混ざった形もここに来る）
+        return {"stage": "unknown", "why": "question"}
     end = rule
     rows = []  # [番号, 行の文字, 下の行（折り返し・説明）, カーソルか, 収まらない印か]
     for l in body[first:end]:
@@ -300,8 +306,19 @@ async def act(kind: str, arg, read, keys, text, expect: str | None = None) -> st
             raise Stuck("自由記入の欄が画面に収まっていない（端末で）")
         if st["free_text"]:  # 欄に文が入っていたら、番号で入らない（番号がその文で答えを確定させてしまう。Collie の測った結果）
             raise Stuck("自由記入の欄に、もう文が入っている（端末で書きかけ）")
-        await keys(str(k))
-        await until(lambda s: same(s) and s["cursor"] == k and s["typing"] and not s["free_text"], "自由記入の欄に入れない")
+        # 欄へは番号ではなく ↓↑ で 1 段ずつ移る（文の入った欄の番号は、その文で答えを確定させる。欄の文が「Type something.」と同じだと
+        # 空の欄と見分けられないので、番号は使わない。Collie の測った結果に倣った。2026-11-17 実画面で ↓ で欄に入ると入力中になるのを確かめた）
+        c = st["cursor"]
+        if type(c) is not int or abs(k - c) > 10:
+            raise Stuck("カーソルの位置が分からない")
+        while c != k:
+            nxt = c + (1 if k > c else -1)
+            await keys("down" if k > c else "up")
+            last = nxt == k
+            await until(lambda s, nxt=nxt, last=last: same(s) and s["cursor"] == nxt and (s["typing"] if last else not s["typing"]),
+                        f"カーソルが {nxt} 番に来ない")
+            c = nxt
+        await until(lambda s: same(s) and s["cursor"] == k and s["typing"] and not s["free_text"], "自由記入の欄が空ではないか、入れない")
         await text(t)
         _, raw3 = await until(lambda s: same(s) and s["cursor"] == k and s["typing"] and _flat(s["free_text"]) == _flat(t),
                               "自由記入の文が出ないか、入力欄から外れた")

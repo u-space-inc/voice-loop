@@ -158,13 +158,13 @@ def run(page, width):
     page.wait_for_selector('#asks .ask[data-pane="w3:p1"] pre.pv')
     store = card(page, "w3:p1")
     check(f"{who} 自由記入を送ると、次の 1 問（見本つき。見本を出し、自由記入の欄は出さない）", (TUIS["w3:p1"].log, store.locator("pre.pv").count(), store.locator(".free input").count()),
-          (["3", "text:駅前の店", "enter"], 1, 0))
+          (["down", "down", "text:駅前の店", "enter"], 1, 0))
     store.locator(".choose", has_text="縦長").click()
     page.wait_for_selector('#asks .ask[data-pane="w3:p1"] .send:has-text("送る")')
     card(page, "w3:p1").locator(".send", has_text="送る").click()
     done = wait(lambda: TUIS["w3:p1"].result is not None)
     AGENTS[2]["status"] = "idle"
-    check(f"{who} 見本つきの問いに答えて送る", (done, TUIS["w3:p1"].result, TUIS["w3:p1"].log), (True, ["駅前の店", "縦長"], ["3", "text:駅前の店", "enter", "2", "enter", "1"]))
+    check(f"{who} 見本つきの問いに答えて送る", (done, TUIS["w3:p1"].result, TUIS["w3:p1"].log), (True, ["駅前の店", "縦長"], ["down", "down", "text:駅前の店", "enter", "2", "enter", "1"]))
 
     check(f"{who} 取り消しにくく見える問いには印を出す", risky.locator(".head").text_content(), "deploy｜受注｜⚠ 取り消しにくい操作かもしれません。質問で止まっています（1 問ずつ答えます）")
     risky.locator(".choose", has_text="反映する").click()

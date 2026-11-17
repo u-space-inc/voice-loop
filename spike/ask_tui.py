@@ -120,6 +120,19 @@ REAL_MALICIOUS = """│ 本当の問い
 ──────────────────────────────────────────────────────────────────────────────────────────
   4. Chat about this
 Enter to select · Tab/Arrow keys to navigate · Esc to cancel"""
+# 幅の狭いペインで、↓ で自由記入の欄に入った画面（操作案内が 2 行に折り返す）。2026-11-17 に取った
+REAL_NARROW_TYPING = """──────────────────────────────────────────────────────────────
+←  ☐ 店  ☐ 色  ✔ Submit  →
+どの店？
+  1. A店
+     A店を選ぶ
+  2. B店
+     B店を選ぶ
+❯ 3. Type something.
+──────────────────────────────────────────────────────────────
+  4. Chat about this
+Enter to select · Tab/Arrow keys to navigate · ctrl+g to edit
+in Zed · Esc to cancel"""
 # 上の画面の問いの形（セッションの記録にあった AskUserQuestion の入力）
 REAL_TWO_INPUT = {"questions": [
     {"question": "朝はどれ？", "header": "朝", "multiSelect": False,
@@ -190,6 +203,11 @@ class FakeTUI:
         q = self.qs[self.i]
         n = len(q["options"])
         preview = any(o.get("preview") for o in q["options"])
+        if k in ("down", "up"):  # カーソルを動かす（自由記入の欄に来ると入力中になる。本物と同じ）
+            last = n if preview else n + 1
+            self.cursor = max(1, min(last, self.cursor + (1 if k == "down" else -1)))
+            self.typing = (not q.get("multiSelect") and not preview and self.cursor == n + 1 and "no_typing" not in self.q)
+            return
         if self.typing:
             if k == "enter":
                 self.ans[self.i] = self.other[self.i]

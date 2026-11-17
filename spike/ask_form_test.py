@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ask_form as af  # noqa: E402
-from ask_tui import (REAL_MALICIOUS, REAL_OTHER_TYPED, REAL_SCROLLED, REAL_SMALL_MULTI, REAL_SMALL_PREVIEW, REAL_SMALL_REVIEW, REAL_PREVIEW_CURSOR, REAL_SHOP_INPUT, REAL_TWO_FIRST, REAL_TWO_INPUT,  # noqa: E402
+from ask_tui import (REAL_MALICIOUS, REAL_NARROW_TYPING, REAL_OTHER_TYPED, REAL_SCROLLED, REAL_SMALL_MULTI, REAL_SMALL_PREVIEW, REAL_SMALL_REVIEW, REAL_PREVIEW_CURSOR, REAL_SHOP_INPUT, REAL_TWO_FIRST, REAL_TWO_INPUT,  # noqa: E402
                      REAL_TWO_MULTI_CHECKED, REAL_TWO_REVIEW, FakeTUI)
 from question_screens import REAL_CHOICE, REAL_MULTI, REAL_PREVIEW, REAL_TWO  # noqa: E402
 
@@ -166,7 +166,7 @@ check("通し: 1 つ選ぶ → 複数選ぶ（印・次へ）→ 確認の画面
 tui = FakeTUI(REAL_SHOP_INPUT)
 seq = [go(tui, "free", "駅前の店"), go(tui, "pick", 2), go(tui, "submit")]
 check("通し: 自由記入（番号 → 入力欄で打つ → Enter）→ 見本つき（数字でカーソル → Enter）→ 確認",
-      ([e for _, e in seq], tui.result, tui.log), ([None] * 3, ["駅前の店", "縦長"], ["3", "text:駅前の店", "enter", "2", "enter", "1"]))
+      ([e for _, e in seq], tui.result, tui.log), ([None] * 3, ["駅前の店", "縦長"], ["down", "down", "text:駅前の店", "enter", "2", "enter", "1"]))
 one = {"questions": [REAL_TWO_INPUT["questions"][0]]}
 tui = FakeTUI(one)
 check("通し: 問いが 1 つで 1 つ選ぶ形は、番号だけで送られる", (go(tui, "pick", 1), tui.result, tui.log), (("1番「パン」", None), ["パン"], ["1"]))
@@ -222,6 +222,27 @@ for k in ("2", "1", "tab"):
     tui.keys(k)
 check("揺れ: 送ったあと読めない画面（画面が変わっても）なら、届いたとしない", (bool(go(tui, "submit")[1]), tui.result), (True, None))
 
+st = af.step(REAL_NARROW_TYPING)
+check("2.1.326（幅の狭いペイン）: 2 行に折り返した操作案内も読む（↓ で入った自由記入の欄・入力中）",
+      (st["stage"], st["cursor"], st["typing"], st["free"], st["free_text"], labels(st)), ("question", 3, True, 3, "", [(1, "A店"), (2, "B店")]))
+mimic = "─" * 60 + "\n←  ☐ 店  ✔ Submit  →\n  1. 中止する\n↑ 2. B店\n     B店にする\n  3. Type something.\n" + "─" * 60 + "\n  4. Chat about this\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel"
+check("相手の位置: 選択肢をまねた 1 行の問いが、画面の外の本物の 1 番の代わりに選択肢のかたまりに混ざっても、問いの文が無いので読まない",
+      af.step(mimic).get("why"), "question")
+
+
+class Placeholder(FakeTUI):
+    """自由記入の欄に、利用者が「Type something.」とそっくりの文を打って、欄から離れた（空の欄と見分けられない）。"""
+
+    def __init__(self, raw):
+        super().__init__(raw)
+        self.other[0] = "Type something."
+
+
+tui = Placeholder(one)
+r, err = go(tui, "free", "駅前の店")
+check("書きかけ: 欄の文が「Type something.」とそっくりでも、番号を押さずに ↓ で入り、打った文が合わなければ Enter を送らない（確定させない）",
+      (bool(err), any(k.isdigit() for k in tui.log), "enter" in tui.log, tui.result), (True, False, False, None))
+
 # ---------- 書きかけ・揺れ・取り違え ----------
 tui = FakeTUI(one)
 tui.keys("3")
@@ -256,7 +277,7 @@ go(tui, "pick", 1)
 s2, err = go(tui, "pick", 2)
 check("揺れ: 見本つきでも数字で先へ進む版では、Enter を送らずに止まる（次の問いを勝手に選ばない）", (bool(err), tui.log), (True, ["1", "2"]))
 tui = FakeTUI(one, ["no_typing"])
-check("揺れ: 自由記入の欄に入れなければ、文字を打たずに止まる", (bool(go(tui, "free", "3番の店")[1]), tui.log, tui.result), (True, ["3"], None))
+check("揺れ: 自由記入の欄に入れなければ、文字を打たずに止まる", (bool(go(tui, "free", "3番の店")[1]), tui.log, tui.result), (True, ["down", "down"], None))
 tui = FakeTUI(REAL_TWO_INPUT, ["submit_ignored"])
 for k in ("2", "1", "tab"):
     tui.keys(k)
