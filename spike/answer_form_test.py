@@ -1,11 +1,10 @@
-"""選択肢の問い（AskUserQuestion）に、問いの形で答える本体の口の試験（/api/prompts の form・/api/answer の choice=form・/api/hub/question・
-/api/hub/answer の answers）。herdr・本物のセッションには触れない（一覧・画面・キーと文字の送信を、偽物の画面 FakeTUI に差し替える）。
+"""選択肢の問い（AskUserQuestion）に、画面から問いの形で答える本体の口の試験（/api/prompts の form・/api/answer の choice=form）。
+herdr・本物のセッションには触れない（一覧・画面・キーと文字の送信を、偽物の画面 FakeTUI に差し替える）。
 確かめること:
 - 問いの形を出すのは、記録に答えを待つ問いがあり、画面に最初の問いが出ていて、まだ答えていないときだけ（端末で答え始めていたら出さない）
 - 画面のボタン: 見せたのと同じ問い（指紋と記録の id）にだけ・答えの形を確かめて・取り消しにくい問いはもう一度押してから・同じ問いに重ねて送らない
-- Slack（Hermes を通る口）: Slack の会話から（hubctl が付ける origin）だけ・1 時間の数の上限・答えるたび（途中で止まったときも）画面の知らせとプッシュ通知・
-  自動通知への応答中は送らない・相手の位置（コンテナ）からも、見本つきの問いへの自由記入など形の外の答えは送れない
-- 途中で止まったら、それ以上は送らず、理由を返す
+- 途中で止まったら、それ以上は送らず、理由を返す。送ったあとの読み取りが失敗したら、送れたとしない
+- 相手の位置（コンテナの中の Hermes）からは、問いの形で答えられない（Slack の会話からと名乗っても）。問いの形を読む口もコンテナには開けていない
 使い方: uv run spike/answer_form_test.py"""
 import asyncio
 import json
@@ -23,7 +22,6 @@ import server as s  # noqa: E402
 from ask_tui import REAL_SHOP_INPUT, REAL_TWO_INPUT, FakeTUI  # noqa: E402
 
 s.ask_form.WAIT, s.ask_form.STEP = 0.3, 0.01
-s.slack_report.CHAT = "D0TESTCHAT1"  # 利用者の DM（config.env の VL_SLACK_REPORT_CHAT の代わり）
 REAL_READ_DIALOG = s.read_dialog
 AGENT = {"pane": "w9:p1", "title": "テスト", "cwd": "/tmp/proj", "kind": "claude", "session": "sess-1", "status": "blocked", "name": "", "hub": False}
 st = {"tui": FakeTUI(REAL_TWO_INPUT), "path": None, "status": "blocked"}
@@ -60,11 +58,8 @@ s.jsonl_path = lambda a: st["path"]
 s.herdr = fake_herdr
 
 
-REAL_PUSH = s.push_all
-
-
-async def fake_push(title, body, tag, urgency="normal", only=None, always=False):
-    pushes.append((title, body, always))
+async def fake_push(title, body, tag, urgency="normal", only=None):
+    pushes.append((title, body))
     return "ok"
 s.push_all = fake_push
 s.start_watch = lambda d, kind="send": watches.append(kind)
@@ -79,7 +74,6 @@ def setup(inp=REAL_TWO_INPUT, tid="t1", quirks=(), answered=False):
     st.update(tui=FakeTUI(inp, quirks), path=transcript(tid, inp, answered), status="blocked")
     s.ANSWERED.clear()
     s._PENDING.clear()
-    s.SLACK_FORMS_FILE.unlink(missing_ok=True)
 
 
 def prompts():
@@ -88,12 +82,6 @@ def prompts():
 
 def screen_answer(**body):
     return json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "sess-1", "choice": "form", **body})).body)
-
-
-def hub_answer(origin=True, **body):
-    o = origin if isinstance(origin, dict) else {"platform": "slack", "chat": "D0TESTCHAT1", "thread": "1794870946.124399"}
-    b = {"pane": "w9:p1", **body, **({"origin": o} if origin else {})}
-    return json.loads(asyncio.run(s.hub_answer(b)).body)
 
 
 # ---------- 問いの形を出す ----------
@@ -155,120 +143,27 @@ check("画面: 途中で思った形にならなければ止まり、理由を�
 r = screen_answer(fp=q["fp"], ask=q["ask"], answers=ok_two)
 check("画面: 途中で止まった問いには、続けて送らない", r.get("reason"), "answered")
 
-# ---------- Slack（Hermes を通る口） ----------
+# ---------- 送ったあとの読み取りの失敗・コンテナからの答え ----------
 setup()
-hq = json.loads(s.hub_question("w9:p1").body)
-check("hub question: 問いの形と指紋・記録の id", (hq["kind"], hq["ask"], hq["fp"] == prompts()[0]["fp"], len(hq["form"]["questions"])), ("question", "t1", True, 2))
-r = hub_answer(origin=False, fp=hq["fp"], ask=hq["ask"], answers=ok_two)
-check("Slack: Slack の会話から（origin）でなければ送らない", (r.get("reason"), st["tui"].log), ("not_slack", []))
-r = hub_answer(origin={"platform": "slack", "chat": "D0OTHERDM9", "thread": ""}, fp=hq["fp"], ask=hq["ask"], answers=ok_two)
-check("Slack: 利用者の DM 以外の会話からは送らない", (r.get("reason"), st["tui"].log), ("not_slack", []))
-s.REPORTING = True
-r = hub_answer(fp=hq["fp"], ask=hq["ask"], answers=ok_two)
-s.REPORTING = False
-check("Slack: 自動通知への応答中は送らない", (r.get("reason"), st["tui"].log), ("reporting", []))
-pushes.clear()
-watches.clear()
-r = hub_answer(fp=hq["fp"], ask=hq["ask"], answers=ok_two)
-nt = s.notices()["rows"]
-check("Slack: 送って届き、画面の知らせとプッシュ通知で知らせ、結果の見張りを付ける",
-      (r.get("ok"), st["tui"].result, (nt[-1]["title"] if nt else None), (nt[-1]["text"] if nt else None), len(pushes), watches),
-      (True, ["ごはん", "赤, 緑"], "Slack から答えました: proj", "［朝］ごはん／［色］赤, 緑", 1, ["answer"]))
-setup(REAL_SHOP_INPUT, quirks=["no_typing"])
-hq = json.loads(s.hub_question("w9:p1").body)
-r = hub_answer(fp=hq["fp"], ask=hq["ask"], answers=[{"other": "3番の店"}, {"pick": 1}])
-check("Slack: 途中で止まったときも知らせる（文字は打たない）", (r.get("reason"), (s.notices()["rows"] or [{}])[-1].get("title"), any(x.startswith("text:") for x in st["tui"].log)),
-      ("stuck", "Slack から答える途中で止まりました: proj", False))
-setup(REAL_SHOP_INPUT)
-hq = json.loads(s.hub_question("w9:p1").body)
-r = hub_answer(fp=hq["fp"], ask=hq["ask"], answers=[{"pick": 1}, {"other": "丸"}])
-check("Slack（相手の位置）: 見本つきの問いへの自由記入など、形の外の答えは送れない", (r.get("reason"), st["tui"].log), ("bad_form", []))
-setup()
-for i in range(s.NOTICE_PER_HOUR):  # 代理の知らせの枠を使い切る（コンテナから使える hubctl notice）
-    asyncio.run(s.hub_notice({"title": f"埋め {i}", "text": ""}))
-pushes.clear()
-hq = json.loads(s.hub_question("w9:p1").body)
-r = hub_answer(fp=hq["fp"], ask=hq["ask"], answers=ok_two)
-check("Slack: 代理の知らせの枠を使い切られても、答えたことの知らせとプッシュ通知は出る",
-      (r.get("ok"), s.notices()["rows"][-1]["title"], len(pushes)), (True, "Slack から答えました: proj", 1))
-setup(quirks=[])
-hq = json.loads(s.hub_question("w9:p1").body)
+q = prompts()[0]
 real_read = s.read_dialog
-calls = {"n": 0}
 
 
 def flaky(pane, *_):  # 送り終えたあとの読み取りで、読み取りが失敗する
-    calls["n"] += 1
     if st["tui"].result is not None:
         raise __import__("subprocess").TimeoutExpired("herdr", 20)
     return real_read(pane)
 
 
 s.read_dialog = flaky
-pushes.clear()
-n0 = len(s.slack_forms())
-r = hub_answer(fp=hq["fp"], ask=hq["ask"], answers=ok_two)
+r = screen_answer(fp=q["fp"], ask=q["ask"], answers=ok_two)
 s.read_dialog = real_read
-check("Slack: 送ったあとの読み取りが失敗しても、結果が分からないとして知らせ、数に入れる",
-      (r.get("reason"), "結果が分からない" in (r.get("why") or ""), s.notices()["rows"][-1]["title"], len(pushes), len(s.slack_forms()) - n0),
-      ("stuck", True, "Slack から答える途中で止まりました: proj", 1, 1))
+check("画面: 送ったあとの読み取りが失敗したら、送れたとせず「結果が分からない」と返す", (r.get("ok"), r.get("reason"), "結果が分からない" in (r.get("why") or "")), (False, "stuck", True))
 setup()
-s.SLACK_FORMS_FILE.write_text(json.dumps([__import__("time").time()] * s.SLACK_FORM_PER_HOUR))  # 再起動の前に答えた分（記録に残っている）
-hq = json.loads(s.hub_question("w9:p1").body)
-r = hub_answer(fp=hq["fp"], ask=hq["ask"], answers=ok_two)
-check("Slack: 1 時間の数の上限を超えたら送らない（本体を再起動しても、記録に残した分を数える）", (r.get("reason"), r.get("max"), st["tui"].log), ("too_many", s.SLACK_FORM_PER_HOUR, []))
-setup()
-hq = json.loads(s.hub_question("w9:p1").body)
-s.ANSWERED["w9:p1"] = (hq["fp"], __import__("time").time())
-r = hub_answer(fp=hq["fp"], ask=hq["ask"], answers=ok_two)
-check("Slack: 答えたばかりの同じ問いに重ねて送らない（画面のボタンの答えと共有）", (r.get("reason"), st["tui"].log), ("answered", []))
-setup()
-hq = json.loads(s.hub_question("w9:p1").body)
-real_wj = s.write_json
-s.write_json = lambda path, data: (_ for _ in ()).throw(OSError("書けない")) if path == s.SLACK_FORMS_FILE else real_wj(path, data)
-r = hub_answer(fp=hq["fp"], ask=hq["ask"], answers=ok_two)
-s.write_json = real_wj
-check("Slack: 答えた数を記録に書けなければ、送らない（送る前に枠を確保する）", (r.get("reason"), st["tui"].log), ("count_failed", []))
-setup()
-hq = json.loads(s.hub_question("w9:p1").body)
-r = hub_answer(fp=hq["fp"], ask=hq["ask"], answers=ok_two)
-check("Slack: 送る前に確保した枠は記録に残る", (r.get("ok"), len(s.slack_forms())), (True, 1))
-check("Slack: 答えたことのプッシュ通知は、画面が見えていても送る（always で頼む）", pushes[-1][2] if pushes else None, True)
-
-
-setup()
-hq = json.loads(s.hub_question("w9:p1").body)
-stuck_push = {"started": 0}
-
-
-async def hang_push(title, body, tag, urgency="normal", only=None, always=False):  # 配送が滞る
-    stuck_push["started"] += 1
-    await asyncio.sleep(3600)
-s.push_all = hang_push
-
-
-async def answer_then_check_lock():
-    t0 = __import__("time").monotonic()
-    r = json.loads((await s.hub_answer({"pane": "w9:p1", "fp": hq["fp"], "ask": hq["ask"], "answers": ok_two,
+q = prompts()[0]
+r = json.loads(asyncio.run(s.hub_answer({"pane": "w9:p1", "fp": q["fp"], "ask": q["ask"], "answers": ok_two,
                                          "origin": {"platform": "slack", "chat": "D0TESTCHAT1", "thread": ""}})).body)
-    took = __import__("time").monotonic() - t0
-    await asyncio.sleep(0.05)
-    return r.get("ok"), took < 2, s._answer_lock.locked(), stuck_push["started"], s.notices()["rows"][-1]["title"]
-check("Slack: 知らせの配送が滞っても、答えは返り、答えの鍵を持ち続けない（記録はその場で書き、配送は裏で）",
-      asyncio.run(answer_then_check_lock()), (True, True, False, 1, "Slack から答えました: proj"))
-s.push_all = fake_push
-
-
-class Seen:  # 見えている画面
-    visible, seen = True, __import__("time").time()
-s.CLIENTS.add(Seen())
-check("プッシュ通知: 見えている画面があると、ふだんは送らず（visible）、always なら送りに進む",
-      (asyncio.run(REAL_PUSH("t", "b", "x")), asyncio.run(REAL_PUSH("t", "b", "x", always=True))), ("visible", "none"))
-s.CLIENTS.clear()
-setup()
-st["status"] = "working"
-r = hub_answer(fp="x", ask="t1", answers=ok_two)
-check("Slack: 止まっていなければ送らない", r.get("reason"), "not_blocked")
+check("コンテナ（Hermes）からは、問いの形で答えられない（Slack の会話からと名乗っても、キーを送らない）", (r.get("ok"), st["tui"].log), (False, []))
 import subprocess as _sp  # noqa: E402
 _run = s.subprocess.run
 s.subprocess.run = lambda *a, **k: _sp.CompletedProcess(a[0], 1, "", "err")
@@ -283,7 +178,7 @@ fo = s.form_of({**AGENT})
 s.subprocess.run = _run
 s.read_dialog = lambda pane, *_: st["tui"].screen()
 check("画面の読み取りが失敗で終わったら、空の画面（問いが消えた）とみなさず例外にし、問いの形も出さない", (rd, fo), ("例外", None))
-check("口: hub/question はコンテナから使える口の一覧にある", ("GET", "/api/hub/question") in __import__("origin_guard").DOCKER_ALLOWED, True)
+check("口: コンテナから使える口の一覧に、問いの形を読む口は足していない", any("question" in path for _, path in __import__("origin_guard").DOCKER_ALLOWED), False)
 
 ok = sum(r[1] for r in results)
 for name, passed, got_, want in results:

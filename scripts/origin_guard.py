@@ -29,7 +29,7 @@ import urllib.parse
 
 LOCAL_NAMES = {"127.0.0.1", "localhost", "::1"}
 DOCKER_NAME = "host.docker.internal"  # コンテナから見た、この Mac の名前
-DOCKER_ALLOWED = {("GET", "/api/hub/sessions"), ("GET", "/api/hub/read"), ("GET", "/api/hub/screen"), ("GET", "/api/hub/question"), ("GET", "/api/hub/tasks"),
+DOCKER_ALLOWED = {("GET", "/api/hub/sessions"), ("GET", "/api/hub/read"), ("GET", "/api/hub/screen"), ("GET", "/api/hub/tasks"),
                   ("POST", "/api/hub/send"), ("POST", "/api/hub/answer"), ("POST", "/api/hub/spawn"), ("POST", "/api/hub/close"),
                   ("POST", "/api/hub/notice")}
 

@@ -1173,11 +1173,10 @@ def _push_send(subs: list[dict], payload: dict, urgency: str) -> tuple[int, list
     return sent, gone
 
 
-async def push_all(title: str, body: str, tag: str, urgency: str = "normal", only: list[dict] | None = None, always: bool = False) -> str:
+async def push_all(title: str, body: str, tag: str, urgency: str = "normal", only: list[dict] | None = None) -> str:
     """どの画面も見えていなければ、購読している端末すべてに知らせる。結果は sent / visible / none / failed / error。
-    only を渡すと、見えている画面の有無に関係なく、その購読だけに送る（🔔 を押したときの試しの通知）。
-    always なら、見えている画面があっても、購読している端末すべてに送る（Slack から答えたことの知らせ。D-003）。"""
-    if only is None and not always and any(c.visible and time.time() - c.seen < VISIBLE_TTL for c in CLIENTS):
+    only を渡すと、見えている画面の有無に関係なく、その購読だけに送る（🔔 を押したときの試しの通知）。"""
+    if only is None and any(c.visible and time.time() - c.seen < VISIBLE_TTL for c in CLIENTS):
         return "visible"
     subs = only if only is not None else await asyncio.to_thread(push_subs)
     if not subs:
@@ -1989,8 +1988,6 @@ async def _hub_answer(body: dict):
     取り消しにくい操作の「はい」は、聞き返してユーザーがもう一度発言してから（どちらの発言も上の確かめを通ること）。「今後は聞かずに許可」は選ばない。"""
     if REPORTING:
         return JSONResponse({"ok": False, "reason": "reporting"})
-    if "answers" in body:  # 選択肢の問いに、問いの形で（Slack の会話から）
-        return await _hub_form_answer(body)
     pane, answer, confirmed = str(body.get("pane", "")), str(body.get("answer", "")).strip().lower(), bool(body.get("confirmed"))
     a = await asyncio.to_thread(_worker, pane)
     if not a:
@@ -2282,34 +2279,14 @@ async def _answer(body: dict):
     return JSONResponse({"ok": True, "said": said})
 
 
-# ---------- 選択肢の問い（AskUserQuestion）に、問いの形で答える（画面・Slack。2026-11-17 本人の要望・決定） ----------
+# ---------- 選択肢の問い（AskUserQuestion）に、画面から問いの形で答える（2026-11-17 本人の要望） ----------
 # 問いは記録から組み、画面は「いまその問いが出ていて、まだ答えていない」ことと、送る途中の 1 手ごとの確かめにだけ使う（scripts/ask_form.py）。
-# 画面からは、画面のボタン（/api/answer、choice=form）。Slack からは、Hermes の Slack のボタン（clarify）で選んだ答えを hubctl answer --form で
-# （/api/hub/answer）。Slack の経路は Hermes を通った答えを信じる形（2026-11-17 本人決定。乗せられた Hermes が自分で答えうることは承知のうえ）で、
-# かわりに 1 時間の数に上限を付け、答えるたびに画面の知らせとプッシュ通知で知らせる。
-SLACK_FORM_PER_HOUR = 10  # Slack から答えられる数（1 時間）
-SLACK_FORMS_FILE = STATE_DIR / "slack-forms.json"  # Slack から答えた時刻（直近 1 時間。本体を再起動しても上限が戻らないように残す）
-_slack_forms_lock = threading.Lock()
+# 答えを受けるのは画面のボタン（/api/answer、choice=form）だけ。本体が利用者の端末から直接受け取れる面でだけ答える（Slack は Hermes を通るので、
+# 本体は利用者の意思を確かめられない。2026-11-17 本人と決めたビジョン: Slack からは画面のその問いへのリンクで来てもらう）。
 
 
-def slack_forms(add: float | None = None) -> list[float]:
-    """Slack から答えた時刻のうち、直近 1 時間のもの（add があれば足して書く）。記録が壊れていても空として読む。"""
-    now = time.time()
-    with _slack_forms_lock:
-        try:
-            raw = _read_json(SLACK_FORMS_FILE, []) if SLACK_FORMS_FILE.exists() and SLACK_FORMS_FILE.stat().st_size < 100_000 else []
-        except OSError:
-            raw = []
-        ts = [float(t) for t in raw if _notice_time(t, now) and now - t < 3600] if isinstance(raw, list) else []
-        if add is not None:
-            ts.append(add)
-            write_json(SLACK_FORMS_FILE, ts)
-        return ts
-
-
-async def form_answer(a: dict, asked: dict, fp: str, ask, answers, confirmed: bool, via: str, reserve=None) -> dict:
-    """答えを確かめて、1 手ずつ画面を確かめながら送る。呼ぶのは _answer_lock の中。
-    reserve があれば、キーを送る直前に呼ぶ（Slack の回数の枠を確保する。確保できなければ送らない）。"""
+async def form_answer(a: dict, asked: dict, fp: str, ask, answers, confirmed: bool, via: str) -> dict:
+    """答えを確かめて、1 手ずつ画面を確かめながら送る。呼ぶのは _answer_lock の中。"""
     if asked["kind"] != "question" or not asked.get("form"):
         return {"ok": False, "reason": "not_form"}
     if asked["fp"] != fp or asked.get("ask") != ask:  # 見せたあとで問いが変わった
@@ -2342,10 +2319,6 @@ async def form_answer(a: dict, asked: dict, fp: str, ask, answers, confirmed: bo
         if "result" not in r:
             raise ask_form.Stuck("herdr が応答しない")
 
-    if reserve is not None:
-        why = await reserve()
-        if why:
-            return {"ok": False, "reason": why}
     ANSWERED[pane] = (fp, time.time())  # 送り始めたら、同じ問いに重ねて送らない（途中で止まっても）
     project = a["cwd"].rsplit("/", 1)[-1]
     try:
@@ -2356,95 +2329,6 @@ async def form_answer(a: dict, asked: dict, fp: str, ask, answers, confirmed: bo
         return {"ok": False, "reason": "stuck", "why": why, "said": said}
     hlog(f"answer({via}・問いの形) → {pane} ({project}): {said} ok", flush=True)
     return {"ok": True, "said": said, "project": project, "title": a.get("title", "")}
-
-
-@app.get("/api/hub/question")
-def hub_question(pane: str):
-    """hubctl question。止まっているセッションの選択肢の問いを、問いの形で返す（Slack の会話で、Hermes がボタンにして見せるため）。"""
-    a = _worker(pane)
-    if not a:
-        return JSONResponse({"error": f"セッションが見つかりません: {pane}"}, status_code=404)
-    if a["status"] != "blocked":
-        return JSONResponse({"pane": pane, "status": a["status"], "form": None})
-    asked = _ask_of(a)
-    return JSONResponse({"pane": pane, "status": "blocked", "project": a["cwd"].rsplit("/", 1)[-1], "title": a.get("title", ""),
-                         "kind": asked["kind"], "fp": asked.get("fp", ""), "ask": asked.get("ask"), "form": asked.get("form"),
-                         "risky": asked.get("risky", False)})
-
-
-_BG: set = set()  # 裏で動かしている知らせの配送（答えの鍵を持ったまま待たない）
-
-
-def must_notice(title: str, text: str):
-    """必ず出す知らせ（Slack から答えたこと）。記録には、呼んだその場で書く。画面とプッシュ通知への配送は裏で動かし、答えの鍵（_answer_lock）を
-    持ったまま待たない。代理の知らせ（hubctl notice）の 1 時間の数の枠は使わない（その枠を使い切られても消されない。数は SLACK_FORM_PER_HOUR
-    で抑える）。記録に書けなくても、ログとプッシュ通知は出す。"""
-    title, text = _notice_clean(title, NOTICE_TITLE) or "知らせ", _notice_clean(text, NOTICE_TEXT) or ""
-    n = None
-    try:
-        with _notice_lock:
-            d = notices()
-            n = d["next"]
-            write_json(NOTICES_FILE, {"next": n + 1, "rows": (d["rows"] + [{"n": n, "title": title, "text": text, "at": time.time()}])[-NOTICE_KEEP:],
-                                      "sent": d["sent"]})
-    except Exception:
-        traceback.print_exc()
-        n = None
-    hlog(f"知らせ（必ず）{'[' + str(n) + ']' if n else '（記録に書けなかった）'}: {title}", flush=True)
-    task = asyncio.get_running_loop().create_task(_deliver_notice(n, title))
-    _BG.add(task)
-    task.add_done_callback(_BG.discard)
-
-
-async def _deliver_notice(n, title: str):
-    for c in list(CLIENTS):
-        try:
-            await c.send(type="agent_notice", n=n or 0, title=title, sender=HUB.label)
-        except Exception:
-            pass
-    try:
-        await push_all(f"{HUB.label} から", title, f"notice-{n or int(time.time())}", always=True)  # 画面が見えていても送る
-    except Exception:
-        traceback.print_exc()
-
-
-async def _hub_form_answer(body: dict) -> JSONResponse:
-    """hubctl answer --form。Slack の会話で、利用者が Hermes のボタンで選んだ答えを送る（Slack の会話から呼ばれたときだけ）。"""
-    if not slack_report.origin(body.get("origin")):  # 利用者の DM（config.env の VL_SLACK_REPORT_CHAT）の会話からだけ
-        return JSONResponse({"ok": False, "reason": "not_slack"})
-    pane = str(body.get("pane", ""))
-    a = await asyncio.to_thread(_worker, pane)
-    if not a:
-        return JSONResponse({"ok": False, "reason": f"セッションが見つかりません: {pane}"}, status_code=404)
-    if a["status"] != "blocked":
-        return JSONResponse({"ok": False, "reason": "not_blocked", "status": a["status"]})
-    if len(await asyncio.to_thread(slack_forms)) >= SLACK_FORM_PER_HOUR:
-        return JSONResponse({"ok": False, "reason": "too_many", "max": SLACK_FORM_PER_HOUR})
-
-    async def reserve() -> str:
-        """送る直前に、回数の枠を記録に書いて確保する（書けなければ送らない。再起動しても数が戻らないように）。"""
-        try:
-            n = len(await asyncio.to_thread(slack_forms, time.time()))
-        except Exception:
-            traceback.print_exc()
-            return "count_failed"
-        return "too_many" if n > SLACK_FORM_PER_HOUR else ""
-    trust = await asyncio.to_thread(pane_shows_trust, pane)
-    if trust is None or trust:
-        return JSONResponse({"ok": False, "reason": "unreadable" if trust is None else "trust"})
-    asked = await asyncio.to_thread(_ask_of, a)
-    r = await form_answer(a, asked, str(body.get("fp", "")), body.get("ask"), body.get("answers"), bool(body.get("confirmed")), "Slack", reserve)
-    if r.get("reason") == "too_many":
-        r["max"] = SLACK_FORM_PER_HOUR
-    if r.get("ok") or r.get("reason") == "stuck":
-        title = f"Slack から{'答えました' if r.get('ok') else '答える途中で止まりました'}: {a['cwd'].rsplit('/', 1)[-1]}"
-        must_notice(title, r.get("said", ""))  # 毎回、画面の知らせとプッシュ通知で知らせる（一般の知らせの数の枠とは別）
-    if r.get("ok") and not WATCHING.get(pane):  # 答えたあとの結果を知らせるため（_hub_answer と同じ）
-        path = jsonl_path(a)
-        start_watch({"pane": pane, "cwd": a["cwd"], "project": r["project"], "title": a["title"], "text": "", "generic": True,
-                     "offset": path.stat().st_size if path and path.exists() else 0, "was_working": True,
-                     "gen": WATCH_GEN.setdefault(pane, 0)}, "answer")
-    return JSONResponse(r)
 
 
 # ---------- セッションの起動 ----------

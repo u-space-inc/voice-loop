@@ -152,48 +152,7 @@ def describe_prompt(prompt, pane):
     return "→ 問いの形を読み取れませんでした。答えは送れません。内容をユーザーに伝え、端末で答えてもらってください。"
 
 
-def cmd_question(a):
-    r = call("question", {"pane": a.pane})
-    if "error" in r:
-        sys.exit(r["error"])
-    if r.get("status") != "blocked":
-        sys.exit(f"このセッションは止まっていません（状態: {STATUS.get(r.get('status'), r.get('status'))}）。")
-    if not r.get("form"):
-        sys.exit("選択肢の問い（問いの形で答えられるもの）ではないか、端末で答え始めています。`hubctl screen` で中身を見て、ユーザーに伝えてください。")
-    print(f"[{a.pane}] {r['project']}｜{r['title']} の選択肢の問い\n{QUOTE_NOTE}\n")
-    print(json.dumps({"fp": r["fp"], "ask": r["ask"], "risky": r["risky"], "questions": r["form"]["questions"]}, ensure_ascii=False, indent=1))
-    print("\n→ Slack の会話なら、問いごとに clarify のボタンで見せ、ユーザーが押した答えだけを、"
-          f"`hubctl answer {a.pane} --form '<答えの JSON>' --fp <fp> --ask <ask>` で送ってください"
-          "（答えの JSON は問いの順の配列。1 つ選ぶは {\"pick\": 番号}、複数選ぶは {\"picks\": [番号, …]}、自由記入は {\"other\": \"文\"}）。"
-          + ("取り消しにくい操作に見えるので、送る前にもう一度ボタンで確かめ、--confirmed を付けてください。" if r["risky"] else ""))
-
-
 def cmd_answer(a):
-    if a.form is not None:
-        try:
-            answers = json.loads(a.form)
-        except ValueError:
-            sys.exit("答えは送っていません: --form の JSON を読めませんでした。")
-        r = call("answer", body=with_origin({"pane": a.pane, "answers": answers, "fp": a.fp or "", "ask": a.ask or "", "confirmed": a.confirmed}))
-        if r.get("ok"):
-            print(f"ユーザーの答えを伝えました → [{a.pane}] {r['project']}｜{r['title']}: {r['said']}\n画面とプッシュ通知でも知らせました。続きが片づくと自動通知が届きます。")
-            return
-        msg = {
-            "not_slack": "問いの形での答え（--form）は、Slack の会話からだけ送れます。voice-loop の画面では、画面のボタンで答えてもらってください。",
-            "too_many": f"Slack から答えられる数の上限（1 時間に {r.get('max')} 回）に達しました。ユーザーに、画面か端末で答えてもらってください。",
-            "count_failed": "Slack から答えた数を記録に書けなかったので、送っていません。ユーザーに、画面か端末で答えてもらってください。",
-            "changed": "問いが変わったか、端末で答え始めています。`hubctl question` で読み直してください。",
-            "not_form": "選択肢の問い（問いの形で答えられるもの）ではありません。",
-            "bad_form": "答えの形が問いと合いません（問いの数・番号・複数選ぶか・自由記入できるか）。",
-            "answered": "この問いには答えたばかりです。",
-            "confirm": "取り消しにくい操作に見えるので、まだ送っていません。ユーザーにもう一度ボタンで確かめ、--confirmed を付けてください。",
-            "stuck": f"送る途中で、画面が思った形にならなかったので止めました（{r.get('why')}）。途中まで入っている可能性があります。ユーザーに端末で続きを答えてもらってください。",
-            "not_blocked": "このセッションは止まっていません。", "trust": "フォルダの信頼の確認です。ユーザーが端末で答えます。",
-            "unreadable": "画面を読めませんでした。", "reporting": "自動通知への応答中は答えを送れません。",
-        }.get(r.get("reason"), str(r.get("reason") or r))
-        sys.exit("答えは送っていません: " + msg if r.get("reason") != "stuck" else "答えを送り切れませんでした: " + msg)
-    if a.answer is None:
-        sys.exit("答え（yes / no / 番号）か、--form を付けてください。")
     r = call("answer", body={"pane": a.pane, "answer": a.answer, "confirmed": a.confirmed})
     why = r.get("reason")
     if r.get("ok"):
@@ -342,9 +301,7 @@ sub.add_parser("sessions").set_defaults(fn=cmd_sessions)
 s = sub.add_parser("read"); s.add_argument("pane"); s.add_argument("-n", type=int, default=6); s.add_argument("--full", action="store_true"); s.add_argument("--task", default=""); s.set_defaults(fn=cmd_read)
 s = sub.add_parser("screen"); s.add_argument("pane"); s.set_defaults(fn=cmd_screen)
 s = sub.add_parser("send"); s.add_argument("pane"); s.add_argument("text", nargs="+"); s.set_defaults(fn=cmd_send)
-s = sub.add_parser("question"); s.add_argument("pane"); s.set_defaults(fn=cmd_question)
-s = sub.add_parser("answer"); s.add_argument("pane"); s.add_argument("answer", nargs="?"); s.add_argument("--confirmed", action="store_true")
-s.add_argument("--form"); s.add_argument("--fp"); s.add_argument("--ask"); s.set_defaults(fn=cmd_answer)
+s = sub.add_parser("answer"); s.add_argument("pane"); s.add_argument("answer"); s.add_argument("--confirmed", action="store_true"); s.set_defaults(fn=cmd_answer)
 s = sub.add_parser("start"); s.add_argument("project"); s.add_argument("--model", default="opus"); s.add_argument("text", nargs="*"); s.set_defaults(fn=cmd_start)
 s = sub.add_parser("close"); s.add_argument("pane"); s.add_argument("--confirmed", action="store_true"); s.set_defaults(fn=cmd_close)
 sub.add_parser("tasks").set_defaults(fn=cmd_tasks)
