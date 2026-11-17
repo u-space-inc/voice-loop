@@ -277,28 +277,27 @@ class Stuck(Exception):
 
 
 async def drive(form: dict, answers: list, read, keys, text) -> None:
-    """答えを送る。read() は画面の文字、keys(k) はキー、text(s) は文字を送る（どれも async）。思った段にならなければ Stuck。"""
+    """答えを送る。read() は画面の文字、keys(k, left) はキー、text(s, left) は文字を送る（どれも async。left は残りの秒数で、送る処理は
+    それを超えて動き続けないこと）。思った段にならなければ Stuck。"""
     qs = form["questions"]
     clock = asyncio.get_running_loop().time
     last = clock() + DRIVE_MAX
 
     send_keys, send_text = keys, text
 
-    async def within(coro):  # 送る待ちも、残りの時間までにする（上限を過ぎたら、それ以上キーを送らない）
-        left = last - clock()
-        if left <= 0:
-            coro.close()
+    def left() -> float:  # 上限を過ぎたら、それ以上キーを送らない
+        n = last - clock()
+        if n <= 0:
             raise Stuck("送り始めてからの上限の時間を過ぎた")
-        try:
-            return await asyncio.wait_for(coro, left)
-        except asyncio.TimeoutError:
-            raise Stuck("送る途中で上限の時間を過ぎた（届いたかは分からない）") from None
+        return n
 
+    # 送る処理には残りの秒数を渡し、送る処理そのもの（herdr の呼び出し）をそこで打ち切ってもらう。
+    # ここで待ちだけを打ち切ると、裏で送る処理が続き、止まったと返したあとにキーが届きうる（その間に答えの鍵が離れる）
     async def keys(k):  # noqa: F811
-        await within(send_keys(k))
+        await send_keys(k, left())
 
     async def text(t):  # noqa: F811
-        await within(send_text(t))
+        await send_text(t, left())
 
     async def until(ok, what: str) -> dict:
         end = min(clock() + WAIT, last)  # 読み取りにかかった時間も数える

@@ -2170,7 +2170,10 @@ def read_dialog(pane: str, timeout: float = 20) -> str:
     if p.returncode != 0:
         raise RuntimeError(f"画面を読めない（herdr の終わりの数 {p.returncode}）")
     rows = [ODD_BREAKS.sub("\ufffd", l) for l in p.stdout.split("\n")]
-    return "\n".join(l.rstrip() for l in rows if l.strip() and not STATUS_LINE.match(l))
+    out = "\n".join(l.rstrip() for l in rows if l.strip() and not STATUS_LINE.match(l))
+    if not out:  # 空（状態表示の行だけも）は、読めなかったとみなす（「問いが消えた」と取り違えない。visible_screen と同じ）
+        raise RuntimeError("画面が空だった")
+    return out
 
 
 _PENDING: dict[str, tuple[tuple, tuple | None]] = {}  # pane → (記録の印, 答えを待っている問い)
@@ -2309,13 +2312,13 @@ async def form_answer(a: dict, asked: dict, fp: str, ask, answers, confirmed: bo
     async def read():
         return await asyncio.to_thread(read_dialog, pane, ask_form.READ_MAX)
 
-    async def keys(k):
-        r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, k, timeout=ask_form.READ_MAX)
+    async def keys(k, left):  # left は drive が渡す残りの秒数。herdr の呼び出しそのものをそこで打ち切る（裏で送り続けない）
+        r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, k, timeout=min(ask_form.READ_MAX, left))
         if "result" not in r:
             raise ask_form.Stuck("herdr が応答しない")
 
-    async def text(t):
-        r = await asyncio.to_thread(herdr, "pane", "send-text", pane, t, timeout=ask_form.READ_MAX)
+    async def text(t, left):
+        r = await asyncio.to_thread(herdr, "pane", "send-text", pane, t, timeout=min(ask_form.READ_MAX, left))
         if "result" not in r:
             raise ask_form.Stuck("herdr が応答しない")
 

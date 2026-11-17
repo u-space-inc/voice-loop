@@ -42,7 +42,12 @@ def screen():
     return "\n".join(l for l in t.split("\n") if l.strip() and not set(l.strip()) <= set("─"))
 
 
+TIMEOUTS = []
+
+
 def fake_herdr(*a, **k):
+    if a[:2] in (("agent", "send-keys"), ("pane", "send-text")):
+        TIMEOUTS.append(k.get("timeout"))
     if a[:2] == ("agent", "send-keys"):
         st["tui"].keys(a[-1])
     elif a[:2] == ("pane", "send-text"):
@@ -178,6 +183,17 @@ fo = s.form_of({**AGENT})
 s.subprocess.run = _run
 s.read_dialog = lambda pane, *_: st["tui"].screen()
 check("画面の読み取りが失敗で終わったら、空の画面（問いが消えた）とみなさず例外にし、問いの形も出さない", (rd, fo), ("例外", None))
+outs = []
+for stdout in ("", "\n\n", "  📂 voice-loop (main) | 🧠 7%\n  ⏵⏵ auto mode on\n"):
+    s.subprocess.run = lambda *a, stdout=stdout, **k: _sp.CompletedProcess(a[0], 0, stdout, "")
+    try:
+        REAL_READ_DIALOG("w9:p1")
+        outs.append("読めた")
+    except RuntimeError:
+        outs.append("例外")
+s.subprocess.run = _run
+check("画面の読み取りが空（状態表示の行だけも）なら、読めなかったとみなす（問いが消えたと取り違えない）", outs, ["例外"] * 3)
+check("キー・文字を送る herdr の呼び出しには、5 秒以下の時間切れを付ける（裏で送り続けない）", bool(TIMEOUTS) and all(t is not None and 0 < t <= 5 for t in TIMEOUTS), True)
 check("口: コンテナから使える口の一覧に、問いの形を読む口は足していない", any("question" in path for _, path in __import__("origin_guard").DOCKER_ALLOWED), False)
 
 ok = sum(r[1] for r in results)

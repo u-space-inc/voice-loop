@@ -116,10 +116,10 @@ def run(raw, answers, quirks=()):
     async def read():
         return tui.screen()
 
-    async def keys(k):
+    async def keys(k, left=None):
         tui.keys(k)
 
-    async def text(t):
+    async def text(t, left=None):
         tui.text(t)
     err = None
     try:
@@ -175,11 +175,11 @@ async def _r():
     return tui.screen()
 
 
-async def _k(k):
+async def _k(k, left=None):
     tui.keys(k)
 
 
-async def _t(t):
+async def _t(t, left=None):
     tui.text(t)
 try:
     asyncio.run(af.drive(TWO, af.check(TWO, ok_two)[0], _r, _k, _t))
@@ -252,8 +252,14 @@ check("送り始めてから終わるまでにも上限がある", (bool(err), _
 tui = FakeTUI(REAL_TWO_INPUT)
 
 
-async def _slow_keys(k):  # キーを送る処理が 2 秒かかる
-    await asyncio.sleep(2)
+lefts = []
+
+
+async def _slow_keys(k, left):  # キーを送る処理が遅い。渡された残りの秒数で打ち切る（本物は herdr の呼び出しの時間切れ）
+    lefts.append(left)
+    await asyncio.sleep(min(2, left))
+    if left < 2:
+        raise af.Stuck("時間切れ")
     tui.keys(k)
 t0 = _time.monotonic()
 try:
@@ -261,7 +267,8 @@ try:
     err = None
 except af.Stuck as e:
     err = str(e)
-check("送る待ちにも上限がある（送る処理が遅くても、上限を過ぎて待たない）", (bool(err), _time.monotonic() - t0 < 1.0), (True, True))
+check("送る処理には残りの秒数を渡し、上限を過ぎて送り続けない（待ちだけを打ち切って、裏で送りが続く形にしない）",
+      (bool(err), _time.monotonic() - t0 < 1.0, bool(lefts) and all(0 < x <= 0.2 for x in lefts), tui.log), (True, True, True, []))
 af.DRIVE_MAX = 60.0
 
 ok = sum(r[1] for r in results)
