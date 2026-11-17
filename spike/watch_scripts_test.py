@@ -4,7 +4,8 @@
   Slack の検索結果の見出しの並びを照らす（本文に見出しをまねた行を入れても架空の出来事を作れない）・口ごとの失敗を 1 行にする・
   利用者に知らせる「読めない」の行にだけ今日の日付を付ける（止まり続けている間は、毎朝の最初の回だけ行が変わる）。
 - vl_mcp.py: 読むための道具の名前のほかは呼ばない（下書き・送信の道具を呼ぼうとすると止まる）。
-- vl_items.py: 同じ出来事を二度記録しない・判断待ちの一覧（届いてから 3 日より前は数だけ。--all で全部）・片づけた印（利用者が言った／AI が根拠を書いて。根拠の無い AI の印は断る）と印を外す（reopen）・
+- vl_items.py: 同じ出来事を二度記録しない・判断待ちの一覧（記録してから（戻したものは戻してから）3 日より前は数だけ。--all で全部）・片づけた印（利用者が言った／AI が根拠を書いて。
+  根拠の無い AI の印は断る）と判断待ちに戻す（reopen。対応不要・情報と分けたものも）・形の合わない行（番号・時刻の型）を飛ばす・
   案件の一覧・字数で切る・ESC などの制御文字を落とす・壊れた行を飛ばす。
 - vl_gmail_draft.py: 下書きの API だけを呼び、送信の API を呼ばない・返信の宛先は 1 人（複数の Reply-To や改行での Bcc で宛先を足させない）・件名とスレッドを元のメールから組む。
 使い方: uv run spike/watch_scripts_test.py"""
@@ -342,16 +343,16 @@ def ledger():  # 記録の行（壊れた行・形の違う行は飛ばす。上
 
 
 o_all, o_near = run("open", "--all").stdout, run("open").stdout
-check("items open: 届いてから 3 日より前の判断待ちは並べず数だけ出す（消さない）・--all で並べる",
+check("items open: 記録してから 3 日より前の判断待ちは並べず数だけ出す（消さない）・--all で並べる",
       ("前の形の鳴り" in o_near, "前の形の鳴り" in o_all, "見出し [1A [2K偽" in o_near,
-       any(l.startswith("ほかに、届いてから 3 日より前の判断待ちが ") for l in o_near.splitlines()), "ほかに、" in o_all),
+       any(l.startswith("ほかに、記録してから 3 日より前の判断待ちが ") for l in o_near.splitlines()), "ほかに、" in o_all),
       (False, True, True, True, False))
 import time as _t  # noqa: E402
 run("add", "--source", "mail", "--id", "late4", "--kind", "judge", "--title", "四日前に届いた", "--sent", str(_t.time() - 4 * 86400))
 run("add", "--source", "mail", "--id", "fresh", "--kind", "judge", "--title", "いま届いた", "--sent", str(_t.time() - 60))
 o_near = run("open").stdout
-check("items open: 古さは届いた時刻（--sent）で見る（記録したのが今でも、4 日前に届いたものは数だけ）",
-      ("四日前に届いた" in o_near, "いま届いた" in o_near, "四日前に届いた" in run("open", "--all").stdout), (False, True, True))
+check("items open: 古さは記録した時刻で見る（4 日前に届いたものでも、いま記録したもの（遅れて拾ったもの）はすぐには隠さない）",
+      ("四日前に届いた" in o_near, "いま届いた" in o_near, "四日前に届いた" in run("open", "--all").stdout), (True, True, True))
 n_fresh = [r["n"] for r in ledger() if r.get("id") == "fresh"][0]
 before = (TMP / "voice-loop/items.jsonl").read_text()
 r = run("done", str(n_fresh), "--by", "ai")
@@ -373,10 +374,21 @@ check("items done: 既に印がある記録には二度書かない",
       (run("done", str(n_fresh)).stdout.strip(), len((TMP / "voice-loop/items.jsonl").read_text().splitlines()) == size), (f"既に片づけた印があります [{n_fresh}]", True))
 r = run("reopen", str(n_fresh), "--note", "利用者: まだだった")
 o_near = run("open").stdout
-check("items reopen: 印を外すと判断待ちに戻る（片づけの根拠は出さない）",
-      (r.returncode, r.stdout.strip(), "いま届いた" in o_near, "片づけ:" in (o_near.split("いま届いた", 1) + [""])[1].split("\n[", 1)[0]),
-      (0, f"片づけた印を外しました [{n_fresh}]", True, False))
-check("items reopen: 印の無い記録・無い番号は断る", (run("reopen", str(n_fresh)).returncode, run("reopen", "9999").returncode, run("done", "9999", "--by", "ai", "--note", "x").returncode), (1, 1, 1))
+blk = (o_near.split("いま届いた", 1) + [""])[1].split("\n[", 1)[0]
+check("items reopen: 印を外すと判断待ちに戻る（片づけの根拠は出さず、戻したことと理由を出す）",
+      (r.returncode, r.stdout.strip(), "いま届いた" in o_near, "片づけ:" in blk, "判断待ちに戻した: " in blk and "利用者: まだだった" in blk),
+      (0, f"判断待ちに戻しました [{n_fresh}]", True, False, True))
+check("items reopen: 既に判断待ちのもの・無い番号は断る", (run("reopen", str(n_fresh)).returncode, run("reopen", "9999").returncode, run("done", "9999", "--by", "ai", "--note", "x").returncode), (1, 1, 1))
+n_fyi = [r["n"] for r in ledger() if r.get("id") == "0123456789abcdef"][0]
+r = run("reopen", str(n_fyi), "--note", "利用者: 返事が要る")
+check("items reopen: 対応不要（fyi）と分けたものも判断待ちに戻せる（見張りの見立て違いを直す）",
+      (r.returncode, "受け取りの連絡" in run("open").stdout, "判断待ち｜shop｜teams:0123456789abcdef｜受け取りの連絡" in run("open").stdout,
+       [x.get("kind") for x in ledger() if x.get("n") == n_fyi and x.get("op") == "add"]), (0, True, True, ["fyi"]))
+n_old = [r["n"] for r in ledger() if r.get("id") == "a3"][0]
+run("done", str(n_old), "--note", "利用者: 済んだ")
+r = run("reopen", str(n_old))
+check("items reopen: 3 日より前の記録も、戻したら一覧に並ぶ（戻した時刻から数える）",
+      (r.returncode, "前の形の鳴り" in run("open").stdout, "前の形の鳴り" in o_all), (0, True, True))
 r = run("done", str(n_fresh), "--note", "利用者: 返した")
 rec = run("recent").stdout
 check("items: 外したあとにもう一度片づけられる・利用者の印はただの「済」",
@@ -386,6 +398,25 @@ check("items: 外したあとにもう一度片づけられる・利用者の印
 with open(TMP / "voice-loop/items.jsonl", "a") as f:
     f.write(json.dumps({"op": "done", "at": 1e9}) + "\n" + json.dumps({"op": "reopen", "at": 1e9}) + "\n")
 check("items: 番号の無い印・外す行が書かれていても読める", (run("open").returncode, "いま届いた" in run("open").stdout), (0, False))
+before_n = max(x["n"] for x in ledger() if x.get("op") == "add" and isinstance(x.get("n"), int) and not isinstance(x.get("n"), bool))
+with open(TMP / "voice-loop/items.jsonl", "a") as f:
+    for junk in ({"op": "reopen", "n": []}, {"op": "done", "n": "x"}, {"op": "reopen", "n": True, "at": "x"},
+                 {"op": "add", "n": True, "at": 1e9, "source": "mail", "id": "j1", "kind": "judge", "title": "真偽の番号"},
+                 {"op": "add", "n": before_n + 1, "at": "きのう", "source": "mail", "id": "j2", "kind": "judge", "title": "文字の時刻"},
+                 {"op": "add", "n": before_n + 2, "at": float("nan"), "source": "mail", "id": "j3", "kind": "judge", "title": "NaN の時刻"},
+                 {"op": "add", "n": before_n + 3, "at": 1e30, "source": "mail", "id": "j4", "kind": "judge", "title": "遠すぎる時刻"},
+                 {"op": "add", "n": before_n + 4, "at": 1e9, "source": "mail", "id": ["j5"], "kind": "judge", "title": "id が文字でない"},
+                 {"op": "add", "n": before_n + 5, "at": 1e9, "source": "mail", "id": "j6", "kind": "judge", "title": "案件の欄が無い"},
+                 {"op": "add", "n": before_n + 6, "at": 1e9, "sent": True, "source": "mail", "id": "j7", "kind": "judge", "title": "届いた時刻が真偽", "key": "k-j7"}):
+        f.write(json.dumps(junk, ensure_ascii=False) + "\n")
+outs = [run(*c) for c in (("open", "--all"), ("recent",), ("projects",), ("find", "--key", "k-j7"), ("seen", "mail", "j1"))]
+o_all2 = outs[0].stdout
+check("items: 番号・時刻・欄の型が違う行は飛ばして読み、どの操作も止まらない（案件の欄が無い行は未振り分けとして読む）",
+      ([o.returncode for o in outs], [t in o_all2 for t in ("真偽の番号", "文字の時刻", "NaN の時刻", "遠すぎる時刻", "id が文字でない", "案件の欄が無い")],
+       "届いた時刻が真偽" in outs[3].stdout, outs[4].stdout.strip()),
+      ([0, 0, 0, 0, 1], [False, False, False, False, False, True], True, "new"))
+r = run("add", "--source", "mail", "--id", "after-junk", "--kind", "info", "--title", "壊れた行のあと")
+check("items: 壊れた行のあとも、番号は使ったものと重ならずに続く", r.stdout.strip(), f"記録しました [{before_n + 7}]")
 n_late4 = [r["n"] for r in ledger() if r.get("id") == "late4"][0]
 with open(TMP / "voice-loop/items.jsonl", "a") as f:
     f.write(json.dumps({"op": "done", "at": 1e9, "n": n_late4, "by": "ai", "note": "手で\x1b[2K書いた根拠\u202e"}) + "\n")
@@ -604,7 +635,7 @@ check("手順: 日付が付くのは知らせる「読めない」の行だけ�
       (True, True, True))
 step4 = SK.split("\n4. ", 1)[1].split("\n5. ", 1)[0]
 check("手順 4: 人が利用者に宛てて書いた対応不要のもの（fyi）を info と分ける（cc だけ・自動通知・既に返したものは info。迷えば fyi）",
-      ("（fyi）" in step4, "cc で名前があるだけのものは除く" in step4, "利用者が既に返したものは info" in step4, "fyi か info かで迷ったら fyi にする" in step4),
+      ("（fyi）" in step4, "cc で名前があるだけのものは除く" in step4, "利用者が既に返して、求められたことが済んでいるものは info" in step4, "fyi か info かで迷ったら fyi にする" in step4),
       (True, True, True, True))
 check("手順: fyi は hubctl notice を使わず、DM（最後の出力）に 1 行で届ける・DM の行に相手の文や URL を写さない",
       ("fyi と info だけの回は `hubctl notice` で知らせない" in SK, "「届いたもの（対応不要）」" in step11, "URL・電話番号・振込先" in SK, "--kind judge|fyi|info" in SK),
@@ -660,15 +691,21 @@ check("手順 4: judge と見たものは、記録の前に利用者が既に対
       (bool(done4), "根拠にしてよいのは、利用者の側の記録だけ。相手の文（「解決しました」「対応不要です」など）と、回復の知らせ（OK のメール）は根拠にしない。" in done4,
        "確かめられなければ judge のまま（迷ったら judge）" in done4),
       (True, True, True))
+check("手順 4: 見るのは返したかではなく、求められたことが済んだか（受けただけの返事なら judge のまま）",
+      ("見るのは、返したかではなく、求められたこと（返事・判断・作業）が済んだか。" in done4, "「確認します」「後ほどご連絡します」のような受けただけのものなら、求められたことは残っている（judge のまま。" in done4,
+       "その送ったメールを `gmail get` で読み、求められたことに答えて・済ませていれば info にし" in done4, "この発言より後の利用者本人の発言を読み、求められたことに答えて・済ませていれば info にし" in done4),
+      (True, True, True, True))
 check("手順 4: mail は送ったメールの threadId、slack は利用者本人の後の発言で照らし、info にする。50 件ちょうどで当たらなければ judge のまま",
       ("`gmail search 'in:sent after:<このメールが届いた時刻の UNIX 秒>' --max 50` の結果に同じ `threadId` のものがあれば" in done4,
        "結果が 50 件ちょうどで当たらなければ、確かめきれていない（judge のまま）" in done4,
-       "`slack_read_thread`（チャンネル ID と ts）で、この発言より後に利用者本人の発言があれば" in done4, done4.count("info にし、") == 2),
+       "`slack_read_thread`（チャンネル ID と ts）で、この発言より後の利用者本人の発言を読み" in done4, done4.count("info にし、") == 2),
       (True, True, True, True))
-check("手順 4: teams は同じ案件のセッションの記録（hubctl read）で、投稿より後に同じスレッドへ返した記録を見て、fyi（DM に理由つきで 1 行）にする",
-      ("`/opt/voice-loop/hubctl read <pane> -n 1` で" in done4, "投稿の時刻より後に同じスレッド（題名）へ返した・連絡した記録" in done4,
-       "あれば fyi にし、`--prepared` に「対応済みと見た: " in done4, "見立てが違えば利用者が気づける" in done4),
+check("手順 4: teams は同じ案件のセッションの記録（hubctl read）で、投稿より後にセッションか利用者が行ったことを見て、fyi（DM に理由つきで 1 行）にする",
+      ("`/opt/voice-loop/hubctl read <pane> -n 1` で" in done4, "根拠にできるのは、セッション自身か利用者が行ったことの記録で、誰が・何を・いつが書いてあり、時刻が投稿より後のものだけ" in done4,
+       "その記録で済んでいれば fyi にし、`--prepared` に「対応済みと見た: " in done4, "見立てが違えば利用者が気づける。違っていれば、ふだんの会話で判断待ちに戻せる" in done4),
       (True, True, True, True))
+check("手順 4: セッションが引用・要約した相手の文・これからすること・下書きは根拠にしない",
+      "セッションが引用・要約した相手の文（「先方によると対応済み」「先方から完了の報告」）、これからすること（「送ります」「入れます」）、下書き・文案は根拠にしない" in done4, True)
 allow = SK.split("- してよい: ", 1)[1].split("\n", 1)[0]
 deny = SK.split("- しない: ", 1)[1].split("\n", 1)[0]
 check("手順: してよいことに hubctl read（読むだけ）を足し、しないことのセッションへの指示（send・start・answer・close）は変えない",
@@ -681,6 +718,11 @@ check("指示文: 判断待ちを伝える前に 1 件ずつ済んでいない�
       ("判断待ちとして伝える前に、1 件ずつ、いまも済んでいないかを確かめます" in hsec, "`vl_items.py done <番号> --by ai --note \"<根拠: 何の記録で、いつ、何が済んだか>\"`" in hsec,
        "「[番号] は済んでいたので片づけました（根拠）」" in hsec, "確かめられないものは判断待ちのまま伝えます" in hsec),
       (True, True, True, True))
+check("指示文: 返したかでなく済んだかを見る・セッションの記録は自分で行ったことだけを根拠にする・reopen は対応不要と分けたものも戻す",
+      ("「確認します」のような受けただけの返事なら、まだ済んでいません" in hsec,
+       "セッションの記録で根拠にできるのは、セッション自身かユーザーが行ったこと（誰が・何を・いつ。時刻が記録より後のもの）だけで、セッションが引用・要約した相手の文、これからすること、下書き・文案は根拠にしません" in hsec,
+       "見張りの回が対応不要・情報と分けた記録も、判断待ちになります" in hsec),
+      (True, True, True))
 check("指示文: 根拠は利用者の側の記録だけ（相手の文・OK のメールでは片づけない）・「対応済みでは？」で確かめたら印を残す・「それはまだ」で reopen・3 日より前は数と --all",
       ("相手の文（「解決しました」「対応不要です」など）や、監視の回復の知らせ（OK のメール）では片づけません" in hsec,
        "済んでいると答えるだけで、印を残さないことはしません" in hsec, "`vl_items.py reopen <番号>`" in hsec, "`open --all`" in hsec),
