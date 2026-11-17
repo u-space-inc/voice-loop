@@ -70,7 +70,8 @@ def _rows() -> list[dict]:
 
 
 def _num(v) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and -1e11 < v < 1e11
+    """時刻として読める数か（1970 年より後で、日時として出せる範囲）。比べるだけで確かめる（巨大な整数を float に直すと例外になる。NaN は比べると偽）。"""
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v < 1e11
 
 
 def _n(v) -> bool:

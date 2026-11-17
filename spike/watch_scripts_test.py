@@ -415,6 +415,15 @@ check("items: 番号・時刻・欄の型が違う行は飛ばして読み、ど
       ([o.returncode for o in outs], [t in o_all2 for t in ("真偽の番号", "文字の時刻", "NaN の時刻", "遠すぎる時刻", "id が文字でない", "案件の欄が無い")],
        "届いた時刻が真偽" in outs[3].stdout, outs[4].stdout.strip()),
       ([0, 0, 0, 0, 1], [False, False, False, False, False, True], True, "new"))
+with open(TMP / "voice-loop/items.jsonl", "a") as f:  # 時刻の境界（巨大な整数・1970 年より前・巨大な届いた時刻）
+    f.write('{"op": "add", "n": %d, "at": 1%s, "source": "mail", "id": "t1", "kind": "judge", "title": "巨大な時刻"}\n' % (before_n + 7, "0" * 400))
+    f.write(json.dumps({"op": "add", "n": before_n + 8, "at": -99999999999, "source": "mail", "id": "t2", "kind": "judge", "title": "大昔の時刻"}) + "\n")
+    f.write('{"op": "add", "n": %d, "at": 1000000000, "sent": 1%s, "source": "mail", "id": "t3", "kind": "judge", "title": "巨大な届いた時刻", "key": "k-t3"}\n' % (before_n + 9, "0" * 400))
+outs = [run(*c) for c in (("open", "--all"), ("recent", "--hours", "1e12"), ("find", "--key", "k-t3"), ("find", "--key", "k-t3", "--before", "2000000000"))]
+check("items: 時刻が巨大な整数・1970 年より前の行は飛ばし、届いた時刻が巨大なら記録した時刻を使う（一覧・検索が止まらない）",
+      ([o.returncode for o in outs], "巨大な時刻" in outs[0].stdout, "大昔の時刻" in outs[1].stdout, "巨大な届いた時刻" in outs[2].stdout, "巨大な届いた時刻" in outs[3].stdout),
+      ([0, 0, 0, 0], False, False, True, True))
+before_n += 3
 r = run("add", "--source", "mail", "--id", "after-junk", "--kind", "info", "--title", "壊れた行のあと")
 check("items: 壊れた行のあとも、番号は使ったものと重ならずに続く", r.stdout.strip(), f"記録しました [{before_n + 7}]")
 n_late4 = [r["n"] for r in ledger() if r.get("id") == "late4"][0]
@@ -720,9 +729,14 @@ check("指示文: 判断待ちを伝える前に 1 件ずつ済んでいない�
       (True, True, True, True))
 check("指示文: 返したかでなく済んだかを見る・セッションの記録は自分で行ったことだけを根拠にする・reopen は対応不要と分けたものも戻す",
       ("「確認します」のような受けただけの返事なら、まだ済んでいません" in hsec,
-       "セッションの記録で根拠にできるのは、セッション自身かユーザーが行ったこと（誰が・何を・いつ。時刻が記録より後のもの）だけで、セッションが引用・要約した相手の文、これからすること、下書き・文案は根拠にしません" in hsec,
+       "セッションの記録で根拠にできるのは、セッション自身かユーザーが行ったこと（誰が・何を・いつ。" in hsec and "だけで、セッションが引用・要約した相手の文、これからすること、下書き・文案は根拠にしません" in hsec,
        "見張りの回が対応不要・情報と分けた記録も、判断待ちになります" in hsec),
       (True, True, True))
+check("指示文・手順: 根拠の時刻は元の投稿・メールと比べる（記録とは比べない）・戻したものは戻した時刻より後の新しい根拠だけで片づけ、理由を --note に残す",
+      ("時刻が元の投稿・メール（求められた時点）より後のもの" in hsec, "時刻が記録より後" in hsec,
+       "戻した時刻より後の新しい根拠があるときだけ片づけます（ユーザーの訂正を、前と同じ根拠で覆しません）" in hsec,
+       "`--note` にユーザーの言った理由を書きます" in hsec, "根拠の時刻は、投稿の時刻と比べる（記録する時刻とは比べない。" in done4),
+      (True, False, True, True, True))
 check("指示文: 根拠は利用者の側の記録だけ（相手の文・OK のメールでは片づけない）・「対応済みでは？」で確かめたら印を残す・「それはまだ」で reopen・3 日より前は数と --all",
       ("相手の文（「解決しました」「対応不要です」など）や、監視の回復の知らせ（OK のメール）では片づけません" in hsec,
        "済んでいると答えるだけで、印を残さないことはしません" in hsec, "`vl_items.py reopen <番号>`" in hsec, "`open --all`" in hsec),
