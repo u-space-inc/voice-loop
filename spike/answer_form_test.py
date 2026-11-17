@@ -115,11 +115,22 @@ check("画面が変わっていたら送らない（端末で答えた・次の�
 setup()
 q = prompt()
 r1 = press(q, act="pick", n=1)
-check("1 問ずつの答えが届いたら、送った画面の指紋（sfp）だけを残す（ハブの指紋は残さず、次の 1 問ずつの答えを止めない）",
-      (s.answered("w9:p1", q["sfp"]), s.answered("w9:p1", q["fp"])), (True, False))
+check("1 問ずつの答えが届いたあとも、ハブ・承認のボタンが比べる指紋（prompt_fp）を残し、続く 1 問ずつの答えは sfp だけで見る（codex-review）",
+      (s.answered("w9:p1", q["sfp"]), s.answered("w9:p1", q["fp"]), s.answered("w9:p1", q["fp"], by="step")), (True, True, False))
 st["tui"] = FakeTUI(REAL_TWO_INPUT)  # 同じ画面に戻った（重ねた押し）
 r2 = press(q, act="pick", n=1)
 check("同じ画面に重ねて送らない", (r1.get("ok"), r2.get("reason"), st["tui"].log), (True, "answered", []))
+setup()
+s.read_prompt = lambda pane: "（画面の下の一部。問いが変わっても同じ）\nEnter to select · Esc to cancel"  # prompt_fp が次の問いでも変わらない形
+q = prompt()
+s.SEEN_PROMPT["w9:p1"] = (q["fp"], "t1")  # ハブはこの問いを見て、利用者に伝えていた
+r = press(q, act="pick", n=1)
+q2 = prompt()
+check("1 問ずつ答えたら、ハブが前に見た問いの記録を消し、次の問いでも prompt_fp が同じならハブ・承認のボタンを止める（codex-review）",
+      (r.get("ok"), "w9:p1" in s.SEEN_PROMPT, q2["fp"] == q["fp"], s.answered("w9:p1", q2["fp"])), (True, False, True, True))
+r = press(q2, act="toggle", n=1)
+check("続く 1 問ずつの答えは、前の答えが残した prompt_fp では止めない（次の問いの指紋が同じでも）", r.get("ok"), True)
+s.read_prompt = lambda pane: screen()
 setup()
 q = prompt()
 r = press(q, act="pick", n=9)

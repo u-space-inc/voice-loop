@@ -325,6 +325,15 @@ tui.log.clear()
 r, err = go(tui, "next")
 check("自由記入の欄に印があれば、「決めて次へ」の Tab を送らない（画面に出していない選択で次へ進めない）", (bool(err), tui.log), (True, []))
 
+sent.clear()
+try:
+    asyncio.run(af.act("pick", 1, _sr, _sk, _sk))
+    err = None
+except af.Stuck as e:
+    err = str(e)
+check("自由記入の欄が画面の外なら、選択肢の番号も送らない（欄の書きかけを捨てて確定させない。codex-review）", (bool(err), sent), (True, []))
+
+
 class DraftBack(FakeTUI):
     """端末で自由記入の欄に書き、カーソルを選択肢へ戻した（入力中ではないが、欄に文が残っている）。"""
 

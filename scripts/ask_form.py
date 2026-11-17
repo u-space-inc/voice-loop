@@ -340,6 +340,8 @@ async def act(kind: str, arg, read, keys, text, expect: str | None = None) -> st
         return await moved("確認の画面で「送る」", fp(raw))
     if st["stage"] != "question":
         raise Stuck("問いの画面ではない")
+    if st["free_hidden"]:  # 自由記入の欄が画面の外（中に書きかけがあるか確かめられない。番号で答えると、それを捨てて確定しうる）
+        raise Stuck("自由記入の欄が画面に収まっていない")
     if st["typing"] or st["notes"] or st["free_text"] or st["free_checked"]:
         # 端末で入力欄・メモに書きかけている。自由記入の欄に文か印が残っている（カーソルを選択肢へ戻していても。番号で答えると、書いた文を捨てる）
         raise Stuck("端末で書きかけている")
