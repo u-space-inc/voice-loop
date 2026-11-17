@@ -319,6 +319,16 @@ box_notes = noted1.replace("│ |    |                                   │", "
 check("画面: 見本の枠の中の「Notes:」は、メモ欄とみない", (af.state(box_notes, SHOP2).get("notes"), af.ready(box_notes, SHOP2)), ("", ""))
 
 
+LONG = {"questions": [{"question": "朝はどれ？", "header": "朝", "options": [{"label": "パンとサラダとスープのセット", "description": "軽め"}, {"label": "ごはん"}]},
+                      {"question": "好きな色は？（複数可）", "header": "色", "multiSelect": True,
+                       "options": [{"label": "赤みがかった明るいオレンジ色", "description": "暖色"}, {"label": "青"}]}]}
+tui, err = run(LONG, [{"pick": 1}, {"picks": [1, 2]}], ["wrap_labels"])
+check("送る: 選択肢の名前が端末の幅で折り返されていても、続きの行をつないで照らし、最後まで送る",
+      (err, tui.result, af.ready(FakeTUI(LONG, ["wrap_labels"]).screen(), af.form_of(LONG))), (None, ["パンとサラダとスープのセット", "赤みがかった明るいオレンジ色, 青"], ""))
+check("画面: 折り返しの続きが記録の名前と合わなければ、照らせないとみる",
+      af.state(FakeTUI(LONG, ["wrap_labels"]).screen().replace("     とスープのセ", "     とケーキのセ"), af.form_of(LONG)).get("why"), "labels")
+
+
 async def _done():
     return tui.recorded()
 tui = FakeTUI(REAL_TWO_INPUT, ["next_question"])

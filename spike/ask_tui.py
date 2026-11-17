@@ -86,7 +86,7 @@ class FakeTUI:
     """Claude Code の選択肢の画面の偽物。quirks で、本物と違う動き（版の違い・取り違え）を入れられる:
     preview_number_selects（見本つきでも数字で選ばれる）・ignore_tab（Tab が効かない）・no_typing（自由記入の欄に入らない）・
     review_wrong（確認の画面に違う答えを出す）・submit_ignored（「1」で送られない）・garble_after（「1」のあと画面に読めない文字が混じる）・
-    next_question（送ったあと、すぐ次の別の問いが画面に出る）。recorded() は、送られた答えを記録の形（{問いの文: 答え}）で返す。
+    next_question（送ったあと、すぐ次の別の問いが画面に出る）・wrap_labels（選択肢の名前を 6 字で折り返す）。recorded() は、送られた答えを記録の形（{問いの文: 答え}）で返す。
     自由記入の文は 30 字で折り返す（続きの行は 5 字下げ）。"""
 
     def __init__(self, raw: dict, quirks=()):
@@ -207,13 +207,18 @@ class FakeTUI:
         rows = [rule, self.bar(), q["question"]]
         cur = lambda k: "❯ " if self.cursor == k else "  "  # noqa: E731
         for k, o in enumerate(q["options"], 1):
+            lab, more = o["label"], []
+            if "wrap_labels" in self.q and len(lab) > 6:
+                lab, more = lab[:6], [lab[j:j + 6] for j in range(6, len(lab), 6)]
             if q.get("multiSelect"):
-                rows.append(f"{cur(k)}{k}. [{'✔' if k in self.checked[self.i] else ' '}] {o['label']}")
+                rows.append(f"{cur(k)}{k}. [{'✔' if k in self.checked[self.i] else ' '}] {lab}")
+                rows += ["         " + x for x in more]
                 rows.append("         " + o.get("description", ""))
             elif preview:
                 rows.append(f"{cur(k)}{k}. {o['label']}" + ("                         ┌──────────┐" if k == 1 else "                         │ " + "x" * k + " │"))
             else:
-                rows.append(f"{cur(k)}{k}. {o['label']}")
+                rows.append(f"{cur(k)}{k}. {lab}")
+                rows += ["     " + x for x in more]
                 rows.append("     " + o.get("description", ""))
         if preview:
             rows += ["                                  └──────────┘", "                                  Notes: press n to add notes", rule, "  Chat about this",

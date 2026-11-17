@@ -244,18 +244,23 @@ def state(text: str, form: dict) -> dict:
     if idx is None:
         return {"stage": "unknown", "why": "question"}
     q = qs[idx]
-    opts = {}
+    opts, at_line = {}, {}
     cursor = None
-    for l in body[first:]:
-        m = _OPT.match(l)
+    for j in range(first, len(body)):
+        m = _OPT.match(body[j])
         if not m:
             continue
         n, label = int(m.group(2)), _BOX.sub("", m.group(3)).strip()
         if n in opts:
             continue
-        opts[n] = label
+        opts[n], at_line[n] = label, j
         if m.group(1) == "❯ ":
             cursor = n
+    starts = sorted(at_line.values()) + [len(body)]
+
+    def tail(n):  # その選択肢の行の下の、次の選択肢の行までの行（折り返した名前の続きか、説明）
+        j = at_line[n]
+        return body[j + 1: next(x for x in starts if x > j)]
     checked = set()
     for i, o in enumerate(q["options"], 1):
         label = opts.get(i)
@@ -270,8 +275,17 @@ def state(text: str, form: dict) -> dict:
             label = label[mk.end():]
         elif mk:
             return {"stage": "unknown", "why": "marks"}
-        if _flat(label) != _flat(o["label"]):
-            return {"stage": "unknown", "why": "labels"}
+        if _flat(label) != _flat(o["label"]):  # 端末の幅で折り返した名前なら、続きの行をつないで照らす
+            want = _flat(o["label"])
+            for l in tail(i):
+                t = _BOX.sub("", l).strip()
+                if not t or t[0] in "│┌└" or not want.startswith(_flat(label + t)):
+                    break
+                label += t
+                if _flat(label) == want:
+                    break
+            if _flat(label) != want:
+                return {"stage": "unknown", "why": "labels"}
     other = None
     k = len(q["options"]) + 1
     if q["other"] and k in opts and _flat(opts[k]) != "Typesomething.":  # 自由記入の文（端末の幅で折り返した続きの行もつなぐ）
