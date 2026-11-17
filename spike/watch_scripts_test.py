@@ -744,6 +744,13 @@ check("指示文: 根拠は利用者の側の記録だけ（相手の文・OK �
        "済んでいると答えるだけで、印を残さないことはしません" in hsec, "`vl_items.py reopen <番号>`" in hsec, "`open --all`" in hsec),
       (True, True, True, True))
 
+check("指示文・手順 4: 作業の途中（コミットだけ・公開の前・下書き）は済んだと見ず、相手に届いた記録か利用者の判断の記録だけを根拠にする（2026-11-17 の本物の Hermes での見立て違いから）",
+      ("作業の途中（コミットしただけ・push や公開の前・返事が下書きや文案のまま）も、済んでいません。" in hsec,
+       "求められたことが相手に届いた記録（公開した・送った・投稿した）か、求められた判断をユーザーが出した記録を根拠にします。" in hsec,
+       "作業の途中（コミットしただけ・push や公開の前・返事が下書きや文案のまま）も済んでいない。" in done4,
+       "求められたことが相手に届いた記録（公開した・送った・投稿した）か、求められた判断を利用者が出した記録だけを、済んだ根拠にする。" in done4),
+      (True, True, True, True))
+
 ok = sum(r[1] for r in results)
 for name, passed, got, want in results:
     print(("✓ " if passed else "✗ ") + name + ("" if passed else f"\n    得た値: {got!r}\n    期待:   {want!r}"))
