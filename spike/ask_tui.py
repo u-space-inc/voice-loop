@@ -85,7 +85,8 @@ REAL_SHOP_INPUT = {"questions": [
 class FakeTUI:
     """Claude Code の選択肢の画面の偽物。quirks で、本物と違う動き（版の違い・取り違え）を入れられる:
     preview_number_selects（見本つきでも数字で選ばれる）・ignore_tab（Tab が効かない）・no_typing（自由記入の欄に入らない）・
-    review_wrong（確認の画面に違う答えを出す）・submit_ignored（「1」で送られない）。"""
+    review_wrong（確認の画面に違う答えを出す）・submit_ignored（「1」で送られない）・garble_after（「1」のあと画面に読めない文字が混じる）。
+    自由記入の文は 30 字で折り返す（続きの行は 5 字下げ）。"""
 
     def __init__(self, raw: dict, quirks=()):
         self.qs = raw["questions"]
@@ -96,6 +97,7 @@ class FakeTUI:
         self.other = [""] * len(self.qs)
         self.log: list[str] = []
         self.result = None
+        self.garbled = False
 
     def review_needed(self):
         return len(self.qs) > 1 or self.qs[0].get("multiSelect")
@@ -123,7 +125,9 @@ class FakeTUI:
     def keys(self, k: str):
         self.log.append(k)
         if self.stage == "review":
-            if k == "1" and "submit_ignored" not in self.q:
+            if k == "1" and "garble_after" in self.q:
+                self.garbled = True
+            elif k == "1" and "submit_ignored" not in self.q:
                 self.submit()
             elif k == "2":
                 self.stage = "cancelled"
@@ -188,7 +192,8 @@ class FakeTUI:
                 if "review_wrong" in self.q and k == 0:
                     got = "ちがう答え"
                 rows += [f" ● {q['question']}", f"   → {got}"]
-            return "\n".join(rows + ["Ready to submit your answers?", "❯ 1. Submit answers", "  2. Cancel"])
+            out = "\n".join(rows + ["Ready to submit your answers?", "❯ 1. Submit answers", "  2. Cancel"])
+            return out.replace("Review", "Re\ufffdview") if self.garbled else out
         q = self.qs[self.i]
         n = len(q["options"])
         preview = any(o.get("preview") for o in q["options"])
@@ -210,7 +215,9 @@ class FakeTUI:
             rows += [f"{cur(n + 1)}{n + 1}. [ ] Type something", "     Submit", rule, f"  {n + 2}. Chat about this",
                      "Enter to select · Tab/Arrow keys to navigate · Esc to cancel"]
         else:
-            rows += [f"{cur(n + 1)}{n + 1}. {self.other[self.i] or 'Type something.'}", rule, f"  {n + 2}. Chat about this",
+            o = self.other[self.i] or "Type something."
+            rows += [f"{cur(n + 1)}{n + 1}. {o[:30]}"] + ["     " + o[j:j + 30] for j in range(30, len(o), 30)]
+            rows += [rule, f"  {n + 2}. Chat about this",
                      "Enter to select · " + ("Tab/Arrow keys" if self.review_needed() else "↑/↓") + " to navigate · "
                      + ("ctrl+g to edit in Zed · " if self.typing else "") + "Esc to cancel"]
         return "\n".join(rows)

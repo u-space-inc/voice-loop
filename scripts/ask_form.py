@@ -245,11 +245,20 @@ def state(text: str, form: dict) -> dict:
             return {"stage": "unknown", "why": "marks"}
         if _flat(label) != _flat(o["label"]):
             return {"stage": "unknown", "why": "labels"}
-    other = opts.get(len(q["options"]) + 1)
+    other = None
+    k = len(q["options"]) + 1
+    if q["other"] and k in opts and _flat(opts[k]) != "Typesomething.":  # 自由記入の文（端末の幅で折り返した続きの行もつなぐ）
+        at = next(j for j in range(first, len(body)) if (m := _OPT.match(body[j])) and int(m.group(2)) == k)
+        other = opts[k]
+        for l in body[at + 1:]:
+            if _OPT.match(l) or not l.startswith("  "):
+                break
+            other += l.strip()
+    elif q["multi"] and k in opts and _flat(opts[k]) != "[]Typesomething":
+        other = opts[k]  # 複数選ぶ問いで自由記入に印が付いている（答え始めている）
     foot = lines[-1]
     return {"stage": "question", "index": idx, "cursor": cursor, "checked": checked, "answered": answered,
-            "other": None if other is None or _flat(other) in ("Typesomething.", "[]Typesomething") else other,
-            "typing": "to edit in" in foot}
+            "other": other, "typing": "to edit in" in foot}
 
 
 def ready(text: str, form: dict) -> str:
@@ -328,7 +337,7 @@ async def drive(form: dict, answers: list, read, keys, text) -> None:
         if i + 1 < len(qs):
             continue
         if not review:  # 問いが 1 つで 1 つ選ぶ形は、ここで送られる
-            await until(lambda s: not on(i)(s), "送ったあとも問いが残っている")
+            await until(lambda s: s["stage"] == "gone", "送ったあとも問いが残っているか、画面を読み取れない")  # 問いが消えたのを見届けるまで、送れたとしない
             return
     st = await until(lambda s: s["stage"] == "review", "確認の画面が出ない")
     want = [(_flat(q["question"]), _flat(_expect(q, a))) for q, a in zip(qs, answers)]
@@ -336,4 +345,4 @@ async def drive(form: dict, answers: list, read, keys, text) -> None:
     if got != want or not st["submit"]:
         raise Stuck("確認の画面の答えが、送るつもりのものと違う")
     await keys("1")
-    await until(lambda s: s["stage"] != "review", "送ったあとも確認の画面が残っている")
+    await until(lambda s: s["stage"] == "gone", "送ったあとも確認の画面が残っているか、画面を読み取れない")

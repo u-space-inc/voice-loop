@@ -217,6 +217,15 @@ except af.Stuck as e:
     err = str(e)
 check("揺れ: 最初のキーを決める画面で答え始めていたら、キーを 1 本も送らない（1 回目は未回答・2 回目で印）", (bool(err), tui.log, tui.checked[0]), (True, [], {2}))
 
+long = "駅前の大きな交差点の角にある、青い看板のパン屋さんの二階の窓際の席で、九時に待ち合わせ" * 2
+tui, err = run(one, [{"other": long}])
+check("送る: 端末の幅で折り返す長い自由記入も、つないで照らして送る", (err, tui.result, tui.log[-1]), (None, [long], "enter"))
+tui, err = run(REAL_TWO_INPUT, ok_two, ["garble_after"])
+check("揺れ: 最後のキーのあと画面を読み取れなければ、送れたとしない（止まったと伝える）", (bool(err), tui.result), (True, None))
+check("画面: 複数選ぶ問いの自由記入に印があれば答え始めたとみる・「Submit」の行を自由記入の文に混ぜない",
+      (af.state(REAL_TWO_MULTI_CHECKED.replace("[✔]", "[ ]"), TWO)["other"],
+       af.ready(one_multi.replace("[✔]", "[ ]").replace("4. [ ] Type something", "4. [✔] Type something"), M1)),
+      (None, "started"))
 import time as _time  # noqa: E402
 tui = FakeTUI(REAL_TWO_INPUT, ["ignore_tab"])
 
