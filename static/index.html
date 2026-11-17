@@ -681,7 +681,8 @@ function renderStep(q, el) {
     b.dataset.n = o.n; if (o.checked) b.classList.add('on');
   }
   if (st.more) add('div', 'note', 'ほかの選択肢は画面に収まっていません（端末で）');
-  if (st.multi) {
+  if (st.multi && (st.free_text || st.free_checked)) add('div', 'note', '端末で自由記入の欄に書いてあるか、印が付いています。端末で決めてください');
+  else if (st.multi) {
     const row = add('div', 'row'), b = btn(row, '決めて次へ', '', () => answer(q.pane, 'step', { act: 'next' }), 'send');
     b.disabled = !st.options.some(o => o.checked);
   }

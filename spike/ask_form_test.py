@@ -300,6 +300,31 @@ r, err = go(tui, "pick", 2)
 check("競り合い: 送ったキーが次の問いに届いて印が付いたら、届いたとしない（防げない間隙を、気づける形にする）",
       (bool(err), tui.checked[1]), (True, {2}))
 
+notes_desc = REAL_TWO_FIRST.replace("     朝はパン", "     Notes: 先にバックアップを取る")
+check("見本の無い問いでは、「Notes:」で始まる説明も捨てない（codex-review）",
+      [o["desc"] for o in af.step(notes_desc)["options"]], ["Notes: 先にバックアップを取る", "朝はごはん"])
+submit_desc = REAL_TWO_MULTI_CHECKED.replace("         赤色", "         Submit")
+st = af.step(submit_desc)
+check("複数選ぶ問いで、選択肢の説明が「Submit」でも捨てない（外すのはいちばん下の欄の下の行だけ）",
+      (st["stage"], [o["desc"] for o in st["options"]]), ("question", ["Submit", "青色", "緑色"]))
+free_on = REAL_TWO_MULTI_CHECKED.replace("  4. [ ] Type something", "  4. [✔] Type something")
+st = af.step(free_on)
+check("複数選ぶ問いで、自由記入の欄に端末で付けた印を読む（codex-review）", (st["stage"], st["free_checked"], st["free_text"]), ("question", True, ""))
+
+
+class FreeChecked(FakeTUI):
+    """複数選ぶ問いで、端末で自由記入の欄に印が付いている（入力欄からは離れている）。"""
+
+    def screen(self):
+        return super().screen().replace("[ ] Type something", "[✔] Type something")
+
+
+tui = FreeChecked(REAL_TWO_INPUT)
+tui.keys("1"); tui.keys("1")  # 1 問目に答え、2 問目（複数選ぶ）で「赤」に印
+tui.log.clear()
+r, err = go(tui, "next")
+check("自由記入の欄に印があれば、「決めて次へ」の Tab を送らない（画面に出していない選択で次へ進めない）", (bool(err), tui.log), (True, []))
+
 # ---------- 書きかけ・揺れ・取り違え ----------
 tui = FakeTUI(one)
 tui.keys("3")

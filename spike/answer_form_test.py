@@ -13,7 +13,6 @@ import json
 import os
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 TMP = tempfile.mkdtemp()
@@ -116,10 +115,16 @@ check("画面が変わっていたら送らない（端末で答えた・次の�
 setup()
 q = prompt()
 r1 = press(q, act="pick", n=1)
-s.ANSWERED["w9:p1"] = (q["sfp"], time.time())
+check("1 問ずつの答えが届いたら、送った画面の指紋（sfp）だけを残す（ハブの指紋は残さず、次の 1 問ずつの答えを止めない）",
+      (s.answered("w9:p1", q["sfp"]), s.answered("w9:p1", q["fp"])), (True, False))
 st["tui"] = FakeTUI(REAL_TWO_INPUT)  # 同じ画面に戻った（重ねた押し）
 r2 = press(q, act="pick", n=1)
 check("同じ画面に重ねて送らない", (r1.get("ok"), r2.get("reason"), st["tui"].log), (True, "answered", []))
+setup()
+q = prompt()
+r = press(q, act="pick", n=9)
+check("1 問ずつの答えが途中で止まったら、ハブ・承認のボタンが比べる指紋（prompt_fp）でも、同じ画面に重ねて送らない（codex-review）",
+      (r.get("reason"), s.answered("w9:p1", q["sfp"]), s.answered("w9:p1", q["fp"])), ("stuck", True, True))
 setup()
 for body, why in ((dict(act="jump"), "bad_choice"), (dict(act="pick", n=9), "stuck"), (dict(act="toggle", n=1), "stuck"), (dict(act="free", text=""), "stuck")):
     s.ANSWERED.clear()

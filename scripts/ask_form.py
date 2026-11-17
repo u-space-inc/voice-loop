@@ -197,7 +197,9 @@ def step(text: str) -> dict:
         elif rows and l.startswith(" ") and not _RULE.match(l):
             t = (_cut(l, box_col)[0] if box_col is not None else l).strip()
             after.append(t)
-            if t and t[0] not in "│┌└┐┘├┤" and not t.startswith("Notes:") and t not in ("Submit", "Next"):
+            # 見本つきの問いでは、枠とメモの行は枠の列より右にあり、ここでは空になる。見本の無い問いでは、説明の行をそのまま読む
+            # （「Notes:」「Submit」で始まる説明も捨てない。複数選ぶ問いの「Submit」「Next」は、いちばん下の欄の下の行として外す）
+            if t:
                 rows[-1][2].append(t)
     if sum(1 for r in rows if r[3]) > 1:
         return {"stage": "unknown", "why": "cursors"}
@@ -209,8 +211,9 @@ def step(text: str) -> dict:
         # 複数選ぶ問いとみるのは、作りで確かめられるときだけ: どの行にも印があり、いちばん下が「[ ] Type something」の形の欄で
         # （Chat の番号の 1 つ前）、その下に「Submit」か「Next」の行がある。名前に [ ] をまねた 1 つ選ぶ問いと取り違えない
         if not (all(marked) and chat_n and rows[-1][0] == chat_n - 1 and _flat(_MARK.sub("", rows[-1][1])) == "Typesomething"
-                and any(t in ("Submit", "Next") for t in after)):
+                and after and after[-1] in ("Submit", "Next")):
             return {"stage": "unknown", "why": "marks"}
+        rows[-1][2].pop()  # いちばん下の欄の下の「Submit」「Next」の行（説明でも書いた文でもない）
     free, free_hidden = None, False
     if not preview and chat_n:  # 自由記入の欄は「Chat about this」の 1 つ前の番号（見本つきの問いには無い）
         if rows[-1][0] == chat_n - 1:
@@ -241,9 +244,11 @@ def step(text: str) -> dict:
         mk = _MARK.match(label)
         options.append({"n": n, "label": _line(label[mk.end():] if mk else label, LIMITS["label"]), "desc": _line(" ".join(below), LIMITS["desc"]),
                         "checked": bool(mk and mk.group(1) != " ")})
-    free_text = ""
+    free_text, free_checked = "", False
     if free:
-        ft = _MARK.sub("", free[1]) if multi else free[1]
+        mf = _MARK.match(free[1]) if multi else None
+        free_checked = bool(mf and mf.group(1) != " ")  # 端末で自由記入の欄に印が付いている（画面のボタンでは扱わない）
+        ft = free[1][mf.end():] if mf else free[1]
         free_text = "" if ft in FREE else " ".join([ft] + free[2])
     cursor = next((r[0] for r in rows + ([free] if free else []) if r[3]), None)
     free_n = free[0] if free else (chat_n - 1 if free_hidden else None)
@@ -252,7 +257,8 @@ def step(text: str) -> dict:
         if l.count("│") >= 2:
             box.append(_CTRL.sub(" ", l.split("│", 1)[1].rsplit("│", 1)[0]).rstrip()[1:])
     return {"stage": "question", "chips": chips, "question": _line(question, LIMITS["question"]), "multi": multi, "preview": preview,
-            "options": options, "free": free_n, "free_hidden": free_hidden, "free_text": _line(free_text, OTHER_MAX + 50), "cursor": cursor,
+            "options": options, "free": free_n, "free_hidden": free_hidden, "free_text": _line(free_text, OTHER_MAX + 50), "free_checked": free_checked,
+            "cursor": cursor,
             "typing": "to edit in" in foot, "notes": notes, "more": more, "cut": not question,
             "box": "\n".join(box).strip("\n")[:600] if preview else ""}
 
@@ -271,7 +277,8 @@ def fp(text: str) -> str:
 
 def public(st: dict) -> dict:
     """画面に出す形。"""
-    keep = ("stage", "chips", "question", "cut", "multi", "preview", "options", "free", "free_hidden", "free_text", "cursor", "typing", "notes", "more", "box",
+    keep = ("stage", "chips", "question", "cut", "multi", "preview", "options", "free", "free_hidden", "free_text", "free_checked", "cursor", "typing",
+            "notes", "more", "box",
             "answers", "submit")
     return {k: st[k] for k in keep if k in st}
 
@@ -361,8 +368,8 @@ async def act(kind: str, arg, read, keys, text, expect: str | None = None) -> st
             await keys(str(n))
         return await moved(f"{n}番「{_line(labels[n]['label'], 40)}」", before)
     if kind == "next":
-        if not st["multi"] or not any(o["checked"] for o in st["options"]) or st["free_text"]:
-            raise Stuck("複数選ぶ問いで、まだ何も選んでいないか、自由記入の欄に書きかけがある")
+        if not st["multi"] or not any(o["checked"] for o in st["options"]) or st["free_text"] or st["free_checked"]:
+            raise Stuck("複数選ぶ問いで、まだ何も選んでいないか、自由記入の欄に書きかけ・印がある")
         await keys("tab")
         return await moved("選んだものを決めて次へ", fp(raw))
     if kind == "free":

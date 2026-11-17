@@ -2034,14 +2034,13 @@ async def _hub_answer(body: dict):
         else:
             n = int(answer)
             key, said = str(n), f"{n}番「{prompt['options'][n]}」"
-    done = ANSWERED.get(pane)  # 画面のボタンと共有する「答えた問い」。答えたあと画面が書き換わるまでに、同じ問いへもう一度送らない
-    if done and done[0] == fp and time.time() - done[1] < ANSWERED_HOLD:
+    if answered(pane, fp):  # 画面のボタンと共有する「答えた問い」。答えたあと画面が書き換わるまでに、同じ問いへもう一度送らない
         return JSONResponse({"ok": False, "reason": "answered"})
     r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, key)
     hlog(f"answer → {pane} ({project}): {said} {'ok' if 'result' in r else 'ERR'}", flush=True)
     if "result" not in r:
         return JSONResponse({"ok": False, "reason": "herdr が応答しません"})
-    ANSWERED[pane] = (fp, time.time())
+    mark_answered(pane, fp)
     SEEN_PROMPT.pop(pane, None)
     CONFIRMING.pop(pane, None)
     if not WATCHING.get(pane):  # ハブ経由で頼んだ件でなければ見張りが無いので、答えたあとの結果を知らせるために付ける
@@ -2177,8 +2176,20 @@ def api_prompts():
 
 
 _answer_lock = asyncio.Lock()  # 確かめてからキーを送るまでを、一度にひとつだけにする
-ANSWERED: dict[str, tuple[str, float]] = {}  # 画面のボタンとハブ経由で答えた問い: pane → (指紋, 時刻)。2 つの経路で共有する
+ANSWERED: dict[str, tuple[frozenset, float]] = {}  # 画面のボタンとハブ経由で答えた問い: pane → (指紋の組, 時刻)。2 つの経路で共有する
 ANSWERED_HOLD = 15  # 答えたあと、相手の状態が変わるまでのあいだ、同じ問いへの重ねた答えを断る秒数
+
+
+def answered(pane: str, fp: str) -> bool:
+    """この問い（指紋）に、さっき答えたか（ANSWERED_HOLD 秒のうち）。"""
+    done = ANSWERED.get(pane)
+    return bool(done) and fp in done[0] and time.time() - done[1] < ANSWERED_HOLD
+
+
+def mark_answered(pane: str, *fps: str) -> None:
+    """答えた問いを記録する。1 問ずつの答えは、その画面の指紋（sfp）と、ハブ・承認のボタンが比べる指紋（prompt_fp）の両方で記録する
+    （指紋の取り方が違うので、片方だけだと、もう一方の経路から同じ画面へ重ねて送れる。2026-11-17 codex-review）。"""
+    ANSWERED[pane] = (frozenset(f for f in fps if f), time.time())
 
 
 @app.post("/api/answer")
@@ -2194,8 +2205,7 @@ async def api_answer(body: dict):
 async def _answer(body: dict):
     pane, key, fp = str(body.get("pane", "")), str(body.get("key", "")), str(body.get("fp", ""))
     choice, confirmed = str(body.get("choice", "")), bool(body.get("confirmed"))
-    done = ANSWERED.get(pane)
-    if done and done[0] == fp and time.time() - done[1] < ANSWERED_HOLD:  # 二度押し・重ねた送信
+    if answered(pane, fp):  # 二度押し・重ねた送信
         return JSONResponse({"ok": False, "reason": "answered"})
     if choice not in ("allow", "deny", "step"):  # 選択肢の問いには step だけ（前の choose は 0.26.1 で外した）
         return JSONResponse({"ok": False, "reason": "bad_choice"})
@@ -2218,7 +2228,7 @@ async def _answer(body: dict):
     hlog(f"answer(画面) → {pane} ({a['cwd'].rsplit('/', 1)[-1]}): {said} {'ok' if 'result' in r else 'ERR'}", flush=True)
     if "result" not in r:
         return JSONResponse({"ok": False, "reason": "herdr"})
-    ANSWERED[pane] = (fp, time.time())
+    mark_answered(pane, fp)
     return JSONResponse({"ok": True, "said": said})
 
 
@@ -2243,8 +2253,7 @@ async def step_answer(a: dict, asked: dict, body: dict, confirmed: bool) -> dict
     if asked["risky"] and kind != "toggle" and not confirmed:
         return {"ok": False, "reason": "confirm"}
     pane = a["pane"]
-    done = ANSWERED.get(pane)
-    if done and done[0] == sfp and time.time() - done[1] < ANSWERED_HOLD:
+    if answered(pane, sfp):
         return {"ok": False, "reason": "answered"}
 
     async def read():
@@ -2260,7 +2269,7 @@ async def step_answer(a: dict, asked: dict, body: dict, confirmed: bool) -> dict
         if "result" not in r and r.get("code") != 0:  # send-text はうまくいくと何も出さない（終わりの数 0）。2026-11-17 実機で確かめた
             raise ask_form.Stuck("herdr が応答しない")
 
-    ANSWERED[pane] = (sfp, time.time())  # 送り始めたら、同じ画面に重ねて送らない（途中で止まっても）
+    mark_answered(pane, sfp, asked["fp"])  # 送り始めたら、同じ画面に重ねて送らない（途中で止まっても。ハブの経路からも）
     STEPPING[pane] = time.time()
     project = a["cwd"].rsplit("/", 1)[-1]
     try:
@@ -2270,6 +2279,9 @@ async def step_answer(a: dict, asked: dict, body: dict, confirmed: bool) -> dict
         hlog(f"answer(画面・1 問ずつ) → {pane} ({project}): 止めました: {why}", flush=True)
         return {"ok": False, "reason": "stuck", "why": why}
     hlog(f"answer(画面・1 問ずつ) → {pane} ({project}): {said} ok", flush=True)
+    # 画面が変わったのを見届けた。prompt_fp は画面の下の一部だけから取るので、変わったあとも同じことがある（複数選ぶ問いの上のほうの印）。
+    # 次の 1 問ずつの答えを止めないよう、送った画面の sfp だけを残す
+    mark_answered(pane, sfp)
     return {"ok": True, "said": said, "project": project, "title": a.get("title", "")}
 
 
