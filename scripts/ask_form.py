@@ -60,9 +60,11 @@ def step(text: str) -> dict:
         return {"stage": "gone"}
     is_opt = lambda l, n, label: (m := _OPT.match(l)) is not None and int(m.group(2)) == n and m.group(3).strip() == label  # noqa: E731
     # 操作案内（いちばん下）。ペインの幅が狭いと 2〜3 行に折り返す（「Enter to select …」で始まる行から下）
+    # 折り返しの続きの行は、操作案内の続きの形だけ（入力欄の ❯・選択肢・線の行でない）。つないだ文は「Esc to cancel」で終わること
     fstart = next((i for i in range(len(lines) - 1, max(-1, len(lines) - 4), -1) if lines[i].startswith("Enter to select")), None)
     foot = " ".join(lines[fstart:]) if fstart is not None else lines[-1]
-    qfoot = fstart is not None and "Esc to cancel" in foot
+    qfoot = (fstart is not None and foot.rstrip().endswith("Esc to cancel")
+             and not any(l.lstrip().startswith(("❯", "↓", "↑")) or _OPT.match(l) or _RULE.match(l) for l in lines[fstart + 1:]))
     if qfoot:
         lines = lines[:fstart] + [foot]  # 折り返しを 1 行にそろえる
     review = len(lines) >= 3 and is_opt(lines[-2], 1, "Submit answers") and is_opt(lines[-1], 2, "Cancel")

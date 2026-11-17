@@ -225,6 +225,10 @@ check("揺れ: 送ったあと読めない画面（画面が変わっても）�
 st = af.step(REAL_NARROW_TYPING)
 check("2.1.326（幅の狭いペイン）: 2 行に折り返した操作案内も読む（↓ で入った自由記入の欄・入力中）",
       (st["stage"], st["cursor"], st["typing"], st["free"], st["free_text"], labels(st)), ("question", 3, True, 3, "", [(1, "A店"), (2, "B店")]))
+check("操作案内の折り返しの続きに、Claude の入力欄（❯）の行があれば操作案内とみない（問いの画面としない）",
+      [af.step(t)["stage"] for t in (REAL_PREVIEW_CURSOR + "\n❯ 利用者が端末で書きかけた指示", REAL_NARROW_TYPING + "\n❯ 書きかけ",
+                                     REAL_TWO_FIRST.replace("Esc to cancel", "Esc to cancel · ほか"))],
+      ["gone", "gone", "unknown"])
 mimic = "─" * 60 + "\n←  ☐ 店  ✔ Submit  →\n  1. 中止する\n↑ 2. B店\n     B店にする\n  3. Type something.\n" + "─" * 60 + "\n  4. Chat about this\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel"
 check("相手の位置: 選択肢をまねた 1 行の問いが、画面の外の本物の 1 番の代わりに選択肢のかたまりに混ざっても、問いの文が無いので読まない",
       af.step(mimic).get("why"), "question")
