@@ -592,9 +592,10 @@ $('agent').onchange = () => { setReplyTarget(null); localStorage.setItem(WANT, c
 // 話し相手（ハブなど）の画面のまま、承認で止まっているセッションをすべて画面の上に並べる（名前・聞かれている中身・許可（今回だけ）・断る）。
 // ボタンを出すのは、本体が承認の画面か、1 つを選ぶ質問（選択肢ごとのボタン）と見分けたときだけ。それ以外は中身を見せるだけにする
 // （画面の文字の読み取りは揺れるので、出さないほうに倒す）。
-// 押すと、送る直前に本体が同じ問いか（指紋）を確かめる。取り消しにくい操作に見えるときは、もう一度押してから許可する・選ぶ
+// 押すと、送る直前に本体が同じ問いか（指紋）を確かめる。取り消しにくい操作に見えるときは、もう一度押してから許可する・選ぶ。
+// 選択肢の問いに答えるのは、いまの 1 問ずつの形（renderStep）だけ（前の「選択肢の番号だけを送る」ボタンは 0.26.1 で外した）
 const ASK_HEAD = {
-  permission: '承認を待っています', question: '質問で止まっています。端末かハブで答えてください', choose: '質問で止まっています',
+  permission: '承認を待っています', question: '質問で止まっています。端末かハブで答えてください',
   step: '質問で止まっています（1 問ずつ答えます）', review: '答えの確かめです。よければ「送る」',
   trust: 'フォルダを信頼するか聞いています。端末で答えてください', unknown: '止まっています。端末で答えてください',
   unreadable: '止まっていますが、画面を読めませんでした',
@@ -603,7 +604,7 @@ const ANSWER_FAIL = {
   changed: '画面が変わっていました。出し直したので、確かめてから押してください', none: 'もう止まっていません',
   gone: 'セッションが入れ替わっていました', not_permission: '承認の画面と見分けられませんでした', trust: 'フォルダの信頼は端末で答えてください',
   unreadable: '画面を読めませんでした', confirm: 'もう一度押してください', unreachable: '接続できません', herdr: 'herdr が応答しません',
-  bad_choice: 'そのボタンでは答えられません', answered: 'もう答えています', not_choice: '選択肢を読み取れませんでした',
+  bad_choice: 'そのボタンでは答えられません', answered: 'もう答えています',
   not_form: '問いを読み取れませんでした。端末で答えてください',
   stuck: '画面が思った形にならなかったので、送らずに（途中なら、それ以上送らずに）止めました。端末で確かめてください',
 };
@@ -631,25 +632,12 @@ async function loadAsks() {
 function renderAsk(q) {
   const el = document.createElement('div'), head = document.createElement('div');
   const stepping = q.kind === 'question' && q.step && (q.step.stage === 'question' || q.step.stage === 'review');
-  const choosing = !stepping && q.kind === 'question' && Array.isArray(q.choices) && q.choices.length > 0;
   el.className = 'ask'; el.dataset.pane = q.pane; head.className = 'head';
-  head.textContent = `${q.name}｜` + ((q.kind === 'permission' || choosing || stepping) && q.risky ? '⚠ 取り消しにくい操作かもしれません。' : '') +
-    (stepping ? ASK_HEAD[q.step.stage === 'review' ? 'review' : 'step'] : choosing ? ASK_HEAD.choose : (ASK_HEAD[q.kind] || ASK_HEAD.unknown));
+  head.textContent = `${q.name}｜` + ((q.kind === 'permission' || stepping) && q.risky ? '⚠ 取り消しにくい操作かもしれません。' : '') +
+    (stepping ? ASK_HEAD[q.step.stage === 'review' ? 'review' : 'step'] : (ASK_HEAD[q.kind] || ASK_HEAD.unknown));
   el.appendChild(head);
   if (stepping) renderStep(q, el);
-  else if (choosing) {  // 問いと、選択肢ごとのボタン（文字はどれも画面から読んだまま、文字として出す）
-    const qt = document.createElement('div'); qt.className = 'q';
-    qt.textContent = (q.header ? `［${q.header}］ ` : '') + (q.question || ''); el.appendChild(qt);
-    const list = document.createElement('div'); list.className = 'choices';
-    for (const c of q.choices) {
-      const b = document.createElement('button'), lbl = document.createElement('span');
-      b.className = 'choose'; b.dataset.n = c.n; b.dataset.label = `${c.n}. ${c.label}`;
-      lbl.className = 'lbl'; lbl.textContent = b.dataset.label; b.appendChild(lbl);
-      if (c.desc) { const d = document.createElement('span'); d.className = 'desc'; d.textContent = c.desc; b.appendChild(d); }
-      b.onclick = () => answer(q.pane, 'choose', c.n); list.appendChild(b);
-    }
-    el.appendChild(list);
-  } else if (q.text) {
+  else if (q.text) {
     const pre = document.createElement('pre'); pre.textContent = q.text; el.appendChild(pre);
     // 承認はコマンドの見える上から、質問は見出しの印のある上から、ほかは問いのある下から見せる
     if (q.kind !== 'permission' && q.kind !== 'question') requestAnimationFrame(() => { pre.scrollTop = pre.scrollHeight; });
@@ -721,12 +709,11 @@ async function answer(pane, choice, n) {
     if (choice === 'allow') { const b = el.querySelector('.allow'); b.textContent = 'もう一度押すと許可'; b.classList.add('warn'); }
     else if (act && act.act !== 'pick') { const b = [...el.querySelectorAll('.send')].find(x => x.dataset.label === ({ submit: '送る', next: '決めて次へ', free: 'この答えで送る' })[act.act]); if (b) { b.querySelector('.lbl').textContent = `もう一度押すと「${b.dataset.label}」`; b.classList.add('warn'); } }
     else if (act) { const b = el.querySelector(`.choose[data-n="${act.n}"]`); b.querySelector('.lbl').textContent = `もう一度押すと「${b.dataset.label}」を選ぶ`; b.classList.add('warn'); }
-    else { const b = el.querySelector(`.choose[data-n="${n}"]`); b.querySelector('.lbl').textContent = `もう一度押すと「${b.dataset.label}」を選ぶ`; b.classList.add('warn'); }
     return;
   }
   const confirmed = !!item.armed; disarm(item);
   item.busy = true; el.querySelectorAll('button, input').forEach(b => { b.disabled = true; }); // 二重に送らない
-  const sendBody = { pane: q.pane, key: q.key, fp: q.fp, choice, confirmed, ...(choice === 'choose' ? { n } : {}), ...(act ? { sfp: q.sfp, ...act } : {}) };
+  const sendBody = { pane: q.pane, key: q.key, fp: q.fp, choice, confirmed, ...(act ? { sfp: q.sfp, ...act } : {}) };
   let r; try { r = await (await fetch('/api/answer', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sendBody) })).json(); }
   catch { r = { ok: false, reason: 'unreachable' }; }
   item.busy = false; el.remove(); asks.delete(pane);

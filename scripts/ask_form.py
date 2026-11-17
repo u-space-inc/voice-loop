@@ -113,6 +113,8 @@ def step(text: str) -> dict:
         return {"stage": "unknown", "why": "partial"}
     bar_i = bars[0]
     items = [x for x in re.split(r"\s{2,}", lines[bar_i].strip().strip("←→").strip()) if x]
+    if not all(_fits(x[1:], "chip") for x in items if x[:1] in "☐☒"):  # 省く前の見出しで確かめる
+        return {"stage": "unknown", "why": "long"}
     chips = [(_line(x[1:], LIMITS["chip"]), x[0] == "☒") for x in items if x[:1] in "☐☒"]
     body = lines[bar_i + 1:]
     if not body or not chips:
@@ -136,7 +138,7 @@ def step(text: str) -> dict:
                     cur[0 if cur[1] is None else 1] += s
             if len(got) != len(chips) or any(b is None for _, b in got):
                 return {"stage": "unknown", "why": "answers"}
-            if not all(_fits(a, "answer") and _fits(b, "answer") for a, b in got) or not all(_fits(h, "chip") for h, _ in chips):
+            if not all(_fits(a, "answer") and _fits(b, "answer") for a, b in got):
                 return {"stage": "unknown", "why": "long"}
             return {"stage": "review", "chips": chips, "answers": [(_line(a, LIMITS["answer"]), _line(b or "", LIMITS["answer"])) for a, b in got], "submit": True}
         return {"stage": "unknown", "why": "review"}  # 確認の画面の終わりはあるが、頭（Review your answers）が決まった形で読めない
@@ -229,7 +231,7 @@ def step(text: str) -> dict:
             return {"stage": "unknown", "why": "notes"}
         notes = l.strip()[len("Notes:"):].strip()
         notes = "" if notes == "press n to add notes" else notes
-    if not _fits(question, "question") or not all(_fits(h, "chip") for h, _ in chips):
+    if not _fits(question, "question"):
         return {"stage": "unknown", "why": "long"}
     options = []
     for n, label, below, _, _ in rows:

@@ -277,6 +277,9 @@ check("書きかけ: 欄の文が「Type something.」とそっくりでも、�
 long_label = {"questions": [{"question": "どれ？", "header": "長", "options": [{"label": "中止する " + "a" * 200 + " ただし実行"}, {"label": "やめる"}]}]}
 check("長すぎる名前は省かずに、問いを読まない（省いた名前のまま押して、見えていない後半ごと確定させない）",
       af.step(FakeTUI(long_label).screen()).get("why"), "long")
+check("長すぎる見出し（41 字）も、省く前の長さで確かめて読まない",
+      [af.step(t).get("why") for t in (REAL_TWO_FIRST.replace("☐ 朝", "☐ " + "朝" * 41), REAL_TWO_REVIEW.replace("☒ 朝", "☒ " + "朝" * 41))], ["long", "long"])
+check("見出しが 40 字ちょうどなら読む", af.step(REAL_TWO_FIRST.replace("☐ 朝", "☐ " + "朝" * 40))["stage"], "question")
 long_ans = full_review.replace("   → B店", "   → B店" + "b" * 300)
 check("確認の画面の長すぎる答えも、省かずに読まない", af.step(long_ans).get("why"), "long")
 
