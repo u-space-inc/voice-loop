@@ -217,6 +217,31 @@ except af.Stuck as e:
     err = str(e)
 check("揺れ: 最初のキーを決める画面で答え始めていたら、キーを 1 本も送らない（1 回目は未回答・2 回目で印）", (bool(err), tui.log, tui.checked[0]), (True, [], {2}))
 
+import time as _time  # noqa: E402
+tui = FakeTUI(REAL_TWO_INPUT, ["ignore_tab"])
+
+
+async def _slow():  # 1 回の読み取りに 0.1 秒かかる
+    await asyncio.sleep(0.1)
+    return tui.screen()
+t0 = _time.monotonic()
+try:
+    asyncio.run(af.drive(TWO, af.check(TWO, ok_two)[0], _slow, _k, _t))
+    err = None
+except af.Stuck as e:
+    err = str(e)
+check("待つ上限は、読み取りの時間も含めた実の時間（読み取りが遅くても、止まるまでが長くならない）", (bool(err), _time.monotonic() - t0 < 1.5), (True, True))
+af.DRIVE_MAX = 0.2
+tui = FakeTUI(REAL_TWO_INPUT)
+t0 = _time.monotonic()
+try:
+    asyncio.run(af.drive(TWO, af.check(TWO, ok_two)[0], _slow, _k, _t))
+    err = None
+except af.Stuck as e:
+    err = str(e)
+check("送り始めてから終わるまでにも上限がある", (bool(err), _time.monotonic() - t0 < 1.0), (True, True))
+af.DRIVE_MAX = 60.0
+
 ok = sum(r[1] for r in results)
 for name, passed, got_, want in results:
     print(("✓ " if passed else "✗ ") + name + ("" if passed else f"\n    得た値: {got_!r}\n    期待:   {want!r}"))

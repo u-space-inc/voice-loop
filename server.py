@@ -2165,9 +2165,12 @@ def _ask_of(a: dict) -> dict:
     return out
 
 
-def read_dialog(pane: str) -> str:
-    """選択肢の問いの画面（答えを送る途中の確かめに使う）。read_prompt より多く読む（見本の枠で縦に長くなるため）。"""
-    p = subprocess.run(["herdr", "agent", "read", pane, "--source", "visible", "--lines", "80"], capture_output=True, text=True, timeout=20)
+def read_dialog(pane: str, timeout: float = 20) -> str:
+    """選択肢の問いの画面（答えを送る途中の確かめに使う）。read_prompt より多く読む（見本の枠で縦に長くなるため）。
+    読めなかったら（herdr が失敗で終わった）例外にする（空の画面を「問いが消えた」と取り違えないため）。"""
+    p = subprocess.run(["herdr", "agent", "read", pane, "--source", "visible", "--lines", "80"], capture_output=True, text=True, timeout=timeout)
+    if p.returncode != 0:
+        raise RuntimeError(f"画面を読めない（herdr の終わりの数 {p.returncode}）")
     rows = [ODD_BREAKS.sub("\ufffd", l) for l in p.stdout.split("\n")]
     return "\n".join(l.rstrip() for l in rows if l.strip() and not STATUS_LINE.match(l))
 
@@ -2193,7 +2196,11 @@ def form_of(a: dict) -> tuple[str, dict] | None:
     _PENDING[a["pane"]] = (sig, got)
     if not got:
         return None
-    return got if not ask_form.ready(read_dialog(a["pane"]), got[1]) else None
+    try:
+        screen = read_dialog(a["pane"])
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        return None  # 画面を読めないときは問いの形を出さない
+    return got if not ask_form.ready(screen, got[1]) else None
 
 
 def _asked(pane: str, key: str) -> tuple[dict | None, dict]:
@@ -2305,7 +2312,7 @@ async def form_answer(a: dict, asked: dict, fp: str, ask, answers, confirmed: bo
     said = ask_form.said(form, plan)
 
     async def read():
-        return await asyncio.to_thread(read_dialog, pane)
+        return await asyncio.to_thread(read_dialog, pane, ask_form.READ_MAX)
 
     async def keys(k):
         r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, k)
@@ -2371,8 +2378,7 @@ async def must_notice(title: str, text: str):
 
 async def _hub_form_answer(body: dict) -> JSONResponse:
     """hubctl answer --form。Slack の会話で、利用者が Hermes のボタンで選んだ答えを送る（Slack の会話から呼ばれたときだけ）。"""
-    o = body.get("origin")
-    if not (isinstance(o, dict) and o.get("platform") == "slack"):
+    if not slack_report.origin(body.get("origin")):  # 利用者の DM（config.env の VL_SLACK_REPORT_CHAT）の会話からだけ
         return JSONResponse({"ok": False, "reason": "not_slack"})
     pane = str(body.get("pane", ""))
     a = await asyncio.to_thread(_worker, pane)

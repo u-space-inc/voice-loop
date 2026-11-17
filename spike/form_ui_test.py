@@ -97,7 +97,7 @@ s.list_agents = lambda: [dict(a) for a in AGENTS]
 s.jsonl_path = lambda a: PATHS.get(a["pane"])
 s.pane_shows_trust = lambda pane: False
 s.read_prompt = shown
-s.read_dialog = lambda pane: TUIS[pane].screen()
+s.read_dialog = lambda pane, *_: TUIS[pane].screen()
 s.herdr = fake_herdr
 
 srv = uvicorn.Server(uvicorn.Config(s.app, host="127.0.0.1", port=PORT, log_level="warning"))

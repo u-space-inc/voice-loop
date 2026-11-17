@@ -24,7 +24,9 @@ from pathlib import Path
 TAIL = 4_000_000  # 記録の末尾から読む大きさ
 MAX_Q, MIN_OPT, MAX_OPT = 4, 2, 4  # AskUserQuestion の決まり（問いは 1〜4、選択肢は 2〜4）
 OTHER_MAX = 300  # 自由記入の字数の上限
-WAIT, STEP = 5.0, 0.25  # 1 手ごとに画面が変わるのを待つ秒数と、見直す間隔
+WAIT, STEP = 5.0, 0.25  # 1 手ごとに画面が変わるのを待つ秒数（読み取りの時間も含めた実の時間）と、見直す間隔
+READ_MAX = 5.0  # 1 回の画面の読み取りの上限（呼び出し側が読み取りに渡す）
+DRIVE_MAX = 60.0  # 送り始めてから終わるまでの上限（実の時間。答えの鍵を持ったまま待ち続けない）
 
 _CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f​-‏ -‮⁠-⁩﻿\ud800-\udfff]")
 _BAR = re.compile(r"^\s*(?:←\s+)?[☐☒] ")  # 見出しの行（問いが 1 つなら「 ☐ 朝」、複数なら「←  ☐ 朝  ☒ 色  ✔ Submit  →」）
@@ -268,17 +270,30 @@ class Stuck(Exception):
 async def drive(form: dict, answers: list, read, keys, text) -> None:
     """答えを送る。read() は画面の文字、keys(k) はキー、text(s) は文字を送る（どれも async）。思った段にならなければ Stuck。"""
     qs = form["questions"]
+    clock = asyncio.get_running_loop().time
+    last = clock() + DRIVE_MAX
+
+    send_keys, send_text = keys, text
+
+    async def keys(k):  # noqa: F811  上限を過ぎたら、それ以上キーを送らない
+        if clock() >= last:
+            raise Stuck("送り始めてからの上限の時間を過ぎた")
+        await send_keys(k)
+
+    async def text(t):  # noqa: F811
+        if clock() >= last:
+            raise Stuck("送り始めてからの上限の時間を過ぎた")
+        await send_text(t)
 
     async def until(ok, what: str) -> dict:
-        t = 0.0
+        end = min(clock() + WAIT, last)  # 読み取りにかかった時間も数える
         while True:
             st = state(await read(), form)
             if ok(st):
                 return st
-            if t >= WAIT:
+            if clock() >= end:
                 raise Stuck(f"{what}（画面: {st['stage']}{'・' + st['why'] if st.get('why') else ''}）")
             await asyncio.sleep(STEP)
-            t += STEP
 
     on = lambda i: (lambda st: st["stage"] == "question" and st["index"] == i)  # noqa: E731
     review = len(qs) > 1 or qs[0]["multi"]

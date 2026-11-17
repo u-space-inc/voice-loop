@@ -23,6 +23,8 @@ import server as s  # noqa: E402
 from ask_tui import REAL_SHOP_INPUT, REAL_TWO_INPUT, FakeTUI  # noqa: E402
 
 s.ask_form.WAIT, s.ask_form.STEP = 0.3, 0.01
+s.slack_report.CHAT = "D0TESTCHAT1"  # 利用者の DM（config.env の VL_SLACK_REPORT_CHAT の代わり）
+REAL_READ_DIALOG = s.read_dialog
 AGENT = {"pane": "w9:p1", "title": "テスト", "cwd": "/tmp/proj", "kind": "claude", "session": "sess-1", "status": "blocked", "name": "", "hub": False}
 st = {"tui": FakeTUI(REAL_TWO_INPUT), "path": None, "status": "blocked"}
 pushes, notices_sent, watches = [], [], []
@@ -53,7 +55,7 @@ def fake_herdr(*a, **k):
 s.list_agents = lambda: [{**AGENT, "status": st["status"]}]
 s.pane_shows_trust = lambda pane: False
 s.read_prompt = lambda pane: screen()
-s.read_dialog = lambda pane: st["tui"].screen()
+s.read_dialog = lambda pane, *_: st["tui"].screen()
 s.jsonl_path = lambda a: st["path"]
 s.herdr = fake_herdr
 
@@ -86,7 +88,8 @@ def screen_answer(**body):
 
 
 def hub_answer(origin=True, **body):
-    b = {"pane": "w9:p1", **body, **({"origin": {"platform": "slack", "chat": "D1", "thread": "1.2"}} if origin else {})}
+    o = origin if isinstance(origin, dict) else {"platform": "slack", "chat": "D0TESTCHAT1", "thread": "1794870946.124399"}
+    b = {"pane": "w9:p1", **body, **({"origin": o} if origin else {})}
     return json.loads(asyncio.run(s.hub_answer(b)).body)
 
 
@@ -155,6 +158,8 @@ hq = json.loads(s.hub_question("w9:p1").body)
 check("hub question: 問いの形と指紋・記録の id", (hq["kind"], hq["ask"], hq["fp"] == prompts()[0]["fp"], len(hq["form"]["questions"])), ("question", "t1", True, 2))
 r = hub_answer(origin=False, fp=hq["fp"], ask=hq["ask"], answers=ok_two)
 check("Slack: Slack の会話から（origin）でなければ送らない", (r.get("reason"), st["tui"].log), ("not_slack", []))
+r = hub_answer(origin={"platform": "slack", "chat": "D0OTHERDM9", "thread": ""}, fp=hq["fp"], ask=hq["ask"], answers=ok_two)
+check("Slack: 利用者の DM 以外の会話からは送らない", (r.get("reason"), st["tui"].log), ("not_slack", []))
 s.REPORTING = True
 r = hub_answer(fp=hq["fp"], ask=hq["ask"], answers=ok_two)
 s.REPORTING = False
@@ -189,7 +194,7 @@ real_read = s.read_dialog
 calls = {"n": 0}
 
 
-def flaky(pane):  # 送り終えたあとの読み取りで、読み取りが失敗する
+def flaky(pane, *_):  # 送り終えたあとの読み取りで、読み取りが失敗する
     calls["n"] += 1
     if st["tui"].result is not None:
         raise __import__("subprocess").TimeoutExpired("herdr", 20)
@@ -218,6 +223,20 @@ setup()
 st["status"] = "working"
 r = hub_answer(fp="x", ask="t1", answers=ok_two)
 check("Slack: 止まっていなければ送らない", r.get("reason"), "not_blocked")
+import subprocess as _sp  # noqa: E402
+_run = s.subprocess.run
+s.subprocess.run = lambda *a, **k: _sp.CompletedProcess(a[0], 1, "", "err")
+try:
+    REAL_READ_DIALOG("w9:p1")
+    rd = "読めた"
+except RuntimeError:
+    rd = "例外"
+s.read_dialog = REAL_READ_DIALOG
+setup()
+fo = s.form_of({**AGENT})
+s.subprocess.run = _run
+s.read_dialog = lambda pane, *_: st["tui"].screen()
+check("画面の読み取りが失敗で終わったら、空の画面（問いが消えた）とみなさず例外にし、問いの形も出さない", (rd, fo), ("例外", None))
 check("口: hub/question はコンテナから使える口の一覧にある", ("GET", "/api/hub/question") in __import__("origin_guard").DOCKER_ALLOWED, True)
 
 ok = sum(r[1] for r in results)
