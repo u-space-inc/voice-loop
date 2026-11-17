@@ -1173,10 +1173,11 @@ def _push_send(subs: list[dict], payload: dict, urgency: str) -> tuple[int, list
     return sent, gone
 
 
-async def push_all(title: str, body: str, tag: str, urgency: str = "normal", only: list[dict] | None = None) -> str:
+async def push_all(title: str, body: str, tag: str, urgency: str = "normal", only: list[dict] | None = None, always: bool = False) -> str:
     """どの画面も見えていなければ、購読している端末すべてに知らせる。結果は sent / visible / none / failed / error。
-    only を渡すと、見えている画面の有無に関係なく、その購読だけに送る（🔔 を押したときの試しの通知）。"""
-    if only is None and any(c.visible and time.time() - c.seen < VISIBLE_TTL for c in CLIENTS):
+    only を渡すと、見えている画面の有無に関係なく、その購読だけに送る（🔔 を押したときの試しの通知）。
+    always なら、見えている画面があっても、購読している端末すべてに送る（Slack から答えたことの知らせ。D-003）。"""
+    if only is None and not always and any(c.visible and time.time() - c.seen < VISIBLE_TTL for c in CLIENTS):
         return "visible"
     subs = only if only is not None else await asyncio.to_thread(push_subs)
     if not subs:
@@ -2392,7 +2393,7 @@ async def must_notice(title: str, text: str):
         except Exception:
             pass
     try:
-        await push_all(f"{HUB.label} から", title, f"notice-{n or int(time.time())}")
+        await push_all(f"{HUB.label} から", title, f"notice-{n or int(time.time())}", always=True)  # 画面が見えていても送る
     except Exception:
         traceback.print_exc()
 

@@ -60,8 +60,11 @@ s.jsonl_path = lambda a: st["path"]
 s.herdr = fake_herdr
 
 
-async def fake_push(title, body, tag, urgency="normal", only=None):
-    pushes.append((title, body))
+REAL_PUSH = s.push_all
+
+
+async def fake_push(title, body, tag, urgency="normal", only=None, always=False):
+    pushes.append((title, body, always))
     return "ok"
 s.push_all = fake_push
 s.start_watch = lambda d, kind="send": watches.append(kind)
@@ -230,6 +233,15 @@ setup()
 hq = json.loads(s.hub_question("w9:p1").body)
 r = hub_answer(fp=hq["fp"], ask=hq["ask"], answers=ok_two)
 check("Slack: 送る前に確保した枠は記録に残る", (r.get("ok"), len(s.slack_forms())), (True, 1))
+check("Slack: 答えたことのプッシュ通知は、画面が見えていても送る（always で頼む）", pushes[-1][2] if pushes else None, True)
+
+
+class Seen:  # 見えている画面
+    visible, seen = True, __import__("time").time()
+s.CLIENTS.add(Seen())
+check("プッシュ通知: 見えている画面があると、ふだんは送らず（visible）、always なら送りに進む",
+      (asyncio.run(REAL_PUSH("t", "b", "x")), asyncio.run(REAL_PUSH("t", "b", "x", always=True))), ("visible", "none"))
+s.CLIENTS.clear()
 setup()
 st["status"] = "working"
 r = hub_answer(fp="x", ask="t1", answers=ok_two)
