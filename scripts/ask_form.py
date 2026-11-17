@@ -55,12 +55,11 @@ def _cut(line: str, col: int) -> tuple[str, str]:
 
 
 def _sure(ch: str) -> bool:
-    """画面の列の幅がはっきりしている文字か（幅 0・組み合わせ文字・異体字の指定・幅のあいまいな文字でない）。"""
+    """画面の列の幅がはっきりしている文字か。許すのは、ASCII の印字できる文字と、全角（W・F）か半角カナ（H）で、分類が文字・数字・
+    句読点・記号のものだけ（組み合わせ記号 M*・制御 C*・幅のあいまいな文字・ほかの文字体系は許さない。列の数え方がずれうるため）。"""
     if ord(ch) < 0x80:
         return ch.isprintable()
-    o = ord(ch)
-    return not (unicodedata.combining(ch) or unicodedata.category(ch) in ("Mn", "Me", "Cf", "Cc", "Co", "Cn")
-                or 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF or unicodedata.east_asian_width(ch) == "A")
+    return unicodedata.east_asian_width(ch) in ("W", "F", "H") and unicodedata.category(ch)[0] in "LNPS"
 
 
 def _width(s: str) -> int:
@@ -172,12 +171,13 @@ def step(text: str) -> dict:
         if m:
             if box_col is not None:
                 head, tail = _cut(l, box_col)
-                if set("│┌└┐┘├┤") & set(head) or not all(_sure(ch) for ch in head) or (tail and tail[0] not in "┌│└├"):
-                    # 名前の側に枠の文字がある・幅のはっきりしない文字がある（列の数え方がずれて、名前の途中で切りうる）・
-                    # 枠の列にちょうど枠の文字が無い（列がずれていれば、名前の途中で切っている）
-                    return {"stage": "unknown", "why": "label"}
                 mh = _OPT.match(head.rstrip())
                 label = mh.group(3).strip() if mh else ""
+                if (not mh or set("│┌└┐┘├┤") & set(head) or not all(_sure(ch) for ch in mh.group(3))
+                        or (tail and tail[0] not in "┌│└├")):
+                    # 名前の側に枠の文字がある・名前に幅のはっきりしない文字がある（列の数え方がずれて、名前の途中で切りうる）・
+                    # 枠の列にちょうど枠の文字が無い（列がずれていれば、名前の途中で切っている）
+                    return {"stage": "unknown", "why": "label"}
             else:
                 label = m.group(3).strip()  # 見本の無い問いでは、枠を外さない（名前に枠の文字があっても、そのまま名前）
             rows.append([int(m.group(2)), label, [], m.group(1) == "❯ ", m.group(1) in ("↓ ", "↑ ")])

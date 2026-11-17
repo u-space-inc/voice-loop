@@ -133,6 +133,9 @@ box_tail = lines_pv[i1][len("  1. 横長" + " " * 25):]  # 「┌──…」
 only_zw = "  1. 横長\ufe0f" + " " * 24 + box_tail  # 枠は数えた列にちょうどあるが、名前に U+FE0F がある
 check("幅のはっきりしない文字だけを見る形: 枠の列は合っていても、名前に U+FE0F があれば読まない",
       af.step("\n".join(lines_pv[:i1] + [only_zw] + lines_pv[i1 + 1:])).get("why"), "label")
+others = [af._sure(c) for c in ("\u093e", "\u200d", "\ufe0f", "\u0301", "α", "é", "Ж", "横", "ｱ", "！", "a", " ")]
+check("幅のはっきりした文字だけを許す（組み合わせ記号・幅 0・異体字の指定・幅のあいまいな文字・ほかの文字体系は許さない）",
+      others, [False, False, False, False, False, False, False, True, True, True, True, True])
 off_by_one = "  1. 横長" + " " * 26 + box_tail  # 枠が 1 列ずれている（名前の文字はふつう）
 check("枠の列だけを見る形: 名前の文字はふつうでも、枠の列にちょうど枠が無ければ読まない",
       af.step("\n".join(lines_pv[:i1] + [off_by_one] + lines_pv[i1 + 1:])).get("why"), "label")
