@@ -6,7 +6,7 @@ herdr・本物のセッションには触れない（一覧・画面・キーと
 - 取り消しにくい問いは、印の付け外しのほかは、もう一度押してから
 - 通し: 押すたびに出し直したいまの 1 問で、最後まで答えが届く
 - 途中で思った形にならなければ止まり、理由を返す。キー・文字を送る herdr の呼び出しには時間切れを付ける
-- 相手の位置（コンテナの中の Hermes）からは答えられない。コンテナに新しい口は開けていない
+- 相手の位置（コンテナの中の Hermes）からは、1 問ずつの押し方では答えられない。コンテナに新しい口は開けていない
 使い方: uv run spike/answer_form_test.py"""
 import asyncio
 import json
@@ -139,12 +139,33 @@ r = press(act="pick", n=2)
 s.read_dialog = real
 check("送ったあとの読み取りが失敗したら、送れたとせず「結果が分からない」と返す", (r.get("ok"), r.get("reason"), "結果が分からない" in (r.get("why") or "")), (False, "stuck", True))
 
+setup()
+q = prompt()
+other = FakeTUI({"questions": [{"question": "全部消しますか？", "header": "消す", "options": [{"label": "全削除"}, {"label": "やめる"}]}]})
+calls = {"n": 0}
+
+
+def swap(pane, *_):  # 本体が照らす読み取り（1 回目）は見せた画面、送る前の読み取り（2 回目から）は別の問いの画面
+    calls["n"] += 1
+    return shown if calls["n"] == 1 else other.screen()
+
+
+shown = st["tui"].screen()  # 利用者に見せた画面
+s.read_dialog = swap
+st["tui"] = other  # キーは別の問いのほうへ届く
+s.read_prompt = lambda pane: "\n".join(l for l in shown.split("\n") if l.strip() and not set(l.strip()) <= set("─"))
+r = press(q, act="pick", n=1)
+s.read_dialog = lambda pane, *_: st["tui"].screen()
+s.read_prompt = lambda pane: screen()
+check("照らしたあとで別の問いの画面に変わったら、キーを送らない（見せた画面の指紋を、送る前の読み取りでも照らす）", (r.get("reason"), other.log, other.result), ("stuck", [], None))
+
 # ---------- 相手の位置 ----------
 setup()
 q = prompt()
 r = json.loads(asyncio.run(s.hub_answer({"pane": "w9:p1", "sfp": q["sfp"], "act": "pick", "n": 1, "answers": [{"pick": 1}],
                                          "origin": {"platform": "slack", "chat": "D0TESTCHAT1", "thread": ""}})).body)
-check("コンテナ（Hermes）からは答えられない（Slack の会話からと名乗っても、キーを送らない）", (r.get("ok"), st["tui"].log), (False, []))
+check("コンテナの口（/api/hub/answer）は、1 問ずつの押し方（act・n・sfp）を受けない（Slack の会話からと名乗っても、キーを送らない。"
+      "声の会話の「はい・番号」は、本体が利用者の発言を自分の記録で確かめる今までの守りで、hermes_hub_test が確かめる）", (r.get("ok"), st["tui"].log), (False, []))
 check("口: コンテナから使える口の一覧に、問いを読む・1 問ずつ答える口は足していない",
       any("question" in path or "step" in path for _, path in __import__("origin_guard").DOCKER_ALLOWED), False)
 

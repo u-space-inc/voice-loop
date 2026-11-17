@@ -2300,7 +2300,7 @@ async def step_answer(a: dict, asked: dict, body: dict, confirmed: bool) -> dict
     ANSWERED[pane] = (sfp, time.time())  # 送り始めたら、同じ画面に重ねて送らない（途中で止まっても）
     project = a["cwd"].rsplit("/", 1)[-1]
     try:
-        said = await ask_form.act(kind, arg, read, keys, text)
+        said = await ask_form.act(kind, arg, read, keys, text, sfp)  # 最初の読み取りも、見せた画面の指紋と照らす
     except Exception as e:  # 送る前に止めた・途中で止めた（Stuck）か、読み取り・送信の失敗
         why = str(e) if isinstance(e, ask_form.Stuck) else f"結果が分からない（{type(e).__name__}）"
         hlog(f"answer(画面・1 問ずつ) → {pane} ({project}): 止めました: {why}", flush=True)

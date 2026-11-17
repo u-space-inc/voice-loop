@@ -64,31 +64,50 @@ def step(text: str) -> dict:
     if not chips:
         return {"stage": "unknown", "why": "chips"}
     body = lines[bar_i + 1:]
-    if body and body[0].strip() == "Review your answers":
-        got, cur = [], None
-        for l in body[1:]:
-            s = l.strip()
-            if s.startswith("Ready to submit"):
-                break
-            if s.startswith("● "):
-                cur = [s[2:], None]
-                got.append(cur)
-            elif s.startswith("→ ") and cur is not None and cur[1] is None:
-                cur[1] = s[2:]
-            elif cur is not None and not _RULE.match(l):  # 折り返した問い・答え
-                cur[0 if cur[1] is None else 1] += s
-        sub = [m for m in map(_OPT.match, body) if m]
-        return {"stage": "review", "chips": chips, "answers": [(_line(a, 300), _line(b or "", 300)) for a, b in got],
-                "submit": any(m.group(2) == "1" and m.group(3).strip() == "Submit answers" for m in sub)}
-    foot = body[-1] if body else ""
-    if not ("Enter to select" in foot and "Esc to cancel" in foot):  # いちばん下が質問の操作案内でなければ、質問の画面と言い切らない
-        return {"stage": "unknown", "why": "foot"}
-    first = next((i for i, l in enumerate(body) if _OPT.match(l)), None)
-    if not first:
+    if not body:
+        return {"stage": "unknown", "why": "empty"}
+    foot = body[-1]
+    is_opt = lambda l, n, label: (m := _OPT.match(l)) is not None and int(m.group(2)) == n and m.group(3).strip() == label  # noqa: E731
+    if not ("Enter to select" in foot and "Esc to cancel" in foot):
+        # 確認の画面（操作案内が無い）。下から決まった形で読む: 「Ready to submit…」「1. Submit answers」「2. Cancel」
+        if (len(body) >= 4 and body[0].strip() == "Review your answers" and body[-3].strip().startswith("Ready to submit")
+                and is_opt(body[-2], 1, "Submit answers") and is_opt(body[-1], 2, "Cancel")):
+            got, cur = [], None
+            for l in body[1:-3]:
+                s = l.strip()
+                if _OPT.match(l) or _RULE.match(l) or _BAR.match(l) or s.startswith("❯"):
+                    return {"stage": "unknown", "why": "suspicious"}  # 問い・答えの文に、選択肢・線・カーソルをまねた行がある
+                if s.startswith("● "):
+                    cur = [s[2:], None]
+                    got.append(cur)
+                elif s.startswith("→ ") and cur is not None and cur[1] is None:
+                    cur[1] = s[2:]
+                elif cur is not None:  # 折り返した問い・答え
+                    cur[0 if cur[1] is None else 1] += s
+            return {"stage": "review", "chips": chips, "answers": [(_line(a, 300), _line(b or "", 300)) for a, b in got], "submit": True}
+        return {"stage": "unknown", "why": "foot"}  # いちばん下が質問の操作案内でなければ、質問の画面と言い切らない
+    # 問いの画面。下から決まった形で読む: 操作案内 → 「Chat about this」の行 → 線 → 選択肢のかたまり → 問いの文。
+    # 問いの文（セッションのモデルが書く。外の文が入りうる）に、選択肢・線・見出し・カーソルをまねた行があれば読まない
+    j = len(body) - 2
+    if j < 1:
+        return {"stage": "unknown", "why": "short"}
+    chat = body[j].strip()
+    if not (chat == "Chat about this" or ((m := _OPT.match(body[j])) and m.group(3).strip() == "Chat about this")):
+        return {"stage": "unknown", "why": "chat"}
+    rule = j - 1
+    if not _RULE.match(body[rule]):
+        return {"stage": "unknown", "why": "rule"}
+    k = rule - 1
+    while k >= 0 and (_OPT.match(body[k]) or (body[k].startswith(" ") and not _RULE.match(body[k]))):
+        k -= 1
+    first = k + 1
+    if first == 0 or first >= rule or not _OPT.match(body[first]):
         return {"stage": "unknown", "why": "no_options"}
-    question = " ".join(l.strip() for l in body[:first] if not _RULE.match(l))
-    rule = next((i for i in range(first, len(body)) if _RULE.match(body[i])), None)  # 選択肢と「Chat about this」を分ける線
-    end = rule if rule is not None else len(body) - 1
+    asked = body[:first]
+    if any(_OPT.match(l) or _RULE.match(l) or _BAR.match(l) or l.lstrip().startswith(("❯", "↓", "↑")) for l in asked):
+        return {"stage": "unknown", "why": "suspicious"}
+    question = " ".join(l.strip() for l in asked)
+    end = rule
     rows = []  # [番号, 行の文字, 下の行（折り返し・説明）, カーソルか, 収まらない印か]
     for l in body[first:end]:
         m = _OPT.match(l)
@@ -98,20 +117,19 @@ def step(text: str) -> dict:
             t = _BOX.sub("", l).strip()
             if t and t[0] not in "│┌└┐┘" and not t.startswith("Notes:") and t != "Submit":
                 rows[-1][2].append(t)
+    if sum(1 for r in rows if r[3]) > 1:
+        return {"stage": "unknown", "why": "cursors"}
     if not rows or [r[0] for r in rows] != list(range(rows[0][0], rows[0][0] + len(rows))):
         return {"stage": "unknown", "why": "numbers"}
-    if rule is None:  # 線が無い（読み取りの形が違う）ときは、「Chat about this」の行を名前で外す
-        rows = [r for r in rows if r[1] != "Chat about this"]
     preview = "to add notes" in foot
     multi = any(_MARK.match(r[1]) for r in rows)
     if multi and not all(_MARK.match(r[1]) for r in rows):
         return {"stage": "unknown", "why": "marks"}
     free = None
     if not preview and rows[0][0] == 1:  # 自由記入の欄は、線の上のいちばん下の行（見本つきの問いには無い）
-        last = rows[-1]
-        label = _MARK.sub("", last[1]) if multi else last[1]
-        if rule is not None or label in FREE:
-            free = rows.pop()
+        free = rows.pop()  # 線の上のいちばん下の行が自由記入の欄（空なら「Type something.」）
+        if not rows:
+            return {"stage": "unknown", "why": "no_options"}
     notes = ""
     if preview:  # 見本の枠の下の、字下げした「Notes: …」の行だけ
         box_end = max((j for j in range(first, len(body)) if "└" in body[j]), default=None)
@@ -160,45 +178,62 @@ def public(st: dict) -> dict:
 
 
 # ---------- 1 回押したぶんを送る ----------
-async def act(kind: str, arg, read, keys, text) -> str:
+def sig(st: dict) -> tuple:
+    """いまの 1 問の見分け（問いの文・選択肢の名前・種類・見出し）。送る途中で、別の問いに変わっていないかを照らす。"""
+    return (_flat(st.get("question", "")), tuple(_flat(o["label"]) for o in st.get("options", [])), st.get("multi"), st.get("preview"),
+            tuple(h for h, _ in st.get("chips", [])))
+
+
+async def act(kind: str, arg, read, keys, text, expect: str | None = None) -> str:
     """押したぶんのキーを、画面を確かめながら送る。read() は画面の文字、keys(k) はキー、text(s) は文字を送る（どれも async）。
     kind: pick（1 つ選ぶ。arg は番号）・toggle（複数選ぶ問いの印。arg は番号）・next（複数選ぶ問いを決めて次へ）・
-    free（自由記入。arg は文）・submit（確認の画面で送る）。思った画面でなければ、キーを送らずに（途中なら、それ以上送らずに）Stuck。
+    free（自由記入。arg は文）・submit（確認の画面で送る）。expect は、利用者に見せた画面の指紋（最初の読み取りがこれと違えば送らない）。
+    1 手ごとの読み取りは、その都度、同じ問い（sig）と期待する変化だけを確かめる。思った画面でなければ、キーを送らずに
+    （途中なら、それ以上送らずに）Stuck。送ったあとは、読める次の画面（問いが消えた・次の問い・確認の画面）を見届ける。
     戻り値は、送ったことの短い言い方。"""
     clock = asyncio.get_running_loop().time
 
-    async def until(ok, what: str) -> dict:
+    async def until(ok, what: str) -> tuple[dict, str]:
         end = clock() + WAIT
         while True:
-            st = step(await read())
-            if ok(st):
-                return st
+            raw_ = await read()
+            st_ = step(raw_)
+            if ok(st_):
+                return st_, raw_
             if clock() >= end:
                 raise Stuck(what)
             await asyncio.sleep(STEP)
 
-    async def moved(said: str) -> str:
-        """送ったあと、画面がいまの 1 問から変わったのを見届ける（変わらなければ、届いたか分からないとして止める）。"""
+    async def moved(said: str, before: str) -> str:
+        """送ったあと、画面がいまの 1 問から、読める次の画面に変わったのを見届ける（読めない画面のままなら、届いたか分からないとして止める）。"""
+        def ok(st_):
+            if st_["stage"] in ("gone", "review"):
+                return st_["stage"] != "review" or kind != "submit"
+            return st_["stage"] == "question" and sig(st_) != sig0
         end = clock() + WAIT
-        while fp(await read()) == fp0:
+        while True:
+            raw_ = await read()
+            if fp(raw_) != before and ok(step(raw_)):
+                return said
             if clock() >= end:
-                raise Stuck("送ったあとも画面が変わらない（届いたか分からない）")
+                raise Stuck("送ったあと、読める次の画面にならない（届いたか分からない）")
             await asyncio.sleep(STEP)
-        return said
 
     raw = await read()
-    fp0, st = fp(raw), step(raw)
+    if expect is not None and fp(raw) != expect:  # 見せたあとで画面が変わった
+        raise Stuck("見せたときから画面が変わった")
+    st = step(raw)
+    sig0 = sig(st)
     if kind == "submit":
         if st["stage"] != "review" or not st["submit"]:
             raise Stuck("確認の画面ではない")
         await keys("1")
-        return await moved("確認の画面で「送る」")
+        return await moved("確認の画面で「送る」", fp(raw))
     if st["stage"] != "question":
         raise Stuck("問いの画面ではない")
     if st["typing"] or st["notes"]:  # 端末で入力欄・メモに書きかけている
         raise Stuck("端末で書きかけている")
-    q = _flat(st["question"])
-    same = lambda s: s["stage"] == "question" and _flat(s["question"]) == q  # noqa: E731
+    same = lambda s: s["stage"] == "question" and sig(s) == sig0  # noqa: E731
     labels = {o["n"]: o for o in st["options"]}
     if kind in ("pick", "toggle"):
         n = arg
@@ -207,25 +242,27 @@ async def act(kind: str, arg, read, keys, text) -> str:
         if (kind == "toggle") != st["multi"]:
             raise Stuck("1 つ選ぶ問いと複数選ぶ問いを取り違えた")
         if kind == "toggle":
-            was = labels[n]["checked"]
+            was = {o["n"]: o["checked"] for o in st["options"]}
+            want = {**was, n: not was[n]}
             await keys(str(n))
-            await until(lambda s: same(s) and not s["typing"] and {o["n"]: o["checked"] for o in s["options"]}.get(n) == (not was),
-                        f"{n} 番の印が変わらない")
-            return f"{n}番「{_line(labels[n]['label'], 40)}」の印を{'外した' if was else '付けた'}"
+            await until(lambda s: same(s) and not s["typing"] and not s["free_text"] and {o["n"]: o["checked"] for o in s["options"]} == want,
+                        f"{n} 番の印が思ったとおりに変わらない")
+            return f"{n}番「{_line(labels[n]['label'], 40)}」の印を{'外した' if was[n] else '付けた'}"
+        before = fp(raw)
         if st["preview"]:  # 見本つきは、数字でカーソルを動かしてから Enter（カーソルが既にそこなら Enter だけ）
             if st["cursor"] != n:
                 await keys(str(n))
-                await until(lambda s: same(s) and s["cursor"] == n and not s["typing"] and not s["notes"], f"カーソルが {n} 番に来ない")
-                fp0 = fp(await read())  # Enter のあとの「変わった」は、カーソルを動かしたあとの画面と比べる
+                _, raw2 = await until(lambda s: same(s) and s["cursor"] == n and not s["typing"] and not s["notes"], f"カーソルが {n} 番に来ない")
+                before = fp(raw2)  # Enter の直前の画面（確かめた読み取りそのもの）
             await keys("enter")
         else:
             await keys(str(n))
-        return await moved(f"{n}番「{_line(labels[n]['label'], 40)}」")
+        return await moved(f"{n}番「{_line(labels[n]['label'], 40)}」", before)
     if kind == "next":
-        if not st["multi"] or not any(o["checked"] for o in st["options"]):
-            raise Stuck("複数選ぶ問いで、まだ何も選んでいない")
+        if not st["multi"] or not any(o["checked"] for o in st["options"]) or st["free_text"]:
+            raise Stuck("複数選ぶ問いで、まだ何も選んでいないか、自由記入の欄に書きかけがある")
         await keys("tab")
-        return await moved("選んだものを決めて次へ")
+        return await moved("選んだものを決めて次へ", fp(raw))
     if kind == "free":
         t = _line(arg, OTHER_MAX + 1) if isinstance(arg, str) else ""
         if not t or len(t) > OTHER_MAX:
@@ -238,9 +275,8 @@ async def act(kind: str, arg, read, keys, text) -> str:
         await keys(str(k))
         await until(lambda s: same(s) and s["cursor"] == k and s["typing"] and not s["free_text"], "自由記入の欄に入れない")
         await text(t)
-        await until(lambda s: same(s) and s["cursor"] == k and s["typing"] and _flat(s["free_text"]) == _flat(t),
-                    "自由記入の文が出ないか、入力欄から外れた")
-        fp0 = fp(await read())  # Enter のあとの「変わった」は、文を打ったあとの画面と比べる
-        await keys("enter")
-        return await moved(f"（自由記入）{_line(t, 60)}")
+        _, raw3 = await until(lambda s: same(s) and s["cursor"] == k and s["typing"] and _flat(s["free_text"]) == _flat(t),
+                              "自由記入の文が出ないか、入力欄から外れた")
+        await keys("enter")  # Enter の直前の画面は、確かめた読み取りそのもの（raw3）
+        return await moved(f"（自由記入）{_line(t, 60)}", fp(raw3))
     raise Stuck("知らない押し方")
