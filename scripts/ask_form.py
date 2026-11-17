@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+import unicodedata
 
 OTHER_MAX = 300  # 自由記入の字数の上限
 WAIT, STEP = 4.0, 0.2  # 1 手ごとに画面が変わるのを待つ秒数（読み取りの時間も含めた実の時間）と、見直す間隔
@@ -41,6 +42,20 @@ def _line(s, n: int) -> str:
     """1 行にそろえ、制御文字・向きを変える文字を空白にして n 字で切る。"""
     v = " ".join(_CTRL.sub(" ", str(s or "")).split())
     return v if len(v) <= n else v[: n - 1] + "…"
+
+
+def _cut(line: str, col: int) -> tuple[str, str]:
+    """画面の列（全角は 2 列）で col の位置の左右に分ける。"""
+    w = 0
+    for i, ch in enumerate(line):
+        if w >= col:
+            return line[:i], line[i:]
+        w += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return line, ""
+
+
+def _width(s: str) -> int:
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in s)
 
 
 class Stuck(Exception):
@@ -133,23 +148,46 @@ def step(text: str) -> dict:
     if not question:  # 問いの文が無い（選択肢をまねた 1 行の問いが、選択肢のかたまりに混ざった形もここに来る）
         return {"stage": "unknown", "why": "question"}
     end = rule
+    preview = "to add notes" in foot
+    box_col = None
+    if preview:  # 見本の枠の列（枠の終わり「└──」の行の位置）。選択肢の行は、この列より左だけが名前
+        ends = [j for j in range(first, end) if re.match(r"^ {10,}└─", body[j])]
+        if not ends:
+            return {"stage": "unknown", "why": "notes"}
+        e = body[ends[-1]]
+        box_col = _width(e[:e.index("└")])
     rows = []  # [番号, 行の文字, 下の行（折り返し・説明）, カーソルか, 収まらない印か]
+    after = []  # 選択肢の行より下の、選択肢でない字下げの行（Submit・Next を見る）
     for l in body[first:end]:
         m = _OPT.match(l)
         if m:
-            rows.append([int(m.group(2)), _BOX.sub("", m.group(3)).strip(), [], m.group(1) == "❯ ", m.group(1) in ("↓ ", "↑ ")])
+            if box_col is not None:
+                head, tail = _cut(l, box_col)
+                if set("│┌└┐┘├┤") & set(head) or (tail and tail[0] not in "┌│└├ "):
+                    return {"stage": "unknown", "why": "label"}  # 名前の側に枠の文字がある（名前と枠を見分けられない）
+                mh = _OPT.match(head.rstrip())
+                label = mh.group(3).strip() if mh else ""
+            else:
+                label = m.group(3).strip()  # 見本の無い問いでは、枠を外さない（名前に枠の文字があっても、そのまま名前）
+            rows.append([int(m.group(2)), label, [], m.group(1) == "❯ ", m.group(1) in ("↓ ", "↑ ")])
+            after = []
         elif rows and l.startswith(" ") and not _RULE.match(l):
-            t = _BOX.sub("", l).strip()
+            t = (_cut(l, box_col)[0] if box_col is not None else l).strip()
+            after.append(t)
             if t and t[0] not in "│┌└┐┘├┤" and not t.startswith("Notes:") and t not in ("Submit", "Next"):
                 rows[-1][2].append(t)
     if sum(1 for r in rows if r[3]) > 1:
         return {"stage": "unknown", "why": "cursors"}
     if not rows or [r[0] for r in rows] != list(range(rows[0][0], rows[0][0] + len(rows))) or (chat_n and rows[-1][0] >= chat_n):
         return {"stage": "unknown", "why": "numbers"}
-    preview = "to add notes" in foot
-    multi = any(_MARK.match(r[1]) for r in rows)
-    if multi and not all(_MARK.match(r[1]) for r in rows):
-        return {"stage": "unknown", "why": "marks"}
+    marked = [bool(_MARK.match(r[1])) for r in rows]
+    multi = any(marked)
+    if multi:
+        # 複数選ぶ問いとみるのは、作りで確かめられるときだけ: どの行にも印があり、いちばん下が「[ ] Type something」の形の欄で
+        # （Chat の番号の 1 つ前）、その下に「Submit」か「Next」の行がある。名前に [ ] をまねた 1 つ選ぶ問いと取り違えない
+        if not (all(marked) and chat_n and rows[-1][0] == chat_n - 1 and _flat(_MARK.sub("", rows[-1][1])) == "Typesomething"
+                and any(t in ("Submit", "Next") for t in after)):
+            return {"stage": "unknown", "why": "marks"}
     free, free_hidden = None, False
     if not preview and chat_n:  # 自由記入の欄は「Chat about this」の 1 つ前の番号（見本つきの問いには無い）
         if rows[-1][0] == chat_n - 1:
@@ -163,8 +201,7 @@ def step(text: str) -> dict:
         more = any(r[4] for r in rows) or rows[0][0] != 1
     notes = ""
     if preview:  # 見本の枠の終わり（字下げした「└──…」の行）のすぐ下の、字下げした「Notes: …」の行。この形で読めなければ読まない
-        ends = [j for j in range(first, end) if re.match(r"^ {10,}└─", body[j])]
-        if not ends or ends[-1] + 1 >= end:
+        if ends[-1] + 1 >= end:
             return {"stage": "unknown", "why": "notes"}
         l = body[ends[-1] + 1]
         if not (l.startswith(" " * 10) and l.strip().startswith("Notes:")):

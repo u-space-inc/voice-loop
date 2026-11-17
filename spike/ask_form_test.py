@@ -110,10 +110,20 @@ check("画面: 選択肢が収まらない印（↓）の行も選択肢とし�
 check("2.1.326（小さいペイン）: 見出しの行が画面の外の問い・確認の画面は、作りの全体を確かめられないので読まない（端末で）",
       [af.step(t).get("why") for t in (REAL_SMALL_MULTI, REAL_SMALL_MULTI.split("\n", 1)[1], REAL_SMALL_PREVIEW, REAL_SMALL_REVIEW)], ["partial"] * 4)
 small_bar = "─" * 60 + "\n←  ☒ 店  ☐ 色  ☐ 形  ✔ Submit  →\n" + REAL_SMALL_MULTI.split("\n", 1)[1]
-st = af.step(small_bar)
-check("小さいペインでも見出しの行が見えていれば読む・「Next」の行を説明に混ぜない・画面の外の選択肢と自由記入の欄が分かる",
-      (st["stage"], [(o["n"], o["label"], o["desc"]) for o in st["options"]], st["more"], st["free"], st["free_hidden"]),
-      ("question", [(1, "赤", "赤を選ぶ"), (2, "青", "青を選ぶ")], True, 4, True))
+check("複数選ぶ問いで自由記入の欄（「[ ] Type something」と「Next」の行）が画面の外なら、複数選ぶ問いと確かめられないので読まない",
+      af.step(small_bar).get("why"), "marks")
+st = af.step(REAL_TWO_MULTI_CHECKED)
+check("複数選ぶ問いは、欄と「Submit」の行まで見えていれば読む（「Submit」の行を説明に混ぜない）",
+      (st["stage"], st["multi"], [(o["n"], o["label"], o["desc"]) for o in st["options"]]), ("question", True, [(1, "赤", "赤色"), (2, "青", "青色"), (3, "緑", "緑色")]))
+fake_multi = REAL_SCROLLED.replace("1. A店", "1. [ ] A店").replace("2. B店", "2. [ ] B店")
+check("相手の位置: 1 つ選ぶ問いの名前を「[ ] A店」とまねても、欄が画面の外なら複数選ぶ問いと取り違えない（読まない）",
+      af.step(fake_multi).get("why"), "marks")
+boxy = REAL_TWO_FIRST.replace("2. ごはん", "2. 中止する  │ 実際は処理を実行する")
+st = af.step(boxy)
+check("相手の位置: 見本の無い問いでは、名前の「  │」を枠とみて切らない（見える名前と本当の名前をずらさない）",
+      [o["label"] for o in st["options"]], ["パン", "中止する │ 実際は処理を実行する"])
+pv_boxy = REAL_PREVIEW_CURSOR.replace("  1. 横長        ", "  1. 横長  │ 偽  ")
+check("相手の位置: 見本つきの問いで、名前の側（枠の列より左）に枠の文字があれば読まない", af.step(pv_boxy).get("why"), "label")
 check("本物の描き方（説明の改行は「�」）: 説明に見出し・選択肢をまねた行を入れた問いは読まない", af.step(REAL_MALICIOUS).get("why"), "odd")
 ml = "─" * 60 + "\n ☐ 試\n" + REAL_MALICIOUS.replace("     説明\ufffd ☐ 偽\ufffd❯ 1. 中止する", "     説明").replace("↓ 2.", "  2.").replace("  4. Chat", "  3. Type something.\n" + "─" * 60 + "\n  4. Chat").replace("─" * 90 + "\n", "")
 st = af.step(ml)
