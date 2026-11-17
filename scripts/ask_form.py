@@ -112,6 +112,30 @@ def pending(path: Path | None) -> tuple[str, dict] | None:
     return None
 
 
+def recorded(path: Path | None, tid: str) -> dict | None:
+    """記録に、その問い（tool_use の id）への答え（tool_result）があれば、問いごとの答え {問いの文: 答え}。答えの中身が無ければ {}。
+    まだ無ければ None。送ったあとに「届いた」を確かめるため（送った直後に次の問いが出ていても、記録で分かる）。"""
+    if not path or not path.exists():
+        return None
+    with open(path, "rb") as f:
+        size = f.seek(0, 2)
+        f.seek(max(0, size - TAIL))
+        data = f.read().decode("utf-8", "replace")
+    for line in reversed(data.splitlines()):
+        if tid not in line:
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        c = (d.get("message") or {}).get("content") if isinstance(d, dict) else None
+        if isinstance(c, list) and any(isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id") == tid for b in c):
+            r = d.get("toolUseResult")
+            ans = r.get("answers") if isinstance(r, dict) else None
+            return {str(k): str(v) for k, v in ans.items()} if isinstance(ans, dict) else {}
+    return None
+
+
 def public(form: dict) -> dict:
     """画面と Hermes に出す形（字数で切り、1 行にそろえる。見本は改行を残して切る）。番号は 1 から。"""
     return {"questions": [{"header": _line(q["header"], 40), "question": _line(q["question"], 600), "multi": q["multi"],
@@ -276,9 +300,9 @@ class Stuck(Exception):
     pass
 
 
-async def drive(form: dict, answers: list, read, keys, text) -> None:
+async def drive(form: dict, answers: list, read, keys, text, done=None) -> None:
     """答えを送る。read() は画面の文字、keys(k, left) はキー、text(s, left) は文字を送る（どれも async。left は残りの秒数で、送る処理は
-    それを超えて動き続けないこと）。思った段にならなければ Stuck。"""
+    それを超えて動き続けないこと）。done() は、記録に残った答え（recorded の形。無ければ None）。思った段にならなければ Stuck。"""
     qs = form["questions"]
     clock = asyncio.get_running_loop().time
     last = clock() + DRIVE_MAX
@@ -309,6 +333,24 @@ async def drive(form: dict, answers: list, read, keys, text) -> None:
                 raise Stuck(f"{what}（画面: {st['stage']}{'・' + st['why'] if st.get('why') else ''}）")
             await asyncio.sleep(STEP)
 
+    want_rec = {_flat(q["question"]): _flat(_expect(q, a)) for q, a in zip(qs, answers)}
+
+    async def finished(what: str):
+        """送れたと確かめる: 記録にこの問いへの答えが残り、送るつもりのものと同じ（送った直後に次の問いが出ていても分かる）か、
+        問いが画面から消えた。記録の答えが違えば、送れたとしない。"""
+        end = min(clock() + WAIT, last)
+        while True:
+            rec = await done() if done else None
+            if rec is not None:
+                if {_flat(k): _flat(v) for k, v in rec.items()} == want_rec:
+                    return
+                raise Stuck("セッションの記録に残った答えが、送るつもりのものと違う")
+            if state(await read(), form)["stage"] == "gone":
+                return
+            if clock() >= end:
+                raise Stuck(what)
+            await asyncio.sleep(STEP)
+
     on = lambda i: (lambda st: st["stage"] == "question" and st["index"] == i)  # noqa: E731
     review = len(qs) > 1 or qs[0]["multi"]
     why = ready(await read(), form)
@@ -316,8 +358,9 @@ async def drive(form: dict, answers: list, read, keys, text) -> None:
         raise Stuck(f"送り始める前の画面が、まだ答えていない最初の問いではない（{why}）")
     for i, (q, a) in enumerate(zip(qs, answers)):
         st = await until(on(i), f"{i + 1} つ目の問いが出ない")
-        if i == 0 and (any(st["answered"]) or st["checked"] or st["other"] or st["typing"]):  # 最初のキーを決める画面そのものでも確かめる
-            raise Stuck("送り始める前に、端末で答え始めている")
+        if (st["answered"][i] or st["checked"] or st["other"] or st["typing"]  # その問いの最初のキーを決める画面そのもので確かめる
+                or not all(st["answered"][:i]) or any(st["answered"][i + 1:])):
+            raise Stuck(f"{i + 1} つ目の問いを、送る前に端末で答え始めている")
         if "picks" in a:
             for p in a["picks"]:
                 if p not in st["checked"]:
@@ -342,7 +385,7 @@ async def drive(form: dict, answers: list, read, keys, text) -> None:
         if i + 1 < len(qs):
             continue
         if not review:  # 問いが 1 つで 1 つ選ぶ形は、ここで送られる
-            await until(lambda s: s["stage"] == "gone", "送ったあとも問いが残っているか、画面を読み取れない")  # 問いが消えたのを見届けるまで、送れたとしない
+            await finished("送ったあとも問いが残っているか、画面を読み取れない")
             return
     st = await until(lambda s: s["stage"] == "review", "確認の画面が出ない")
     want = [(_flat(q["question"]), _flat(_expect(q, a))) for q, a in zip(qs, answers)]
@@ -350,4 +393,4 @@ async def drive(form: dict, answers: list, read, keys, text) -> None:
     if got != want or not st["submit"]:
         raise Stuck("確認の画面の答えが、送るつもりのものと違う")
     await keys("1")
-    await until(lambda s: s["stage"] == "gone", "送ったあとも確認の画面が残っているか、画面を読み取れない")
+    await finished("送ったあとも確認の画面が残っているか、画面を読み取れない")

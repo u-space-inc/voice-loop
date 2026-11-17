@@ -85,7 +85,8 @@ REAL_SHOP_INPUT = {"questions": [
 class FakeTUI:
     """Claude Code の選択肢の画面の偽物。quirks で、本物と違う動き（版の違い・取り違え）を入れられる:
     preview_number_selects（見本つきでも数字で選ばれる）・ignore_tab（Tab が効かない）・no_typing（自由記入の欄に入らない）・
-    review_wrong（確認の画面に違う答えを出す）・submit_ignored（「1」で送られない）・garble_after（「1」のあと画面に読めない文字が混じる）。
+    review_wrong（確認の画面に違う答えを出す）・submit_ignored（「1」で送られない）・garble_after（「1」のあと画面に読めない文字が混じる）・
+    next_question（送ったあと、すぐ次の別の問いが画面に出る）。recorded() は、送られた答えを記録の形（{問いの文: 答え}）で返す。
     自由記入の文は 30 字で折り返す（続きの行は 5 字下げ）。"""
 
     def __init__(self, raw: dict, quirks=()):
@@ -181,7 +182,13 @@ class FakeTUI:
         chips = "  ".join(("☒" if (self.ans[k] is not None or self.checked[k]) else "☐") + " " + q["header"] for k, q in enumerate(self.qs))
         return f"←  {chips}  ✔ Submit  →"
 
+    def recorded(self):
+        return None if self.result is None else {q["question"]: a for q, a in zip(self.qs, self.result)}
+
     def screen(self) -> str:
+        if self.stage == "done" and "next_question" in self.q:
+            return ("←  ☐ 別  ☐ 次  ✔ Submit  →\n別の問いです\n❯ 1. はい\n     する\n  2. いいえ\n     しない\n  3. Type something.\n"
+                    "  4. Chat about this\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel")
         if self.stage in ("done", "cancelled"):
             return "⏺ 受け取りました\n❯ "
         rule = "─" * 60

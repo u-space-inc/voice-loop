@@ -226,6 +226,54 @@ check("画面: 複数選ぶ問いの自由記入に印があれば答え始め�
       (af.state(REAL_TWO_MULTI_CHECKED.replace("[✔]", "[ ]"), TWO)["other"],
        af.ready(one_multi.replace("[✔]", "[ ]").replace("4. [ ] Type something", "4. [✔] Type something"), M1)),
       (None, "started"))
+TWO_SINGLE = {"questions": [REAL_SHOP_INPUT["questions"][0], REAL_TWO_INPUT["questions"][0]]}
+TS = af.form_of(TWO_SINGLE)
+
+
+class TypingSecond(FakeTUI):
+    """1 つ目に答えた直後、端末で 2 つ目の自由記入の欄に入って打ち始めた。"""
+
+    def keys(self, k):
+        super().keys(k)
+        if self.log == ["1"]:
+            self.cursor, self.typing, self.other[1] = 3, True, "おに"
+
+
+tui = TypingSecond(TWO_SINGLE)
+try:
+    asyncio.run(af.drive(TS, af.check(TS, [{"pick": 1}, {"pick": 2}])[0], _r, _k, _t))
+    err = None
+except af.Stuck as e:
+    err = str(e)
+check("揺れ: 2 つ目以降の問いでも、その問いの最初のキーの前に端末で答え始めていたら送らない（打ちかけの文に番号を足さない）",
+      (bool(err), tui.log, tui.other[1]), (True, ["1"], "おに"))
+
+
+async def _done():
+    return tui.recorded()
+tui = FakeTUI(REAL_TWO_INPUT, ["next_question"])
+try:
+    asyncio.run(af.drive(TWO, af.check(TWO, ok_two)[0], _r, _k, _t, _done))
+    err = None
+except af.Stuck as e:
+    err = str(e)
+check("送る: 送った直後に次の問いが出ていても、記録に残った答えで届いたと確かめる", (err, tui.result), (None, ["ごはん", "赤, 緑"]))
+
+
+async def _wrong():
+    return {"朝はどれ？": "パン", "好きな色は？（複数可）": "赤, 緑"} if tui.result else None
+tui = FakeTUI(REAL_TWO_INPUT, ["next_question"])
+try:
+    asyncio.run(af.drive(TWO, af.check(TWO, ok_two)[0], _r, _k, _t, _wrong))
+    err = None
+except af.Stuck as e:
+    err = str(e)
+check("揺れ: 記録に残った答えが送るつもりと違えば、送れたとしない", bool(err) and "記録" in err, True)
+p1 = transcript(use("t1", REAL_TWO_INPUT), {"type": "user", "toolUseResult": {"answers": {"朝はどれ？": "ごはん"}},
+                                            "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}})
+check("記録の答え: tool_result と toolUseResult の answers から読む・無ければ None・答えの無い tool_result は {}",
+      (af.recorded(p1, "t1"), af.recorded(p1, "t9"), af.recorded(transcript(use("t2", REAL_TWO_INPUT), res("t2")), "t2")),
+      ({"朝はどれ？": "ごはん"}, None, {}))
 import time as _time  # noqa: E402
 tui = FakeTUI(REAL_TWO_INPUT, ["ignore_tab"])
 

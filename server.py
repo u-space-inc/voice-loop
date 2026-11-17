@@ -2325,7 +2325,7 @@ async def form_answer(a: dict, asked: dict, fp: str, ask, answers, confirmed: bo
     ANSWERED[pane] = (fp, time.time())  # 送り始めたら、同じ問いに重ねて送らない（途中で止まっても）
     project = a["cwd"].rsplit("/", 1)[-1]
     try:
-        await ask_form.drive(form, plan, read, keys, text)
+        await ask_form.drive(form, plan, read, keys, text, lambda: asyncio.to_thread(ask_form.recorded, jsonl_path(a), ask))
     except Exception as e:  # 途中で止めた（Stuck）か、読み取り・送信の失敗。どこまで届いたかは分からない
         why = str(e) if isinstance(e, ask_form.Stuck) else f"結果が分からない（{type(e).__name__}）"
         hlog(f"answer({via}・問いの形) → {pane} ({project}): 途中で止めました: {why}（送ろうとした答え: {said}）", flush=True)
