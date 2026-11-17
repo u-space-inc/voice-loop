@@ -129,6 +129,13 @@ check("相手の位置: 見本つきの問いの名前に幅のはっきりし�
       af.step("\n".join(lines_pv[:i1] + [zw] + lines_pv[i1 + 1:])).get("why"), "label")
 shifted = "\n".join(lines_pv[:i1] + ["  1. 横長ただし実行 " + lines_pv[i1][len("  1. 横長" + " " * 25):]] + lines_pv[i1 + 1:])
 check("相手の位置: 枠の列にちょうど枠の文字が無ければ（名前が枠の列を越える）読まない", af.step(shifted).get("why"), "label")
+box_tail = lines_pv[i1][len("  1. 横長" + " " * 25):]  # 「┌──…」
+only_zw = "  1. 横長\ufe0f" + " " * 24 + box_tail  # 枠は数えた列にちょうどあるが、名前に U+FE0F がある
+check("幅のはっきりしない文字だけを見る形: 枠の列は合っていても、名前に U+FE0F があれば読まない",
+      af.step("\n".join(lines_pv[:i1] + [only_zw] + lines_pv[i1 + 1:])).get("why"), "label")
+off_by_one = "  1. 横長" + " " * 26 + box_tail  # 枠が 1 列ずれている（名前の文字はふつう）
+check("枠の列だけを見る形: 名前の文字はふつうでも、枠の列にちょうど枠が無ければ読まない",
+      af.step("\n".join(lines_pv[:i1] + [off_by_one] + lines_pv[i1 + 1:])).get("why"), "label")
 pv_boxy = REAL_PREVIEW_CURSOR.replace("  1. 横長        ", "  1. 横長  │ 偽  ")
 check("相手の位置: 見本つきの問いで、名前の側（枠の列より左）に枠の文字があれば読まない", af.step(pv_boxy).get("why"), "label")
 check("本物の描き方（説明の改行は「�」）: 説明に見出し・選択肢をまねた行を入れた問いは読まない", af.step(REAL_MALICIOUS).get("why"), "odd")
