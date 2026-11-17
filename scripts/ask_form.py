@@ -138,9 +138,10 @@ def step(text: str) -> dict:
                     cur[0 if cur[1] is None else 1] += s
             if len(got) != len(chips) or any(b is None for _, b in got):
                 return {"stage": "unknown", "why": "answers"}
-            if not all(_fits(a, "answer") and _fits(b, "answer") for a, b in got):
+            if not all(_fits(a, "question") and _fits(b, "answer") for a, b in got):  # 問いの文は、問いの画面と同じ上限
                 return {"stage": "unknown", "why": "long"}
-            return {"stage": "review", "chips": chips, "answers": [(_line(a, LIMITS["answer"]), _line(b or "", LIMITS["answer"])) for a, b in got], "submit": True}
+            return {"stage": "review", "chips": chips, "answers": [(_line(a, LIMITS["question"]), _line(b or "", LIMITS["answer"])) for a, b in got],
+                    "submit": True}
         return {"stage": "unknown", "why": "review"}  # 確認の画面の終わりはあるが、頭（Review your answers）が決まった形で読めない
     # 問いの画面。下から決まった形で読む: 操作案内 → 「Chat about this」の行 → 線 → 選択肢のかたまり → 問いの文。
     # 問いの文（セッションのモデルが書く。外の文が入りうる）に、選択肢・線・見出し・カーソルをまねた行があれば読まない
@@ -317,8 +318,12 @@ async def act(kind: str, arg, read, keys, text, expect: str | None = None) -> st
                 return st_["stage"] != "review" or kind != "submit"
             # 次の問い。まだ何も答えていない形のときだけ（もう印・書きかけ・メモがあれば、送ったキーがずれて次の問いに届いたか、
             # 端末で同時に押された。届いたとしない）
-            return (st_["stage"] == "question" and sig(st_) != sig0 and not any(o["checked"] for o in st_["options"])
-                    and not st_["free_text"] and not st_["free_checked"] and not st_["typing"] and not st_["notes"])
+            if not (st_["stage"] == "question" and not any(o["checked"] for o in st_["options"])
+                    and not st_["free_text"] and not st_["free_checked"] and not st_["typing"] and not st_["notes"]):
+                return False
+            # 次の問いに進んだ見分け: 問い・選択肢・種類が変わった、見出しの答えた印が進んだ（見出しだけが違う同じ文の問いが続くとき）、
+            # 「決めて次へ」で印のあった問いから印の無い問いになった（Tab は印を外さない）
+            return sig(st_) != sig0 or [a for _, a in st_["chips"]] != chips0 or kind == "next"
         end = clock() + WAIT
         while True:
             raw_ = await read()
@@ -332,7 +337,7 @@ async def act(kind: str, arg, read, keys, text, expect: str | None = None) -> st
     if expect is not None and fp(raw) != expect:  # 見せたあとで画面が変わった
         raise Stuck("見せたときから画面が変わった")
     st = step(raw)
-    sig0 = sig(st)
+    sig0, chips0 = sig(st), [a for _, a in st.get("chips", [])]
     if kind == "submit":
         if st["stage"] != "review" or not st["submit"]:
             raise Stuck("確認の画面ではない")

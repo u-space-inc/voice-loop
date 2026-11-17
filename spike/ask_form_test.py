@@ -360,6 +360,23 @@ tui = NextFreeChecked(REAL_TWO_INPUT)
 r, err = go(tui, "pick", 1)
 check("次の問いの自由記入の欄に印があれば、届いたとしない（codex-review）", bool(err), True)
 
+twin = {"questions": [{"question": "どれ？", "header": h, "options": [{"label": "A", "description": "a"}, {"label": "B", "description": "b"}]}
+                      for h in ("一", "二")]}
+tui = FakeTUI(twin)
+r, err = go(tui, "pick", 1)
+check("見出しだけが違う同じ文の問いが続いても、見出しの答えた印が進めば次の問いに進んだとみる（codex-review）", (err, tui.i, tui.ans[0]), (None, 1, 1))
+twin_multi = {"questions": [{**q, "multiSelect": True} for q in twin["questions"]]}
+tui = FakeTUI(twin_multi)
+tui.keys("1")
+r, err = go(tui, "next")
+check("複数選ぶ同じ文の問いが続いても、「決めて次へ」で印の無い問いになれば進んだとみる", (err, tui.i), (None, 1))
+long_q = {"questions": [{"question": "長い問い" + "あ" * 400, "header": "長", "options": [{"label": "A"}, {"label": "B"}]},
+                        {"question": "次", "header": "次", "options": [{"label": "C"}, {"label": "D"}]}]}
+tui = FakeTUI(long_q)
+tui.keys("1"); tui.keys("1")
+st = af.step(tui.screen())
+check("確認の画面の問いの文には、問いの画面と同じ上限（600 字）を使う（301〜600 字の問いでも送れる。codex-review）", (st["stage"], len(st["answers"])), ("review", 2))
+
 # ---------- 書きかけ・揺れ・取り違え ----------
 tui = FakeTUI(one)
 tui.keys("3")
