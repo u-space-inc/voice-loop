@@ -38,6 +38,14 @@ def _flat(s: str) -> str:
     return "".join(str(s).split())
 
 
+LIMITS = {"chip": 40, "question": 600, "label": 200, "desc": 1000, "answer": 300}  # 画面に出す字数の上限。超えたら省かずに、問いを読まない
+
+
+def _fits(s, kind: str) -> bool:
+    """省かずに出せる長さか（省いた名前のまま押すと、見えていない後半ごと確定してしまう）。"""
+    return len(" ".join(_CTRL.sub(" ", str(s or "")).split())) <= LIMITS[kind]
+
+
 def _line(s, n: int) -> str:
     """1 行にそろえ、制御文字・向きを変える文字を空白にして n 字で切る。"""
     v = " ".join(_CTRL.sub(" ", str(s or "")).split())
@@ -105,7 +113,7 @@ def step(text: str) -> dict:
         return {"stage": "unknown", "why": "partial"}
     bar_i = bars[0]
     items = [x for x in re.split(r"\s{2,}", lines[bar_i].strip().strip("←→").strip()) if x]
-    chips = [(_line(x[1:], 40), x[0] == "☒") for x in items if x[:1] in "☐☒"]
+    chips = [(_line(x[1:], LIMITS["chip"]), x[0] == "☒") for x in items if x[:1] in "☐☒"]
     body = lines[bar_i + 1:]
     if not body or not chips:
         return {"stage": "unknown", "why": "empty"}
@@ -128,7 +136,9 @@ def step(text: str) -> dict:
                     cur[0 if cur[1] is None else 1] += s
             if len(got) != len(chips) or any(b is None for _, b in got):
                 return {"stage": "unknown", "why": "answers"}
-            return {"stage": "review", "chips": chips, "answers": [(_line(a, 300), _line(b or "", 300)) for a, b in got], "submit": True}
+            if not all(_fits(a, "answer") and _fits(b, "answer") for a, b in got) or not all(_fits(h, "chip") for h, _ in chips):
+                return {"stage": "unknown", "why": "long"}
+            return {"stage": "review", "chips": chips, "answers": [(_line(a, LIMITS["answer"]), _line(b or "", LIMITS["answer"])) for a, b in got], "submit": True}
         return {"stage": "unknown", "why": "review"}  # 確認の画面の終わりはあるが、頭（Review your answers）が決まった形で読めない
     # 問いの画面。下から決まった形で読む: 操作案内 → 「Chat about this」の行 → 線 → 選択肢のかたまり → 問いの文。
     # 問いの文（セッションのモデルが書く。外の文が入りうる）に、選択肢・線・見出し・カーソルをまねた行があれば読まない
@@ -219,10 +229,15 @@ def step(text: str) -> dict:
             return {"stage": "unknown", "why": "notes"}
         notes = l.strip()[len("Notes:"):].strip()
         notes = "" if notes == "press n to add notes" else notes
+    if not _fits(question, "question") or not all(_fits(h, "chip") for h, _ in chips):
+        return {"stage": "unknown", "why": "long"}
     options = []
     for n, label, below, _, _ in rows:
+        mk0 = _MARK.match(label)
+        if not _fits(label[mk0.end():] if mk0 else label, "label") or not _fits(" ".join(below), "desc"):
+            return {"stage": "unknown", "why": "long"}  # 長すぎる名前・説明は省かずに、問いを読まない（端末で）
         mk = _MARK.match(label)
-        options.append({"n": n, "label": _line(label[mk.end():] if mk else label, 200), "desc": _line(" ".join(below), 300),
+        options.append({"n": n, "label": _line(label[mk.end():] if mk else label, LIMITS["label"]), "desc": _line(" ".join(below), LIMITS["desc"]),
                         "checked": bool(mk and mk.group(1) != " ")})
     free_text = ""
     if free:
@@ -234,7 +249,7 @@ def step(text: str) -> dict:
     for l in body[first:end]:
         if l.count("│") >= 2:
             box.append(_CTRL.sub(" ", l.split("│", 1)[1].rsplit("│", 1)[0]).rstrip()[1:])
-    return {"stage": "question", "chips": chips, "question": _line(question, 600), "multi": multi, "preview": preview,
+    return {"stage": "question", "chips": chips, "question": _line(question, LIMITS["question"]), "multi": multi, "preview": preview,
             "options": options, "free": free_n, "free_hidden": free_hidden, "free_text": _line(free_text, OTHER_MAX + 50), "cursor": cursor,
             "typing": "to edit in" in foot, "notes": notes, "more": more, "cut": not question,
             "box": "\n".join(box).strip("\n")[:600] if preview else ""}
@@ -291,7 +306,10 @@ async def act(kind: str, arg, read, keys, text, expect: str | None = None) -> st
         def ok(st_):
             if st_["stage"] in ("gone", "review"):
                 return st_["stage"] != "review" or kind != "submit"
-            return st_["stage"] == "question" and sig(st_) != sig0
+            # 次の問い。まだ何も答えていない形のときだけ（もう印・書きかけ・メモがあれば、送ったキーがずれて次の問いに届いたか、
+            # 端末で同時に押された。届いたとしない）
+            return (st_["stage"] == "question" and sig(st_) != sig0 and not any(o["checked"] for o in st_["options"])
+                    and not st_["free_text"] and not st_["typing"] and not st_["notes"])
         end = clock() + WAIT
         while True:
             raw_ = await read()

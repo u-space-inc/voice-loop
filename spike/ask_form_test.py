@@ -274,6 +274,29 @@ r, err = go(tui, "free", "駅前の店")
 check("書きかけ: 欄の文が「Type something.」とそっくりでも、番号を押さずに ↓ で入り、打った文が合わなければ Enter を送らない（確定させない）",
       (bool(err), any(k.isdigit() for k in tui.log), "enter" in tui.log, tui.result), (True, False, False, None))
 
+long_label = {"questions": [{"question": "どれ？", "header": "長", "options": [{"label": "中止する " + "a" * 200 + " ただし実行"}, {"label": "やめる"}]}]}
+check("長すぎる名前は省かずに、問いを読まない（省いた名前のまま押して、見えていない後半ごと確定させない）",
+      af.step(FakeTUI(long_label).screen()).get("why"), "long")
+long_ans = full_review.replace("   → B店", "   → B店" + "b" * 300)
+check("確認の画面の長すぎる答えも、省かずに読まない", af.step(long_ans).get("why"), "long")
+
+
+class Simul(FakeTUI):
+    """画面を確かめてからキーを送るまでの間に、端末で「1」が押された（1 つ目に答えて次の問いへ進んだ）。"""
+    done_once = False
+
+    def keys(self, k):
+        if not self.done_once:
+            self.done_once = True
+            super().keys("1")
+        super().keys(k)
+
+
+tui = Simul(REAL_TWO_INPUT)
+r, err = go(tui, "pick", 2)
+check("競り合い: 送ったキーが次の問いに届いて印が付いたら、届いたとしない（防げない間隙を、気づける形にする）",
+      (bool(err), tui.checked[1]), (True, {2}))
+
 # ---------- 書きかけ・揺れ・取り違え ----------
 tui = FakeTUI(one)
 tui.keys("3")
