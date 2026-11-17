@@ -283,9 +283,14 @@ def state(text: str, form: dict) -> dict:
             other += l.strip()
     elif q["multi"] and k in opts and _flat(opts[k]) != "[]Typesomething":
         other = opts[k]  # 複数選ぶ問いで自由記入に印が付いている（答え始めている）
-    notes = next((l.split("Notes:", 1)[1].strip() for l in body[first:] if "Notes:" in l), "")  # 見本付きの問いのメモ欄
-    if notes == "press n to add notes":
-        notes = ""
+    notes = ""  # 見本付きの問いのメモ欄（見本の枠の下の、字下げした「Notes: …」の行だけ。説明文・見本の中身・選択肢の行は見ない）
+    if q["preview"]:
+        box_end = max((j for j in range(first, len(body)) if "└" in body[j]), default=None)
+        if box_end is not None and box_end + 1 < len(body):
+            l = body[box_end + 1]
+            if l.startswith(" " * 10) and l.strip().startswith("Notes:") and not _OPT.match(l) and not set("│┌┐└┘") & set(l):
+                notes = l.strip()[len("Notes:"):].strip()
+                notes = "" if notes == "press n to add notes" else notes
     return {"stage": "question", "index": idx, "cursor": cursor, "checked": checked, "answered": answered,
             "other": other, "typing": "to edit in" in foot, "notes": notes}
 

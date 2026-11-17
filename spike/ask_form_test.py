@@ -311,6 +311,12 @@ noted1 = noted.replace("←  ☐ 店  ☐ 形  ✔ Submit  →", " ☐ 形")
 check("画面: 見本付きの問いのメモ欄（Notes）に書かれていたら、答え始めたとみる",
       (af.state(noted1, SHOP2).get("notes"), af.ready(noted1, SHOP2), af.ready(noted1.replace("Notes: 大きめで", "Notes: press n to add notes"), SHOP2)),
       ("大きめで", "started", ""))
+DESC_NOTES = {"questions": [{"question": "朝はどれ？", "header": "朝", "options": [{"label": "パン", "description": "Notes: 説明を読む"}, {"label": "ごはん"}]},
+                            {"question": "好きな色は？（複数可）", "header": "色", "multiSelect": True, "options": [{"label": "赤"}, {"label": "青"}]}]}
+tui = FakeTUI(DESC_NOTES)
+check("画面: 選択肢の説明文の「Notes:」は、メモ欄とみない（答え始めたとしない）", (af.state(tui.screen(), af.form_of(DESC_NOTES))["notes"], af.ready(tui.screen(), af.form_of(DESC_NOTES))), ("", ""))
+box_notes = noted1.replace("│ |    |                                   │", "│ Notes: 枠の中の文                       │", 1).replace("Notes: 大きめで", "Notes: press n to add notes")
+check("画面: 見本の枠の中の「Notes:」は、メモ欄とみない", (af.state(box_notes, SHOP2).get("notes"), af.ready(box_notes, SHOP2)), ("", ""))
 
 
 async def _done():
