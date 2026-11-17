@@ -233,6 +233,9 @@ def state(text: str, form: dict) -> dict:
         sub = [m for m in map(_OPT.match, body) if m]
         return {"stage": "review", "answers": [(a, b or "") for a, b in got],
                 "submit": any(m.group(2) == "1" and m.group(3).strip() == "Submit answers" for m in sub)}
+    foot = lines[-1]
+    if not ("Enter to select" in foot and "Esc to cancel" in foot):  # いちばん下が質問の操作案内でなければ、質問の画面と言い切らない（別の入力欄・枠）
+        return {"stage": "unknown", "why": "foot"}
     first = next((i for i, l in enumerate(body) if _OPT.match(l)), None)
     if not first:
         return {"stage": "unknown", "why": "no_options"}
@@ -280,7 +283,6 @@ def state(text: str, form: dict) -> dict:
             other += l.strip()
     elif q["multi"] and k in opts and _flat(opts[k]) != "[]Typesomething":
         other = opts[k]  # 複数選ぶ問いで自由記入に印が付いている（答え始めている）
-    foot = lines[-1]
     return {"stage": "question", "index": idx, "cursor": cursor, "checked": checked, "answered": answered,
             "other": other, "typing": "to edit in" in foot}
 
@@ -362,10 +364,15 @@ async def drive(form: dict, answers: list, read, keys, text, done=None) -> None:
                 or not all(st["answered"][:i]) or any(st["answered"][i + 1:])):
             raise Stuck(f"{i + 1} つ目の問いを、送る前に端末で答え始めている")
         if "picks" in a:
+            done_set: set = set()
             for p in a["picks"]:
-                if p not in st["checked"]:
-                    await keys(str(p))
-                    st = await until(lambda s, p=p: on(i)(s) and p in s["checked"], f"{i + 1} つ目の {p} 番に印が付かない")
+                st = state(await read(), form)  # 1 手ごとに、思った印の集合のままで、入力欄に入っていないかを確かめてから送る
+                if not (on(i)(st) and st["checked"] == done_set and not st["typing"] and st["other"] is None):
+                    raise Stuck(f"{i + 1} つ目の問いが、送る途中で端末から変わった")
+                await keys(str(p))
+                done_set = done_set | {p}
+                st = await until(lambda s, w=frozenset(done_set): on(i)(s) and s["checked"] == w and not s["typing"] and s["other"] is None,
+                                 f"{i + 1} つ目の {p} 番に印が付かない（ほかの印・入力欄が変わった）")
             if st["checked"] != set(a["picks"]):
                 raise Stuck(f"{i + 1} つ目の印が答えと違う")
             await keys("tab")
@@ -380,7 +387,7 @@ async def drive(form: dict, answers: list, read, keys, text, done=None) -> None:
             p = a["pick"]
             await keys(str(p))
             if q["preview"]:
-                await until(lambda s: on(i)(s) and s["cursor"] == p, f"{i + 1} つ目のカーソルが {p} 番に来ない")
+                await until(lambda s: on(i)(s) and s["cursor"] == p and not s["typing"], f"{i + 1} つ目のカーソルが {p} 番に来ない")
                 await keys("enter")
         if i + 1 < len(qs):
             continue

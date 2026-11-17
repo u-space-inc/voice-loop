@@ -220,7 +220,7 @@ class FakeTUI:
                      "Enter to select · ↑/↓ to navigate · n to add notes · Esc to cancel"]
         elif q.get("multiSelect"):
             rows += [f"{cur(n + 1)}{n + 1}. [ ] Type something", "     Submit", rule, f"  {n + 2}. Chat about this",
-                     "Enter to select · Tab/Arrow keys to navigate · Esc to cancel"]
+                     "Enter to select · Tab/Arrow keys to navigate · " + ("ctrl+g to edit in Zed · " if self.typing else "") + "Esc to cancel"]
         else:
             o = self.other[self.i] or "Type something."
             rows += [f"{cur(n + 1)}{n + 1}. {o[:30]}"] + ["     " + o[j:j + 30] for j in range(30, len(o), 30)]

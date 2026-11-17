@@ -249,6 +249,26 @@ check("揺れ: 2 つ目以降の問いでも、その問いの最初のキーの
       (bool(err), tui.log, tui.other[1]), (True, ["1"], "おに"))
 
 
+class TypingInMulti(FakeTUI):
+    """複数選ぶ問いで 1 つ目の印を付けた直後、端末で自由記入の欄に入った。"""
+
+    def keys(self, k):
+        super().keys(k)
+        if self.log == ["2", "1"]:
+            self.typing = True
+
+
+tui = TypingInMulti(REAL_TWO_INPUT)
+try:
+    asyncio.run(af.drive(TWO, af.check(TWO, ok_two)[0], _r, _k, _t))
+    err = None
+except af.Stuck as e:
+    err = str(e)
+check("揺れ: 複数選ぶ問いの途中で端末の入力欄に入ったら、次の番号を送らない", (bool(err), tui.log), (True, ["2", "1"]))
+check("画面: いちばん下が質問の操作案内でなければ、質問の画面とみない（番号を送らない）",
+      (af.state("\n".join(REAL_TWO_FIRST.split("\n")[:-1]), TWO).get("why"), af.ready("\n".join(REAL_TWO_FIRST.split("\n")[:-1]), TWO)), ("foot", "foot"))
+
+
 async def _done():
     return tui.recorded()
 tui = FakeTUI(REAL_TWO_INPUT, ["next_question"])
