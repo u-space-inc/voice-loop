@@ -152,6 +152,7 @@ def run(page, width):
           (done, TUIS["w2:p1"].result, TUIS["w2:p1"].log, wait(lambda: "shop｜受注 に「［朝］ごはん／［色］赤, 緑」を送りました" in (page.text_content("#log") or ""))),
           (True, ["ごはん", "赤, 緑"], ["2", "1", "3", "tab", "1"], True))
 
+    check(f"{who} 自由記入の欄は、文字が見える幅がある", store.locator('fieldset[data-i="0"] input.other').evaluate("e => e.getBoundingClientRect().width > 150"), True)
     store.locator('fieldset[data-i="0"] input.other').fill("駅前の店")
     check(f"{who} 自由記入の欄に書くと、その丸が選ばれる", store.locator('fieldset[data-i="0"] input[value=other]').is_checked(), True)
     store.locator('fieldset[data-i="1"] label', has_text="縦長").click()

@@ -220,6 +220,17 @@ s.ANSWERED["w9:p1"] = (hq["fp"], __import__("time").time())
 r = hub_answer(fp=hq["fp"], ask=hq["ask"], answers=ok_two)
 check("Slack: 答えたばかりの同じ問いに重ねて送らない（画面のボタンの答えと共有）", (r.get("reason"), st["tui"].log), ("answered", []))
 setup()
+hq = json.loads(s.hub_question("w9:p1").body)
+real_wj = s.write_json
+s.write_json = lambda path, data: (_ for _ in ()).throw(OSError("書けない")) if path == s.SLACK_FORMS_FILE else real_wj(path, data)
+r = hub_answer(fp=hq["fp"], ask=hq["ask"], answers=ok_two)
+s.write_json = real_wj
+check("Slack: 答えた数を記録に書けなければ、送らない（送る前に枠を確保する）", (r.get("reason"), st["tui"].log), ("count_failed", []))
+setup()
+hq = json.loads(s.hub_question("w9:p1").body)
+r = hub_answer(fp=hq["fp"], ask=hq["ask"], answers=ok_two)
+check("Slack: 送る前に確保した枠は記録に残る", (r.get("ok"), len(s.slack_forms())), (True, 1))
+setup()
 st["status"] = "working"
 r = hub_answer(fp="x", ask="t1", answers=ok_two)
 check("Slack: 止まっていなければ送らない", r.get("reason"), "not_blocked")

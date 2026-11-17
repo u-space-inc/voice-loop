@@ -95,10 +95,10 @@
   .ask .fq { margin:0; padding:6px 8px; border:1px solid #3a3420; border-radius:8px; display:flex; flex-direction:column; gap:4px; }
   .ask .fq legend { padding:0 4px; font-size:14px; line-height:1.5; color:#eee; white-space:pre-wrap; word-break:break-word; }
   .ask .opt { display:grid; grid-template-columns:auto 1fr; column-gap:8px; align-items:start; padding:6px 4px; font-size:14px; color:#eee; cursor:pointer; }
-  .ask .opt input { width:20px; height:20px; margin:1px 0 0; }
+  .ask .opt input[type=radio], .ask .opt input[type=checkbox] { width:20px; height:20px; margin:1px 0 0; }
   .ask .opt .desc { grid-column:2; font-size:12px; color:#bbb; }
   .ask .opt pre.pv { grid-column:2; max-height:8em; font-size:11px; color:#ccc; background:#111; border-radius:6px; padding:4px 6px; }
-  .ask .opt .other { grid-column:2; height:36px; font-size:14px; padding:0 8px; border-radius:8px; border:1px solid #444; background:#111; color:#eee; }
+  .ask .opt .other { grid-column:2; width:100%; box-sizing:border-box; height:36px; font-size:14px; padding:0 8px; border-radius:8px; border:1px solid #444; background:#111; color:#eee; }
   .ask .send.warn { background:var(--rec); } .ask .send { background:var(--ok); }
   /* 頼んだ件（📋 で開く） */
   #tasks { flex:none; max-height:45dvh; overflow-y:auto; display:flex; flex-direction:column; gap:6px; padding:calc(8px + env(safe-area-inset-top)) 12px 8px; background:#14161d; border-bottom:1px solid #262a38; }
