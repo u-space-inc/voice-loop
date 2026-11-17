@@ -44,6 +44,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "scripts"))
 from origin_guard import SameOriginOnly  # noqa: E402  接続元の確かめ
 import consent  # noqa: E402  利用者の発言が、許す・選ぶの答えになっているか（承認に答える・閉じるの守り）
+import ask_form  # noqa: E402  選択肢の問い（AskUserQuestion）に、画面と Slack から答える
 from places import CONFIG_DIR, STATE_DIR  # noqa: E402  端末ごとの設定と状態の置き場
 
 
@@ -1987,6 +1988,8 @@ async def _hub_answer(body: dict):
     取り消しにくい操作の「はい」は、聞き返してユーザーがもう一度発言してから（どちらの発言も上の確かめを通ること）。「今後は聞かずに許可」は選ばない。"""
     if REPORTING:
         return JSONResponse({"ok": False, "reason": "reporting"})
+    if "answers" in body:  # 選択肢の問いに、問いの形で（Slack の会話から）
+        return await _hub_form_answer(body)
     pane, answer, confirmed = str(body.get("pane", "")), str(body.get("answer", "")).strip().lower(), bool(body.get("confirmed"))
     a = await asyncio.to_thread(_worker, pane)
     if not a:
@@ -2155,7 +2158,42 @@ def _ask_of(a: dict) -> dict:
         if q:
             out.update(header=_clip(q["header"], 40), question=_clip(q["question"], 600),
                        choices=[{"n": c["n"], "label": _clip(c["label"], 120), "desc": _clip(c["desc"], 200)} for c in q["choices"]])
+        got = form_of(a)
+        if got:
+            out.update(ask=got[0], form=ask_form.public(got[1]))
+            out["risky"] = out["risky"] or bool(RISKY.search(ask_form.form_text(got[1])))
     return out
+
+
+def read_dialog(pane: str) -> str:
+    """選択肢の問いの画面（答えを送る途中の確かめに使う）。read_prompt より多く読む（見本の枠で縦に長くなるため）。"""
+    p = subprocess.run(["herdr", "agent", "read", pane, "--source", "visible", "--lines", "80"], capture_output=True, text=True, timeout=20)
+    rows = [ODD_BREAKS.sub("\ufffd", l) for l in p.stdout.split("\n")]
+    return "\n".join(l.rstrip() for l in rows if l.strip() and not STATUS_LINE.match(l))
+
+
+_PENDING: dict[str, tuple[tuple, tuple | None]] = {}  # pane → (記録の印, 答えを待っている問い)
+
+
+def form_of(a: dict) -> tuple[str, dict] | None:
+    """止まっているセッション a の、答えを待っている選択肢の問い (記録の id, 問いの形)。記録にあり、画面に最初の問いが出ていて、
+    まだ何も答えていないときだけ（端末で答え始めていたら None。続きは端末で）。"""
+    if a.get("kind") != "claude" or not a.get("session"):
+        return None
+    path = jsonl_path(a)
+    try:
+        st = path.stat() if path else None
+    except OSError:
+        st = None
+    if not st:
+        return None
+    sig = (str(path), st.st_mtime_ns, st.st_size)
+    hit = _PENDING.get(a["pane"])
+    got = hit[1] if hit and hit[0] == sig else ask_form.pending(path)  # 記録が変わっていなければ読み直さない（画面は 5 秒ごとに問いを聞く）
+    _PENDING[a["pane"]] = (sig, got)
+    if not got:
+        return None
+    return got if not ask_form.ready(read_dialog(a["pane"]), got[1]) else None
 
 
 def _asked(pane: str, key: str) -> tuple[dict | None, dict]:
@@ -2200,11 +2238,14 @@ async def _answer(body: dict):
     done = ANSWERED.get(pane)
     if done and done[0] == fp and time.time() - done[1] < ANSWERED_HOLD:  # 二度押し・重ねた送信
         return JSONResponse({"ok": False, "reason": "answered"})
-    if choice not in ("allow", "deny", "choose"):
+    if choice not in ("allow", "deny", "choose", "form"):
         return JSONResponse({"ok": False, "reason": "bad_choice"})
     a, asked = await asyncio.to_thread(_asked, pane, key)
     if asked["kind"] in ("gone", "none", "unreadable", "trust"):
         return JSONResponse({"ok": False, "reason": asked["kind"]})
+    if choice == "form":
+        r = await form_answer(a, asked, fp, body.get("ask"), body.get("answers"), confirmed, "画面")
+        return JSONResponse(r)
     if choice == "choose" and not asked.get("choices"):  # 1 つを選ぶ質問と言い切れないときは、何も送らない
         return JSONResponse({"ok": False, "reason": "not_choice"})
     if choice != "choose" and asked["kind"] != "permission":  # 承認の画面と見分けられないときは、何も送らない
@@ -2231,6 +2272,106 @@ async def _answer(body: dict):
         return JSONResponse({"ok": False, "reason": "herdr"})
     ANSWERED[pane] = (fp, time.time())
     return JSONResponse({"ok": True, "said": said})
+
+
+# ---------- 選択肢の問い（AskUserQuestion）に、問いの形で答える（画面・Slack。2026-11-17 本人の要望・決定） ----------
+# 問いは記録から組み、画面は「いまその問いが出ていて、まだ答えていない」ことと、送る途中の 1 手ごとの確かめにだけ使う（scripts/ask_form.py）。
+# 画面からは、画面のボタン（/api/answer、choice=form）。Slack からは、Hermes の Slack のボタン（clarify）で選んだ答えを hubctl answer --form で
+# （/api/hub/answer）。Slack の経路は Hermes を通った答えを信じる形（2026-11-17 本人決定。乗せられた Hermes が自分で答えうることは承知のうえ）で、
+# かわりに 1 時間の数に上限を付け、答えるたびに画面の知らせとプッシュ通知で知らせる。
+SLACK_FORM_PER_HOUR = 10  # Slack から答えられる数（1 時間）
+_slack_forms: list[float] = []
+
+
+async def form_answer(a: dict, asked: dict, fp: str, ask, answers, confirmed: bool, via: str) -> dict:
+    """答えを確かめて、1 手ずつ画面を確かめながら送る。呼ぶのは _answer_lock の中。"""
+    if asked["kind"] != "question" or not asked.get("form"):
+        return {"ok": False, "reason": "not_form"}
+    if asked["fp"] != fp or asked.get("ask") != ask:  # 見せたあとで問いが変わった
+        return {"ok": False, "reason": "changed"}
+    pane = a["pane"]
+    done = ANSWERED.get(pane)
+    if done and done[0] == fp and time.time() - done[1] < ANSWERED_HOLD:
+        return {"ok": False, "reason": "answered"}
+    got = await asyncio.to_thread(form_of, a)
+    if not got or got[0] != ask:
+        return {"ok": False, "reason": "changed"}
+    form = got[1]
+    plan, why = ask_form.check(form, answers)
+    if plan is None:
+        return {"ok": False, "reason": why}
+    if asked["risky"] and not confirmed:
+        return {"ok": False, "reason": "confirm"}
+    said = ask_form.said(form, plan)
+
+    async def read():
+        return await asyncio.to_thread(read_dialog, pane)
+
+    async def keys(k):
+        r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, k)
+        if "result" not in r:
+            raise ask_form.Stuck("herdr が応答しない")
+
+    async def text(t):
+        r = await asyncio.to_thread(herdr, "pane", "send-text", pane, t)
+        if "result" not in r:
+            raise ask_form.Stuck("herdr が応答しない")
+
+    ANSWERED[pane] = (fp, time.time())  # 送り始めたら、同じ問いに重ねて送らない（途中で止まっても）
+    project = a["cwd"].rsplit("/", 1)[-1]
+    try:
+        await ask_form.drive(form, plan, read, keys, text)
+    except ask_form.Stuck as e:
+        hlog(f"answer({via}・問いの形) → {pane} ({project}): 途中で止めました: {e}（送ろうとした答え: {said}）", flush=True)
+        return {"ok": False, "reason": "stuck", "why": str(e), "said": said}
+    hlog(f"answer({via}・問いの形) → {pane} ({project}): {said} ok", flush=True)
+    return {"ok": True, "said": said, "project": project, "title": a.get("title", "")}
+
+
+@app.get("/api/hub/question")
+def hub_question(pane: str):
+    """hubctl question。止まっているセッションの選択肢の問いを、問いの形で返す（Slack の会話で、Hermes がボタンにして見せるため）。"""
+    a = _worker(pane)
+    if not a:
+        return JSONResponse({"error": f"セッションが見つかりません: {pane}"}, status_code=404)
+    if a["status"] != "blocked":
+        return JSONResponse({"pane": pane, "status": a["status"], "form": None})
+    asked = _ask_of(a)
+    return JSONResponse({"pane": pane, "status": "blocked", "project": a["cwd"].rsplit("/", 1)[-1], "title": a.get("title", ""),
+                         "kind": asked["kind"], "fp": asked.get("fp", ""), "ask": asked.get("ask"), "form": asked.get("form"),
+                         "risky": asked.get("risky", False)})
+
+
+async def _hub_form_answer(body: dict) -> JSONResponse:
+    """hubctl answer --form。Slack の会話で、利用者が Hermes のボタンで選んだ答えを送る（Slack の会話から呼ばれたときだけ）。"""
+    o = body.get("origin")
+    if not (isinstance(o, dict) and o.get("platform") == "slack"):
+        return JSONResponse({"ok": False, "reason": "not_slack"})
+    pane = str(body.get("pane", ""))
+    a = await asyncio.to_thread(_worker, pane)
+    if not a:
+        return JSONResponse({"ok": False, "reason": f"セッションが見つかりません: {pane}"}, status_code=404)
+    if a["status"] != "blocked":
+        return JSONResponse({"ok": False, "reason": "not_blocked", "status": a["status"]})
+    now = time.time()
+    _slack_forms[:] = [t for t in _slack_forms if now - t < 3600]
+    if len(_slack_forms) >= SLACK_FORM_PER_HOUR:
+        return JSONResponse({"ok": False, "reason": "too_many", "max": SLACK_FORM_PER_HOUR})
+    trust = await asyncio.to_thread(pane_shows_trust, pane)
+    if trust is None or trust:
+        return JSONResponse({"ok": False, "reason": "unreadable" if trust is None else "trust"})
+    asked = await asyncio.to_thread(_ask_of, a)
+    r = await form_answer(a, asked, str(body.get("fp", "")), body.get("ask"), body.get("answers"), bool(body.get("confirmed")), "Slack")
+    if r.get("ok") or r.get("reason") == "stuck":
+        _slack_forms.append(now)
+        title = f"Slack から{'答えました' if r.get('ok') else '答える途中で止まりました'}: {a['cwd'].rsplit('/', 1)[-1]}"
+        await hub_notice({"title": title, "text": r.get("said", "")})  # 毎回、画面の知らせとプッシュ通知で知らせる
+    if r.get("ok") and not WATCHING.get(pane):  # 答えたあとの結果を知らせるため（_hub_answer と同じ）
+        path = jsonl_path(a)
+        start_watch({"pane": pane, "cwd": a["cwd"], "project": r["project"], "title": a["title"], "text": "", "generic": True,
+                     "offset": path.stat().st_size if path and path.exists() else 0, "was_working": True,
+                     "gen": WATCH_GEN.setdefault(pane, 0)}, "answer")
+    return JSONResponse(r)
 
 
 # ---------- セッションの起動 ----------
