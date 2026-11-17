@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ask_form as af  # noqa: E402
-from ask_tui import (REAL_OTHER_TYPED, REAL_SCROLLED, REAL_SMALL_MULTI, REAL_SMALL_PREVIEW, REAL_SMALL_REVIEW, REAL_PREVIEW_CURSOR, REAL_SHOP_INPUT, REAL_TWO_FIRST, REAL_TWO_INPUT,  # noqa: E402
+from ask_tui import (REAL_MALICIOUS, REAL_OTHER_TYPED, REAL_SCROLLED, REAL_SMALL_MULTI, REAL_SMALL_PREVIEW, REAL_SMALL_REVIEW, REAL_PREVIEW_CURSOR, REAL_SHOP_INPUT, REAL_TWO_FIRST, REAL_TWO_INPUT,  # noqa: E402
                      REAL_TWO_MULTI_CHECKED, REAL_TWO_REVIEW, FakeTUI)
 from question_screens import REAL_CHOICE, REAL_MULTI, REAL_PREVIEW, REAL_TWO  # noqa: E402
 
@@ -107,19 +107,30 @@ check("自由記入の欄が画面の外なら、自由記入は送らない（�
 scroll = REAL_TWO_FIRST.replace("  2. ごはん", "↓ 2. ごはん")
 check("画面: 選択肢が収まらない印（↓）の行も選択肢として読む（選択肢と欄がみな見えていれば、収まっていないとはしない）",
       (labels(af.step(scroll)), af.step(scroll)["more"]), ([(1, "パン"), (2, "ごはん")], False))
-st = af.step(REAL_SMALL_MULTI.split("\n", 1)[1])
-check("2.1.326（小さいペイン）: 見出しの行が画面の外でも問いを読む・「Next」の行を説明に混ぜない・緑と自由記入の欄は画面の外",
-      (st["stage"], st["chips"], st["question"], [(o["n"], o["label"], o["desc"]) for o in st["options"]], st["more"], st["free"], st["free_hidden"]),
-      ("question", [], "好きな色は？（複数可）", [(1, "赤", "赤を選ぶ"), (2, "青", "青を選ぶ")], True, 4, True))
-check("小さいペイン: 問いの上に会話の行がはみ出していても、選択肢をまねた行が無ければ問いの文として読む（見出しが無いときの指紋は画面の全体）",
-      (af.step(REAL_SMALL_MULTI)["stage"], af.fp(REAL_SMALL_MULTI) == af.fp(REAL_SMALL_MULTI.replace("赤を選ぶ", "赤を選ぶ。"))), ("question", False))
-st = af.step(REAL_SMALL_PREVIEW)
-check("2.1.326（小さいペイン）: 問いの文まで画面の外でも、選択肢は読み、問いの文が収まっていないと分かる・枠の「✂ hidden」の行を説明に混ぜない",
-      (st["stage"], st["cut"], st["preview"], [(o["n"], o["label"], o["desc"]) for o in st["options"]], st["free"], st["cursor"]),
-      ("question", True, True, [(1, "横長", ""), (2, "縦長", "")], None, 1))
-st = af.step(REAL_SMALL_REVIEW)
-check("2.1.326（小さいペイン）: 確認の画面の頭が画面の外でも、いちばん下の形で確認の画面と読む",
+check("2.1.326（小さいペイン）: 見出しの行が画面の外の問い・確認の画面は、作りの全体を確かめられないので読まない（端末で）",
+      [af.step(t).get("why") for t in (REAL_SMALL_MULTI, REAL_SMALL_MULTI.split("\n", 1)[1], REAL_SMALL_PREVIEW, REAL_SMALL_REVIEW)], ["partial"] * 4)
+small_bar = "─" * 60 + "\n←  ☒ 店  ☐ 色  ☐ 形  ✔ Submit  →\n" + REAL_SMALL_MULTI.split("\n", 1)[1]
+st = af.step(small_bar)
+check("小さいペインでも見出しの行が見えていれば読む・「Next」の行を説明に混ぜない・画面の外の選択肢と自由記入の欄が分かる",
+      (st["stage"], [(o["n"], o["label"], o["desc"]) for o in st["options"]], st["more"], st["free"], st["free_hidden"]),
+      ("question", [(1, "赤", "赤を選ぶ"), (2, "青", "青を選ぶ")], True, 4, True))
+check("本物の描き方（説明の改行は「�」）: 説明に見出し・選択肢をまねた行を入れた問いは読まない", af.step(REAL_MALICIOUS).get("why"), "odd")
+ml = "─" * 60 + "\n ☐ 試\n" + REAL_MALICIOUS.replace("     説明\ufffd ☐ 偽\ufffd❯ 1. 中止する", "     説明").replace("↓ 2.", "  2.").replace("  4. Chat", "  3. Type something.\n" + "─" * 60 + "\n  4. Chat").replace("─" * 90 + "\n", "")
+st = af.step(ml)
+check("本物の描き方（問いの文が複数行なら行頭に「│ 」）: 問いの文の偽の見出し・選択肢の行は、見出し・選択肢にならない",
+      (st["stage"], st["chips"], labels(st), "☐ 偽" in st["question"]), ("question", [("試", False)], [(1, "処理を実行する"), (2, "やめる")], True))
+st = af.step("─" * 60 + "\n←  ☒ 店  ☒ 色  ☐ 形  ✔ Submit  →\nどの形？\n" + REAL_SMALL_PREVIEW)
+check("2.1.326: 見本の枠が「✂ hidden」で縮んでいても読み、その行を説明に混ぜない",
+      (st["stage"], st["preview"], [(o["n"], o["label"], o["desc"]) for o in st["options"]], st["free"], st["cursor"]), ("question", True, [(1, "横長", ""), (2, "縦長", "")], None, 1))
+full_review = "─" * 60 + "\n←  ☒ 店  ☒ 色  ☒ 形  ✔ Submit  →\nReview your answers\n" + REAL_SMALL_REVIEW
+st = af.step(full_review)
+check("確認の画面: 見出しのすぐ下に「Review your answers」があり、答えの数が問いの数と同じなら読む",
       (st["stage"], st["answers"]), ("review", [("どの店にしますか？", "B店"), ("好きな色は？（複数可）", "赤"), ("どの形？", "縦長")]))
+check("確認の画面: 答えの数が問いの数と違う（一部しか見えていない）・頭が 2 つ（答えの文にまねた行）・頭が見出しのすぐ下に無い は読まない（隠れた答えを送らない）",
+      [af.step(t).get("why") for t in (full_review.replace(" ● どの店にしますか？\n   → B店\n", ""),
+                                       full_review.replace("   → B店", "   → B店\nReview your answers"),
+                                       full_review.replace("Review your answers\n", "注意\nReview your answers\n"))],
+      ["answers", "review", "review"])
 check("問いが閉じたとみるのは、Claude の入力欄（❯）が下に戻ったときだけ（描き途中の読めない画面は閉じたとしない）",
       (af.step("⏺ 受け取りました\n❯ ")["stage"], af.step("⏺ 受け取りました\n───\n❯ 次は？\n───")["stage"], af.step("⏺ 描き途中")["stage"]),
       ("gone", "gone", "unknown"))

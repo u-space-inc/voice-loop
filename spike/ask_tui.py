@@ -108,6 +108,18 @@ REAL_SMALL_REVIEW = """ ● どの店にしますか？
 Ready to submit your answers?
 ❯ 1. Submit answers
   2. Cancel"""
+# 問い・説明に改行と、見出し・選択肢をまねた行を入れた問いの、本物の描き方（2026-11-17、小さいペインで取った）。
+# 問いの文が複数行だと各行の頭に「│ 」が付き、説明の改行は「�」になって 1 行に描かれる（偽の見出し・選択肢の行にはならない）
+REAL_MALICIOUS = """│ 本当の問い
+│  ☐ 偽
+│ 中止しますか？
+❯ 1. 処理を実行する
+     説明\ufffd ☐ 偽\ufffd❯ 1. 中止する
+↓ 2. やめる
+     やめる
+──────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel"""
 # 上の画面の問いの形（セッションの記録にあった AskUserQuestion の入力）
 REAL_TWO_INPUT = {"questions": [
     {"question": "朝はどれ？", "header": "朝", "multiSelect": False,
@@ -244,9 +256,11 @@ class FakeTUI:
         q = self.qs[self.i]
         n = len(q["options"])
         preview = any(o.get("preview") for o in q["options"])
-        rows = [rule, self.bar(), q["question"]]
+        ql = q["question"].split("\n")  # 本物と同じく、問いの文が複数行なら各行の頭に「│ 」
+        rows = [rule, self.bar()] + (["│ " + x for x in ql] if len(ql) > 1 else ql)
         cur = lambda k: "❯ " if self.cursor == k else "  "  # noqa: E731
         for k, o in enumerate(q["options"], 1):
+            o = {**o, "label": o["label"].replace("\n", "\ufffd"), "description": o.get("description", "").replace("\n", "\ufffd")}  # 本物と同じく、改行は「�」
             lab, more = o["label"], []
             if "wrap_labels" in self.q and len(lab) > 6:
                 lab, more = lab[:6], [lab[j:j + 6] for j in range(6, len(lab), 6)]

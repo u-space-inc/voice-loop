@@ -67,26 +67,26 @@ def step(text: str) -> dict:
         # 無ければ読めない画面（描き途中など）で、問いが閉じたとは言い切らない（送ったあとに「届いた」と取り違えない）
         prompt = any(l.strip() == "❯" or (l.lstrip().startswith("❯ ") and not _OPT.match(l)) for l in lines[-6:])
         return {"stage": "gone"} if prompt else {"stage": "unknown", "why": "foot"}
-    # 見出しの行（小さいペインでは画面の上にはみ出して無いことがある。あれば読む）。本物は画面に 1 つだけ。2 つ以上あれば、
-    # 問い・選択肢・説明の文にまねた行がある（その下から読むと、本物の選択肢を捨てて偽の選択肢を読んでしまう）
+    # 見出しの行。本物は画面に 1 つだけ。2 つ以上あれば、問い・選択肢・説明の文にまねた行がある（その下から読むと、本物の選択肢を捨てて
+    # 偽の選択肢を読んでしまう）。見出しの行が画面に無い（小さいペインで上にはみ出した）ときは、作りの全体を確かめられないので読まない（端末で）
     bars = [i for i, l in enumerate(lines) if _BAR.match(l)]
     if len(bars) > 1:
         return {"stage": "unknown", "why": "suspicious"}
-    bar_i = bars[0] if bars else None
-    chips = []
-    if bar_i is not None:
-        items = [x for x in re.split(r"\s{2,}", lines[bar_i].strip().strip("←→").strip()) if x]
-        chips = [(_line(x[1:], 40), x[0] == "☒") for x in items if x[:1] in "☐☒"]
-    body = lines[bar_i + 1:] if bar_i is not None else lines
-    if not body:
+    if not bars:
+        return {"stage": "unknown", "why": "partial"}
+    bar_i = bars[0]
+    items = [x for x in re.split(r"\s{2,}", lines[bar_i].strip().strip("←→").strip()) if x]
+    chips = [(_line(x[1:], 40), x[0] == "☒") for x in items if x[:1] in "☐☒"]
+    body = lines[bar_i + 1:]
+    if not body or not chips:
         return {"stage": "unknown", "why": "empty"}
     if review:
-        # 確認の画面（操作案内が無い）。下から決まった形で読む: 「Review your answers」…「Ready to submit…」「1. Submit answers」「2. Cancel」
-        # 頭（Review your answers）は、小さいペインでは画面の上にはみ出して無いことがある。あれば、その下から読む
-        rv = next((i for i in range(len(body) - 1, -1, -1) if body[i].strip() == "Review your answers"), -1)
-        if len(body) - rv >= 4 and body[-3].strip().startswith("Ready to submit") and any(l.strip().startswith("● ") for l in body[rv + 1:-3]):
+        # 確認の画面（操作案内が無い）。決まった形で読む: 見出しのすぐ下に「Review your answers」（画面に 1 つだけ）…「Ready to submit…」
+        # 「1. Submit answers」「2. Cancel」。答え（●）の数は問いの数と同じこと（隠れた答えがあるまま送らない）
+        heads = [i for i, l in enumerate(body) if l.strip() == "Review your answers"]
+        if heads == [0] and len(body) >= 4 and body[-3].strip().startswith("Ready to submit"):
             got, cur = [], None
-            for l in body[rv + 1:-3]:
+            for l in body[1:-3]:
                 s = l.strip()
                 if _OPT.match(l) or _RULE.match(l) or _BAR.match(l) or s.startswith("❯"):
                     return {"stage": "unknown", "why": "suspicious"}  # 問い・答えの文に、選択肢・線・カーソルをまねた行がある
@@ -97,6 +97,8 @@ def step(text: str) -> dict:
                     cur[1] = s[2:]
                 elif cur is not None:  # 折り返した問い・答え
                     cur[0 if cur[1] is None else 1] += s
+            if len(got) != len(chips) or any(b is None for _, b in got):
+                return {"stage": "unknown", "why": "answers"}
             return {"stage": "review", "chips": chips, "answers": [(_line(a, 300), _line(b or "", 300)) for a, b in got], "submit": True}
         return {"stage": "unknown", "why": "review"}  # 確認の画面の終わりはあるが、頭（Review your answers）が決まった形で読めない
     # 問いの画面。下から決まった形で読む: 操作案内 → 「Chat about this」の行 → 線 → 選択肢のかたまり → 問いの文。
@@ -118,8 +120,6 @@ def step(text: str) -> dict:
     first = k + 1
     if first >= rule or not _OPT.match(body[first]):
         return {"stage": "unknown", "why": "no_options"}
-    if bar_i is None and any(_BAR.match(l) for l in lines):  # 見出しが選択肢のかたまりより下にある（ありえない形）
-        return {"stage": "unknown", "why": "suspicious"}
     asked = body[:first]
     if any(_OPT.match(l) or _RULE.match(l) or _BAR.match(l) or l.lstrip().startswith(("❯", "↓", "↑")) for l in asked):
         return {"stage": "unknown", "why": "suspicious"}
