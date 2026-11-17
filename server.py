@@ -2287,7 +2287,23 @@ async def _answer(body: dict):
 # （/api/hub/answer）。Slack の経路は Hermes を通った答えを信じる形（2026-11-17 本人決定。乗せられた Hermes が自分で答えうることは承知のうえ）で、
 # かわりに 1 時間の数に上限を付け、答えるたびに画面の知らせとプッシュ通知で知らせる。
 SLACK_FORM_PER_HOUR = 10  # Slack から答えられる数（1 時間）
-_slack_forms: list[float] = []
+SLACK_FORMS_FILE = STATE_DIR / "slack-forms.json"  # Slack から答えた時刻（直近 1 時間。本体を再起動しても上限が戻らないように残す）
+_slack_forms_lock = threading.Lock()
+
+
+def slack_forms(add: float | None = None) -> list[float]:
+    """Slack から答えた時刻のうち、直近 1 時間のもの（add があれば足して書く）。記録が壊れていても空として読む。"""
+    now = time.time()
+    with _slack_forms_lock:
+        try:
+            raw = _read_json(SLACK_FORMS_FILE, []) if SLACK_FORMS_FILE.exists() and SLACK_FORMS_FILE.stat().st_size < 100_000 else []
+        except OSError:
+            raw = []
+        ts = [float(t) for t in raw if _notice_time(t, now) and now - t < 3600] if isinstance(raw, list) else []
+        if add is not None:
+            ts.append(add)
+            write_json(SLACK_FORMS_FILE, ts)
+        return ts
 
 
 async def form_answer(a: dict, asked: dict, fp: str, ask, answers, confirmed: bool, via: str) -> dict:
@@ -2315,12 +2331,12 @@ async def form_answer(a: dict, asked: dict, fp: str, ask, answers, confirmed: bo
         return await asyncio.to_thread(read_dialog, pane, ask_form.READ_MAX)
 
     async def keys(k):
-        r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, k)
+        r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, k, timeout=ask_form.READ_MAX)
         if "result" not in r:
             raise ask_form.Stuck("herdr が応答しない")
 
     async def text(t):
-        r = await asyncio.to_thread(herdr, "pane", "send-text", pane, t)
+        r = await asyncio.to_thread(herdr, "pane", "send-text", pane, t, timeout=ask_form.READ_MAX)
         if "result" not in r:
             raise ask_form.Stuck("herdr が応答しない")
 
@@ -2387,8 +2403,7 @@ async def _hub_form_answer(body: dict) -> JSONResponse:
     if a["status"] != "blocked":
         return JSONResponse({"ok": False, "reason": "not_blocked", "status": a["status"]})
     now = time.time()
-    _slack_forms[:] = [t for t in _slack_forms if now - t < 3600]
-    if len(_slack_forms) >= SLACK_FORM_PER_HOUR:
+    if len(await asyncio.to_thread(slack_forms)) >= SLACK_FORM_PER_HOUR:
         return JSONResponse({"ok": False, "reason": "too_many", "max": SLACK_FORM_PER_HOUR})
     trust = await asyncio.to_thread(pane_shows_trust, pane)
     if trust is None or trust:
@@ -2396,7 +2411,10 @@ async def _hub_form_answer(body: dict) -> JSONResponse:
     asked = await asyncio.to_thread(_ask_of, a)
     r = await form_answer(a, asked, str(body.get("fp", "")), body.get("ask"), body.get("answers"), bool(body.get("confirmed")), "Slack")
     if r.get("ok") or r.get("reason") == "stuck":
-        _slack_forms.append(now)
+        try:
+            await asyncio.to_thread(slack_forms, now)
+        except Exception:
+            traceback.print_exc()
         title = f"Slack から{'答えました' if r.get('ok') else '答える途中で止まりました'}: {a['cwd'].rsplit('/', 1)[-1]}"
         await must_notice(title, r.get("said", ""))  # 毎回、画面の知らせとプッシュ通知で知らせる（一般の知らせの数の枠とは別）
     if r.get("ok") and not WATCHING.get(pane):  # 答えたあとの結果を知らせるため（_hub_answer と同じ）

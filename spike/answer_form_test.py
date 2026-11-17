@@ -76,7 +76,7 @@ def setup(inp=REAL_TWO_INPUT, tid="t1", quirks=(), answered=False):
     st.update(tui=FakeTUI(inp, quirks), path=transcript(tid, inp, answered), status="blocked")
     s.ANSWERED.clear()
     s._PENDING.clear()
-    s._slack_forms.clear()
+    s.SLACK_FORMS_FILE.unlink(missing_ok=True)
 
 
 def prompts():
@@ -203,17 +203,17 @@ def flaky(pane, *_):  # 送り終えたあとの読み取りで、読み取り�
 
 s.read_dialog = flaky
 pushes.clear()
-n0 = len(s._slack_forms)
+n0 = len(s.slack_forms())
 r = hub_answer(fp=hq["fp"], ask=hq["ask"], answers=ok_two)
 s.read_dialog = real_read
 check("Slack: 送ったあとの読み取りが失敗しても、結果が分からないとして知らせ、数に入れる",
-      (r.get("reason"), "結果が分からない" in (r.get("why") or ""), s.notices()["rows"][-1]["title"], len(pushes), len(s._slack_forms) - n0),
+      (r.get("reason"), "結果が分からない" in (r.get("why") or ""), s.notices()["rows"][-1]["title"], len(pushes), len(s.slack_forms()) - n0),
       ("stuck", True, "Slack から答える途中で止まりました: proj", 1, 1))
 setup()
-s._slack_forms[:] = [__import__("time").time()] * s.SLACK_FORM_PER_HOUR
+s.SLACK_FORMS_FILE.write_text(json.dumps([__import__("time").time()] * s.SLACK_FORM_PER_HOUR))  # 再起動の前に答えた分（記録に残っている）
 hq = json.loads(s.hub_question("w9:p1").body)
 r = hub_answer(fp=hq["fp"], ask=hq["ask"], answers=ok_two)
-check("Slack: 1 時間の数の上限を超えたら送らない", (r.get("reason"), r.get("max"), st["tui"].log), ("too_many", s.SLACK_FORM_PER_HOUR, []))
+check("Slack: 1 時間の数の上限を超えたら送らない（本体を再起動しても、記録に残した分を数える）", (r.get("reason"), r.get("max"), st["tui"].log), ("too_many", s.SLACK_FORM_PER_HOUR, []))
 setup()
 hq = json.loads(s.hub_question("w9:p1").body)
 s.ANSWERED["w9:p1"] = (hq["fp"], __import__("time").time())

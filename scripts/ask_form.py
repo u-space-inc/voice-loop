@@ -284,15 +284,21 @@ async def drive(form: dict, answers: list, read, keys, text) -> None:
 
     send_keys, send_text = keys, text
 
-    async def keys(k):  # noqa: F811  上限を過ぎたら、それ以上キーを送らない
-        if clock() >= last:
+    async def within(coro):  # 送る待ちも、残りの時間までにする（上限を過ぎたら、それ以上キーを送らない）
+        left = last - clock()
+        if left <= 0:
+            coro.close()
             raise Stuck("送り始めてからの上限の時間を過ぎた")
-        await send_keys(k)
+        try:
+            return await asyncio.wait_for(coro, left)
+        except asyncio.TimeoutError:
+            raise Stuck("送る途中で上限の時間を過ぎた（届いたかは分からない）") from None
+
+    async def keys(k):  # noqa: F811
+        await within(send_keys(k))
 
     async def text(t):  # noqa: F811
-        if clock() >= last:
-            raise Stuck("送り始めてからの上限の時間を過ぎた")
-        await send_text(t)
+        await within(send_text(t))
 
     async def until(ok, what: str) -> dict:
         end = min(clock() + WAIT, last)  # 読み取りにかかった時間も数える

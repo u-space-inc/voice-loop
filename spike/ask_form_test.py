@@ -249,6 +249,19 @@ try:
 except af.Stuck as e:
     err = str(e)
 check("送り始めてから終わるまでにも上限がある", (bool(err), _time.monotonic() - t0 < 1.0), (True, True))
+tui = FakeTUI(REAL_TWO_INPUT)
+
+
+async def _slow_keys(k):  # キーを送る処理が 2 秒かかる
+    await asyncio.sleep(2)
+    tui.keys(k)
+t0 = _time.monotonic()
+try:
+    asyncio.run(af.drive(TWO, af.check(TWO, ok_two)[0], _r, _slow_keys, _t))
+    err = None
+except af.Stuck as e:
+    err = str(e)
+check("送る待ちにも上限がある（送る処理が遅くても、上限を過ぎて待たない）", (bool(err), _time.monotonic() - t0 < 1.0), (True, True))
 af.DRIVE_MAX = 60.0
 
 ok = sum(r[1] for r in results)
