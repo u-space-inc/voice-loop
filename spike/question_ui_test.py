@@ -66,6 +66,7 @@ s.list_agents = lambda: [dict(a) for a in AGENTS]
 s.jsonl_path = lambda a: None
 s.pane_shows_trust = lambda pane: False
 s.read_prompt = lambda pane: SCREENS.get(pane, "")
+s.read_dialog = lambda pane, *_: (_ for _ in ()).throw(RuntimeError("この試験では読まない"))  # 1 問ずつの読み取りは answer_form_test・form_ui_test で確かめる（本物の herdr を呼ばない）
 s.herdr = lambda *a, **k: (SENT.append((a[2], a[3])), {"result": {}})[1] if a[:2] == ("agent", "send-keys") else {"result": {}}
 
 srv = uvicorn.Server(uvicorn.Config(s.app, host="127.0.0.1", port=PORT, log_level="warning"))
