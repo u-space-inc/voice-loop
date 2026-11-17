@@ -325,6 +325,32 @@ tui.log.clear()
 r, err = go(tui, "next")
 check("自由記入の欄に印があれば、「決めて次へ」の Tab を送らない（画面に出していない選択で次へ進めない）", (bool(err), tui.log), (True, []))
 
+class DraftBack(FakeTUI):
+    """端末で自由記入の欄に書き、カーソルを選択肢へ戻した（入力中ではないが、欄に文が残っている）。"""
+
+    def __init__(self, raw):
+        super().__init__(raw)
+        self.other[0] = "書きかけの店"
+
+
+tui = DraftBack({"questions": [REAL_SHOP_INPUT["questions"][0]]})
+r, err = go(tui, "pick", 1)
+check("自由記入の欄に文が残っていれば、カーソルが選択肢にあっても番号を送らない（書いた文を捨てて確定させない。codex-review）",
+      (bool(err), tui.log, tui.result), (True, [], None))
+
+
+class NextFreeChecked(FakeTUI):
+    """1 問目を送った直後、次の複数選ぶ問いの自由記入の欄にだけ印が付いた（端末での同時の操作など）。"""
+
+    def screen(self):
+        out = super().screen()
+        return out.replace("[ ] Type something", "[✔] Type something") if self.i == 1 else out
+
+
+tui = NextFreeChecked(REAL_TWO_INPUT)
+r, err = go(tui, "pick", 1)
+check("次の問いの自由記入の欄に印があれば、届いたとしない（codex-review）", bool(err), True)
+
 # ---------- 書きかけ・揺れ・取り違え ----------
 tui = FakeTUI(one)
 tui.keys("3")

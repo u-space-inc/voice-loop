@@ -318,7 +318,7 @@ async def act(kind: str, arg, read, keys, text, expect: str | None = None) -> st
             # 次の問い。まだ何も答えていない形のときだけ（もう印・書きかけ・メモがあれば、送ったキーがずれて次の問いに届いたか、
             # 端末で同時に押された。届いたとしない）
             return (st_["stage"] == "question" and sig(st_) != sig0 and not any(o["checked"] for o in st_["options"])
-                    and not st_["free_text"] and not st_["typing"] and not st_["notes"])
+                    and not st_["free_text"] and not st_["free_checked"] and not st_["typing"] and not st_["notes"])
         end = clock() + WAIT
         while True:
             raw_ = await read()
@@ -340,7 +340,8 @@ async def act(kind: str, arg, read, keys, text, expect: str | None = None) -> st
         return await moved("確認の画面で「送る」", fp(raw))
     if st["stage"] != "question":
         raise Stuck("問いの画面ではない")
-    if st["typing"] or st["notes"]:  # 端末で入力欄・メモに書きかけている
+    if st["typing"] or st["notes"] or st["free_text"] or st["free_checked"]:
+        # 端末で入力欄・メモに書きかけている。自由記入の欄に文か印が残っている（カーソルを選択肢へ戻していても。番号で答えると、書いた文を捨てる）
         raise Stuck("端末で書きかけている")
     same = lambda s: s["stage"] == "question" and sig(s) == sig0  # noqa: E731
     labels = {o["n"]: o for o in st["options"]}
