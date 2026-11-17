@@ -236,6 +236,29 @@ check("Slack: 送る前に確保した枠は記録に残る", (r.get("ok"), len(
 check("Slack: 答えたことのプッシュ通知は、画面が見えていても送る（always で頼む）", pushes[-1][2] if pushes else None, True)
 
 
+setup()
+hq = json.loads(s.hub_question("w9:p1").body)
+stuck_push = {"started": 0}
+
+
+async def hang_push(title, body, tag, urgency="normal", only=None, always=False):  # 配送が滞る
+    stuck_push["started"] += 1
+    await asyncio.sleep(3600)
+s.push_all = hang_push
+
+
+async def answer_then_check_lock():
+    t0 = __import__("time").monotonic()
+    r = json.loads((await s.hub_answer({"pane": "w9:p1", "fp": hq["fp"], "ask": hq["ask"], "answers": ok_two,
+                                         "origin": {"platform": "slack", "chat": "D0TESTCHAT1", "thread": ""}})).body)
+    took = __import__("time").monotonic() - t0
+    await asyncio.sleep(0.05)
+    return r.get("ok"), took < 2, s._answer_lock.locked(), stuck_push["started"], s.notices()["rows"][-1]["title"]
+check("Slack: 知らせの配送が滞っても、答えは返り、答えの鍵を持ち続けない（記録はその場で書き、配送は裏で）",
+      asyncio.run(answer_then_check_lock()), (True, True, False, 1, "Slack から答えました: proj"))
+s.push_all = fake_push
+
+
 class Seen:  # 見えている画面
     visible, seen = True, __import__("time").time()
 s.CLIENTS.add(Seen())

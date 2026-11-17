@@ -2372,9 +2372,13 @@ def hub_question(pane: str):
                          "risky": asked.get("risky", False)})
 
 
-async def must_notice(title: str, text: str):
-    """必ず出す知らせ（Slack から答えたこと）。代理の知らせ（hubctl notice）の 1 時間の数の枠は使わない（その枠を使い切られても消されない。
-    数は SLACK_FORM_PER_HOUR で抑える）。記録に書けなくても、ログとプッシュ通知は出す。"""
+_BG: set = set()  # 裏で動かしている知らせの配送（答えの鍵を持ったまま待たない）
+
+
+def must_notice(title: str, text: str):
+    """必ず出す知らせ（Slack から答えたこと）。記録には、呼んだその場で書く。画面とプッシュ通知への配送は裏で動かし、答えの鍵（_answer_lock）を
+    持ったまま待たない。代理の知らせ（hubctl notice）の 1 時間の数の枠は使わない（その枠を使い切られても消されない。数は SLACK_FORM_PER_HOUR
+    で抑える）。記録に書けなくても、ログとプッシュ通知は出す。"""
     title, text = _notice_clean(title, NOTICE_TITLE) or "知らせ", _notice_clean(text, NOTICE_TEXT) or ""
     n = None
     try:
@@ -2387,6 +2391,12 @@ async def must_notice(title: str, text: str):
         traceback.print_exc()
         n = None
     hlog(f"知らせ（必ず）{'[' + str(n) + ']' if n else '（記録に書けなかった）'}: {title}", flush=True)
+    task = asyncio.get_running_loop().create_task(_deliver_notice(n, title))
+    _BG.add(task)
+    task.add_done_callback(_BG.discard)
+
+
+async def _deliver_notice(n, title: str):
     for c in list(CLIENTS):
         try:
             await c.send(type="agent_notice", n=n or 0, title=title, sender=HUB.label)
@@ -2428,7 +2438,7 @@ async def _hub_form_answer(body: dict) -> JSONResponse:
         r["max"] = SLACK_FORM_PER_HOUR
     if r.get("ok") or r.get("reason") == "stuck":
         title = f"Slack から{'答えました' if r.get('ok') else '答える途中で止まりました'}: {a['cwd'].rsplit('/', 1)[-1]}"
-        await must_notice(title, r.get("said", ""))  # 毎回、画面の知らせとプッシュ通知で知らせる（一般の知らせの数の枠とは別）
+        must_notice(title, r.get("said", ""))  # 毎回、画面の知らせとプッシュ通知で知らせる（一般の知らせの数の枠とは別）
     if r.get("ok") and not WATCHING.get(pane):  # 答えたあとの結果を知らせるため（_hub_answer と同じ）
         path = jsonl_path(a)
         start_watch({"pane": pane, "cwd": a["cwd"], "project": r["project"], "title": a["title"], "text": "", "generic": True,
