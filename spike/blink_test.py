@@ -81,6 +81,7 @@ state = {"screen": ON, "keys": []}
 s.list_agents = lambda: [dict(TARGET)]
 s.pane_shows_trust = lambda pane: False
 s.read_prompt = lambda pane: state["screen"]
+s.read_dialog = lambda pane, *_: (_ for _ in ()).throw(RuntimeError("この試験では読まない"))  # 1 問ずつの読み取りは answer_form_test・form_ui_test で確かめる（本物の herdr を呼ばない）
 s.read_lines = lambda *a, **k: []
 s.jsonl_path = lambda a: None
 s.herdr = lambda *a, **k: (state["keys"].append(a[-1]), {"result": {}})[1] if a[:2] == ("agent", "send-keys") else {"result": {}}

@@ -2034,14 +2034,13 @@ async def _hub_answer(body: dict):
         else:
             n = int(answer)
             key, said = str(n), f"{n}番「{prompt['options'][n]}」"
-    done = ANSWERED.get(pane)  # 画面のボタンと共有する「答えた問い」。答えたあと画面が書き換わるまでに、同じ問いへもう一度送らない
-    if done and done[0] == fp and time.time() - done[1] < ANSWERED_HOLD:
+    if answered(pane, fp):  # 画面のボタンと共有する「答えた問い」。答えたあと画面が書き換わるまでに、同じ問いへもう一度送らない
         return JSONResponse({"ok": False, "reason": "answered"})
     r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, key)
     hlog(f"answer → {pane} ({project}): {said} {'ok' if 'result' in r else 'ERR'}", flush=True)
     if "result" not in r:
         return JSONResponse({"ok": False, "reason": "herdr が応答しません"})
-    ANSWERED[pane] = (fp, time.time())
+    mark_answered(pane, fp)
     SEEN_PROMPT.pop(pane, None)
     CONFIRMING.pop(pane, None)
     if not WATCHING.get(pane):  # ハブ経由で頼んだ件でなければ見張りが無いので、答えたあとの結果を知らせるために付ける
@@ -2058,55 +2057,11 @@ async def _hub_answer(body: dict):
 # セッション ID が無い）は中身を見せるだけで、キーは送らない
 QUESTION_ONLY = ("Type something.", "Chat about this")  # 選択式の質問（AskUserQuestion）にだけある選択肢
 QUESTION_CHIP = re.compile(r"^\s*(?:←\s+)?☐ ")  # 質問の見出しの印（複数選択・問いが複数のときは「←  ☐ 朝  ☐ 夜  ✔ Submit  →」）
-QUESTION_OPTION = re.compile(r"^(?:❯ | {2})(\d+)\. (\S.*)$")  # 質問の選択肢の行。説明の行は 5 文字下げて出る
-NOT_PLAIN = re.compile(r"[│┌┐└┘├┤]|^\[[ x✔✓]\]")  # preview の枠・複数選択の印
 
 
 def question_head(lines: list[str]) -> int | None:
     """末尾の操作案内から上へたどって、いちばん近い質問の見出しの行。"""
     return next((i for i in range(len(lines) - 2, -1, -1) if QUESTION_CHIP.match(lines[i])), None)
-
-
-def parse_question(text: str) -> dict | None:
-    """問いが 1 つで、選択肢から 1 つを選ぶ質問（AskUserQuestion）の画面なら、見出し・問い・選択肢。言い切れなければ None。
-    数字キーはその番号を選んで確定する（2026-11-05 実画面で確認）。言い切る形は、実画面で取ったものと同じ並び:
-    いちばん下の行が操作案内（Enter to select · ↑/↓ to navigate · Esc to cancel）、その上に見出しの印・問い・選択肢（1 から順に。
-    説明の行は 5 文字下げ）・「Type something.」・「Chat about this」。複数選択（[ ] と Submit）・問いが複数（← → と Tab/Arrow keys）・
-    preview 付き（枠と n to add notes）・番号が飛ぶか重なる・ほかの行が混じる・特殊な改行文字がある・見出しの印が 2 つ以上ある画面は
-    None（ボタンを出さない）。"""
-    if ODD_BREAKS.search(text) or "\ufffd" in text:
-        return None
-    lines = text.split("\n")
-    if not lines or sum(1 for l in lines if QUESTION_CHIP.match(l)) != 1:
-        return None
-    foot = lines[-1]
-    if not all(w in foot for w in ("Enter to select", "↑/↓ to navigate", "Esc to cancel")) or "Tab/Arrow" in foot or "to add notes" in foot:
-        return None
-    head = question_head(lines)
-    if head is None or any(w in lines[head] for w in ("Submit", "←", "→")):
-        return None
-    body = lines[head + 1:-1]
-    first = next((i for i, l in enumerate(body) if QUESTION_OPTION.match(l)), None)
-    if not first:  # 選択肢が無い、または問いの行が無い
-        return None
-    opts: list[list] = []  # [番号, 見出し, 説明の行]
-    for l in body[first:]:
-        m = QUESTION_OPTION.match(l)
-        if m:
-            opts.append([int(m.group(1)), m.group(2).strip(), []])
-        elif l.startswith(" " * 5):
-            opts[-1][2].append(l.strip())
-        else:
-            return None
-    if [o[0] for o in opts] != list(range(1, len(opts) + 1)) or len(opts) < 3:
-        return None
-    if [o[1] for o in opts[-2:]] != list(QUESTION_ONLY) or opts[-1][2] or opts[-2][2]:
-        return None
-    real = opts[:-2]
-    if any(NOT_PLAIN.search(label) or label in QUESTION_ONLY for _, label, _ in real):
-        return None
-    return {"header": lines[head].strip()[1:].strip(), "question": "\n".join(l.strip() for l in body[:first]),
-            "choices": [{"n": n, "label": label, "desc": " ".join(desc)} for n, label, desc in real]}
 
 
 def dialog_part(text: str) -> str | None:
@@ -2130,11 +2085,32 @@ def is_permission(text: str) -> bool:
     return "Enter to select" not in foot and any(l.strip().startswith("Do you want to") for l in asked)
 
 
+STEPPING: dict[str, float] = {}  # 1 問ずつ答えている途中のセッション: pane → 最後に押した時刻
+STEPPING_FOR = 600  # その間は、herdr が止まっていると見ていなくても画面を読む（確認の画面は、herdr が止まっていると見ないことがある）
+
+
+def stepping(a: dict) -> bool:
+    return time.time() - STEPPING.get(a["pane"], 0) < STEPPING_FOR
+
+
 def _ask_of(a: dict) -> dict:
     """止まっているセッション a の問い。kind は permission（ボタンを出す）/ question / trust / unknown / none（止まっていない）/ unreadable。
-    question は、1 つを選ぶ質問と言い切れて、セッション ID もあるときだけ choices（選択肢のボタン）を付ける。"""
+    選択肢の問い（AskUserQuestion）は、セッション ID があり、いまの 1 問（か確認の画面）を ask_form.step で読めたときだけ step（1 問ずつ
+    答えるボタン）を付ける。読めない画面には答え方を付けない（前の「選択肢の番号だけを送る」答え方は 0.26.1 で外した。step が断る画面にも
+    番号を送れてしまうため。答え方は 1 つ）。
+    1 問ずつ答えている途中のセッション（stepping）は、herdr が止まっていると見ていなくても、選択肢の問いの画面かを読む。"""
     if a["status"] != "blocked":
-        return {"kind": "none"}
+        if not (stepping(a) and a.get("session")):
+            return {"kind": "none"}
+        try:
+            dtext = read_dialog(a["pane"])
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            return {"kind": "none"}
+        st = ask_form.step(dtext)
+        if st["stage"] not in ("question", "review"):
+            return {"kind": "none"}
+        return {"kind": "question", "text": _clip(ask_form.dialog(dtext), 1200), "fp": prompt_fp(read_prompt(a["pane"])),
+                "risky": bool(RISKY.search(ask_form.dialog(dtext))), "step": ask_form.public(st), "sfp": ask_form.fp(dtext)}
     trust = pane_shows_trust(a["pane"])
     if trust is None or trust:
         return {"kind": "unreadable" if trust is None else "trust"}
@@ -2147,19 +2123,21 @@ def _ask_of(a: dict) -> dict:
     else:  # 言い切れない（選択肢が映りきっていない、セッションを見分けられない、など）。ボタンは出さない
         kind = "unknown"
     out = {"kind": kind, "text": _clip(asked, 1200), "fp": prompt_fp(text), "risky": bool(RISKY.search(asked))}
+    if kind != "permission" and a.get("session"):  # 選択肢の問い（AskUserQuestion）の、いまの 1 問か確認の画面（確認の画面には操作案内が無い）
+        try:
+            dtext = read_dialog(a["pane"])
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            dtext = ""
+        st = ask_form.step(dtext) if dtext else {"stage": "unknown"}
+        if st["stage"] in ("question", "review"):
+            kind = out["kind"] = "question"
+            out.update(step=ask_form.public(st), sfp=ask_form.fp(dtext))
+            out["risky"] = out["risky"] or bool(RISKY.search(ask_form.dialog(dtext)))
     if kind == "question":
         dialog = dialog_part(text)
         if dialog:  # 質問は見出しの印から見せる（会話の上の部分は出さない）。取り消しにくい印は、省く前の問いと選択肢の全体でも見る
             out["text"] = _clip(dialog, 1200)
             out["risky"] = out["risky"] or bool(RISKY.search(dialog))
-        q = parse_question(text) if a.get("session") else None
-        if q:
-            out.update(header=_clip(q["header"], 40), question=_clip(q["question"], 600),
-                       choices=[{"n": c["n"], "label": _clip(c["label"], 120), "desc": _clip(c["desc"], 200)} for c in q["choices"]])
-        got = form_of(a)
-        if got:
-            out.update(ask=got[0], form=ask_form.public(got[1]))
-            out["risky"] = out["risky"] or bool(RISKY.search(ask_form.form_text(got[1])))
     return out
 
 
@@ -2176,34 +2154,6 @@ def read_dialog(pane: str, timeout: float = 20) -> str:
     return out
 
 
-_PENDING: dict[str, tuple[tuple, tuple | None]] = {}  # pane → (記録の印, 答えを待っている問い)
-
-
-def form_of(a: dict) -> tuple[str, dict] | None:
-    """止まっているセッション a の、答えを待っている選択肢の問い (記録の id, 問いの形)。記録にあり、画面に最初の問いが出ていて、
-    まだ何も答えていないときだけ（端末で答え始めていたら None。続きは端末で）。"""
-    if a.get("kind") != "claude" or not a.get("session"):
-        return None
-    path = jsonl_path(a)
-    try:
-        st = path.stat() if path else None
-    except OSError:
-        st = None
-    if not st:
-        return None
-    sig = (str(path), st.st_mtime_ns, st.st_size)
-    hit = _PENDING.get(a["pane"])
-    got = hit[1] if hit and hit[0] == sig else ask_form.pending(path)  # 記録が変わっていなければ読み直さない（画面は 5 秒ごとに問いを聞く）
-    _PENDING[a["pane"]] = (sig, got)
-    if not got:
-        return None
-    try:
-        screen = read_dialog(a["pane"])
-    except (OSError, RuntimeError, subprocess.SubprocessError):
-        return None  # 画面を読めないときは問いの形を出さない
-    return got if not ask_form.ready(screen, got[1]) else None
-
-
 def _asked(pane: str, key: str) -> tuple[dict | None, dict]:
     """pane と key が指すセッションと、その問い。key はセッション ID で必須（同じ場所でセッションが立て直されていたら別物として断る。
     ハブも、話し相手の選択に使う "hub" ではなく、いまのセッション ID で見分ける）。"""
@@ -2218,7 +2168,7 @@ def api_prompts():
     """止まっているセッションすべての問い。画面はこれを上に並べ、承認の画面にだけボタンを出す。key はセッション ID。"""
     out = []
     for a in list_agents():
-        if a["status"] == "blocked":
+        if a["status"] == "blocked" or stepping(a):
             asked = _ask_of(a)
             if asked["kind"] != "none":
                 out.append({"pane": a["pane"], "key": a.get("session") or "", "name": f"{a['cwd'].rsplit('/', 1)[-1]}｜{a['title']}", **asked})
@@ -2226,8 +2176,22 @@ def api_prompts():
 
 
 _answer_lock = asyncio.Lock()  # 確かめてからキーを送るまでを、一度にひとつだけにする
-ANSWERED: dict[str, tuple[str, float]] = {}  # 画面のボタンとハブ経由で答えた問い: pane → (指紋, 時刻)。2 つの経路で共有する
+ANSWERED: dict[str, tuple[frozenset, float, str]] = {}  # 画面のボタンとハブ経由で答えた問い: pane → (指紋の組, 時刻, 経路)。経路で共有する
 ANSWERED_HOLD = 15  # 答えたあと、相手の状態が変わるまでのあいだ、同じ問いへの重ねた答えを断る秒数
+
+
+def answered(pane: str, fp: str, by: str = "") -> bool:
+    """この問い（指紋）に、さっき答えたか（ANSWERED_HOLD 秒のうち）。by を渡すと、その経路で記録したものは数えない。"""
+    done = ANSWERED.get(pane)
+    return bool(done) and fp in done[0] and time.time() - done[1] < ANSWERED_HOLD and not (by and done[2] == by)
+
+
+def mark_answered(pane: str, *fps: str, by: str = "") -> None:
+    """答えた問いを記録する。1 問ずつの答え（by="step"）は、その画面の指紋（sfp）と、ハブ・承認のボタンが比べる指紋（prompt_fp）の両方で
+    記録する（指紋の取り方が違うので、片方だけだと、もう一方の経路から同じ画面へ重ねて送れる。2026-11-17 codex-review）。
+    prompt_fp は画面の下の一部から取るので、次の問いに進んでも同じことがある。届いたあとも残し、ハブ・承認のボタンを止める。
+    続く 1 問ずつの答えは sfp だけで見る（_answer は、1 問ずつの答えが記録したものを prompt_fp では数えない）。"""
+    ANSWERED[pane] = (frozenset(f for f in fps if f), time.time(), by)
 
 
 @app.post("/api/answer")
@@ -2243,20 +2207,16 @@ async def api_answer(body: dict):
 async def _answer(body: dict):
     pane, key, fp = str(body.get("pane", "")), str(body.get("key", "")), str(body.get("fp", ""))
     choice, confirmed = str(body.get("choice", "")), bool(body.get("confirmed"))
-    done = ANSWERED.get(pane)
-    if done and done[0] == fp and time.time() - done[1] < ANSWERED_HOLD:  # 二度押し・重ねた送信
+    if answered(pane, fp, by="step" if choice == "step" else ""):  # 二度押し・重ねた送信（1 問ずつの答えどうしは、step_answer が sfp で見る）
         return JSONResponse({"ok": False, "reason": "answered"})
-    if choice not in ("allow", "deny", "choose", "form"):
+    if choice not in ("allow", "deny", "step"):  # 選択肢の問いには step だけ（前の choose は 0.26.1 で外した）
         return JSONResponse({"ok": False, "reason": "bad_choice"})
     a, asked = await asyncio.to_thread(_asked, pane, key)
     if asked["kind"] in ("gone", "none", "unreadable", "trust"):
         return JSONResponse({"ok": False, "reason": asked["kind"]})
-    if choice == "form":
-        r = await form_answer(a, asked, fp, body.get("ask"), body.get("answers"), confirmed, "画面")
-        return JSONResponse(r)
-    if choice == "choose" and not asked.get("choices"):  # 1 つを選ぶ質問と言い切れないときは、何も送らない
-        return JSONResponse({"ok": False, "reason": "not_choice"})
-    if choice != "choose" and asked["kind"] != "permission":  # 承認の画面と見分けられないときは、何も送らない
+    if choice == "step":
+        return JSONResponse(await step_answer(a, asked, body, confirmed))
+    if asked["kind"] != "permission":  # 承認の画面と見分けられないときは、何も送らない
         return JSONResponse({"ok": False, "reason": "not_permission"})
     if asked["fp"] != fp:  # 画面に出したあとで問いが変わった
         return JSONResponse({"ok": False, "reason": "changed"})
@@ -2264,73 +2224,65 @@ async def _answer(body: dict):
         if asked["risky"] and not confirmed:
             return JSONResponse({"ok": False, "reason": "confirm"})
         keys, said = "1", "許可（今回だけ）"
-    elif choice == "deny":
+    else:
         keys, said = "esc", "断る"
-    else:  # 画面から読んだ選択肢の番号だけを送る（Type something. と Chat about this は選ばない）
-        n = body.get("n")
-        picked = next((c for c in asked["choices"] if type(n) is int and c["n"] == n), None)
-        if not picked:
-            return JSONResponse({"ok": False, "reason": "bad_choice"})
-        if asked["risky"] and not confirmed:
-            return JSONResponse({"ok": False, "reason": "confirm"})
-        keys, said = str(n), f"{n}番「{_clip(picked['label'], 40)}」"
     r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, keys)
     hlog(f"answer(画面) → {pane} ({a['cwd'].rsplit('/', 1)[-1]}): {said} {'ok' if 'result' in r else 'ERR'}", flush=True)
     if "result" not in r:
         return JSONResponse({"ok": False, "reason": "herdr"})
-    ANSWERED[pane] = (fp, time.time())
+    mark_answered(pane, fp)
     return JSONResponse({"ok": True, "said": said})
 
 
-# ---------- 選択肢の問い（AskUserQuestion）に、画面から問いの形で答える（2026-11-17 本人の要望） ----------
-# 問いは記録から組み、画面は「いまその問いが出ていて、まだ答えていない」ことと、送る途中の 1 手ごとの確かめにだけ使う（scripts/ask_form.py）。
-# 答えを受けるのは画面のボタン（/api/answer、choice=form）だけ。本体が利用者の端末から直接受け取れる面でだけ答える（Slack は Hermes を通るので、
+# ---------- 選択肢の問い（AskUserQuestion）に、画面から 1 問ずつ答える（2026-11-17 本人の要望） ----------
+# いまターミナルに出ている 1 問（か確認の画面）だけを画面から読んでボタンにし、1 回押すごとに確かめながらキーを送る（scripts/ask_form.py）。
+# 答えを受けるのは画面のボタン（/api/answer、choice=step）だけ。本体が利用者の端末から直接受け取れる面でだけ答える（Slack は Hermes を通るので、
 # 本体は利用者の意思を確かめられない。2026-11-17 本人と決めたビジョン: Slack からは画面のその問いへのリンクで来てもらう）。
+STEP_ACTS = ("pick", "toggle", "next", "free", "submit")
 
 
-async def form_answer(a: dict, asked: dict, fp: str, ask, answers, confirmed: bool, via: str) -> dict:
-    """答えを確かめて、1 手ずつ画面を確かめながら送る。呼ぶのは _answer_lock の中。"""
-    if asked["kind"] != "question" or not asked.get("form"):
+async def step_answer(a: dict, asked: dict, body: dict, confirmed: bool) -> dict:
+    """1 回押したぶんを送る。見せたのと同じ画面（指紋）にだけ。取り消しにくい問いは、印の付け外しのほかは、もう一度押してから。呼ぶのは _answer_lock の中。"""
+    if "step" not in asked:
         return {"ok": False, "reason": "not_form"}
-    if asked["fp"] != fp or asked.get("ask") != ask:  # 見せたあとで問いが変わった
+    sfp = str(body.get("sfp", ""))
+    if asked["sfp"] != sfp:  # 見せたあとで画面が変わった（端末で答えた・次の問いに進んだ）
         return {"ok": False, "reason": "changed"}
-    pane = a["pane"]
-    done = ANSWERED.get(pane)
-    if done and done[0] == fp and time.time() - done[1] < ANSWERED_HOLD:
-        return {"ok": False, "reason": "answered"}
-    got = await asyncio.to_thread(form_of, a)
-    if not got or got[0] != ask:
-        return {"ok": False, "reason": "changed"}
-    form = got[1]
-    plan, why = ask_form.check(form, answers)
-    if plan is None:
-        return {"ok": False, "reason": why}
-    if asked["risky"] and not confirmed:
+    kind = body.get("act")
+    if kind not in STEP_ACTS:
+        return {"ok": False, "reason": "bad_choice"}
+    arg = body.get("n") if kind in ("pick", "toggle") else body.get("text") if kind == "free" else None
+    if asked["risky"] and kind != "toggle" and not confirmed:
         return {"ok": False, "reason": "confirm"}
-    said = ask_form.said(form, plan)
+    pane = a["pane"]
+    if answered(pane, sfp):
+        return {"ok": False, "reason": "answered"}
 
     async def read():
         return await asyncio.to_thread(read_dialog, pane, ask_form.READ_MAX)
 
-    async def keys(k, left):  # left は drive が渡す残りの秒数。herdr の呼び出しそのものをそこで打ち切る（裏で送り続けない）
-        r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, k, timeout=min(ask_form.READ_MAX, left))
+    async def keys(k):
+        r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, k, timeout=ask_form.READ_MAX)
         if "result" not in r:
             raise ask_form.Stuck("herdr が応答しない")
 
-    async def text(t, left):
-        r = await asyncio.to_thread(herdr, "pane", "send-text", pane, t, timeout=min(ask_form.READ_MAX, left))
-        if "result" not in r:
+    async def text(t):
+        r = await asyncio.to_thread(herdr, "pane", "send-text", pane, t, timeout=ask_form.READ_MAX)
+        if "result" not in r and r.get("code") != 0:  # send-text はうまくいくと何も出さない（終わりの数 0）。2026-11-17 実機で確かめた
             raise ask_form.Stuck("herdr が応答しない")
 
-    ANSWERED[pane] = (fp, time.time())  # 送り始めたら、同じ問いに重ねて送らない（途中で止まっても）
+    mark_answered(pane, sfp, asked["fp"], by="step")  # 送り始めたら、同じ画面に重ねて送らない（途中で止まっても。ハブの経路からも）
+    SEEN_PROMPT.pop(pane, None)  # ハブがこの前に見た問いへの答えを、このあとの問いに送らない（ハブは問いを見直してから答える）
+    CONFIRMING.pop(pane, None)
+    STEPPING[pane] = time.time()
     project = a["cwd"].rsplit("/", 1)[-1]
     try:
-        await ask_form.drive(form, plan, read, keys, text, lambda: asyncio.to_thread(ask_form.recorded, jsonl_path(a), ask))
-    except Exception as e:  # 途中で止めた（Stuck）か、読み取り・送信の失敗。どこまで届いたかは分からない
+        said = await ask_form.act(kind, arg, read, keys, text, sfp)  # 最初の読み取りも、見せた画面の指紋と照らす
+    except Exception as e:  # 送る前に止めた・途中で止めた（Stuck）か、読み取り・送信の失敗
         why = str(e) if isinstance(e, ask_form.Stuck) else f"結果が分からない（{type(e).__name__}）"
-        hlog(f"answer({via}・問いの形) → {pane} ({project}): 途中で止めました: {why}（送ろうとした答え: {said}）", flush=True)
-        return {"ok": False, "reason": "stuck", "why": why, "said": said}
-    hlog(f"answer({via}・問いの形) → {pane} ({project}): {said} ok", flush=True)
+        hlog(f"answer(画面・1 問ずつ) → {pane} ({project}): 止めました: {why}", flush=True)
+        return {"ok": False, "reason": "stuck", "why": why}
+    hlog(f"answer(画面・1 問ずつ) → {pane} ({project}): {said} ok", flush=True)
     return {"ok": True, "said": said, "project": project, "title": a.get("title", "")}
 
 

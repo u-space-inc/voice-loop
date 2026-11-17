@@ -68,6 +68,71 @@ REAL_PREVIEW_CURSOR = """←  ☒ 店  ☐ 形  ✔ Submit  →
 ──────────────────────────────────────────────────────────────────────────────────────────────────
   Chat about this
 Enter to select · ↑/↓ to navigate · n to add notes · Tab to switch questions · Esc to cancel"""
+# 小さいペインで、選択肢が画面に収まらないとき（↓ の印。自由記入の欄「3. Type something.」は画面の外）。2026-11-17 に取った
+REAL_SCROLLED = """←  ☐ 店  ☐ 色  ☐ 形  ✔ Submit  →
+どの店にしますか？
+❯ 1. A店
+     A店にする
+↓ 2. B店
+     B店にする
+──────────────────────────────────────────────────────────────────────
+  4. Chat about this
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel"""
+# 小さいペインの複数選ぶ問い（見出しの行は画面の上にはみ出し、緑と自由記入の欄は画面の外。問いが続くので「Next」）。2026-11-17 に取った
+REAL_SMALL_MULTI = """  B店にする（このあたりは会話の続き）
+好きな色は？（複数可）
+❯ 1. [ ] 赤
+         赤を選ぶ
+↓ 2. [ ] 青
+         青を選ぶ
+     Next
+──────────────────────────────────────────────────────────────────────
+  5. Chat about this
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel"""
+# 小さいペインの見本つきの問い（見出しの行も問いの文も画面の上にはみ出し、見本の枠は「✂ … hidden」で縮む）。2026-11-17 に取った
+REAL_SMALL_PREVIEW = """❯ 1. 横長                         ┌─────────────────────────────────────
+  2. 縦長                         │ +----------------+                  │
+                                  ├─── ✂ ─── 2 lines hidden ──────────
+                                  └───────────────────────────────────
+                                  Notes: press n to add notes
+──────────────────────────────────────────────────────────────────────
+  Chat about this
+Enter to select · ↑/↓ to navigate · n to add notes · Tab to switch questions · Esc to cancel"""
+# 小さいペインの確認の画面（見出しの行も「Review your answers」も画面の上にはみ出している）。2026-11-17 に取った
+REAL_SMALL_REVIEW = """ ● どの店にしますか？
+   → B店
+ ● 好きな色は？（複数可）
+   → 赤
+ ● どの形？
+   → 縦長
+Ready to submit your answers?
+❯ 1. Submit answers
+  2. Cancel"""
+# 問い・説明に改行と、見出し・選択肢をまねた行を入れた問いの、本物の描き方（2026-11-17、小さいペインで取った）。
+# 問いの文が複数行だと各行の頭に「│ 」が付き、説明の改行は「�」になって 1 行に描かれる（偽の見出し・選択肢の行にはならない）
+REAL_MALICIOUS = """│ 本当の問い
+│  ☐ 偽
+│ 中止しますか？
+❯ 1. 処理を実行する
+     説明\ufffd ☐ 偽\ufffd❯ 1. 中止する
+↓ 2. やめる
+     やめる
+──────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel"""
+# 幅の狭いペインで、↓ で自由記入の欄に入った画面（操作案内が 2 行に折り返す）。2026-11-17 に取った
+REAL_NARROW_TYPING = """──────────────────────────────────────────────────────────────
+←  ☐ 店  ☐ 色  ✔ Submit  →
+どの店？
+  1. A店
+     A店を選ぶ
+  2. B店
+     B店を選ぶ
+❯ 3. Type something.
+──────────────────────────────────────────────────────────────
+  4. Chat about this
+Enter to select · Tab/Arrow keys to navigate · ctrl+g to edit
+in Zed · Esc to cancel"""
 # 上の画面の問いの形（セッションの記録にあった AskUserQuestion の入力）
 REAL_TWO_INPUT = {"questions": [
     {"question": "朝はどれ？", "header": "朝", "multiSelect": False,
@@ -138,6 +203,11 @@ class FakeTUI:
         q = self.qs[self.i]
         n = len(q["options"])
         preview = any(o.get("preview") for o in q["options"])
+        if k in ("down", "up"):  # カーソルを動かす（自由記入の欄に来ると入力中になる。本物と同じ）
+            last = n if preview else n + 1
+            self.cursor = max(1, min(last, self.cursor + (1 if k == "down" else -1)))
+            self.typing = (not q.get("multiSelect") and not preview and self.cursor == n + 1 and "no_typing" not in self.q)
+            return
         if self.typing:
             if k == "enter":
                 self.ans[self.i] = self.other[self.i]
@@ -204,9 +274,11 @@ class FakeTUI:
         q = self.qs[self.i]
         n = len(q["options"])
         preview = any(o.get("preview") for o in q["options"])
-        rows = [rule, self.bar(), q["question"]]
+        ql = q["question"].split("\n")  # 本物と同じく、問いの文が複数行なら各行の頭に「│ 」
+        rows = [rule, self.bar()] + (["│ " + x for x in ql] if len(ql) > 1 else ql)
         cur = lambda k: "❯ " if self.cursor == k else "  "  # noqa: E731
         for k, o in enumerate(q["options"], 1):
+            o = {**o, "label": o["label"].replace("\n", "\ufffd"), "description": o.get("description", "").replace("\n", "\ufffd")}  # 本物と同じく、改行は「�」
             lab, more = o["label"], []
             if "wrap_labels" in self.q and len(lab) > 6:
                 lab, more = lab[:6], [lab[j:j + 6] for j in range(6, len(lab), 6)]

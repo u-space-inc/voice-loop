@@ -1,8 +1,8 @@
 """選択式の質問で止まっているセッションの欄（画面の上に並べるもの）の通し。本体の写しを 127.0.0.1:8792 に立て、本物のブラウザ（Chromium）で開く。
 herdr には触れない（一覧・画面の読み取り・キーの送信を差し替える）。声の一覧は、この試験の中の小さな偽物（127.0.0.1:8796）から取る。
-見ること: 1 つを選ぶ質問は、問いと選択肢ごとのボタン（説明つき）を出し、Type something. と Chat about this のボタンは出さない・押すと
-その番号だけが送られる・取り消しにくく見える問いは同じボタンをもう一度押すまで送らない（別のボタンを押すとそちらで数え直す）・
-複数選択の質問はボタンを出さず、中身を見出しの印から見せる・画面から読んだ文字はタグにしない・スマホの幅（390px）と PC の幅（1400px）。
+見ること: いまの 1 問を読めない（この試験では読み取りを止めている）選択式の質問には、答えるボタンを 1 つも出さず、中身を見出しの印から
+文字として見せる（前の「選択肢の番号だけを送る」ボタンは 0.26.1 で外した。1 問ずつ答える欄は form_ui_test が確かめる）・画面から読んだ
+文字はタグにしない・何も送らない・スマホの幅（390px）と PC の幅（1400px）。
 使い方: uv run spike/question_ui_test.py"""
 import json
 import os
@@ -66,6 +66,7 @@ s.list_agents = lambda: [dict(a) for a in AGENTS]
 s.jsonl_path = lambda a: None
 s.pane_shows_trust = lambda pane: False
 s.read_prompt = lambda pane: SCREENS.get(pane, "")
+s.read_dialog = lambda pane, *_: (_ for _ in ()).throw(RuntimeError("この試験では読まない"))  # 1 問ずつの読み取りは answer_form_test・form_ui_test で確かめる（本物の herdr を呼ばない）
 s.herdr = lambda *a, **k: (SENT.append((a[2], a[3])), {"result": {}})[1] if a[:2] == ("agent", "send-keys") else {"result": {}}
 
 srv = uvicorn.Server(uvicorn.Config(s.app, host="127.0.0.1", port=PORT, log_level="warning"))
@@ -89,10 +90,6 @@ def card(page, pane):
     return page.locator(f'#asks .ask[data-pane="{pane}"]')
 
 
-def labels(page, pane):
-    return card(page, pane).locator(".choose .lbl").all_text_contents()
-
-
 def run(page, width):
     who = f"{width}px:"
     SENT.clear()
@@ -104,37 +101,20 @@ def run(page, width):
     page.wait_for_function("document.getElementById('conn').classList.contains('on')")
     page.wait_for_selector('#asks .ask[data-pane="w4:p1"]')
     shop, risky, multi = card(page, "w2:p1"), card(page, "w3:p1"), card(page, "w4:p1")
-    check(f"{who} 1 つを選ぶ質問: 見出し・問い・選択肢のボタン（Type something. と Chat about this は出さない）",
-          (shop.locator(".head").text_content(), shop.locator(".q").text_content(), labels(page, "w2:p1"),
-           shop.locator(".choose .desc").all_text_contents(), shop.locator(".allow, .deny, pre").count()),
-          ("shop｜受注｜質問で止まっています", "［試験］ 試験の質問です。どれにしますか？", ["1. りんご", "2. みかん", f"3. {XSS}"],
-           ["赤い果物", "橙の果物", "紫の果物"], 0))
+    check(f"{who} 1 つを選ぶ質問でも、いまの 1 問を読めなければ答えるボタンを出さず、中身を見出しの印から文字で見せる",
+          (shop.locator(".head").text_content(), shop.locator("button").count(), shop.locator("pre").text_content().splitlines()[0],
+           XSS in shop.locator("pre").text_content()),
+          ("shop｜受注｜質問で止まっています。端末かハブで答えてください", 0, " ☐ 試験", True))
     check(f"{who} 画面から読んだ文字はタグにしない", (page.evaluate("window.__xss === undefined"), shop.locator("img").count()), (True, 0))
-    check(f"{who} 問いと選択肢がどちらも見えている", (shop.locator(".q").is_visible(), shop.locator(".choose").nth(2).is_visible()), (True, True))
+    check(f"{who} 取り消しにくく見える問いにも、答えるボタンを出さない", risky.locator("button").count(), 0)
     check(f"{who} 横にはみ出さない", page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), True)
-
-    shop.locator(".choose", has_text="みかん").click()
-    sent = wait(lambda: SENT == [("w2:p1", "2")])
-    AGENTS[1]["status"] = "idle"  # 答えたので止まっていない
-    check(f"{who} 押すと、その番号だけを送り、送ったことを出す",
-          (sent, wait(lambda: "shop｜受注 に「2番「みかん」」を送りました" in (page.text_content("#log") or ""))), (True, True))
-
-    check(f"{who} 取り消しにくく見える問いには印を出す", risky.locator(".head").text_content(), "deploy｜受注｜⚠ 取り消しにくい操作かもしれません。質問で止まっています")
-    SENT.clear()
-    risky.locator(".choose").nth(0).click()
-    check(f"{who} 取り消しにくく見える問いは、1 回目では送らず、押したボタンに「もう一度」を出す",
-          (SENT, labels(page, "w3:p1")[0], risky.locator(".choose.warn").count()), ([], "もう一度押すと「1. りんご」を選ぶ", 1))
-    risky.locator(".choose").nth(1).click()
-    check(f"{who} 別のボタンを押したら、そちらで数え直す（前のボタンは元に戻す）",
-          (SENT, labels(page, "w3:p1")[:2]), ([], ["1. りんご", "もう一度押すと「2. みかん」を選ぶ"]))
-    risky.locator(".choose").nth(1).click()
-    check(f"{who} 同じボタンをもう一度押すと、その番号を送る", wait(lambda: SENT == [("w3:p1", "2")]), True)
-    AGENTS[2]["status"] = "idle"
-
-    check(f"{who} 複数選択の質問はボタンを出さず、中身を見出しの印から見せる",
+    check(f"{who} 複数選択の質問もボタンを出さず、中身を見出しの印から見せる",
           (multi.locator("button").count(), multi.locator("pre").text_content().splitlines()[0], multi.locator("pre").evaluate("e => e.scrollTop")),
           (0, "←  ☐ 複数  ✔ Submit  →", 0))
-    check(f"{who} 送ったのは押した 2 回だけ", SENT, [("w3:p1", "2")])
+    r = page.evaluate("""async () => (await (await fetch('/api/answer', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({pane: 'w2:p1', key: 's2', fp: 'x', choice: 'choose', n: 2})})).json()).reason""")
+    check(f"{who} 前の答え方（choose）で頼まれても送らない", r, "bad_choice")
+    check(f"{who} 何も送らない", SENT, [])
 
 
 with sync_playwright() as p:

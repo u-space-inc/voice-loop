@@ -80,6 +80,7 @@ s.jsonl_path = lambda a: None
 UPDATED: dict = {}  # セッションが最後に動いた時刻（pane → UNIX 秒）。無いものは記録の無いセッション
 s.agent_updated = lambda a: UPDATED.get(a["pane"])
 s.read_prompt = lambda pane: "Do you want to proceed?\n ❯ 1. Yes\n   2. No"
+s.read_dialog = lambda pane, *_: (_ for _ in ()).throw(RuntimeError("この試験では読まない"))  # 1 問ずつの読み取りは answer_form_test・form_ui_test で確かめる（本物の herdr を呼ばない）
 CALLS, OUT, STILL = [], {}, {"v": False}
 
 
