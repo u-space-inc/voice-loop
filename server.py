@@ -44,6 +44,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "scripts"))
 from origin_guard import SameOriginOnly  # noqa: E402  接続元の確かめ
 import consent  # noqa: E402  利用者の発言が、許す・選ぶの答えになっているか（承認に答える・閉じるの守り）
+import ask_form  # noqa: E402  選択肢の問い（AskUserQuestion）に、画面と Slack から答える
 from places import CONFIG_DIR, STATE_DIR  # noqa: E402  端末ごとの設定と状態の置き場
 
 
@@ -2155,7 +2156,52 @@ def _ask_of(a: dict) -> dict:
         if q:
             out.update(header=_clip(q["header"], 40), question=_clip(q["question"], 600),
                        choices=[{"n": c["n"], "label": _clip(c["label"], 120), "desc": _clip(c["desc"], 200)} for c in q["choices"]])
+        got = form_of(a)
+        if got:
+            out.update(ask=got[0], form=ask_form.public(got[1]))
+            out["risky"] = out["risky"] or bool(RISKY.search(ask_form.form_text(got[1])))
     return out
+
+
+def read_dialog(pane: str, timeout: float = 20) -> str:
+    """選択肢の問いの画面（答えを送る途中の確かめに使う）。read_prompt より多く読む（見本の枠で縦に長くなるため）。
+    読めなかったら（herdr が失敗で終わった）例外にする（空の画面を「問いが消えた」と取り違えないため）。"""
+    p = subprocess.run(["herdr", "agent", "read", pane, "--source", "visible", "--lines", "80"], capture_output=True, text=True, timeout=timeout)
+    if p.returncode != 0:
+        raise RuntimeError(f"画面を読めない（herdr の終わりの数 {p.returncode}）")
+    rows = [ODD_BREAKS.sub("\ufffd", l) for l in p.stdout.split("\n")]
+    out = "\n".join(l.rstrip() for l in rows if l.strip() and not STATUS_LINE.match(l))
+    if not out:  # 空（状態表示の行だけも）は、読めなかったとみなす（「問いが消えた」と取り違えない。visible_screen と同じ）
+        raise RuntimeError("画面が空だった")
+    return out
+
+
+_PENDING: dict[str, tuple[tuple, tuple | None]] = {}  # pane → (記録の印, 答えを待っている問い)
+
+
+def form_of(a: dict) -> tuple[str, dict] | None:
+    """止まっているセッション a の、答えを待っている選択肢の問い (記録の id, 問いの形)。記録にあり、画面に最初の問いが出ていて、
+    まだ何も答えていないときだけ（端末で答え始めていたら None。続きは端末で）。"""
+    if a.get("kind") != "claude" or not a.get("session"):
+        return None
+    path = jsonl_path(a)
+    try:
+        st = path.stat() if path else None
+    except OSError:
+        st = None
+    if not st:
+        return None
+    sig = (str(path), st.st_mtime_ns, st.st_size)
+    hit = _PENDING.get(a["pane"])
+    got = hit[1] if hit and hit[0] == sig else ask_form.pending(path)  # 記録が変わっていなければ読み直さない（画面は 5 秒ごとに問いを聞く）
+    _PENDING[a["pane"]] = (sig, got)
+    if not got:
+        return None
+    try:
+        screen = read_dialog(a["pane"])
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        return None  # 画面を読めないときは問いの形を出さない
+    return got if not ask_form.ready(screen, got[1]) else None
 
 
 def _asked(pane: str, key: str) -> tuple[dict | None, dict]:
@@ -2200,11 +2246,14 @@ async def _answer(body: dict):
     done = ANSWERED.get(pane)
     if done and done[0] == fp and time.time() - done[1] < ANSWERED_HOLD:  # 二度押し・重ねた送信
         return JSONResponse({"ok": False, "reason": "answered"})
-    if choice not in ("allow", "deny", "choose"):
+    if choice not in ("allow", "deny", "choose", "form"):
         return JSONResponse({"ok": False, "reason": "bad_choice"})
     a, asked = await asyncio.to_thread(_asked, pane, key)
     if asked["kind"] in ("gone", "none", "unreadable", "trust"):
         return JSONResponse({"ok": False, "reason": asked["kind"]})
+    if choice == "form":
+        r = await form_answer(a, asked, fp, body.get("ask"), body.get("answers"), confirmed, "画面")
+        return JSONResponse(r)
     if choice == "choose" and not asked.get("choices"):  # 1 つを選ぶ質問と言い切れないときは、何も送らない
         return JSONResponse({"ok": False, "reason": "not_choice"})
     if choice != "choose" and asked["kind"] != "permission":  # 承認の画面と見分けられないときは、何も送らない
@@ -2231,6 +2280,58 @@ async def _answer(body: dict):
         return JSONResponse({"ok": False, "reason": "herdr"})
     ANSWERED[pane] = (fp, time.time())
     return JSONResponse({"ok": True, "said": said})
+
+
+# ---------- 選択肢の問い（AskUserQuestion）に、画面から問いの形で答える（2026-11-17 本人の要望） ----------
+# 問いは記録から組み、画面は「いまその問いが出ていて、まだ答えていない」ことと、送る途中の 1 手ごとの確かめにだけ使う（scripts/ask_form.py）。
+# 答えを受けるのは画面のボタン（/api/answer、choice=form）だけ。本体が利用者の端末から直接受け取れる面でだけ答える（Slack は Hermes を通るので、
+# 本体は利用者の意思を確かめられない。2026-11-17 本人と決めたビジョン: Slack からは画面のその問いへのリンクで来てもらう）。
+
+
+async def form_answer(a: dict, asked: dict, fp: str, ask, answers, confirmed: bool, via: str) -> dict:
+    """答えを確かめて、1 手ずつ画面を確かめながら送る。呼ぶのは _answer_lock の中。"""
+    if asked["kind"] != "question" or not asked.get("form"):
+        return {"ok": False, "reason": "not_form"}
+    if asked["fp"] != fp or asked.get("ask") != ask:  # 見せたあとで問いが変わった
+        return {"ok": False, "reason": "changed"}
+    pane = a["pane"]
+    done = ANSWERED.get(pane)
+    if done and done[0] == fp and time.time() - done[1] < ANSWERED_HOLD:
+        return {"ok": False, "reason": "answered"}
+    got = await asyncio.to_thread(form_of, a)
+    if not got or got[0] != ask:
+        return {"ok": False, "reason": "changed"}
+    form = got[1]
+    plan, why = ask_form.check(form, answers)
+    if plan is None:
+        return {"ok": False, "reason": why}
+    if asked["risky"] and not confirmed:
+        return {"ok": False, "reason": "confirm"}
+    said = ask_form.said(form, plan)
+
+    async def read():
+        return await asyncio.to_thread(read_dialog, pane, ask_form.READ_MAX)
+
+    async def keys(k, left):  # left は drive が渡す残りの秒数。herdr の呼び出しそのものをそこで打ち切る（裏で送り続けない）
+        r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, k, timeout=min(ask_form.READ_MAX, left))
+        if "result" not in r:
+            raise ask_form.Stuck("herdr が応答しない")
+
+    async def text(t, left):
+        r = await asyncio.to_thread(herdr, "pane", "send-text", pane, t, timeout=min(ask_form.READ_MAX, left))
+        if "result" not in r:
+            raise ask_form.Stuck("herdr が応答しない")
+
+    ANSWERED[pane] = (fp, time.time())  # 送り始めたら、同じ問いに重ねて送らない（途中で止まっても）
+    project = a["cwd"].rsplit("/", 1)[-1]
+    try:
+        await ask_form.drive(form, plan, read, keys, text, lambda: asyncio.to_thread(ask_form.recorded, jsonl_path(a), ask))
+    except Exception as e:  # 途中で止めた（Stuck）か、読み取り・送信の失敗。どこまで届いたかは分からない
+        why = str(e) if isinstance(e, ask_form.Stuck) else f"結果が分からない（{type(e).__name__}）"
+        hlog(f"answer({via}・問いの形) → {pane} ({project}): 途中で止めました: {why}（送ろうとした答え: {said}）", flush=True)
+        return {"ok": False, "reason": "stuck", "why": why, "said": said}
+    hlog(f"answer({via}・問いの形) → {pane} ({project}): {said} ok", flush=True)
+    return {"ok": True, "said": said, "project": project, "title": a.get("title", "")}
 
 
 # ---------- セッションの起動 ----------
