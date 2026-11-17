@@ -290,6 +290,29 @@ check("画面: いちばん下が質問の操作案内でなければ、質問�
       (af.state("\n".join(REAL_TWO_FIRST.split("\n")[:-1]), TWO).get("why"), af.ready("\n".join(REAL_TWO_FIRST.split("\n")[:-1]), TWO)), ("foot", "foot"))
 
 
+class LeaveOther(FakeTUI):
+    """自由記入の文を打った直後、端末でカーソルが 1 番へ移り、入力欄から外れた。"""
+
+    def text(self, t):
+        super().text(t)
+        self.cursor, self.typing = 1, False
+
+
+tui = LeaveOther(one)
+try:
+    asyncio.run(af.drive(af.form_of(one), [{"other": "おにぎり"}], _r, _k, _t))
+    err = None
+except af.Stuck as e:
+    err = str(e)
+check("揺れ: 自由記入の文を打ったあと入力欄から外れたら、Enter を送らない（別の選択肢を確定させない）", (bool(err), "enter" in tui.log, tui.result), (True, False, None))
+noted = REAL_PREVIEW_CURSOR.replace("Notes: press n to add notes", "Notes: 大きめで").replace("☒ 店", "☐ 店").replace("❯ 2. 縦長", "  2. 縦長").replace("  1. 横長", "❯ 1. 横長")
+SHOP2 = af.form_of({"questions": [REAL_SHOP_INPUT["questions"][1]]})
+noted1 = noted.replace("←  ☐ 店  ☐ 形  ✔ Submit  →", " ☐ 形")
+check("画面: 見本付きの問いのメモ欄（Notes）に書かれていたら、答え始めたとみる",
+      (af.state(noted1, SHOP2).get("notes"), af.ready(noted1, SHOP2), af.ready(noted1.replace("Notes: 大きめで", "Notes: press n to add notes"), SHOP2)),
+      ("大きめで", "started", ""))
+
+
 async def _done():
     return tui.recorded()
 tui = FakeTUI(REAL_TWO_INPUT, ["next_question"])

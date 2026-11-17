@@ -283,8 +283,11 @@ def state(text: str, form: dict) -> dict:
             other += l.strip()
     elif q["multi"] and k in opts and _flat(opts[k]) != "[]Typesomething":
         other = opts[k]  # 複数選ぶ問いで自由記入に印が付いている（答え始めている）
+    notes = next((l.split("Notes:", 1)[1].strip() for l in body[first:] if "Notes:" in l), "")  # 見本付きの問いのメモ欄
+    if notes == "press n to add notes":
+        notes = ""
     return {"stage": "question", "index": idx, "cursor": cursor, "checked": checked, "answered": answered,
-            "other": other, "typing": "to edit in" in foot}
+            "other": other, "typing": "to edit in" in foot, "notes": notes}
 
 
 def ready(text: str, form: dict) -> str:
@@ -292,7 +295,7 @@ def ready(text: str, form: dict) -> str:
     st = state(text, form)
     if st["stage"] != "question":
         return st.get("why", st["stage"])
-    if st["index"] != 0 or any(st["answered"]) or st["checked"] or st["other"] or st["typing"]:
+    if st["index"] != 0 or any(st["answered"]) or st["checked"] or st["other"] or st["typing"] or st["notes"]:
         return "started"  # 端末で答え始めている。続きは端末で
     return ""
 
@@ -360,7 +363,7 @@ async def drive(form: dict, answers: list, read, keys, text, done=None) -> None:
         raise Stuck(f"送り始める前の画面が、まだ答えていない最初の問いではない（{why}）")
     for i, (q, a) in enumerate(zip(qs, answers)):
         st = await until(on(i), f"{i + 1} つ目の問いが出ない")
-        if (st["answered"][i] or st["checked"] or st["other"] or st["typing"]  # その問いの最初のキーを決める画面そのもので確かめる
+        if (st["answered"][i] or st["checked"] or st["other"] or st["typing"] or st["notes"]  # その問いの最初のキーを決める画面そのもので確かめる
                 or not all(st["answered"][:i]) or any(st["answered"][i + 1:])):
             raise Stuck(f"{i + 1} つ目の問いを、送る前に端末で答え始めている")
         if "picks" in a:
@@ -381,13 +384,14 @@ async def drive(form: dict, answers: list, read, keys, text, done=None) -> None:
             await keys(str(k))
             await until(lambda s: on(i)(s) and s["cursor"] == k and s["typing"], f"{i + 1} つ目の自由記入の欄に入れない")
             await text(a["other"])
-            await until(lambda s: on(i)(s) and s["other"] is not None and _flat(s["other"]) == _flat(a["other"]), f"{i + 1} つ目の自由記入の文が出ない")
+            await until(lambda s: on(i)(s) and s["cursor"] == k and s["typing"] and s["other"] is not None and _flat(s["other"]) == _flat(a["other"]),
+                        f"{i + 1} つ目の自由記入の文が出ないか、入力欄から外れた")  # Enter の前に、入力欄にいることも確かめる
             await keys("enter")
         else:
             p = a["pick"]
             await keys(str(p))
             if q["preview"]:
-                await until(lambda s: on(i)(s) and s["cursor"] == p and not s["typing"], f"{i + 1} つ目のカーソルが {p} 番に来ない")
+                await until(lambda s: on(i)(s) and s["cursor"] == p and not s["typing"] and not s["notes"], f"{i + 1} つ目のカーソルが {p} 番に来ない")
                 await keys("enter")
         if i + 1 < len(qs):
             continue
