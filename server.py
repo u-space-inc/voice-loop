@@ -2183,7 +2183,7 @@ ANSWERED_HOLD = 15  # 答えたあと、相手の状態が変わるまでのあ�
 def answered(pane: str, fp: str, by: str = "") -> bool:
     """この問い（指紋）に、さっき答えたか（ANSWERED_HOLD 秒のうち）。by を渡すと、その経路で記録したものは数えない。"""
     done = ANSWERED.get(pane)
-    return bool(done) and fp in done[0] and time.time() - done[1] < ANSWERED_HOLD and done[2] != by
+    return bool(done) and fp in done[0] and time.time() - done[1] < ANSWERED_HOLD and not (by and done[2] == by)
 
 
 def mark_answered(pane: str, *fps: str, by: str = "") -> None:
