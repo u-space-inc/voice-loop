@@ -265,6 +265,27 @@ try:
 except af.Stuck as e:
     err = str(e)
 check("揺れ: 複数選ぶ問いの途中で端末の入力欄に入ったら、次の番号を送らない", (bool(err), tui.log), (True, ["2", "1"]))
+
+
+class TypingAfterCheck(FakeTUI):
+    """複数選ぶ問いで 1 つ目の印を確かめた読み取りのあと、次のキーの前に、端末で入力欄に入った。"""
+    reads_after = 0
+
+    def screen(self):
+        if self.log == ["2", "1"]:
+            self.reads_after += 1
+            if self.reads_after == 2:
+                self.typing = True
+        return super().screen()
+
+
+tui = TypingAfterCheck(REAL_TWO_INPUT)
+try:
+    asyncio.run(af.drive(TWO, af.check(TWO, ok_two)[0], _r, _k, _t))
+    err = None
+except af.Stuck as e:
+    err = str(e)
+check("揺れ: 印を確かめたあと次のキーまでに入力欄に入っても、次の番号を送らない", (bool(err), tui.log), (True, ["2", "1"]))
 check("画面: いちばん下が質問の操作案内でなければ、質問の画面とみない（番号を送らない）",
       (af.state("\n".join(REAL_TWO_FIRST.split("\n")[:-1]), TWO).get("why"), af.ready("\n".join(REAL_TWO_FIRST.split("\n")[:-1]), TWO)), ("foot", "foot"))
 
