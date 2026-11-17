@@ -95,6 +95,20 @@ check("通し: 押すたびに出し直した画面で 1 手ずつ送り、最�
       ([r.get("ok") for r in rs], [r.get("said") for r in rs][:2], st["tui"].result, st["tui"].log),
       ([True] * 5, ["2番「ごはん」", "1番「赤」の印を付けた"], ["ごはん", "赤, 緑"], ["2", "1", "3", "tab", "1"]))
 setup()
+s.STEPPING.clear()
+press(act="pick", n=2)
+press(act="toggle", n=1)
+press(act="next")
+st["status"] = "done"  # 確認の画面を、herdr が止まっていると見ないことがある（小さいペインの実画面で見た）
+q = prompt()
+r = press(q, act="submit")
+check("答えている途中のセッションは、herdr が止まっていると見ていなくても、確認の画面を出して送れる",
+      (q["step"]["stage"], r.get("ok"), st["tui"].result), ("review", True, ["ごはん", "赤"]))
+s.STEPPING.clear()
+setup()
+st["status"] = "done"
+check("答えていないセッションは、herdr が止まっていると見ていなければ読まない", json.loads(s.api_prompts().body), [])
+setup()
 q = prompt()
 st["tui"].keys("1")  # 見せたあとで、端末で答えた
 r = press(q, act="pick", n=2)

@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ask_form as af  # noqa: E402
-from ask_tui import (REAL_OTHER_TYPED, REAL_PREVIEW_CURSOR, REAL_SHOP_INPUT, REAL_TWO_FIRST, REAL_TWO_INPUT,  # noqa: E402
+from ask_tui import (REAL_OTHER_TYPED, REAL_SCROLLED, REAL_SMALL_MULTI, REAL_SMALL_PREVIEW, REAL_SMALL_REVIEW, REAL_PREVIEW_CURSOR, REAL_SHOP_INPUT, REAL_TWO_FIRST, REAL_TWO_INPUT,  # noqa: E402
                      REAL_TWO_MULTI_CHECKED, REAL_TWO_REVIEW, FakeTUI)
 from question_screens import REAL_CHOICE, REAL_MULTI, REAL_PREVIEW, REAL_TWO  # noqa: E402
 
@@ -86,14 +86,55 @@ check("画面: 操作案内の無い画面・番号の飛ぶ画面・問いの�
       (af.step("\n".join(REAL_TWO_FIRST.split("\n")[:-1]))["stage"], af.step(REAL_TWO_FIRST.replace("2. ごはん", "5. ごはん")).get("why"),
        af.step("❯ ")["stage"], af.step(REAL_TWO_FIRST + "�")["stage"]),
       ("unknown", "numbers", "gone", "unknown"))
+st = af.step(REAL_SCROLLED)
+check("2.1.326（小さいペイン）: 選択肢が収まらず自由記入の欄が画面の外 → 選択肢は 2 つ、欄の番号は「Chat about this」の 1 つ前で、画面の外と分かる",
+      (labels(st), st["free"], st["free_hidden"], st["more"]), ([(1, "A店"), (2, "B店")], 3, True, False))
+
+
+async def _sr():
+    return REAL_SCROLLED
+sent = []
+
+
+async def _sk(k):
+    sent.append(k)
+try:
+    asyncio.run(af.act("free", "駅前の店", _sr, _sk, _sk))
+    err = None
+except af.Stuck as e:
+    err = str(e)
+check("自由記入の欄が画面の外なら、自由記入は送らない（中の書きかけで確定させない）", (bool(err), sent), (True, []))
 scroll = REAL_TWO_FIRST.replace("  2. ごはん", "↓ 2. ごはん")
-check("画面: 選択肢が収まらない印（↓）の行も選択肢として読み、収まらないことを知らせる", (labels(af.step(scroll)), af.step(scroll)["more"]), ([(1, "パン"), (2, "ごはん")], True))
+check("画面: 選択肢が収まらない印（↓）の行も選択肢として読む（選択肢と欄がみな見えていれば、収まっていないとはしない）",
+      (labels(af.step(scroll)), af.step(scroll)["more"]), ([(1, "パン"), (2, "ごはん")], False))
+st = af.step(REAL_SMALL_MULTI.split("\n", 1)[1])
+check("2.1.326（小さいペイン）: 見出しの行が画面の外でも問いを読む・「Next」の行を説明に混ぜない・緑と自由記入の欄は画面の外",
+      (st["stage"], st["chips"], st["question"], [(o["n"], o["label"], o["desc"]) for o in st["options"]], st["more"], st["free"], st["free_hidden"]),
+      ("question", [], "好きな色は？（複数可）", [(1, "赤", "赤を選ぶ"), (2, "青", "青を選ぶ")], True, 4, True))
+check("小さいペイン: 問いの上に会話の行がはみ出していても、選択肢をまねた行が無ければ問いの文として読む（見出しが無いときの指紋は画面の全体）",
+      (af.step(REAL_SMALL_MULTI)["stage"], af.fp(REAL_SMALL_MULTI) == af.fp(REAL_SMALL_MULTI.replace("赤を選ぶ", "赤を選ぶ。"))), ("question", False))
+st = af.step(REAL_SMALL_PREVIEW)
+check("2.1.326（小さいペイン）: 問いの文まで画面の外でも、選択肢は読み、問いの文が収まっていないと分かる・枠の「✂ hidden」の行を説明に混ぜない",
+      (st["stage"], st["cut"], st["preview"], [(o["n"], o["label"], o["desc"]) for o in st["options"]], st["free"], st["cursor"]),
+      ("question", True, True, [(1, "横長", ""), (2, "縦長", "")], None, 1))
+st = af.step(REAL_SMALL_REVIEW)
+check("2.1.326（小さいペイン）: 確認の画面の頭が画面の外でも、いちばん下の形で確認の画面と読む",
+      (st["stage"], st["answers"]), ("review", [("どの店にしますか？", "B店"), ("好きな色は？（複数可）", "赤"), ("どの形？", "縦長")]))
+check("問いが閉じたとみるのは、Claude の入力欄（❯）が下に戻ったときだけ（描き途中の読めない画面は閉じたとしない）",
+      (af.step("⏺ 受け取りました\n❯ ")["stage"], af.step("⏺ 受け取りました\n───\n❯ 次は？\n───")["stage"], af.step("⏺ 描き途中")["stage"]),
+      ("gone", "gone", "unknown"))
+hid = REAL_SCROLLED.replace("❯ 1. A店\n     A店にする\n↓ 2. B店", "↑ 2. B店").replace("4. Chat about this", "5. Chat about this")
+check("画面: 選択肢そのものが画面の外にあれば、収まっていないと知らせる", (labels(af.step(hid)), af.step(hid)["more"]), ([(2, "B店")], True))
 FAKE = REAL_TWO_FIRST.replace("朝はどれ？", "朝はどれ？\n❯ 1. 中止する\n  2. 続行する\n  3. Type something.\n" + RULE)
 check("相手の位置: 問いの文に、選択肢・線・カーソルをまねた行があれば読まない（偽の選択肢で、見えているのと別の答えを確定させない）",
       [af.step(t)["stage"] for t in (FAKE, REAL_TWO_FIRST.replace("朝はどれ？", "朝はどれ？\n  1. 中止する"),
-                                      REAL_TWO_FIRST.replace("朝はどれ？", "朝はどれ？\n" + RULE), REAL_TWO_FIRST.replace("朝はどれ？", "朝はどれ？\n ☐ 偽"),
-                                      REAL_TWO_FIRST.replace("  2. ごはん", "❯ 2. ごはん"))],
-      ["unknown"] * 5)
+                                      REAL_TWO_FIRST.replace("朝はどれ？", "朝はどれ？\n" + RULE), REAL_TWO_FIRST.replace("  2. ごはん", "❯ 2. ごはん"))],
+      ["unknown"] * 4)
+IN_DESC = REAL_TWO_FIRST.replace("     朝はパン", "     朝はパン\n ☐ 偽\n中止しますか？\n❯ 1. 中止する")
+check("相手の位置: 問い・選択肢の説明に偽の見出しの行を入れたら（見出しが 2 つ）読まない（その下から読み直して、本物の選択肢を捨てない）",
+      [af.step(t).get("why") for t in (REAL_TWO_FIRST.replace("朝はどれ？", "朝はどれ？\n ☐ 偽"), IN_DESC)], ["suspicious", "suspicious"])
+check("見出しの行は本物の形だけ（字下げした ☐ の行は、Claude の ToDo の一覧などで、見出しとみない）",
+      (af.step("  ⎿  ☐ やること\n     ☐ つぎ\n" + REAL_TWO_FIRST)["stage"], af.step("     ☐ 偽\n" + REAL_TWO_FIRST)["chips"]), ("question", [("朝", False), ("色", False)]))
 LOOK = REAL_TWO_FIRST.replace("朝はどれ？", "Review your answers\n ● 朝はどれ？\n   → パン\nReady to submit your answers?")
 tui_look = FakeTUI({"questions": [{"question": "Review your answers\n ● 朝はどれ？\n   → パン\nReady to submit your answers?", "header": "朝",
                                     "options": [{"label": "パン"}, {"label": "ごはん"}]}]})
@@ -191,6 +232,14 @@ tui = Filled(one)
 check("書きかけ: 自由記入の欄に文が入っていたら、欄の番号で入らない（その文で確定させない）", (bool(go(tui, "free", "パン")[1]), tui.log, tui.result), (True, [], None))
 noted = REAL_PREVIEW_CURSOR.replace("Notes: press n to add notes", "Notes: 大きめで")
 check("書きかけ: 見本つきの問いのメモ欄に書かれていたら、読み取りで分かる（送らない）", af.step(noted)["notes"], "大きめで")
+check("書きかけ: メモに「└」の文字があっても、枠の終わりと取り違えずにメモを読む・メモの行が無い形は読まない",
+      (af.step(REAL_PREVIEW_CURSOR.replace("Notes: press n to add notes", "Notes: 大きめで └")).get("notes"),
+       af.step(REAL_PREVIEW_CURSOR.replace("                                  Notes: press n to add notes\n", "")).get("why")),
+      ("大きめで └", "notes"))
+ts = REAL_SCROLLED.replace("B店", "Type something.", 1)
+st = af.step(ts)
+check("取り違え: 選択肢の名前が「Type something.」でも、欄の番号は「Chat about this」の 1 つ前で決める（画面の外の欄と、見えている選択肢を取り違えない）",
+      (labels(st), st["free"], st["free_hidden"]), ([(1, "A店"), (2, "Type something.")], 3, True))
 tui, err = FakeTUI(REAL_SHOP_INPUT, ["preview_number_selects"]), None
 go(tui, "pick", 1)
 s2, err = go(tui, "pick", 2)

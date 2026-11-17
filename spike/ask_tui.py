@@ -68,6 +68,46 @@ REAL_PREVIEW_CURSOR = """←  ☒ 店  ☐ 形  ✔ Submit  →
 ──────────────────────────────────────────────────────────────────────────────────────────────────
   Chat about this
 Enter to select · ↑/↓ to navigate · n to add notes · Tab to switch questions · Esc to cancel"""
+# 小さいペインで、選択肢が画面に収まらないとき（↓ の印。自由記入の欄「3. Type something.」は画面の外）。2026-11-17 に取った
+REAL_SCROLLED = """←  ☐ 店  ☐ 色  ☐ 形  ✔ Submit  →
+どの店にしますか？
+❯ 1. A店
+     A店にする
+↓ 2. B店
+     B店にする
+──────────────────────────────────────────────────────────────────────
+  4. Chat about this
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel"""
+# 小さいペインの複数選ぶ問い（見出しの行は画面の上にはみ出し、緑と自由記入の欄は画面の外。問いが続くので「Next」）。2026-11-17 に取った
+REAL_SMALL_MULTI = """  B店にする（このあたりは会話の続き）
+好きな色は？（複数可）
+❯ 1. [ ] 赤
+         赤を選ぶ
+↓ 2. [ ] 青
+         青を選ぶ
+     Next
+──────────────────────────────────────────────────────────────────────
+  5. Chat about this
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel"""
+# 小さいペインの見本つきの問い（見出しの行も問いの文も画面の上にはみ出し、見本の枠は「✂ … hidden」で縮む）。2026-11-17 に取った
+REAL_SMALL_PREVIEW = """❯ 1. 横長                         ┌─────────────────────────────────────
+  2. 縦長                         │ +----------------+                  │
+                                  ├─── ✂ ─── 2 lines hidden ──────────
+                                  └───────────────────────────────────
+                                  Notes: press n to add notes
+──────────────────────────────────────────────────────────────────────
+  Chat about this
+Enter to select · ↑/↓ to navigate · n to add notes · Tab to switch questions · Esc to cancel"""
+# 小さいペインの確認の画面（見出しの行も「Review your answers」も画面の上にはみ出している）。2026-11-17 に取った
+REAL_SMALL_REVIEW = """ ● どの店にしますか？
+   → B店
+ ● 好きな色は？（複数可）
+   → 赤
+ ● どの形？
+   → 縦長
+Ready to submit your answers?
+❯ 1. Submit answers
+  2. Cancel"""
 # 上の画面の問いの形（セッションの記録にあった AskUserQuestion の入力）
 REAL_TWO_INPUT = {"questions": [
     {"question": "朝はどれ？", "header": "朝", "multiSelect": False,

@@ -2130,11 +2130,30 @@ def is_permission(text: str) -> bool:
     return "Enter to select" not in foot and any(l.strip().startswith("Do you want to") for l in asked)
 
 
+STEPPING: dict[str, float] = {}  # 1 問ずつ答えている途中のセッション: pane → 最後に押した時刻
+STEPPING_FOR = 600  # その間は、herdr が止まっていると見ていなくても画面を読む（確認の画面は、herdr が止まっていると見ないことがある）
+
+
+def stepping(a: dict) -> bool:
+    return time.time() - STEPPING.get(a["pane"], 0) < STEPPING_FOR
+
+
 def _ask_of(a: dict) -> dict:
     """止まっているセッション a の問い。kind は permission（ボタンを出す）/ question / trust / unknown / none（止まっていない）/ unreadable。
-    question は、1 つを選ぶ質問と言い切れて、セッション ID もあるときだけ choices（選択肢のボタン）を付ける。"""
+    question は、1 つを選ぶ質問と言い切れて、セッション ID もあるときだけ choices（選択肢のボタン）を付ける。
+    1 問ずつ答えている途中のセッション（stepping）は、herdr が止まっていると見ていなくても、選択肢の問いの画面かを読む。"""
     if a["status"] != "blocked":
-        return {"kind": "none"}
+        if not (stepping(a) and a.get("session")):
+            return {"kind": "none"}
+        try:
+            dtext = read_dialog(a["pane"])
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            return {"kind": "none"}
+        st = ask_form.step(dtext)
+        if st["stage"] not in ("question", "review"):
+            return {"kind": "none"}
+        return {"kind": "question", "text": _clip(ask_form.dialog(dtext), 1200), "fp": prompt_fp(read_prompt(a["pane"])),
+                "risky": bool(RISKY.search(ask_form.dialog(dtext))), "step": ask_form.public(st), "sfp": ask_form.fp(dtext)}
     trust = pane_shows_trust(a["pane"])
     if trust is None or trust:
         return {"kind": "unreadable" if trust is None else "trust"}
@@ -2196,7 +2215,7 @@ def api_prompts():
     """止まっているセッションすべての問い。画面はこれを上に並べ、承認の画面にだけボタンを出す。key はセッション ID。"""
     out = []
     for a in list_agents():
-        if a["status"] == "blocked":
+        if a["status"] == "blocked" or stepping(a):
             asked = _ask_of(a)
             if asked["kind"] != "none":
                 out.append({"pane": a["pane"], "key": a.get("session") or "", "name": f"{a['cwd'].rsplit('/', 1)[-1]}｜{a['title']}", **asked})
@@ -2298,6 +2317,7 @@ async def step_answer(a: dict, asked: dict, body: dict, confirmed: bool) -> dict
             raise ask_form.Stuck("herdr が応答しない")
 
     ANSWERED[pane] = (sfp, time.time())  # 送り始めたら、同じ画面に重ねて送らない（途中で止まっても）
+    STEPPING[pane] = time.time()
     project = a["cwd"].rsplit("/", 1)[-1]
     try:
         said = await ask_form.act(kind, arg, read, keys, text, sfp)  # 最初の読み取りも、見せた画面の指紋と照らす

@@ -683,7 +683,7 @@ function renderStep(q, el) {
     const row = add('div', 'row'); btn(row, '送る', '', () => answer(q.pane, 'step', { act: 'submit' }), 'send');
     return;
   }
-  add('div', 'q', st.question + (st.multi ? '（いくつでも選べます）' : ''));
+  add('div', 'q', (st.cut ? '（問いの文は画面に収まっていません。端末で確かめてください）' : st.question) + (st.multi ? '（いくつでも選べます）' : ''));
   if (st.typing || st.notes) { add('div', 'note', '端末で書きかけています。端末で続けてください'); return; }
   if (st.preview && st.box) add('pre', 'pv', st.box);
   const list = add('div', 'choices');
@@ -697,7 +697,8 @@ function renderStep(q, el) {
     const row = add('div', 'row'), b = btn(row, '決めて次へ', '', () => answer(q.pane, 'step', { act: 'next' }), 'send');
     b.disabled = !st.options.some(o => o.checked);
   }
-  if (st.free != null && !st.multi && !st.preview) {
+  if (st.free != null && st.free_hidden && !st.multi && !st.preview) add('div', 'note', '自由記入の欄は画面に収まっていません（端末で）');
+  if (st.free != null && !st.free_hidden && !st.multi && !st.preview) {
     const box = add('div', 'free'), inp = document.createElement('input'); inp.type = 'text'; inp.maxLength = 300; inp.placeholder = 'ほかの答え（自由記入）';
     box.appendChild(inp);
     btn(box, 'この答えで送る', '', () => { const t = inp.value.trim(); if (t) answer(q.pane, 'step', { act: 'free', text: t }); else sys(`${q.name}: 答えを書いてください`); }, 'send');

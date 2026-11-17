@@ -24,7 +24,7 @@ WAIT, STEP = 4.0, 0.2  # 1 手ごとに画面が変わるのを待つ秒数（�
 READ_MAX = 5.0  # 1 回の画面の読み取り・キーを送る呼び出しの上限
 
 _CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f​-‏ -‮⁠-⁩﻿\ud800-\udfff]")
-_BAR = re.compile(r"^\s*(?:←\s+)?[☐☒] ")  # 見出しの行（問いが 1 つなら「 ☐ 朝」、複数なら「←  ☐ 朝  ☒ 色  ✔ Submit  →」）
+_BAR = re.compile(r"^(?:←\s+[☐☒] | [☐☒] )")  # 見出しの行。本物の形だけ（問いが 1 つなら行頭に空白 1 つで「 ☐ 朝」、複数なら行頭から「←  ☐ 朝  ☒ 色  ✔ Submit  →」）
 _OPT = re.compile(r"^(❯ | {2}|↓ |↑ )(\d+)\. (.*)$")  # 選択肢の行（↓↑ は、選択肢が画面に収まらないときの印）
 _BOX = re.compile(r"\s{2,}[┌│└].*$")  # 見本の枠（選択肢の行の右に出る）
 _MARK = re.compile(r"^\[([ ✔✓x])\] ")  # 複数選ぶ問いの印
@@ -56,24 +56,37 @@ def step(text: str) -> dict:
     if "�" in text:
         return {"stage": "unknown", "why": "odd"}
     lines = [l.rstrip() for l in text.split("\n") if l.strip()]
-    bar_i = next((i for i in range(len(lines) - 1, -1, -1) if _BAR.match(lines[i])), None)
-    if bar_i is None:
+    if not lines:
         return {"stage": "gone"}
-    items = [x for x in re.split(r"\s{2,}", lines[bar_i].strip().strip("←→").strip()) if x]
-    chips = [(_line(x[1:], 40), x[0] == "☒") for x in items if x[:1] in "☐☒"]
-    if not chips:
-        return {"stage": "unknown", "why": "chips"}
-    body = lines[bar_i + 1:]
+    is_opt = lambda l, n, label: (m := _OPT.match(l)) is not None and int(m.group(2)) == n and m.group(3).strip() == label  # noqa: E731
+    foot = lines[-1]
+    qfoot = "Enter to select" in foot and "Esc to cancel" in foot
+    review = len(lines) >= 3 and is_opt(lines[-2], 1, "Submit answers") and is_opt(lines[-1], 2, "Cancel")
+    if not qfoot and not review:
+        # いちばん下が、質問の操作案内でも確認の画面の終わりでもない。Claude の入力欄（「❯」だけ、か「❯ 文」の行）が下にあれば、問いは閉じた。
+        # 無ければ読めない画面（描き途中など）で、問いが閉じたとは言い切らない（送ったあとに「届いた」と取り違えない）
+        prompt = any(l.strip() == "❯" or (l.lstrip().startswith("❯ ") and not _OPT.match(l)) for l in lines[-6:])
+        return {"stage": "gone"} if prompt else {"stage": "unknown", "why": "foot"}
+    # 見出しの行（小さいペインでは画面の上にはみ出して無いことがある。あれば読む）。本物は画面に 1 つだけ。2 つ以上あれば、
+    # 問い・選択肢・説明の文にまねた行がある（その下から読むと、本物の選択肢を捨てて偽の選択肢を読んでしまう）
+    bars = [i for i, l in enumerate(lines) if _BAR.match(l)]
+    if len(bars) > 1:
+        return {"stage": "unknown", "why": "suspicious"}
+    bar_i = bars[0] if bars else None
+    chips = []
+    if bar_i is not None:
+        items = [x for x in re.split(r"\s{2,}", lines[bar_i].strip().strip("←→").strip()) if x]
+        chips = [(_line(x[1:], 40), x[0] == "☒") for x in items if x[:1] in "☐☒"]
+    body = lines[bar_i + 1:] if bar_i is not None else lines
     if not body:
         return {"stage": "unknown", "why": "empty"}
-    foot = body[-1]
-    is_opt = lambda l, n, label: (m := _OPT.match(l)) is not None and int(m.group(2)) == n and m.group(3).strip() == label  # noqa: E731
-    if not ("Enter to select" in foot and "Esc to cancel" in foot):
-        # 確認の画面（操作案内が無い）。下から決まった形で読む: 「Ready to submit…」「1. Submit answers」「2. Cancel」
-        if (len(body) >= 4 and body[0].strip() == "Review your answers" and body[-3].strip().startswith("Ready to submit")
-                and is_opt(body[-2], 1, "Submit answers") and is_opt(body[-1], 2, "Cancel")):
+    if review:
+        # 確認の画面（操作案内が無い）。下から決まった形で読む: 「Review your answers」…「Ready to submit…」「1. Submit answers」「2. Cancel」
+        # 頭（Review your answers）は、小さいペインでは画面の上にはみ出して無いことがある。あれば、その下から読む
+        rv = next((i for i in range(len(body) - 1, -1, -1) if body[i].strip() == "Review your answers"), -1)
+        if len(body) - rv >= 4 and body[-3].strip().startswith("Ready to submit") and any(l.strip().startswith("● ") for l in body[rv + 1:-3]):
             got, cur = [], None
-            for l in body[1:-3]:
+            for l in body[rv + 1:-3]:
                 s = l.strip()
                 if _OPT.match(l) or _RULE.match(l) or _BAR.match(l) or s.startswith("❯"):
                     return {"stage": "unknown", "why": "suspicious"}  # 問い・答えの文に、選択肢・線・カーソルをまねた行がある
@@ -85,15 +98,17 @@ def step(text: str) -> dict:
                 elif cur is not None:  # 折り返した問い・答え
                     cur[0 if cur[1] is None else 1] += s
             return {"stage": "review", "chips": chips, "answers": [(_line(a, 300), _line(b or "", 300)) for a, b in got], "submit": True}
-        return {"stage": "unknown", "why": "foot"}  # いちばん下が質問の操作案内でなければ、質問の画面と言い切らない
+        return {"stage": "unknown", "why": "review"}  # 確認の画面の終わりはあるが、頭（Review your answers）が決まった形で読めない
     # 問いの画面。下から決まった形で読む: 操作案内 → 「Chat about this」の行 → 線 → 選択肢のかたまり → 問いの文。
     # 問いの文（セッションのモデルが書く。外の文が入りうる）に、選択肢・線・見出し・カーソルをまねた行があれば読まない
     j = len(body) - 2
     if j < 1:
         return {"stage": "unknown", "why": "short"}
     chat = body[j].strip()
-    if not (chat == "Chat about this" or ((m := _OPT.match(body[j])) and m.group(3).strip() == "Chat about this")):
+    mc = _OPT.match(body[j])
+    if not (chat == "Chat about this" or (mc and mc.group(3).strip() == "Chat about this")):
         return {"stage": "unknown", "why": "chat"}
+    chat_n = int(mc.group(2)) if mc else None  # 「Chat about this」の番号（見本つきの問いには番号が無い）
     rule = j - 1
     if not _RULE.match(body[rule]):
         return {"stage": "unknown", "why": "rule"}
@@ -101,8 +116,10 @@ def step(text: str) -> dict:
     while k >= 0 and (_OPT.match(body[k]) or (body[k].startswith(" ") and not _RULE.match(body[k]))):
         k -= 1
     first = k + 1
-    if first == 0 or first >= rule or not _OPT.match(body[first]):
+    if first >= rule or not _OPT.match(body[first]):
         return {"stage": "unknown", "why": "no_options"}
+    if bar_i is None and any(_BAR.match(l) for l in lines):  # 見出しが選択肢のかたまりより下にある（ありえない形）
+        return {"stage": "unknown", "why": "suspicious"}
     asked = body[:first]
     if any(_OPT.match(l) or _RULE.match(l) or _BAR.match(l) or l.lstrip().startswith(("❯", "↓", "↑")) for l in asked):
         return {"stage": "unknown", "why": "suspicious"}
@@ -115,29 +132,37 @@ def step(text: str) -> dict:
             rows.append([int(m.group(2)), _BOX.sub("", m.group(3)).strip(), [], m.group(1) == "❯ ", m.group(1) in ("↓ ", "↑ ")])
         elif rows and l.startswith(" ") and not _RULE.match(l):
             t = _BOX.sub("", l).strip()
-            if t and t[0] not in "│┌└┐┘" and not t.startswith("Notes:") and t != "Submit":
+            if t and t[0] not in "│┌└┐┘├┤" and not t.startswith("Notes:") and t not in ("Submit", "Next"):
                 rows[-1][2].append(t)
     if sum(1 for r in rows if r[3]) > 1:
         return {"stage": "unknown", "why": "cursors"}
-    if not rows or [r[0] for r in rows] != list(range(rows[0][0], rows[0][0] + len(rows))):
+    if not rows or [r[0] for r in rows] != list(range(rows[0][0], rows[0][0] + len(rows))) or (chat_n and rows[-1][0] >= chat_n):
         return {"stage": "unknown", "why": "numbers"}
     preview = "to add notes" in foot
     multi = any(_MARK.match(r[1]) for r in rows)
     if multi and not all(_MARK.match(r[1]) for r in rows):
         return {"stage": "unknown", "why": "marks"}
-    free = None
-    if not preview and rows[0][0] == 1:  # 自由記入の欄は、線の上のいちばん下の行（見本つきの問いには無い）
-        free = rows.pop()  # 線の上のいちばん下の行が自由記入の欄（空なら「Type something.」）
+    free, free_hidden = None, False
+    if not preview and chat_n:  # 自由記入の欄は「Chat about this」の 1 つ前の番号（見本つきの問いには無い）
+        if rows[-1][0] == chat_n - 1:
+            free = rows.pop()
+        else:  # 選択肢が画面に収まらず、欄が画面の外にある（中に書きかけがあるか分からない）
+            free_hidden = True
         if not rows:
             return {"stage": "unknown", "why": "no_options"}
+        more = any(n not in {r[0] for r in rows} for n in range(1, chat_n - 1))  # 画面に収まっていない選択肢がある
+    else:
+        more = any(r[4] for r in rows) or rows[0][0] != 1
     notes = ""
-    if preview:  # 見本の枠の下の、字下げした「Notes: …」の行だけ
-        box_end = max((j for j in range(first, len(body)) if "└" in body[j]), default=None)
-        if box_end is not None and box_end + 1 < len(body):
-            l = body[box_end + 1]
-            if l.startswith(" " * 10) and l.strip().startswith("Notes:"):
-                notes = l.strip()[len("Notes:"):].strip()
-                notes = "" if notes == "press n to add notes" else notes
+    if preview:  # 見本の枠の終わり（字下げした「└──…」の行）のすぐ下の、字下げした「Notes: …」の行。この形で読めなければ読まない
+        ends = [j for j in range(first, end) if re.match(r"^ {10,}└─", body[j])]
+        if not ends or ends[-1] + 1 >= end:
+            return {"stage": "unknown", "why": "notes"}
+        l = body[ends[-1] + 1]
+        if not (l.startswith(" " * 10) and l.strip().startswith("Notes:")):
+            return {"stage": "unknown", "why": "notes"}
+        notes = l.strip()[len("Notes:"):].strip()
+        notes = "" if notes == "press n to add notes" else notes
     options = []
     for n, label, below, _, _ in rows:
         mk = _MARK.match(label)
@@ -148,21 +173,22 @@ def step(text: str) -> dict:
         ft = _MARK.sub("", free[1]) if multi else free[1]
         free_text = "" if ft in FREE else " ".join([ft] + free[2])
     cursor = next((r[0] for r in rows + ([free] if free else []) if r[3]), None)
+    free_n = free[0] if free else (chat_n - 1 if free_hidden else None)
     box = []  # いまカーソルのある選択肢の見本（枠の中の文字。左右の枠線と、同じ行の選択肢の名前は外す）
     for l in body[first:end]:
         if l.count("│") >= 2:
             box.append(_CTRL.sub(" ", l.split("│", 1)[1].rsplit("│", 1)[0]).rstrip()[1:])
     return {"stage": "question", "chips": chips, "question": _line(question, 600), "multi": multi, "preview": preview,
-            "options": options, "free": free[0] if free else None, "free_text": _line(free_text, OTHER_MAX + 50), "cursor": cursor,
-            "typing": "to edit in" in foot, "notes": notes, "more": any(r[4] for r in rows),
+            "options": options, "free": free_n, "free_hidden": free_hidden, "free_text": _line(free_text, OTHER_MAX + 50), "cursor": cursor,
+            "typing": "to edit in" in foot, "notes": notes, "more": more, "cut": not question,
             "box": "\n".join(box).strip("\n")[:600] if preview else ""}
 
 
 def dialog(text: str) -> str:
-    """問いの画面のうち、見出しの行から下（指紋と表示に使う）。"""
+    """問いの画面のうち、見出しの行から下（指紋と表示に使う）。見出しの行が画面の外なら、画面の全体。"""
     lines = [l.rstrip() for l in text.split("\n") if l.strip()]
     bar_i = next((i for i in range(len(lines) - 1, -1, -1) if _BAR.match(lines[i])), None)
-    return "" if bar_i is None else "\n".join(lines[bar_i:])
+    return "\n".join(lines[bar_i:] if bar_i is not None else lines)
 
 
 def fp(text: str) -> str:
@@ -172,7 +198,7 @@ def fp(text: str) -> str:
 
 def public(st: dict) -> dict:
     """画面に出す形。"""
-    keep = ("stage", "chips", "question", "multi", "preview", "options", "free", "free_text", "cursor", "typing", "notes", "more", "box",
+    keep = ("stage", "chips", "question", "cut", "multi", "preview", "options", "free", "free_hidden", "free_text", "cursor", "typing", "notes", "more", "box",
             "answers", "submit")
     return {k: st[k] for k in keep if k in st}
 
@@ -270,6 +296,8 @@ async def act(kind: str, arg, read, keys, text, expect: str | None = None) -> st
         k = st["free"]
         if k is None or st["multi"] or st["preview"]:
             raise Stuck("この問いには自由記入の欄が無い")
+        if st["free_hidden"]:  # 欄が画面の外にあると、中に書きかけの文があるか分からない（番号がその文で答えを確定させうる）
+            raise Stuck("自由記入の欄が画面に収まっていない（端末で）")
         if st["free_text"]:  # 欄に文が入っていたら、番号で入らない（番号がその文で答えを確定させてしまう。Collie の測った結果）
             raise Stuck("自由記入の欄に、もう文が入っている（端末で書きかけ）")
         await keys(str(k))
