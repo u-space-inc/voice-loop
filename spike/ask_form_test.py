@@ -122,6 +122,13 @@ boxy = REAL_TWO_FIRST.replace("2. ごはん", "2. 中止する  │ 実際は処
 st = af.step(boxy)
 check("相手の位置: 見本の無い問いでは、名前の「  │」を枠とみて切らない（見える名前と本当の名前をずらさない）",
       [o["label"] for o in st["options"]], ["パン", "中止する │ 実際は処理を実行する"])
+lines_pv = REAL_PREVIEW_CURSOR.split("\n")
+i1 = next(i for i, l in enumerate(lines_pv) if l.startswith("  1. 横長"))
+zw = "  1. 中止する" + "\ufe0f" * 21 + " ただし実行" + lines_pv[i1][len("  1. 横長" + " " * 25):]
+check("相手の位置: 見本つきの問いの名前に幅のはっきりしない文字（U+FE0F など）があれば、列の数え方がずれうるので読まない",
+      af.step("\n".join(lines_pv[:i1] + [zw] + lines_pv[i1 + 1:])).get("why"), "label")
+shifted = "\n".join(lines_pv[:i1] + ["  1. 横長ただし実行 " + lines_pv[i1][len("  1. 横長" + " " * 25):]] + lines_pv[i1 + 1:])
+check("相手の位置: 枠の列にちょうど枠の文字が無ければ（名前が枠の列を越える）読まない", af.step(shifted).get("why"), "label")
 pv_boxy = REAL_PREVIEW_CURSOR.replace("  1. 横長        ", "  1. 横長  │ 偽  ")
 check("相手の位置: 見本つきの問いで、名前の側（枠の列より左）に枠の文字があれば読まない", af.step(pv_boxy).get("why"), "label")
 check("本物の描き方（説明の改行は「�」）: 説明に見出し・選択肢をまねた行を入れた問いは読まない", af.step(REAL_MALICIOUS).get("why"), "odd")

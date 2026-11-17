@@ -54,6 +54,15 @@ def _cut(line: str, col: int) -> tuple[str, str]:
     return line, ""
 
 
+def _sure(ch: str) -> bool:
+    """画面の列の幅がはっきりしている文字か（幅 0・組み合わせ文字・異体字の指定・幅のあいまいな文字でない）。"""
+    if ord(ch) < 0x80:
+        return ch.isprintable()
+    o = ord(ch)
+    return not (unicodedata.combining(ch) or unicodedata.category(ch) in ("Mn", "Me", "Cf", "Cc", "Co", "Cn")
+                or 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF or unicodedata.east_asian_width(ch) == "A")
+
+
 def _width(s: str) -> int:
     return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in s)
 
@@ -163,8 +172,10 @@ def step(text: str) -> dict:
         if m:
             if box_col is not None:
                 head, tail = _cut(l, box_col)
-                if set("│┌└┐┘├┤") & set(head) or (tail and tail[0] not in "┌│└├ "):
-                    return {"stage": "unknown", "why": "label"}  # 名前の側に枠の文字がある（名前と枠を見分けられない）
+                if set("│┌└┐┘├┤") & set(head) or not all(_sure(ch) for ch in head) or (tail and tail[0] not in "┌│└├"):
+                    # 名前の側に枠の文字がある・幅のはっきりしない文字がある（列の数え方がずれて、名前の途中で切りうる）・
+                    # 枠の列にちょうど枠の文字が無い（列がずれていれば、名前の途中で切っている）
+                    return {"stage": "unknown", "why": "label"}
                 mh = _OPT.match(head.rstrip())
                 label = mh.group(3).strip() if mh else ""
             else:
