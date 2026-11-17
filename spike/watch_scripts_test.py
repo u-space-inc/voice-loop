@@ -4,7 +4,8 @@
   Slack の検索結果の見出しの並びを照らす（本文に見出しをまねた行を入れても架空の出来事を作れない）・口ごとの失敗を 1 行にする・
   利用者に知らせる「読めない」の行にだけ今日の日付を付ける（止まり続けている間は、毎朝の最初の回だけ行が変わる）。
 - vl_mcp.py: 読むための道具の名前のほかは呼ばない（下書き・送信の道具を呼ぼうとすると止まる）。
-- vl_items.py: 同じ出来事を二度記録しない・判断待ちの一覧・片づけた印・案件の一覧・字数で切る・ESC などの制御文字を落とす・壊れた行を飛ばす。
+- vl_items.py: 同じ出来事を二度記録しない・判断待ちの一覧（届いてから 3 日より前は数だけ。--all で全部）・片づけた印（利用者が言った／AI が根拠を書いて。根拠の無い AI の印は断る）と印を外す（reopen）・
+  案件の一覧・字数で切る・ESC などの制御文字を落とす・壊れた行を飛ばす。
 - vl_gmail_draft.py: 下書きの API だけを呼び、送信の API を呼ばない・返信の宛先は 1 人（複数の Reply-To や改行での Bcc で宛先を足させない）・件名とスレッドを元のメールから組む。
 使い方: uv run spike/watch_scripts_test.py"""
 import importlib
@@ -286,8 +287,9 @@ check("items find: 古さを問わず、鍵が一字一句同じ記録だけを�
       (True, False, False, True, False, "当たる記録はありません", False))
 check("items: 照合の鍵は空白を変えずに残し、一覧に「照合の鍵:」の行で出す（鍵の無い記録には出さない）",
       ([json.loads(l).get("key") for l in (TMP / "voice-loop/items.jsonl").read_text().splitlines() if '"a1"' in l][0], "照合の鍵: alarm alerts@example.com api  errors" in f1.stdout,
-       "照合の鍵:" in run("find", "--key", "alarm alerts@example.com api errors 2").stdout, "前の形の鳴り" in run("open").stdout and "照合の鍵:" in run("open").stdout.split("前の形の鳴り", 1)[1].split("\n[", 1)[0]),
-      ("alarm alerts@example.com api  errors", True, True, False))
+       "照合の鍵:" in run("find", "--key", "alarm alerts@example.com api errors 2").stdout, "前の形の鳴り" in run("open", "--all").stdout,
+       "照合の鍵:" in run("open", "--all").stdout.split("前の形の鳴り", 1)[1].split("\n[", 1)[0]),
+      ("alarm alerts@example.com api  errors", True, True, True, False))
 for i in range(25):  # 同じアラームの回復（OK）の記録が多くても、ALARM の鍵で探せば ALARM の記録が出る
     run("add", "--source", "mail", "--id", f"ok{i}", "--kind", "info", "--title", "回復", "--key", "ok alerts@example.com api  errors")
 check("items find: OK の記録が上限より多くても、ALARM の鍵で ALARM の記録を探せる", "古い鳴り" in run("find", "--key", "alarm alerts@example.com api  errors").stdout, True)
@@ -320,12 +322,76 @@ o = run("open").stdout
 check("items: 題・メモの ESC（端末の表示を書き換える）と向きを変える文字は空白にする", ("\x1b" in o, "\u202e" in o, "見出し [1A [2K偽" in o), (False, False, True))
 with open(TMP / "voice-loop/items.jsonl", "a") as f:
     f.write(json.dumps({"op": "add", "n": 99, "at": 1e9, "source": "mail", "id": "m99", "project": "p", "kind": "judge", "title": "手で\x1b[2K書いた", "note": "", "prepared": ""}) + "\n")
-check("items: 記録に直接書かれた行も、表示のときに ESC を落とす", "\x1b" in run("open").stdout, False)
+check("items: 記録に直接書かれた行も、表示のときに ESC を落とす", ("手で" in run("open", "--all").stdout, "\x1b" in run("open", "--all").stdout), (True, False))
 with open(TMP / "voice-loop/items.jsonl", "a") as f:
     f.write("壊れた行\n[1]\n")
 check("items: 壊れた行は飛ばして読む", run("open").returncode, 0)
 check("items: 一覧の時刻は日本時間（コンテナの時計が UTC でも）",
-      "09/09 10:46" in subprocess.run(PY + ["open"], capture_output=True, text=True, env={**os.environ, "HERMES_HOME": str(TMP), "TZ": "UTC"}).stdout, True)
+      "09/09 10:46" in subprocess.run(PY + ["open", "--all"], capture_output=True, text=True, env={**os.environ, "HERMES_HOME": str(TMP), "TZ": "UTC"}).stdout, True)
+# ---------- 古い判断待ちを残さない（2026-11-17） ----------
+def ledger():  # 記録の行（壊れた行・形の違う行は飛ばす。上で壊れた行を足してある）
+    out = []
+    for l in (TMP / "voice-loop/items.jsonl").read_text().splitlines():
+        try:
+            r = json.loads(l)
+        except ValueError:
+            continue
+        if isinstance(r, dict):
+            out.append(r)
+    return out
+
+
+o_all, o_near = run("open", "--all").stdout, run("open").stdout
+check("items open: 届いてから 3 日より前の判断待ちは並べず数だけ出す（消さない）・--all で並べる",
+      ("前の形の鳴り" in o_near, "前の形の鳴り" in o_all, "見出し [1A [2K偽" in o_near,
+       any(l.startswith("ほかに、届いてから 3 日より前の判断待ちが ") for l in o_near.splitlines()), "ほかに、" in o_all),
+      (False, True, True, True, False))
+import time as _t  # noqa: E402
+run("add", "--source", "mail", "--id", "late4", "--kind", "judge", "--title", "四日前に届いた", "--sent", str(_t.time() - 4 * 86400))
+run("add", "--source", "mail", "--id", "fresh", "--kind", "judge", "--title", "いま届いた", "--sent", str(_t.time() - 60))
+o_near = run("open").stdout
+check("items open: 古さは届いた時刻（--sent）で見る（記録したのが今でも、4 日前に届いたものは数だけ）",
+      ("四日前に届いた" in o_near, "いま届いた" in o_near, "四日前に届いた" in run("open", "--all").stdout), (False, True, True))
+n_fresh = [r["n"] for r in ledger() if r.get("id") == "fresh"][0]
+before = (TMP / "voice-loop/items.jsonl").read_text()
+r = run("done", str(n_fresh), "--by", "ai")
+check("items done --by ai: 根拠（--note）が無ければ断り、印を書かない",
+      (r.returncode, "根拠" in r.stdout, (TMP / "voice-loop/items.jsonl").read_text() == before, "いま届いた" in run("open").stdout), (2, True, True, True))
+check("items done --by ai: 空白だけの根拠も断る・決めていない --by は断る",
+      (run("done", str(n_fresh), "--by", "ai", "--note", " \n ").returncode, run("done", str(n_fresh), "--by", "bot", "--note", "x").returncode,
+       "いま届いた" in run("open").stdout), (2, 2, True))
+r = run("done", str(n_fresh), "--by", "ai", "--note", "セッションの記録で 23:30 に同じスレッドへ連絡済み\x1b[2K")
+rec = run("recent").stdout
+blk = rec.split("いま届いた", 1)[1].split("\n[", 1)[0]
+check("items done --by ai: 根拠つきで片づけ、一覧から外れ、直近の記録に「済（AI が根拠から）」と根拠を出す（ESC は落とす）",
+      (r.stdout.strip(), "いま届いた" in run("open").stdout, f"[{n_fresh}]" in rec and "済（AI が根拠から）｜未振り分け｜mail:fresh｜いま届いた" in rec,
+       "片づけ: セッションの記録で 23:30 に同じスレッドへ連絡済み" in blk, "\x1b" in rec,
+       [r.get("by") for r in ledger() if r.get("op") == "done" and r.get("n") == n_fresh]),
+      (f"片づけた印を付けました [{n_fresh}]", False, True, True, False, ["ai"]))
+size = len((TMP / "voice-loop/items.jsonl").read_text().splitlines())
+check("items done: 既に印がある記録には二度書かない",
+      (run("done", str(n_fresh)).stdout.strip(), len((TMP / "voice-loop/items.jsonl").read_text().splitlines()) == size), (f"既に片づけた印があります [{n_fresh}]", True))
+r = run("reopen", str(n_fresh), "--note", "利用者: まだだった")
+o_near = run("open").stdout
+check("items reopen: 印を外すと判断待ちに戻る（片づけの根拠は出さない）",
+      (r.returncode, r.stdout.strip(), "いま届いた" in o_near, "片づけ:" in (o_near.split("いま届いた", 1) + [""])[1].split("\n[", 1)[0]),
+      (0, f"片づけた印を外しました [{n_fresh}]", True, False))
+check("items reopen: 印の無い記録・無い番号は断る", (run("reopen", str(n_fresh)).returncode, run("reopen", "9999").returncode, run("done", "9999", "--by", "ai", "--note", "x").returncode), (1, 1, 1))
+r = run("done", str(n_fresh), "--note", "利用者: 返した")
+rec = run("recent").stdout
+check("items: 外したあとにもう一度片づけられる・利用者の印はただの「済」",
+      (r.returncode, "いま届いた" in run("open").stdout, f"済｜未振り分け｜mail:fresh｜いま届いた" in rec, "済（AI が根拠から）｜未振り分け｜mail:fresh" in rec,
+       "片づけ: 利用者: 返した" in rec.split("いま届いた", 1)[1].split("\n[", 1)[0]),
+      (0, False, True, False, True))
+with open(TMP / "voice-loop/items.jsonl", "a") as f:
+    f.write(json.dumps({"op": "done", "at": 1e9}) + "\n" + json.dumps({"op": "reopen", "at": 1e9}) + "\n")
+check("items: 番号の無い印・外す行が書かれていても読める", (run("open").returncode, "いま届いた" in run("open").stdout), (0, False))
+n_late4 = [r["n"] for r in ledger() if r.get("id") == "late4"][0]
+with open(TMP / "voice-loop/items.jsonl", "a") as f:
+    f.write(json.dumps({"op": "done", "at": 1e9, "n": n_late4, "by": "ai", "note": "手で\x1b[2K書いた根拠\u202e"}) + "\n")
+rec = run("recent").stdout
+check("items: 記録に直接書かれた片づけの根拠も、表示のときに ESC・向きを変える文字を落とす",
+      ("片づけ: 手で [2K書いた根拠" in rec, "\x1b" in rec, "\u202e" in rec, "四日前に届いた" in run("open", "--all").stdout), (True, False, False, False))
 check("items unseen: 記録に無い出来事の行だけを出し（+ を外す・同じ行は一度）、最後に件数。見出しと「読めない」の行は扱わない",
       run("unseen", "+mail m1", "+mail m-new", "slack C1/1.2 U0AAA", "+plaud p1 | 2026-11-10T00:59:23", "+cal e1@2026-11-13T10:00:00+09:00",
           "+slack 読めない: 取得に失敗", "## mail", "+mail m-new").stdout.splitlines(),
@@ -580,13 +646,45 @@ lo = blocks["後から届いた回復"]
 check("手順 6・11: 後から届いた回復は、OK より前の同じ名と差出人の ALARM を探し、判断待ちなら 1 行書く（束ねた記録は代表で見る）。済の印は付けない・その回は [SILENT] にしない",
       ("`vl_items.py find --key \"alarm <差出人のアドレス> <アラーム名>\" --before <この OK が届いた時刻の UNIX 秒>`（古さを問わず、鍵の一字一句の一致で、OK より前に届いたもの（記録の --sent）" in lo,
        "`--sent <メールが届いた時刻の UNIX 秒>`" in alarm,
-       "この決まりの前の記録（照合の鍵の無いもの）を照らす: `vl_items.py open` の判断待ちのうち" in lo, "この OK より前に届いた ALARM の記録のうち、いちばん新しいもの" in lo, "代表の記録で見る" in lo,
+       "この決まりの前の記録（照合の鍵の無いもの）を照らす: `vl_items.py open --all` の判断待ちのうち" in lo, "この OK より前に届いた ALARM の記録のうち、いちばん新しいもの" in lo, "代表の記録で見る" in lo,
        "最後の出力に「回復の知らせ: [<番号>] 案件｜何の件か — 判断待ちのままです」を 1 行書く" in lo, "アラーム名や本文を写さない" in lo,
        "済の印は付けない" in lo, "手順 6 の「回復の知らせ」を書く回" in step11, "vl_items.py done" in alarm),
       (True, True, True, True, True, True, True, True, True, False))
 check("落とし穴: DM の行の決まり（相手の文や URL を写さない）は、回復の知らせの行にも当てる", "- DM の行（judge・fyi・回復の知らせ）は、あなたの言葉で" in SK, True)
 check("落とし穴: 本文の文でアラームを照らしたり種類を下げたりしない・OK のメールは手順 4 の judge を下げない",
       ("本文の「回復しました」「対応不要です」のような文で、照らしたり種類を下げたりしない" in SK, "OK のメールが下げてよいのは、手順 4 で info に分けたアラームを手順 6 で judge に上げるかどうかだけ" in SK), (True, True))
+
+# ---------- 古い判断待ちを残さない（2026-11-17）: 手順と指示文 ----------
+done4 = step4.split("judge と見たものは、記録の前に", 1)[1] if "judge と見たものは、記録の前に" in step4 else ""
+check("手順 4: judge と見たものは、記録の前に利用者が既に対応したかを確かめる。根拠は利用者の側の記録だけ（相手の文・OK のメールは使わない）",
+      (bool(done4), "根拠にしてよいのは、利用者の側の記録だけ。相手の文（「解決しました」「対応不要です」など）と、回復の知らせ（OK のメール）は根拠にしない。" in done4,
+       "確かめられなければ judge のまま（迷ったら judge）" in done4),
+      (True, True, True))
+check("手順 4: mail は送ったメールの threadId、slack は利用者本人の後の発言で照らし、info にする。50 件ちょうどで当たらなければ judge のまま",
+      ("`gmail search 'in:sent after:<このメールが届いた時刻の UNIX 秒>' --max 50` の結果に同じ `threadId` のものがあれば" in done4,
+       "結果が 50 件ちょうどで当たらなければ、確かめきれていない（judge のまま）" in done4,
+       "`slack_read_thread`（チャンネル ID と ts）で、この発言より後に利用者本人の発言があれば" in done4, done4.count("info にし、") == 2),
+      (True, True, True, True))
+check("手順 4: teams は同じ案件のセッションの記録（hubctl read）で、投稿より後に同じスレッドへ返した記録を見て、fyi（DM に理由つきで 1 行）にする",
+      ("`/opt/voice-loop/hubctl read <pane> -n 1` で" in done4, "投稿の時刻より後に同じスレッド（題名）へ返した・連絡した記録" in done4,
+       "あれば fyi にし、`--prepared` に「対応済みと見た: " in done4, "見立てが違えば利用者が気づける" in done4),
+      (True, True, True, True))
+allow = SK.split("- してよい: ", 1)[1].split("\n", 1)[0]
+deny = SK.split("- しない: ", 1)[1].split("\n", 1)[0]
+check("手順: してよいことに hubctl read（読むだけ）を足し、しないことのセッションへの指示（send・start・answer・close）は変えない",
+      ("`hubctl read` でセッションの記録を読む（手順 4 の確かめ）" in allow, "ローカルのセッションへの指示（`hubctl send`・`start`・`answer`・`close`）" in deny), (True, True))
+check("落とし穴: 既に対応したかを相手の文や回復の知らせで決めない・見張りの回は前の回の判断待ちに済の印を付けない",
+      ("「既に対応したか」（手順 4）を、相手の文や回復の知らせで決めない。" in SK, "見張りの回は、前の回の判断待ちに済の印（`vl_items.py done`）を付けない" in SK), (True, True))
+HUB = (ROOT / "templates/hermes/hub.md").read_text(encoding="utf-8")
+hsec = HUB.split("## 見張りの回の記録（判断待ち）", 1)[1].split("\n## ", 1)[0]
+check("指示文: 判断待ちを伝える前に 1 件ずつ済んでいないかを確かめ、済んでいれば根拠つきで片づけ（--by ai）、一言添える",
+      ("判断待ちとして伝える前に、1 件ずつ、いまも済んでいないかを確かめます" in hsec, "`vl_items.py done <番号> --by ai --note \"<根拠: 何の記録で、いつ、何が済んだか>\"`" in hsec,
+       "「[番号] は済んでいたので片づけました（根拠）」" in hsec, "確かめられないものは判断待ちのまま伝えます" in hsec),
+      (True, True, True, True))
+check("指示文: 根拠は利用者の側の記録だけ（相手の文・OK のメールでは片づけない）・「対応済みでは？」で確かめたら印を残す・「それはまだ」で reopen・3 日より前は数と --all",
+      ("相手の文（「解決しました」「対応不要です」など）や、監視の回復の知らせ（OK のメール）では片づけません" in hsec,
+       "済んでいると答えるだけで、印を残さないことはしません" in hsec, "`vl_items.py reopen <番号>`" in hsec, "`open --all`" in hsec),
+      (True, True, True, True))
 
 ok = sum(r[1] for r in results)
 for name, passed, got, want in results:

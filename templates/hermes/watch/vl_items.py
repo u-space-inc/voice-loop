@@ -5,12 +5,17 @@
   vl_items.py add --source mail --id X --project P --kind judge|fyi|info|baseline --title T [--note N] [--prepared 準備したこと] [--key 照合の鍵] [--sent 届いた時刻]
                                        （--sent はメールなどが届いた時刻の UNIX 秒。find の --before と並びに使う）
                                        （fyi は、人が利用者に宛てて書いたが対応の要らないもの。見張りの回が DM に 1 行で知らせる）
-  vl_items.py open [--project P]       判断待ち（kind=judge で、まだ片づいていないもの）を新しい順に
+  vl_items.py open [--project P] [--all]
+                                       判断待ち（kind=judge で、まだ片づいていないもの）を新しい順に。並べるのは届いてから OPEN_DAYS 日以内のものだけで、
+                                       それより前のものは数だけ出す（動きの無いものは一覧から薄れる。消さない）。--all で全部
   vl_items.py recent [--hours 24]      直近の記録（種類を問わず）を新しい順に
   vl_items.py find --key K [--before T] [--limit 20]
                                        照合の鍵が K と一字一句同じ記録を、古さを問わず新しい順に（既読扱いは出さない。アラームの照合に使う）。
                                        --before は UNIX 秒で、それより前に届いたもの（--sent。無い記録は記録した時刻）だけ（絞ってから数を切る。切ったら「ほかに N 件」と出す）
-  vl_items.py done <番号> [--note N]   判断待ちを片づけた印を付ける（ユーザーが「済んだ」と言ったとき）
+  vl_items.py done <番号> [--note N] [--by user|ai]
+                                       片づけた印を付ける。user は利用者が「済んだ」と言ったとき。ai は、あなたが元の記録（利用者が送ったメール・
+                                       Slack の投稿、セッションの記録）で済んだと確かめたときで、根拠を --note に書く（無ければ断る）
+  vl_items.py reopen <番号> [--note N] 片づけた印を外す（利用者が「まだだった」「戻して」と言ったとき）
   vl_items.py projects                 これまでに使った案件の名前と件数
 
 記録は HERMES_HOME/voice-loop/items.jsonl。書くのはこの道具だけ（手で書き換えない）。中身はメール・Slack・録音からの要約（引用データ）。
@@ -35,6 +40,7 @@ SOURCES = {"mail", "slack", "plaud", "cal", "teams"}
 KINDS = {"judge", "fyi", "info", "baseline"}
 LIMITS = {"title": 80, "note": 600, "prepared": 600, "project": 40, "id": 200}
 JST = dt.timezone(dt.timedelta(hours=9))  # 表示の時刻。コンテナの時計は UTC なので、決めて付ける
+OPEN_DAYS = 3  # 判断待ちの一覧に並べる日数（届いてから）。これより前のものは数だけ出す（2026-11-17。人が閉じなくても一覧が古くならないように）
 # 見張りの行の形（vl_watch.py と同じ。変えるときは両方を変える）。2 つ目の語（括弧の中）が記録の id
 _ID = r"[A-Za-z0-9_.@:+=-]{1,200}"
 _LINE = {
@@ -63,14 +69,21 @@ def _rows() -> list[dict]:
 
 
 def _state(rows: list[dict]) -> tuple[dict, dict]:
-    """(番号→出来事, 番号→片づけた印)。"""
+    """(番号→出来事, 番号→片づけた印)。印は書いた順に読み、reopen で外す。"""
     items, done = {}, {}
     for r in rows:
         if r.get("op") == "add":
             items[r["n"]] = r
         elif r.get("op") == "done":
-            done[r["n"]] = r
+            done[r.get("n")] = r
+        elif r.get("op") == "reopen":
+            done.pop(r.get("n"), None)
     return items, done
+
+
+def _when(r: dict) -> float:
+    """届いた時刻（--sent。無ければ記録した時刻）。"""
+    return r.get("sent") if isinstance(r.get("sent"), (int, float)) else r["at"]
 
 
 def _append(row: dict) -> dict:
@@ -105,7 +118,9 @@ def clip(v: str | None, key: str) -> str:
 
 def show(r: dict, done: dict) -> str:
     t = dt.datetime.fromtimestamp(r["at"], JST).strftime("%m/%d %H:%M")
-    mark = "済" if r["n"] in done else {"judge": "判断待ち", "fyi": "宛て・対応不要", "info": "情報", "baseline": "既読扱い"}.get(r["kind"], r["kind"])
+    d = done.get(r["n"])
+    mark = ("済（AI が根拠から）" if d.get("by") == "ai" else "済") if d else \
+        {"judge": "判断待ち", "fyi": "宛て・対応不要", "info": "情報", "baseline": "既読扱い"}.get(r["kind"], r["kind"])
     s = f"[{r['n']}] {t} {mark}｜{clip(r['project'], 'project')}｜{clip(r['source'], 'project')}:{clip(r['id'], 'id')}｜{clip(r['title'], 'title')}"
     if r.get("note"):
         s += f"\n    要ること: {clip(r['note'], 'note')}"
@@ -113,6 +128,8 @@ def show(r: dict, done: dict) -> str:
         s += f"\n    準備したこと: {clip(r['prepared'], 'prepared')}"
     if r.get("key"):
         s += f"\n    照合の鍵: {raw_key(r['key'])}"
+    if d and d.get("note"):
+        s += f"\n    片づけ: {clip(d['note'], 'note')}"
     return s
 
 
@@ -126,10 +143,11 @@ def main() -> int:
     s.add_argument("--project", default="未振り分け"); s.add_argument("--kind", required=True, choices=sorted(KINDS))
     s.add_argument("--title", required=True); s.add_argument("--note", default=""); s.add_argument("--prepared", default=""); s.add_argument("--key", default="")
     s.add_argument("--sent", type=float)
-    s = sub.add_parser("open"); s.add_argument("--project")
+    s = sub.add_parser("open"); s.add_argument("--project"); s.add_argument("--all", action="store_true")
     s = sub.add_parser("recent"); s.add_argument("--hours", type=float, default=24)
     s = sub.add_parser("find"); s.add_argument("--key", required=True); s.add_argument("--before", type=float); s.add_argument("--limit", type=int, default=20)
-    s = sub.add_parser("done"); s.add_argument("n", type=int); s.add_argument("--note", default="")
+    s = sub.add_parser("done"); s.add_argument("n", type=int); s.add_argument("--note", default=""); s.add_argument("--by", choices=("user", "ai"), default="user")
+    s = sub.add_parser("reopen"); s.add_argument("n", type=int); s.add_argument("--note", default="")
     sub.add_parser("projects")
     a = p.parse_args()
     rows = _rows()
@@ -179,7 +197,12 @@ def main() -> int:
         return 0
     if a.cmd == "open":
         rs = [r for r in items.values() if r["kind"] == "judge" and r["n"] not in done and (not a.project or r["project"] == a.project)]
-        print("\n".join(show(r, done) for r in sorted(rs, key=lambda r: -r["at"])) or "判断待ちはありません")
+        near = rs if a.all else [r for r in rs if time.time() - _when(r) < OPEN_DAYS * 86400]
+        out = [show(r, done) for r in sorted(near, key=lambda r: -r["at"])]
+        if len(rs) > len(near):
+            out.append(f"ほかに、届いてから {OPEN_DAYS} 日より前の判断待ちが {len(rs) - len(near)} 件"
+                       "（済んでいるかは確かめていません。--all で並べます）")
+        print("\n".join(out) or "判断待ちはありません")
         return 0
     if a.cmd == "recent":
         rs = [r for r in items.values() if time.time() - r["at"] < a.hours * 3600 and r["kind"] != "baseline"]
@@ -190,18 +213,30 @@ def main() -> int:
         if not k.strip():
             print("照合の鍵が空です")
             return 2
-        when = lambda r: r.get("sent") if isinstance(r.get("sent"), (int, float)) else r["at"]  # 届いた時刻（無ければ記録した時刻）
-        rs = sorted((r for r in items.values() if r["kind"] != "baseline" and r.get("key") == k and (a.before is None or when(r) < a.before)),
-                    key=lambda r: -when(r))
+        rs = sorted((r for r in items.values() if r["kind"] != "baseline" and r.get("key") == k and (a.before is None or _when(r) < a.before)),
+                    key=lambda r: -_when(r))
         n = max(1, a.limit)
         print("\n".join([show(r, done) for r in rs[:n]] + ([f"ほかに {len(rs) - n} 件（--limit で増やせます）"] if len(rs) > n else [])) or "当たる記録はありません")
         return 0
+    if a.cmd in ("done", "reopen") and a.n not in items:
+        print(f"{a.n} 番の記録はありません")
+        return 1
     if a.cmd == "done":
-        if a.n not in items:
-            print(f"{a.n} 番の記録はありません")
-            return 1
-        _append({"op": "done", "at": time.time(), "n": a.n, "note": clip(a.note, "note")})
+        if a.n in done:
+            print(f"既に片づけた印があります [{a.n}]")
+            return 0
+        if a.by == "ai" and not clip(a.note, "note"):
+            print("あなたが確かめて片づけるときは、根拠（何で済んだと確かめたか）を --note に書いてください")
+            return 2
+        _append({"op": "done", "at": time.time(), "n": a.n, "note": clip(a.note, "note"), "by": a.by})
         print(f"片づけた印を付けました [{a.n}]")
+        return 0
+    if a.cmd == "reopen":
+        if a.n not in done:
+            print(f"[{a.n}] に片づけた印はありません")
+            return 1
+        _append({"op": "reopen", "at": time.time(), "n": a.n, "note": clip(a.note, "note")})
+        print(f"片づけた印を外しました [{a.n}]")
         return 0
     if a.cmd == "projects":
         c = Counter(r["project"] for r in items.values() if r["kind"] != "baseline")
