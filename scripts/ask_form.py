@@ -287,6 +287,8 @@ async def drive(form: dict, answers: list, read, keys, text) -> None:
         raise Stuck(f"送り始める前の画面が、まだ答えていない最初の問いではない（{why}）")
     for i, (q, a) in enumerate(zip(qs, answers)):
         st = await until(on(i), f"{i + 1} つ目の問いが出ない")
+        if i == 0 and (any(st["answered"]) or st["checked"] or st["other"] or st["typing"]):  # 最初のキーを決める画面そのものでも確かめる
+            raise Stuck("送り始める前に、端末で答え始めている")
         if "picks" in a:
             for p in a["picks"]:
                 if p not in st["checked"]:

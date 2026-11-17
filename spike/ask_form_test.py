@@ -197,6 +197,26 @@ except af.Stuck as e:
     err = str(e)
 check("揺れ: 送り始める前に答え始めていたら、キーを 1 本も送らない（印を変えない）", (bool(err), tui.log, tui.checked[0]), (True, [], {2}))
 
+
+class LateMark(FakeTUI):
+    """1 回目の読み取りでは未回答、2 回目の読み取りの前に、端末で青に印が付いた。"""
+    reads = 0
+
+    def screen(self):
+        self.reads += 1
+        if self.reads == 2:
+            self.checked[0].add(2)
+        return super().screen()
+
+
+tui = LateMark({"questions": [REAL_TWO_INPUT["questions"][1]]})
+try:
+    asyncio.run(af.drive(M1, af.check(M1, [{"picks": [1]}])[0], _r, _k, _t))
+    err = None
+except af.Stuck as e:
+    err = str(e)
+check("揺れ: 最初のキーを決める画面で答え始めていたら、キーを 1 本も送らない（1 回目は未回答・2 回目で印）", (bool(err), tui.log, tui.checked[0]), (True, [], {2}))
+
 ok = sum(r[1] for r in results)
 for name, passed, got_, want in results:
     print(("✓ " if passed else "✗ ") + name + ("" if passed else f"\n    得た値: {got_!r}\n    期待:   {want!r}"))
