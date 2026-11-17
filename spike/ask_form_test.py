@@ -187,6 +187,15 @@ try:
 except af.Stuck as e:
     err = str(e)
 check("揺れ: 途中で端末から印が足されたら、Tab を押さずに止まる", (bool(err), "tab" in tui.log, tui.result), (True, False, None))
+tui = FakeTUI({"questions": [REAL_TWO_INPUT["questions"][1]]})
+tui.keys("2")  # 確かめたあと、送り始めるまでに、端末で青に印が付いた
+tui.log.clear()
+try:
+    asyncio.run(af.drive(M1, af.check(M1, [{"picks": [1]}])[0], _r, _k, _t))
+    err = None
+except af.Stuck as e:
+    err = str(e)
+check("揺れ: 送り始める前に答え始めていたら、キーを 1 本も送らない（印を変えない）", (bool(err), tui.log, tui.checked[0]), (True, [], {2}))
 
 ok = sum(r[1] for r in results)
 for name, passed, got_, want in results:

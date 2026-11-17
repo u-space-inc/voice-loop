@@ -176,6 +176,35 @@ hq = json.loads(s.hub_question("w9:p1").body)
 r = hub_answer(fp=hq["fp"], ask=hq["ask"], answers=[{"pick": 1}, {"other": "丸"}])
 check("Slack（相手の位置）: 見本つきの問いへの自由記入など、形の外の答えは送れない", (r.get("reason"), st["tui"].log), ("bad_form", []))
 setup()
+for i in range(s.NOTICE_PER_HOUR):  # 代理の知らせの枠を使い切る（コンテナから使える hubctl notice）
+    asyncio.run(s.hub_notice({"title": f"埋め {i}", "text": ""}))
+pushes.clear()
+hq = json.loads(s.hub_question("w9:p1").body)
+r = hub_answer(fp=hq["fp"], ask=hq["ask"], answers=ok_two)
+check("Slack: 代理の知らせの枠を使い切られても、答えたことの知らせとプッシュ通知は出る",
+      (r.get("ok"), s.notices()["rows"][-1]["title"], len(pushes)), (True, "Slack から答えました: proj", 1))
+setup(quirks=[])
+hq = json.loads(s.hub_question("w9:p1").body)
+real_read = s.read_dialog
+calls = {"n": 0}
+
+
+def flaky(pane):  # 送り終えたあとの読み取りで、読み取りが失敗する
+    calls["n"] += 1
+    if st["tui"].result is not None:
+        raise __import__("subprocess").TimeoutExpired("herdr", 20)
+    return real_read(pane)
+
+
+s.read_dialog = flaky
+pushes.clear()
+n0 = len(s._slack_forms)
+r = hub_answer(fp=hq["fp"], ask=hq["ask"], answers=ok_two)
+s.read_dialog = real_read
+check("Slack: 送ったあとの読み取りが失敗しても、結果が分からないとして知らせ、数に入れる",
+      (r.get("reason"), "結果が分からない" in (r.get("why") or ""), s.notices()["rows"][-1]["title"], len(pushes), len(s._slack_forms) - n0),
+      ("stuck", True, "Slack から答える途中で止まりました: proj", 1, 1))
+setup()
 s._slack_forms[:] = [__import__("time").time()] * s.SLACK_FORM_PER_HOUR
 hq = json.loads(s.hub_question("w9:p1").body)
 r = hub_answer(fp=hq["fp"], ask=hq["ask"], answers=ok_two)

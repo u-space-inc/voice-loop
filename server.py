@@ -2321,9 +2321,10 @@ async def form_answer(a: dict, asked: dict, fp: str, ask, answers, confirmed: bo
     project = a["cwd"].rsplit("/", 1)[-1]
     try:
         await ask_form.drive(form, plan, read, keys, text)
-    except ask_form.Stuck as e:
-        hlog(f"answer({via}・問いの形) → {pane} ({project}): 途中で止めました: {e}（送ろうとした答え: {said}）", flush=True)
-        return {"ok": False, "reason": "stuck", "why": str(e), "said": said}
+    except Exception as e:  # 途中で止めた（Stuck）か、読み取り・送信の失敗。どこまで届いたかは分からない
+        why = str(e) if isinstance(e, ask_form.Stuck) else f"結果が分からない（{type(e).__name__}）"
+        hlog(f"answer({via}・問いの形) → {pane} ({project}): 途中で止めました: {why}（送ろうとした答え: {said}）", flush=True)
+        return {"ok": False, "reason": "stuck", "why": why, "said": said}
     hlog(f"answer({via}・問いの形) → {pane} ({project}): {said} ok", flush=True)
     return {"ok": True, "said": said, "project": project, "title": a.get("title", "")}
 
@@ -2340,6 +2341,32 @@ def hub_question(pane: str):
     return JSONResponse({"pane": pane, "status": "blocked", "project": a["cwd"].rsplit("/", 1)[-1], "title": a.get("title", ""),
                          "kind": asked["kind"], "fp": asked.get("fp", ""), "ask": asked.get("ask"), "form": asked.get("form"),
                          "risky": asked.get("risky", False)})
+
+
+async def must_notice(title: str, text: str):
+    """必ず出す知らせ（Slack から答えたこと）。代理の知らせ（hubctl notice）の 1 時間の数の枠は使わない（その枠を使い切られても消されない。
+    数は SLACK_FORM_PER_HOUR で抑える）。記録に書けなくても、ログとプッシュ通知は出す。"""
+    title, text = _notice_clean(title, NOTICE_TITLE) or "知らせ", _notice_clean(text, NOTICE_TEXT) or ""
+    n = None
+    try:
+        with _notice_lock:
+            d = notices()
+            n = d["next"]
+            write_json(NOTICES_FILE, {"next": n + 1, "rows": (d["rows"] + [{"n": n, "title": title, "text": text, "at": time.time()}])[-NOTICE_KEEP:],
+                                      "sent": d["sent"]})
+    except Exception:
+        traceback.print_exc()
+        n = None
+    hlog(f"知らせ（必ず）{'[' + str(n) + ']' if n else '（記録に書けなかった）'}: {title}", flush=True)
+    for c in list(CLIENTS):
+        try:
+            await c.send(type="agent_notice", n=n or 0, title=title, sender=HUB.label)
+        except Exception:
+            pass
+    try:
+        await push_all(f"{HUB.label} から", title, f"notice-{n or int(time.time())}")
+    except Exception:
+        traceback.print_exc()
 
 
 async def _hub_form_answer(body: dict) -> JSONResponse:
@@ -2365,7 +2392,7 @@ async def _hub_form_answer(body: dict) -> JSONResponse:
     if r.get("ok") or r.get("reason") == "stuck":
         _slack_forms.append(now)
         title = f"Slack から{'答えました' if r.get('ok') else '答える途中で止まりました'}: {a['cwd'].rsplit('/', 1)[-1]}"
-        await hub_notice({"title": title, "text": r.get("said", "")})  # 毎回、画面の知らせとプッシュ通知で知らせる
+        await must_notice(title, r.get("said", ""))  # 毎回、画面の知らせとプッシュ通知で知らせる（一般の知らせの数の枠とは別）
     if r.get("ok") and not WATCHING.get(pane):  # 答えたあとの結果を知らせるため（_hub_answer と同じ）
         path = jsonl_path(a)
         start_watch({"pane": pane, "cwd": a["cwd"], "project": r["project"], "title": a["title"], "text": "", "generic": True,

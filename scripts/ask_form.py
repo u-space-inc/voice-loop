@@ -282,6 +282,9 @@ async def drive(form: dict, answers: list, read, keys, text) -> None:
 
     on = lambda i: (lambda st: st["stage"] == "question" and st["index"] == i)  # noqa: E731
     review = len(qs) > 1 or qs[0]["multi"]
+    why = ready(await read(), form)
+    if why:  # 送り始める前に、まだ何も答えていないことを確かめる（端末で答え始めていたら、キーを 1 本も送らない）
+        raise Stuck(f"送り始める前の画面が、まだ答えていない最初の問いではない（{why}）")
     for i, (q, a) in enumerate(zip(qs, answers)):
         st = await until(on(i), f"{i + 1} つ目の問いが出ない")
         if "picks" in a:
