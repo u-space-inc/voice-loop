@@ -1159,7 +1159,10 @@ async def _learn_memory(mine: dict | None = None):
             slot = _HMEM_MINE.setdefault(t, {"added": [], "removed": []})
             slot["added"] += m.get("added", [])
             slot["removed"] += m.get("removed", [])
-        if mine:
+        expired = [t for t, slot in _HMEM_MINE.items() if time.time() - slot.get("at", 0) > HMEM_MINE_KEEP]
+        for t in expired:  # 期限切れの外す項目は、差分を見る前に手放す（期限のあとに Hermes が同じ中身を書いた変化を、跡から落とさない）
+            _HMEM_MINE.pop(t, None)
+        if mine or expired:
             _save_hmem_mine()
         d = hlearn_state()
         if d is None:

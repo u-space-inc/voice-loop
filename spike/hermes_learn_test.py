@@ -873,6 +873,13 @@ s.hermes._HMEM_MINE.update(s.hermes._load_hmem_mine())
 (MEM / "MEMORY.md").write_text(D.join([x for x in (MEM / "MEMORY.md").read_text().split(D) if x] + ["比べるもと無しで遅れて書き終える"]))
 asyncio.run(s.hermes._watch_memory())
 check("記憶: 比べるもとがまだ無いときの、結果の分からない本人の書き込みも、起動し直して遅れて書き終えても学びにしない", count() - n9, 0)
+asyncio.run(s.hermes._learn_memory())
+n10 = count()
+s.hermes._HMEM_MINE["memory"] = {"added": ["期限のあとに Hermes が足した"], "removed": [], "at": time.time() - s.hermes.HMEM_MINE_KEEP - 1}
+(MEM / "MEMORY.md").write_text(D.join([x for x in (MEM / "MEMORY.md").read_text().split(D) if x] + ["期限のあとに Hermes が足した"]))
+asyncio.run(s.hermes._watch_memory())
+check("記憶: 期限を過ぎた外す項目は差分を見る前に手放す（期限のあとに Hermes が同じ中身を足した変化を、跡から落とさない）",
+      (count() - n10, [e["summary"] for e in learned()["entries"] if e["kind"] == "memory"][0]), (1, "期限のあとに Hermes が足した"))
 s.hermes._HMEM_MINE["memory"] = {"added": ["ずっと現れない"], "removed": [], "at": time.time() - s.hermes.HMEM_MINE_KEEP - 1}
 asyncio.run(s.hermes._watch_memory())
 check("記憶: 期限（HMEM_MINE_KEEP）を過ぎても現れない外す項目は手放す", "memory" in s.hermes._HMEM_MINE, False)
