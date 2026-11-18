@@ -791,7 +791,9 @@ async def _hmem_write(op: str, body: dict) -> JSONResponse:
         if res in ("state", "busy", "unverifiable"):
             return JSONResponse({"ok": False, "reason": res})
         # 画面で書いて当たった項目だけを、Hermes の学びとして跡に残さない（当たらなかった・分からないものは外さない。ほかの変化は跡に残す）
-        mine = {"added": [req["content"].strip()] if op in ("add", "edit") else [], "removed": [req["entry"]] if op in ("edit", "remove") else []}
+        # 読む側（記憶のファイルの読み取り）と同じく、改行を LF にそろえて前後の空白を外したもので照らす
+        norm = lambda t: t.replace("\r\n", "\n").replace("\r", "\n").strip()
+        mine = {"added": [norm(req["content"])] if op in ("add", "edit") else [], "removed": [req["entry"]] if op in ("edit", "remove") else []}
         await _learn_memory(mine={target: mine} if res == "applied" else None)
     if res == "applied":
         return JSONResponse({"ok": True, "shape": out.get("shape", "")})

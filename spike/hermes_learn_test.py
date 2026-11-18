@@ -575,6 +575,10 @@ check("戻す: フォルダの名前と別名の両方の鍵を取る（Hermes �
 pk = {"action": "batch", "operations": [{"action": "patch", "name": n, "old_string": "a", "new_string": "b"} for n in ("par", "kid", "hub")]}
 check("自動で当てる: 1 つの書き足しが親と子の関係にある手順のフォルダを両方触るときは、自動では当てない（二度戻して途中で止まらないように）",
       (script("snap", {"payload": pk}).get("result"), script("snap", {"payload": {**pk, "operations": pk["operations"][:1]}}).get("result")), ("unsupported", "snap"))
+(SK2 / "voice-loop" / "par-x").mkdir(parents=True, exist_ok=True)
+(SK2 / "voice-loop" / "par-x" / "SKILL.md").write_text("間\n")
+pk2 = {"action": "batch", "operations": [{"action": "patch", "name": n, "old_string": "a", "new_string": "b"} for n in ("par", "par-x", "kid")]}
+check("自動で当てる: 親と子の間に、並べると間に入る別の手順（par-x）があっても、親子を見逃さない", script("snap", {"payload": pk2}).get("result"), "unsupported")
 for i in range(hl.SNAP_BATCH_SKILLS_MAX + 1):
     (SK2 / "many" / f"m{i:02d}").mkdir(parents=True, exist_ok=True)
     (SK2 / "many" / f"m{i:02d}" / "SKILL.md").write_text("小さい\n")
@@ -786,6 +790,12 @@ finally:
 asyncio.run(s.hermes._watch_memory())
 check("記憶: 画面で書いたあとに跡を保存できなくても、外す項目は持ち続け、次の見張りで本人の書き込みを学びにしない",
       (r4.get("ok"), count() - n4, "保存できない間に画面で足した" in (MEM / "MEMORY.md").read_text()), (True, 0, True))
+# 画面で足した本文の改行が CRLF でも、読む側と同じく LF にそろえて照らす（本人の書き込みを学びにしない）
+asyncio.run(s.hermes._learn_memory())
+n6 = count()
+r6 = json.loads(asyncio.run(s.hermes._hmem_write("add", {"target": "memory", "content": "改行\r\nのある本文"})).body)
+asyncio.run(s.hermes._watch_memory())
+check("記憶: 画面で足した本文の改行が CRLF でも、読む側と同じく LF にそろえて照らし、本人の書き込みを学びにしない", (r6.get("ok"), count() - n6), (True, 0))
 # 見張りの 1 回: 手順の承認待ちを読めなくても、記憶は見る
 n5 = count()
 real_pending = s.hermes.hermes_skills.pending_ids

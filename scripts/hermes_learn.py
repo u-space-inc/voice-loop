@@ -257,9 +257,8 @@ def snap_payload(sm, payload: dict) -> dict:
             size = sum(len(v) for snap in out.values() for v in snap["files"].values())
             if len(out) > SNAP_BATCH_SKILLS_MAX or size > SNAP_BATCH_TOTAL_MAX:  # 書き足し全体でも大きすぎる控えは作らない（自動では当てない）
                 raise ValueError("書き足しが触る手順が多すぎるか、大きすぎます")
-    rels = sorted(out)
-    for a, b in zip(rels, rels[1:]):  # 親と子の関係にある手順のフォルダ（同じファイルを二度控え・二度戻すことになる）は扱わない
-        if b.startswith(a + "/"):
+    for rel in out:  # 親と子の関係にある手順のフォルダ（同じファイルを二度控え・二度戻すことになる）は扱わない（並びの隣だけでなく、祖先をすべて見る）
+        if any(rel.startswith(other + "/") for other in out if other != rel):
             raise ValueError("書き足しが、親と子の関係にある手順のフォルダを両方触るので、自動では当てません")
     return out
 
