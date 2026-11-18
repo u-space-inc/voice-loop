@@ -858,6 +858,21 @@ kept = "遅れて書き終える" in s.hermes._HMEM_MINE.get("memory", {}).get("
 asyncio.run(s.hermes._watch_memory())
 check("記憶: 時間切れのあとで遅れて書き終えた本人の書き込みも学びにしない（外す項目は、照らし合うまで持ち続ける）",
       (r9.get("reason"), kept, count() - n8, "遅れて書き終える" in s.hermes._HMEM_MINE.get("memory", {}).get("added", [])), ("unknown", True, 0, False))
+# 比べるもとがまだ無いとき（初めての読み取りの前）に結果の分からない書き込みをし、本体を起動し直し、遅れて書き終えた
+st = json.loads(s.hermes.HLEARN_FILE.read_text())
+st["memory"] = None
+s.hermes.HLEARN_FILE.write_text(json.dumps(st))
+n9 = count()
+s.hermes.hermes_memory.run_script = uncertain_run(False)
+asyncio.run(s.hermes._hmem_write("add", {"target": "memory", "content": "比べるもと無しで遅れて書き終える"}))
+s.hermes.hermes_memory.run_script = fake_mem_run
+s.hermes.HMEM_FILE.unlink(missing_ok=True)
+asyncio.run(s.hermes._watch_memory())  # 初めての読み取り（まだ現れない）
+s.hermes._HMEM_MINE.clear()  # 本体を起動し直した
+s.hermes._HMEM_MINE.update(s.hermes._load_hmem_mine())
+(MEM / "MEMORY.md").write_text(D.join([x for x in (MEM / "MEMORY.md").read_text().split(D) if x] + ["比べるもと無しで遅れて書き終える"]))
+asyncio.run(s.hermes._watch_memory())
+check("記憶: 比べるもとがまだ無いときの、結果の分からない本人の書き込みも、起動し直して遅れて書き終えても学びにしない", count() - n9, 0)
 s.hermes._HMEM_MINE["memory"] = {"added": ["ずっと現れない"], "removed": [], "at": time.time() - s.hermes.HMEM_MINE_KEEP - 1}
 asyncio.run(s.hermes._watch_memory())
 check("記憶: 期限（HMEM_MINE_KEEP）を過ぎても現れない外す項目は手放す", "memory" in s.hermes._HMEM_MINE, False)

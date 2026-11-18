@@ -1190,10 +1190,11 @@ async def _learn_memory(mine: dict | None = None):
                     slot = _HMEM_MINE.get(t)
                     if slot is None:
                         continue
-                    if prev is None or t not in prev:  # 初めて読んだ（比べていない）ファイルは、外すものが要らない
-                        _HMEM_MINE.pop(t, None)
-                        continue
-                    ua, ur = used.get(t, ([], []))
+                    if prev is None or t not in prev:  # 初めて読んだ（比べるもとが無い）: もう比べるもとに入った項目だけを手放し、まだ現れないものは持ち続ける
+                        ua = [x for x in slot["added"] if x in cur[t]]
+                        ur = [x for x in slot["removed"] if x not in cur[t]]
+                    else:
+                        ua, ur = used.get(t, ([], []))
                     for x in ua:
                         slot["added"].remove(x)
                     for x in ur:
