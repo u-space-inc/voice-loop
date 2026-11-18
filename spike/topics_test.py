@@ -236,6 +236,34 @@ check("相手の位置: Slack の同じスレッド・返信中でも、別の�
       (True, True, True, "s1", "s1", "s2"))
 check("件の分け方: 同じスレッドから別のセッションにも頼んだあと、前のセッションの続きを頼んだら、前のセッションの件に戻る",
       (back["topic"] == four["topic"], back["topic"] != nine["topic"]), (True, True))
+real_herdr = s.herdr
+
+
+async def direct_during_send():
+    async def go():
+        s.OPEN_WATCH.clear()
+        first = await send("直接送られる前の依頼", ag=AG2)
+        first["_closed"] = True
+
+        def herdr_with_direct(*a, **k):  # ハブの依頼を送り終えるのを待つ間に、画面から同じセッションへ直接送られた
+            if a[:2] == ("agent", "prompt"):
+                s.SENT_GEN["w2:p1"] = s.SENT_GEN.get("w2:p1", 0) + 1
+                s.topics.mark_direct("s2")
+            return {"result": {}}
+        s.herdr = herdr_with_direct
+        try:
+            again = await send("同じスレッドの続き（送る間に直接送られる）", (DM, "7.7"), ag=AG2)
+            again["_closed"] = True
+            cont = await send("続きをもう一つ（送る間に直接送られる）", (DM, "7.7"), ag=AG2)
+        finally:
+            s.herdr = real_herdr
+        return again, cont
+    return await go()
+
+
+again, cont = asyncio.run(direct_during_send())
+check("相手の位置: ハブの依頼を送り終えるのを待つ間に直接送られたら、新しい件にも続きの件にも直接送った印を残す（いまの問いをその件のものとしない）",
+      (bool(s.topics.get(again["topic"]).get("direct")), cont["topic"] == again["topic"], bool(s.topics.get(cont["topic"]).get("direct"))), (True, True, True))
 check("件の分け方: 頼んだ件ごとに件が付く（台帳にも載る）", all(s.topics.get(d["topic"]) for d in (one, three, four, six, eight)), True)
 
 
@@ -661,8 +689,36 @@ with sync_playwright() as p:
         lit = True
     except Exception:
         lit = False
-    check("画面: 問いの一覧の読み込みが一度失敗しても、報告のほうへ進まず、問いの欄を描けた時点で光らせる",
-          (lit, fresh.eval_on_selector("#replyBar", "e => e.hidden")), (True, True))
+    check("画面: 問いの一覧の読み込みが一度失敗しても、報告のほうへ進まず、件を覚えて開き直し、問いの欄を光らせる",
+          (lit, "つながったらこの件を開きます" in logs(fresh), fresh.eval_on_selector("#replyBar", "e => e.hidden")), (True, True, True))
+    fresh.wait_for_timeout(3500)  # 前の「少し待って開き直す」が済んでから
+    fresh.evaluate("""() => { document.querySelectorAll('.flash').forEach(e => e.classList.remove('flash'));
+      const of = window.fetch; let n = 0;  // つながったまま、問いの一覧の読み込みだけが返らない
+      window.fetch = (u, ...a) => (String(u).startsWith('/api/prompts') && ++n === 1) ? new Promise((_, rej) => a[0] && a[0].signal && a[0].signal.addEventListener('abort', () => rej(new DOMException('aborted', 'AbortError')))) : of(u, ...a);
+    }""")
+    fresh.evaluate(f"location.hash = '#t={ASK_T}'")
+    try:
+        fresh.wait_for_function('[...document.querySelectorAll("#asks .ask.flash")].length === 1', timeout=15000)
+        lit = True
+    except Exception:
+        lit = False
+    check("画面: つながったまま問いの一覧の読み込みが返らなくても、見切って開き直し、問いの欄を光らせる", (lit, fresh.eval_on_selector("#replyBar", "e => e.hidden")), (True, True))
+    fresh.wait_for_timeout(3500)
+    fresh.evaluate("""() => { asks.forEach(i => i.el.remove()); asks.clear(); document.querySelectorAll('.flash').forEach(e => e.classList.remove('flash'));
+      const of = window.fetch; let n = 0;  // 件を開く処理が問いの一覧を読んだあと、もっと新しい（遅い）読み込みが割り込む
+      window.fetch = (u, ...a) => {
+        if (String(u).startsWith('/api/prompts')) {
+          n++;
+          if (n === 2) { setTimeout(() => loadAsks(), 0); return new Promise(r => setTimeout(() => r(of(u, ...a)), 50)); }
+          if (n === 3) return new Promise(r => setTimeout(() => r(of(u, ...a)), 1500));
+        }
+        return of(u, ...a);
+      };
+    }""")
+    fresh.evaluate(f"location.hash = '#t={ASK_T}'")
+    fresh.wait_for_timeout(1000)
+    check("画面: 件を開く処理は、自分で読んだ問いの一覧をその場で描いて照らす（あとから割り込んだ読み込みを待たない・報告のほうへ進まない）",
+          (fresh.evaluate("[...document.querySelectorAll('#asks .ask.flash')].length"), fresh.eval_on_selector("#replyBar", "e => e.hidden")), (1, True))
     fresh.evaluate("""() => { document.querySelectorAll('.flash').forEach(e => e.classList.remove('flash'));
       const of = window.fetch; let n = 0;  // 件を引く読み込みが、通信が切れて返らないまま止まる
       window.fetch = (u, ...a) => (String(u).startsWith('/api/topic') && ++n === 1) ? new Promise(() => {}) : of(u, ...a);

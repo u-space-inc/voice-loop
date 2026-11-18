@@ -90,14 +90,15 @@ def new(pane: str, session: str, project: str, title: str, slack=None) -> str:
     return tid
 
 
-def touch(tid: str, pane: str, session: str, slack=None) -> bool:
+def touch(tid: str, pane: str, session: str, slack=None, clear_direct: bool = True) -> bool:
     """件が続いた（同じ件に次の依頼が来た）。いまの相手と Slack のスレッドを、新しいほうに置き換える。件が無ければ False。"""
     with _lock:
         t = TOPICS.get(tid)
         if not t or not _live(t):
             return False
         t.update(updated=time.time(), pane=str(pane), session=str(session or ""))
-        t.pop("direct", None)  # ハブがまたこの件で頼んだ。いまの問いはこの件のものに戻る
+        if clear_direct:
+            t.pop("direct", None)  # ハブがまたこの件で頼んだ。いまの問いはこの件のものに戻る（送る間に直接送られていたら外さない）
         if _slack(slack):
             t["slack"] = _slack(slack)
         _save()

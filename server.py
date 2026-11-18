@@ -1999,7 +1999,7 @@ async def dispatch(a: dict, text: str, kind: str = "send", slack: tuple[str, str
          "was_working": a["status"] == "working", "gen": WATCH_GEN[pane], "sent_gen": sent_gen, "overlap": overlap, "slack": slack,
          "session": a.get("session")}
     merge_open(d, OPEN_WATCH.get(pane))  # 前の件がまだ報告前なら、この件にまとめる（ここから start_watch までは await しない）
-    d["topic"] = topic_for(d)
+    d["topic"] = topic_for(d, keep_direct=SENT_GEN.get(pane) != sent_gen)  # 送り終えるのを待つ間に、画面・声から直接送られていた（印を残す）
     OPEN_WATCH[pane] = d
     start_watch(d, kind)
     if slack_chain(d):
@@ -2007,22 +2007,26 @@ async def dispatch(a: dict, text: str, kind: str = "send", slack: tuple[str, str
     return {"ok": True, "project": project, "title": a["title"], "was_working": a["status"] == "working", "task": d["task"], "slack": bool(slack)}
 
 
-def topic_for(d: dict) -> str:
+def topic_for(d: dict, keep_direct: bool = False) -> str:
     """この依頼の件を決める（2026-11-19 本人が A を選んだ: 続きなら同じ件、それ以外は新しい件）。続きは、次の順に見る:
     1. まだ報告の来ていない同じセッションへの前の依頼にまとめた（merge_open。#54 の報告のまとめと同じ）→ その件
     2. Slack の同じスレッドから頼まれた（スレッドの無い、DM の一番上の依頼は続きと見なさない）→ そのスレッドの件
     3. 画面の「↩ 返信」で報告に返した発言を、ハブが扱っている間の依頼（Slack から頼まれた依頼は除く）→ その報告の件
     どれでもなければ新しい件。続きにするのは、前の件と同じセッション（空でないセッション ID が同じ）への依頼だけ。Slack のスレッドと返信中かは
     ハブ（乗せられうる Hermes）の申告に頼るので、別のセッションへの依頼を前の件に結ぶと、前の件のリンク（Slack・通知）の行き先を別のセッションの
-    問いに書き換えられてしまう。続きの件は、Slack のスレッドを新しいほうに置き換える。同期で呼ぶ（dispatch の中、await しない）。"""
+    問いに書き換えられてしまう。続きの件は、Slack のスレッドを新しいほうに置き換える。同期で呼ぶ（dispatch の中、await しない）。
+    keep_direct: この依頼を送り終えるのを待つ間に、同じセッションへ画面・声から直接送られていた。直接送った印を外さない（新しい件にも付ける）"""
     pane, session, slack = d["pane"], d.get("session") or "", d.get("slack")
     for tid in (next((e.get("topic") for e in reversed(d.get("chain") or []) if e.get("topic")), None),
                 topics.by_slack(slack, session) if slack and session else None,
                 HUB.reply_topic() if not slack else None):
         t = topics.get(tid)
-        if t and session and t["session"] == session and topics.touch(tid, pane, session, slack):
+        if t and session and t["session"] == session and topics.touch(tid, pane, session, slack, clear_direct=not keep_direct):
             return tid
-    return topics.new(pane, session, d["project"], d["text"] or f"{d['project']}｜{d['title']}", slack)
+    tid = topics.new(pane, session, d["project"], d["text"] or f"{d['project']}｜{d['title']}", slack)
+    if keep_direct:
+        topics.mark_direct(session)
+    return tid
 
 
 def report_idle() -> asyncio.Event:

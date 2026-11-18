@@ -604,14 +604,16 @@ async function openTopic() {
   closeViewer(); if (reading) setReading(false); // 画像を見ている・広げて読んでいる間に開いたら、普通の表示に戻す（光らせる欄が後ろに隠れて押せないため）
   // 問いの欄を見せるのは、本体がこの件の問いとして返した問い（同じセッションで、その件がそのセッションの一番新しい件、直接送られていない）だけ。
   // 光らせるのは、本体が返した指紋と同じ問いの欄だけ（あとで変わった問い・直接送った別の話の問いは光らせない。古い件ならその件の報告を開く）
+  // 問いの一覧は、この処理が自分で（期限つきで）読み、その場で描いてから照らす（並んで走る loadAsks の取り込みに左右されない）。
+  // 読めなかった・返らなかったら、件を覚えて開き直す。描いた問いの指紋が違えば（問いがもう変わっていた）、件の報告のほうを開く
   const ak = t.ask;
   if (t.current === true && t.session && ak && ak.pane === t.pane && ak.key === t.session && typeof ak.fp === 'string') {
-    askFlash = { pane: ak.pane, key: ak.key, fp: ak.fp, seq }; // 欄を描いたら光らせる（並んで走る loadAsks の取り込みに負けても、あとで描いた時点で）
-    await loadAsks();
+    let qs; try { qs = await topicFetch('/api/prompts'); } catch { qs = null; }
     if (seq !== topicSeq) return;
+    if (!Array.isArray(qs)) { later(); return; }
+    ++asksSeq; applyAsks(qs);
     const it = asks.get(ak.pane);
-    if (!it || (it.q.key === ak.key && it.q.fp === ak.fp)) { flashAsk(); setStatus(`${t.project}｜問いに答えてください（押すまで答えません）`); return; }
-    askFlash = null; // 問いがもう変わっていた。件の報告のほうを開く
+    if (it && it.q.key === ak.key && it.q.fp === ak.fp) { flash(it.el); setStatus(`${t.project}｜問いに答えてください（押すまで答えません）`); return; }
   }
   if (!agents.length) await loadAgents();
   if (seq !== topicSeq) return;
@@ -751,6 +753,11 @@ async function loadAsks() {
   const seq = ++asksSeq;
   let list; try { list = await (await fetch('/api/prompts')).json(); } catch { list = []; } // 読めないときは、ボタンを出さないほうに倒す
   if (seq !== asksSeq) return;
+  applyAsks(list);
+}
+// 読んだ問いの一覧を、上の欄に描く（件の URL で開く処理も、自分で読んだ一覧をここで描く。そのとき asksSeq を進め、並んで走る古い読み込みを捨てる）
+function applyAsks(list) {
+  if (!Array.isArray(list)) list = [];
   const now = Date.now();
   // 答えたばかりのセッションは、3秒のあいだは中身を問わず、同じ問いなら15秒のあいだ出し直さない
   // （答えた直後は、herdr の状態がまだ「止まっている」で、画面は書き換わる途中のため）
@@ -764,15 +771,6 @@ async function loadAsks() {
     if (item) { disarm(item); item.el.replaceWith(el); } else $('asks').appendChild(el);
     asks.set(q.pane, { q, el, armed: null, armedFor: null, busy: false });
   }
-  flashAsk();
-}
-// 件の URL で開いた問いの欄を、描いた時点で光らせる（開いた件のあとに利用者が別の件・相手を選んだら光らせない）
-let askFlash = null;
-function flashAsk() {
-  const f = askFlash; if (!f) return;
-  if (f.seq !== topicSeq) { askFlash = null; return; }
-  const item = asks.get(f.pane);
-  if (item && item.q.key === f.key && item.q.fp === f.fp) { askFlash = null; flash(item.el); }
 }
 function renderAsk(q) {
   const el = document.createElement('div'), head = document.createElement('div');
