@@ -24,6 +24,10 @@
   .msg.ai { align-self:flex-start; background:var(--ai); border:1px solid var(--line); border-bottom-left-radius:4px; }
   .msg.ai.speaking { border-color: var(--ok); }
   .flash { outline:2px solid var(--ok); outline-offset:2px; } /* 件の URL で開いた問い・報告 */
+  #topicMsg { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--mute); padding:2px 4px; }
+  #topicMsg[hidden] { display:none; }
+  #topicMsg span { flex:1; min-width:0; overflow-wrap:anywhere; }
+  #topicMsg button { background:none; border:none; color:inherit; font-size:14px; cursor:pointer; }
   .msg.pending { opacity:.6; }
   .sys { align-self:center; color:var(--mute); font-size:12px; text-align:center; }
   .msg .rep { display:flex; align-items:center; gap:8px; margin:0 0 6px; font-size:12px; color:var(--mute); white-space:normal; }
@@ -330,6 +334,7 @@
   <div id="bar">
     <div id="status"><span id="conn" class="dot"></span><span id="statusText">接続中…</span><button id="hubStart">ハブを起動</button><button id="tap">▶ タップして再生</button><button id="sitBtn" aria-pressed="false" aria-label="知らせと承認" title="知らせと承認">💡</button><button id="tasksBtn" aria-pressed="false" aria-label="頼んだ件" title="頼んだ件">📋</button><button id="bell" aria-pressed="false" hidden>🔔</button><button id="mute" aria-pressed="false">🔇</button><button id="reload" aria-label="最新の画面を読み込み直す" title="最新の画面を読み込み直す">↻</button></div>
     <div class="row"><select id="agent" aria-label="セッション"></select><select id="speaker" aria-label="声"></select></div>
+    <div id="topicMsg" hidden role="status"><span id="topicMsgText"></span><button id="topicMsgClose" type="button" aria-label="件の案内を閉じる">✕</button></div>
     <div id="replyBar" hidden><span id="replyTo"></span><button id="replyClear" type="button" aria-label="返信をやめる">✕</button></div>
     <div class="row"><button id="talk" title="PC では Space でも話せます（文字の欄の外で）">タップして話す</button><button id="stop" title="PC では Esc でも止められます">停止</button></div>
     <div id="attachBar" hidden></div>
@@ -577,7 +582,7 @@ let topicSeq = 0;
 let pendingTopic = null; // 本体に届かず開けなかった件。つながりしだい catchUp が開き直す（URL の #t= はもう外してある）
 // 利用者が相手・返信先を選んだ・外した・発言を送ったら、開いている途中の件（と、つながったら開く件）はやめる（あとから相手や返信先を上書きしない）
 // 起動を待つ間でまだ取り込んでいない URL の #t= も外す（起動のあとで件を開かない）
-function cancelTopic() { topicSeq++; pendingTopic = null; if (/^#t=/.test(location.hash)) history.replaceState(null, '', location.pathname + location.search); }
+function cancelTopic() { topicSeq++; pendingTopic = null; showTopicMsg(''); if (/^#t=/.test(location.hash)) history.replaceState(null, '', location.pathname + location.search); }
 // 件を開くときの読み込み。返らないまま止まったら（つながったまま応答が無い）見切って、届かなかったものとして開き直しに回す
 const TOPIC_WAIT = 6000;
 async function topicFetch(url) {
@@ -591,6 +596,7 @@ async function openTopic() {
   if (m) history.replaceState(null, '', location.pathname + location.search);
   pendingTopic = id; // 開き終えるまで覚えておく（読み込みが止まったままつながり直したら、catchUp が開き直す。前の処理は世代で捨てる）
   const seq = ++topicSeq; // 前に開いていた件の処理は、待ちから戻っても何も変えない（あとで開いた件が勝つ）
+  showTopicMsg(''); // 前の件の案内は消す
   let keep = false;
   try {
   setReplyTarget(null); // 別の件を開いたら、前に選んでいた返信先は外す（開いた件の報告に付け直すときだけ付ける）
@@ -598,7 +604,7 @@ async function openTopic() {
   let t, reached = true; try { t = await topicFetch('/api/topic?id=' + id); } catch { t = null; reached = false; }
   if (seq !== topicSeq) return;
   // 届かなかった件は覚えておき、つながったとき（catchUp）と、つながっていれば少し待ってから開き直す
-  const later = () => { keep = true; pendingTopic = id; sys('本体に届かないので、つながったらこの件を開きます'); setTimeout(() => { if (pendingTopic === id && linked()) openTopic(); }, 3000); };
+  const later = () => { keep = true; pendingTopic = id; topicNote(seq, '本体に届かないので、つながったらこの件を開きます'); setTimeout(() => { if (pendingTopic === id && linked()) openTopic(); }, 3000); };
   if (!reached) { later(); return; }
   if (!t || !t.ok) { topicNote(seq, 'この件は見つかりませんでした（古くなったか、消えました）'); return; }
   closeViewer(); if (reading) setReading(false); // 画像を見ている・広げて読んでいる間に開いたら、普通の表示に戻す（光らせる欄が後ろに隠れて押せないため）
@@ -613,7 +619,7 @@ async function openTopic() {
     if (!Array.isArray(qs)) { later(); return; }
     ++asksSeq; applyAsks(qs);
     const it = asks.get(ak.pane);
-    if (it && it.q.key === ak.key && it.q.fp === ak.fp && (it.q.sfp || null) === (typeof ak.sfp === 'string' ? ak.sfp : null)) { flash(it.el); setStatus(`${t.project}｜問いに答えてください（押すまで答えません）`); return; }
+    if (it && it.q.key === ak.key && it.q.fp === ak.fp && (it.q.sfp || null) === (typeof ak.sfp === 'string' ? ak.sfp : null)) { flash(it.el); showTopicMsg(`${t.project}｜上の問いに答えてください（押すまで答えません）`); return; }
   }
   if (!agents.length) await Promise.race([loadAgents(), new Promise(res => setTimeout(res, TOPIC_WAIT))]); // 一覧は届いても、会話の読み込みで止まることがある
   if (seq !== topicSeq) return;
@@ -628,19 +634,21 @@ async function openTopic() {
   // 読み込みが返らないまま止まっても、期限で見切って案内を出す
   await Promise.race([loadThread(), new Promise(res => setTimeout(res, TOPIC_WAIT))]);
   if (seq !== topicSeq) return;
-  if (!r || typeof r.at !== 'number') { topicNote(seq, `${t.project}｜${t.title}: この件の報告は、まだありません`, false); return; } // 会話の読み込みは上で待った（見切った）
+  if (!r || typeof r.at !== 'number') { topicNote(seq, `${t.project}｜${t.title}: この件の報告は、まだありません`); return; }
   const el = [...$('log').querySelectorAll('.msg.ai')].find(e => e.dataset.topic === t.id && Number(e.dataset.at) === r.at);
-  if (el) flash(el); else topicNote(seq, `${t.project}｜${t.title}: この件の報告は古いので画面の履歴には出ていませんが、返信先にしました`, false);
+  if (el) flash(el); else topicNote(seq, `${t.project}｜${t.title}: この件の報告は古いので画面の履歴には出ていませんが、返信先にしました`);
   } finally { if (!keep && seq === topicSeq && pendingTopic === id) pendingTopic = null; } // 開き終えた（開けないと決まった）件は忘れる
 }
-// 件の案内を出す。起動の読み込みと会話の読み込みが済んでから（描き直しで消えないように。返らなければ期限で見切る）。あとで別の件を開いたら出さない
-async function topicNote(seq, msg, wait = true) {
-  const end = Date.now() + (wait ? TOPIC_WAIT : 0); // wait=false: 会話の読み込みは呼ぶ側が待った（見切った）ので、すぐ出す
-  const until = p => Promise.race([p, new Promise(r => setTimeout(r, Math.max(0, end - Date.now())))]);
-  await until(bootLoad);
-  for (let p = null; p !== threadLoad && Date.now() < end;) { p = threadLoad; await until(p); }
-  if (seq === topicSeq) sys(msg);
+// 件の案内。会話の欄の外（下の欄）に出す（会話の欄は、起動・つながり直し・画面が見えたときの読み直しで描き直され、そこに足した案内は消える）。
+// 会話の欄にも 1 行残す。あとで別の件を開いた・利用者が相手や返信先を選んだら出さない／消す。✕ か 30 秒で消える
+let topicMsgTimer = 0;
+function showTopicMsg(msg) {
+  clearTimeout(topicMsgTimer);
+  $('topicMsgText').textContent = msg || ''; $('topicMsg').hidden = !msg;
+  if (msg) topicMsgTimer = setTimeout(() => showTopicMsg(''), 30000);
 }
+$('topicMsgClose').onclick = () => showTopicMsg('');
+function topicNote(seq, msg) { if (seq === topicSeq) { sys(msg); showTopicMsg(msg); } }
 window.addEventListener('hashchange', () => openTopic());
 // 通知を押したとき、開いていた画面には sw.js が件の場所を渡す（この画面の中の #t= だけを受ける）
 navigator.serviceWorker?.addEventListener('message', e => {
@@ -658,10 +666,7 @@ function setReplyTarget(t) {
   if (t && wide) $('typed').focus();
 }
 const replyFields = () => { const a = curAgent(); return replyTarget && a && a.hub ? { reply_at: replyTarget.at } : {}; };
-// 会話の読み込み（描き直すと、それまでの案内が消える）。件の案内は、これと起動の読み込みが済んでから出す（topicNote）
-let threadLoad = Promise.resolve(), bootLoad = Promise.resolve();
-function loadThread() { const p = loadThreadNow(); threadLoad = p; return p; }
-async function loadThreadNow() {
+async function loadThread() {
   const pane = $('agent').value; if (!pane) return;
   const seq = ++loadSeq;
   try {
@@ -1780,8 +1785,7 @@ loadAsks();
 // 件の URL（通知・Slack のリンク）で新しく開いたときは、起動の読み込み（一覧・会話・声）を待たずに件を開く（初めの表示では hashchange が起きない。
 // 届かなければ、件を覚えておき catchUp と少し待ってから開き直す）
 if (location.hash) openTopic();
-bootLoad = Promise.allSettled([loadAgents(), ensureSpeakers()]);
-Promise.race([bootLoad.then(() => true), new Promise(r => setTimeout(() => r(false), 5000))])
+Promise.race([Promise.allSettled([loadAgents(), ensureSpeakers()]).then(() => true), new Promise(r => setTimeout(() => r(false), 5000))])
   .then(replied => { if (!replied) setStatus(UNREACHABLE); connect(); });
 </script>
 </body>
