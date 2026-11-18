@@ -1580,9 +1580,10 @@ $('typedForm').onsubmit = async e => {
   const t = $('typed').value.trim(); if ((!t && !attachFiles.length) || $('send').disabled || !$('agent').value || !linked()) return;
   // 宛先・返信先（とその件の名前）・添付は押した時点で固定する。待つ間に欄が変わっても、ここで決めたものだけを送る
   const pane = $('agent').value, key = curKey(), rf = replyFields(), about = rf.reply_at !== undefined ? replyTarget.about : '', list = attachFiles.slice();
+  prime();  // 読み上げの許可は、押したその場で取る（添付を置き終えるのを待ってからでは、iPhone の Safari が押した操作と見ない）
   const files = await sendAttach(pane, list, '文と添付');
   if (!files) return;  // 送らないときは、文も添付も残す
-  sendTurnStart(); prime();
+  sendTurnStart();
   const shown = t + (list.length ? (t ? '\n' : '') + '📎 ' + list.map(f => f.name).join('、') : '');
   if ($('typed').value.trim() === t) { $('typed').value = ''; fitTyped(); }  // 待つ間に打ち直した文は消さない
   decorate(bubble('me', shown, 'pending'), { role: 'me', reply_to: about }); localPush('me', shown);

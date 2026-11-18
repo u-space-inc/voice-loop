@@ -19,7 +19,7 @@ PC の見た目（Chromium）: 頼んだ件を「動いている」「終わっ�
 キー（Chromium）: PC の幅で Space が話す（押し続けの繰り返し・変換の途中・文字の欄の中では効かない。押しているボタンの既定の動きは止める）・
 Esc が停止（文字の欄の中でも効く・ほかの欄の中では効かない）・広げて読んでいる間は Esc で戻るだけ・スマホの幅では効かない。
 添付（Chromium）: 📎 で選ぶと入力の上に並ぶ（文字の欄の上・同じ幅）・扱えない種類と 6 つ目は断る・✕ で外す・送ると本体に置いて id を発言に付け、
-欄を空にする・吹き出しに名前を出す。置いている間: 重ねて送らない・送るのは押した時点の添付・停止で取り消す・返信先を外しても押した時点の返信先で送る・
+欄を空にする・吹き出しに名前を出す。置いている間: 読み上げの許可は押したその場で取る・重ねて送らない・送るのは押した時点の添付・停止で取り消す・返信先を外しても押した時点の返信先で送る・
 相手が替わる・つながりが切れると送らずに文と添付を残す。
 報告への返信（Chromium）: ハブの報告に件と「↩ 返信」を出す（件は文字として）・押すと入力の上に返信先・次の発言に報告の時刻だけを付けて送る・
 送った発言に返信先を出す・送る・✕・相手を替えると外れる。
@@ -732,9 +732,11 @@ def run_attach(page, who):
     page.select_option("#agent", "w1:p1")
     hold.clear()
     page.route("**/api/attach*", lambda route: hold.append(route))
+    page.evaluate("(() => { window.__primed = 0; const o = prime; window.prime = () => { window.__primed++; o(); }; })()")
     page.fill("#typed", "一度だけ")
     page.press("#typed", "Enter")
     held(1)
+    check(f"{who} 読み上げの許可（prime）は、押したその場で取る（添付を置き終えるのを待たない。iPhone の Safari のため）", page.evaluate("window.__primed"), 1)
     page.press("#typed", "Enter")
     page.click("#send")
     page.set_input_files("#attachInput", files=[f("d.png")])  # 置いている間に足す（送るのは押した時点の c.png だけ。d.png は残す）

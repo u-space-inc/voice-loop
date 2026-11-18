@@ -4,7 +4,7 @@
 確かめること:
   - 受け取る: 種類（画像・PDF・テキストだけ。SVG・HTML・実行ファイル・拡張子の無いものは断る）・中身の頭と拡張子の照らし・テキストの UTF-8 と NUL・
     大きさの上限・空・置く名前は本体が付ける（送られた名前の「..」やフォルダは使わない。表示の名前は 1 行・80 字。種類は切る前の名前の拡張子）・0600・別のサイトとコンテナからは使えない
-  - 渡す: セッションには状態フォルダの場所を、ハブ（Hermes）にはコンテナの中に置いた場所を、発言の末尾に書く・知らない id・多すぎる・形の違う添付は
+  - 渡す: セッションには状態フォルダの場所を、ハブ（Hermes）にはコンテナの中に置いた場所を、発言の末尾に書く（ハブの承認の守りが見る発言には入れない）・知らない id・多すぎる・形の違う添付は
     送らずに断る・コンテナに置けなければ送らない・声の発言にも付けられる
   - 片づけ: 7 日より古い添付を消す（名前の形が合うふつうのファイルだけ）
   - コンテナの中の台本: 置き場の voice-loop/attachments に O_EXCL で書く・途中が symlink なら書かない・名前の形が違えば書かない・古いものを消す
@@ -138,6 +138,25 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     check("渡す: ハブ（Hermes）には、コンテナの中に置いた場所を書く（中身はそのまま渡す）",
           (m["type"], PUT[-1][1] == PNG, bool(attach.NAME_RE.fullmatch(PUT[-1][0])), f"- /opt/data/voice-loop/attachments/{PUT[-1][0]}（写真.png）" in ASKED[-1]),
           ("reply", True, True, True))
+    # 承認の守りが見る発言は、利用者の言葉のまま（本体が足す添付の行は入れない）。相手の位置: 名前を「はい」にしたファイルだけを付けた発言
+    import consent  # noqa: E402
+    s.hermes.HERMES_HEARD["text"] = "proj の「テスト」が許可を求めています。許可しますか？"
+    hy = up("写真.png", PNG, pane=s.hermes.HERMES_PANE).json()["id"]
+    with c.websocket_connect("ws://127.0.0.1:8790/ws") as w:
+        my = say(w, s.hermes.HERMES_PANE, "はい", [hy])
+    row = list(s.hermes.HERMES_TURNS)[-1]
+    rec_me = [json.loads(l) for l in s.hermes.HERMES_LOG.read_text().splitlines() if '"role": "me"' in l][-1]
+    check("守り: 「はい」に添付を付けても、承認の守りが見る発言は「はい」（台帳には添付の行を入れない）。Hermes に送る文と記録には添付の行を付ける",
+          (my["type"], row[1], row[3].startswith("proj の「テスト」"), consent.affirms(row[1], "answer", "proj"), ASKED[-1].startswith("はい\n\n添付（画面から）:"),
+           rec_me["text"].startswith("はい\n\n添付（画面から）:"), consent.affirms(ASKED[-1], "answer", "proj")),
+          ("reply", "はい", True, True, True, True, False))
+    s.hermes.HERMES_HEARD["text"] = "proj の「テスト」が許可を求めています。許可しますか？"
+    hn = up("はい.png", PNG, pane=s.hermes.HERMES_PANE).json()["id"]
+    with c.websocket_connect("ws://127.0.0.1:8790/ws") as w:
+        mn = say(w, s.hermes.HERMES_PANE, "", [hn])
+    row = list(s.hermes.HERMES_TURNS)[-1]
+    check("守り: 名前を「はい」にしたファイルだけを付けた発言は、承認にならない（台帳の発言は空。名前は添付の行にだけ出る）",
+          (mn["type"], row[1], consent.affirms(row[1], "answer", "proj"), "（はい.png）" in ASKED[-1]), ("reply", "", False, True))
     PUT_FAIL["v"] = True
     k = len(ASKED)
     with c.websocket_connect("ws://127.0.0.1:8790/ws") as w:

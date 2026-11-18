@@ -2635,14 +2635,15 @@ async def ws(sock: WebSocket):
                     await asyncio.to_thread(TALKERS[pane].refused, text, why)
                 await send(type="error", text=why)
                 return
-            await run_turn(text + extra, pane, cancel, key, reply_at)
+            await run_turn(text, pane, cancel, key, reply_at, extra)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # 語り手・音声合成・herdr の失敗を黙って止めず、画面とログに出す
             traceback.print_exc()
             await send(type="error", text=f"{type(e).__name__}: {e}"[:300])
 
-    async def run_turn(text: str, pane: str, cancel: asyncio.Event, key: str | None, reply_at: float | None = None):
+    async def run_turn(text: str, pane: str, cancel: asyncio.Event, key: str | None, reply_at: float | None = None, extra: str = ""):
+        # extra: 本体が足す添付の行。相手に渡す文には付けるが、ハブの承認・閉じるの守りが見る発言は利用者の言葉（text）のまま
         talker = TALKERS.get(pane)
         if talker:  # herdr のセッションではなく、本体の外の話し相手
             if not talker.on():
@@ -2651,7 +2652,7 @@ async def ws(sock: WebSocket):
             await send(type="status", text=talker.sending_text())
             # 画面が閉じても、止めても、返事は最後まで待って記録する（相手は答えて覚えているので、記録が欠けると画面と食い違う）。
             # ハブが自動通知に応答している最中なら、それが終わってから送る
-            job = asyncio.create_task(talker.exchange(text, reply_at))  # reply_at: 画面の「返信」が指した報告（herdr のセッションには使わない）
+            job = asyncio.create_task(talker.exchange(text, reply_at, extra))  # reply_at: 画面の「返信」が指した報告（herdr のセッションには使わない）
             _tasks.add(job)
             job.add_done_callback(_tasks.discard)
             reply, why, saved = await asyncio.shield(job)
@@ -2675,7 +2676,7 @@ async def ws(sock: WebSocket):
         async with pane_lock(pane):  # ハブが自動通知に応答している最中なら、それが終わってから送る
             SENT_GEN[pane] = SENT_GEN.get(pane, 0) + 1  # 順番を待つ間に、ハブ経由の件が送られていることがある。実際に送る直前にも進める
             # 返事が来るまで（止められても、送る処理が裏で終わるまで）に送られたハブ経由の件は、重なった件として扱う
-            state, reply = await asyncio.shield(track_send(pane, ask(agent, text)))
+            state, reply = await asyncio.shield(track_send(pane, ask(agent, text + extra)))
             if cancel.is_set():
                 return
             if state == "error":
