@@ -568,6 +568,13 @@ check("戻す: 別名を読む関数があるのに別名を読めないとき�
       ("failed", "---\nname: alias-fm\n---\nHermes が別名で書いた\n"))
 check("戻す: フォルダの名前と別名の両方の鍵を取る（Hermes が別名で書いている間も待ち、上書きしない）",
       (fres.get("result"), (SK2 / "voice-loop" / "fmhub" / "SKILL.md").read_text()), ("changed", "---\nname: alias-fm\n---\nHermes が別名で書いた\n"))
+(SK2 / "voice-loop" / "par").mkdir(parents=True, exist_ok=True)
+(SK2 / "voice-loop" / "par" / "SKILL.md").write_text("親\n")
+(SK2 / "voice-loop" / "par" / "kid").mkdir(parents=True, exist_ok=True)
+(SK2 / "voice-loop" / "par" / "kid" / "SKILL.md").write_text("子\n")
+pk = {"action": "batch", "operations": [{"action": "patch", "name": n, "old_string": "a", "new_string": "b"} for n in ("par", "kid", "hub")]}
+check("自動で当てる: 1 つの書き足しが親と子の関係にある手順のフォルダを両方触るときは、自動では当てない（二度戻して途中で止まらないように）",
+      (script("snap", {"payload": pk}).get("result"), script("snap", {"payload": {**pk, "operations": pk["operations"][:1]}}).get("result")), ("unsupported", "snap"))
 for i in range(hl.SNAP_BATCH_SKILLS_MAX + 1):
     (SK2 / "many" / f"m{i:02d}").mkdir(parents=True, exist_ok=True)
     (SK2 / "many" / f"m{i:02d}" / "SKILL.md").write_text("小さい\n")
