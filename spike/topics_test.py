@@ -67,6 +67,10 @@ topics.TOPICS_FILE.write_text("{壊れた")
 topics.TOPICS.clear()
 topics.load()
 check("台帳: 読めない台帳は空から始める（止まらない）", topics.TOPICS, {})
+old = topics.new("p", "s-exp", "x", "期限の切れる件", ("D1", "9.9"))
+topics.TOPICS[old]["updated"] -= topics.TOPIC_KEEP + 1  # 保存し直す前に期限を過ぎた
+check("台帳: 期限を過ぎた件は、保存し直す前でも引かない・続きにしない（Slack のスレッド・セッションでも）",
+      (topics.get(old), topics.by_slack(("D1", "9.9")), topics.latest_for_session("s-exp"), topics.touch(old, "p", "s-exp")), (None, None, None, False))
 _max = topics.TOPIC_MAX
 topics.TOPIC_MAX = 3
 ids = [topics.new("p", "s", "x", f"件{i}") for i in range(5)]
@@ -467,6 +471,20 @@ with sync_playwright() as p:
     check("画面: 画面の履歴（直近の 40 件）に出ていない古い報告も、本体が記録から探して返信先にする（そう知らせる）",
           (page.eval_on_selector("#replyTo", "e => e.textContent"), "古い報告の件: この件の報告は古いので画面の履歴には出ていませんが、返信先にしました" in logs(page)),
           ("↩ lp｜古い件 の報告に返信", True))
+    SLOW["n"] = 1
+    page.select_option("#agent", "w1:p1")
+    page.wait_for_timeout(300)
+    page.evaluate(f"location.hash = '#t={one['topic']}'")  # 件を開く途中（問いを読む間）に、利用者が相手を選ぶ
+    page.wait_for_timeout(300)
+    page.select_option("#agent", "w1:p1")
+    page.evaluate("document.getElementById('agent').value = 'w1:p1'; document.getElementById('agent').dispatchEvent(new Event('change'))")
+    page.wait_for_timeout(2500)
+    check("画面: 件を開く途中に利用者が相手を選んだら、件の処理は戻っても相手を替えない・返信先を付けない",
+          (page.eval_on_selector("#agent", "e => e.value"), page.eval_on_selector("#replyBar", "e => e.hidden"), SLOW["n"]), ("w1:p1", True, 0))
+    page.evaluate(f"location.hash = '#t={one['topic']}'")
+    page.wait_for_function("!document.getElementById('replyBar').hidden", timeout=8000)
+    check("画面: PC の幅で件を開いてハブに替えたら、左の一覧の印もハブに替える",
+          page.evaluate("[...document.querySelectorAll('#sessions .sess.on')].map(e => e.classList.contains('hub'))"), [True])
     SLOW["n"] = 1
     page.evaluate(f"location.hash = '#t={one['topic']}'")  # ハブを選んだまま、問いを読む間に待たせる
     page.wait_for_timeout(300)

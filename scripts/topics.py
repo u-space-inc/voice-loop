@@ -50,6 +50,11 @@ def _save():
         traceback.print_exc()
 
 
+def _live(t: dict) -> bool:
+    """最後に動いてから TOPIC_KEEP の内の件か（期限を過ぎた件は、保存し直す前でも引かない・続きにしない）。"""
+    return time.time() - t["updated"] < TOPIC_KEEP
+
+
 def _slack(v) -> list[str] | None:
     return [v[0], v[1]] if isinstance(v, (list, tuple)) and len(v) == 2 and all(isinstance(x, str) for x in v) else None
 
@@ -88,7 +93,7 @@ def touch(tid: str, pane: str, session: str, slack=None) -> bool:
     """件が続いた（同じ件に次の依頼が来た）。いまの相手と Slack のスレッドを、新しいほうに置き換える。件が無ければ False。"""
     with _lock:
         t = TOPICS.get(tid)
-        if not t:
+        if not t or not _live(t):
             return False
         t.update(updated=time.time(), pane=str(pane), session=str(session or ""))
         if _slack(slack):
@@ -103,7 +108,7 @@ def get(tid) -> dict | None:
         return None
     with _lock:
         t = TOPICS.get(tid)
-        return dict(t) if t else None
+        return dict(t) if t and _live(t) else None
 
 
 def by_slack(dest) -> str | None:
@@ -112,7 +117,7 @@ def by_slack(dest) -> str | None:
     if not d or not d[1]:
         return None
     with _lock:
-        hit = [t for t in TOPICS.values() if t.get("slack") == d]
+        hit = [t for t in TOPICS.values() if t.get("slack") == d and _live(t)]
         return max(hit, key=lambda t: t["updated"])["id"] if hit else None
 
 
@@ -121,7 +126,7 @@ def latest_for_session(session: str) -> str | None:
     if not session:
         return None
     with _lock:
-        hit = [t for t in TOPICS.values() if t["session"] == session]
+        hit = [t for t in TOPICS.values() if t["session"] == session and _live(t)]
         return max(hit, key=lambda t: t["updated"])["id"] if hit else None
 
 

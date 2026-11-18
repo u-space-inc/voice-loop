@@ -597,7 +597,7 @@ async function openTopic() {
   if (seq !== topicSeq) return;
   const hub = agents.find(a => a.hub);
   if (!hub) { sys(`${t.project}｜${t.title}: 報告はハブの会話にありますが、ハブが居ません`); return; }
-  if ($('agent').value !== hub.pane) { $('agent').value = hub.pane; setReplyTarget(null); localStorage.setItem(WANT, 'hub'); shownPane = hub.pane; applyTarget(); }
+  if ($('agent').value !== hub.pane) { $('agent').value = hub.pane; setReplyTarget(null); localStorage.setItem(WANT, 'hub'); shownPane = hub.pane; applyTarget(); renderSessions(); } // PC の左の一覧の印も替える
   // ハブの会話は、選んでいても読み直す（前に開いた件の読み込みが遅れて戻っても、loadThread が古いほうを捨てる。この件の案内は描き直したあとに出す）
   await loadThread();
   if (seq !== topicSeq) return;
@@ -698,7 +698,8 @@ async function showSetup(seq) {
 $('replyClear').onclick = () => setReplyTarget(null);
 $('attachBtn').onclick = () => $('attachInput').click();
 $('attachInput').onchange = () => { addAttach([...$('attachInput').files]); $('attachInput').value = ''; };
-$('agent').onchange = () => { setReplyTarget(null); localStorage.setItem(WANT, curKey()); shownPane = $('agent').value; applyTarget(); setStatus(linked() ? '準備できました' : UNREACHABLE); loadThread(); };
+$('agent').onchange = () => { topicSeq++; pendingTopic = null; setReplyTarget(null); // 利用者が相手を選んだら、開いている途中の件（と、つながったら開く件）はやめる
+  localStorage.setItem(WANT, curKey()); shownPane = $('agent').value; applyTarget(); setStatus(linked() ? '準備できました' : UNREACHABLE); loadThread(); };
 
 // ---------- 承認で止まっているセッションへの返答（ボタン） ----------
 // 話し相手（ハブなど）の画面のまま、承認で止まっているセッションをすべて画面の上に並べる（名前・聞かれている中身・許可（今回だけ）・断る）。
