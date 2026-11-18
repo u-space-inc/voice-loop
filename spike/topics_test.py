@@ -443,6 +443,19 @@ with sync_playwright() as p:
         s.hermes.TALKER.history = real_hist
     check("画面: 前に開いた件の処理が遅れて戻っても、あとで開いた件の表示を上書きしない（返信先を付けない・報告を光らせない）",
           (ask_lit, page.eval_on_selector("#replyBar", "e => e.hidden"), page.evaluate("document.querySelectorAll('#log .msg.ai.flash').length")), (1, True, 0))
+    s.hermes.TALKER.history = lambda *a, **k: (time.sleep(1.5), real_hist(*a, **k))[1]  # 前の件のハブの会話の読み込みが遅れて戻る
+    try:
+        page.select_option("#agent", "w1:p1")
+        page.wait_for_timeout(300)
+        page.evaluate(f"location.hash = '#t={one['topic']}'")
+        page.wait_for_timeout(300)
+        s.hermes.TALKER.history = real_hist
+        page.evaluate(f"location.hash = '#t={NOREP_T}'")
+        page.wait_for_timeout(2500)
+    finally:
+        s.hermes.TALKER.history = real_hist
+    check("画面: 前に開いた件のハブの会話の読み込みが遅れて戻っても、あとで開いた件の案内を消さない（返信先も付けない）",
+          ("まだ報告の無い件: この件の報告は、まだありません" in logs(page), page.eval_on_selector("#replyBar", "e => e.hidden")), (True, True))
     OLDREP_T = s.topics.new("w1:p1", "s1", "lp", "古い報告の件")
     s.hermes.hermes_log("ai", "古い報告の本文", report=True, about="lp｜古い件", pane="w1:p1", topic=OLDREP_T)
     for i in range(45):  # 画面の履歴（直近の 40 件）から押し出す
@@ -494,6 +507,18 @@ with sync_playwright() as p:
     page.wait_for_function("!document.getElementById('replyBar').hidden", timeout=8000)  # この件の報告は、上で履歴から押し出された（返信先にはする）
     check("画面: 通知を押したとき、開いていた画面は sw.js から渡された件を開く",
           (page.eval_on_selector("#agent", "e => e.value"), page.eval_on_selector("#replyTo", "e => e.textContent")), ("hermes", "↩ lp｜見積 の報告に返信"))
+    for target, ready in ((ASK_T, '[...document.querySelectorAll("#asks .ask.flash")].length === 1'), (one["topic"], '!document.getElementById("replyBar").hidden')):
+        fresh = browser.new_page()  # 通知・Slack のリンクで、画面を新しく開いたとき（初めの表示では hashchange が起きない）
+        fresh.set_viewport_size({"width": 390, "height": 844})
+        fresh.goto(BASE + f"/#t={target}")
+        opened = True
+        try:
+            fresh.wait_for_function(ready, timeout=8000)
+        except Exception:
+            opened = False
+        check(f"画面: 件の URL で画面を新しく開いても、その件を開く（{'問いの欄' if target == ASK_T else '報告の返信先'}・URL の #t= は外す）",
+              (opened, fresh.evaluate("location.hash")), (True, ""))
+        fresh.close()
     sw = page.evaluate(SW_CASES, [SW, BASE, [[f"/#t={one['topic']}", False], ["https://evil.example/", False], ["/#t=../x", False], [f"/x#t={one['topic']}", False],
                                              [f"/?a=1#t={one['topic']}", False], [f"/#t={one['topic']}", True], ["/", True], ["https://evil.example/#t=" + one["topic"], True]]])
     check("sw.js: 通知を押したとき開くのは / か /#t=<件> だけ。開いている画面があれば寄せて件を渡す（ほかのサイト・形の違う場所は / にする）", sw,

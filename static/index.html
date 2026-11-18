@@ -593,11 +593,10 @@ async function openTopic() {
   if (seq !== topicSeq) return;
   const hub = agents.find(a => a.hub);
   if (!hub) { sys(`${t.project}｜${t.title}: 報告はハブの会話にありますが、ハブが居ません`); return; }
-  if ($('agent').value !== hub.pane) {
-    $('agent').value = hub.pane; setReplyTarget(null); localStorage.setItem(WANT, 'hub'); shownPane = hub.pane; applyTarget();
-    await loadThread();
-    if (seq !== topicSeq) return;
-  }
+  if ($('agent').value !== hub.pane) { $('agent').value = hub.pane; setReplyTarget(null); localStorage.setItem(WANT, 'hub'); shownPane = hub.pane; applyTarget(); }
+  // ハブの会話は、選んでいても読み直す（前に開いた件の読み込みが遅れて戻っても、loadThread が古いほうを捨てる。この件の案内は描き直したあとに出す）
+  await loadThread();
+  if (seq !== topicSeq) return;
   // 返信先にするのは、本体が記録から探したその件の一番新しい報告（画面の履歴に出ていない古い報告でも）。吹き出しが出ていれば光らせる
   const r = t.report;
   if (!r || typeof r.at !== 'number') { sys(`${t.project}｜${t.title}: この件の報告は、まだありません`); return; }
@@ -1730,7 +1729,8 @@ setInterval(() => { if (!document.hidden && document.activeElement !== $('agent'
 setInterval(() => { if (!document.hidden) loadAsks(); }, 5000); // 承認で止まっているセッションを、話し相手の画面のまま上に並べる
 loadAsks();
 // 一覧と声を読んでからつなぐ。届かないときは5秒で見切って案内を出し、つなぎに行く（つながりしだい catchUp で取り直す）
-Promise.race([Promise.allSettled([loadAgents(), ensureSpeakers()]).then(() => true), new Promise(r => setTimeout(() => r(false), 5000))])
+// 件の URL（通知・Slack のリンク）で新しく開いたときは、一覧が届いてから件を開く（初めの表示では hashchange が起きない。届かなければ catchUp が開く）
+Promise.race([Promise.allSettled([loadAgents(), ensureSpeakers()]).then(() => { if (location.hash) openTopic(); return true; }), new Promise(r => setTimeout(() => r(false), 5000))])
   .then(replied => { if (!replied) setStatus(UNREACHABLE); connect(); });
 </script>
 </body>
