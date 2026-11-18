@@ -308,6 +308,17 @@ check("自動: 控えを取ったあと・当てる前に Hermes が手順を書
       ([(e["state"], e["can_undo"], "控えを取ったあとに手順が変わりました" in e["note"]) for e in dd], (PEND / "dddddddd.json").exists(),
        base64.b64decode(SNAPS["hub2"]["files"]["SKILL.md"]).decode()),
       ([("failed", False, True)], True, "Hermes が控えのあとに書いた"))
+(PEND / "dddddddd.json").unlink(missing_ok=True)  # 次の試験で当て直さない
+SNAPS["hub3"] = {"exists": True, "files": {"SKILL.md": base64.b64encode("前".encode()).decode()}}
+record("eeeeeee3", "hub3")
+LOUT["snap"] = {"result": "timeout", "why": "時間切れ"}
+asyncio.run(s.hermes._learn_skills())
+del LOUT["snap"]
+skipped_now = any(p == "eeeeeee3" for p, _ in s.hermes._HLEARN_SKIP)
+SCALLS.clear()
+asyncio.run(s.hermes._learn_skills())
+check("自動: 控えを取るのが一時的に失敗した（時間切れ）書き足しは、飛ばす印を付けず、次の回に試し直して当てる",
+      (skipped_now, [p for m, p in SCALLS if m == "approve"]), (False, ["eeeeeee3"]))
 
 # ---------- 2b. コンテナの中の台本の入口（Hermes の部品を偽物にして、台本そのものを動かす） ----------
 import subprocess  # noqa: E402
@@ -787,9 +798,11 @@ try:
     r4 = json.loads(asyncio.run(s.hermes._hmem_write("add", {"target": "memory", "content": "保存できない間に画面で足した"})).body)
 finally:
     s.hermes._hlearn_save = real_save
+s.hermes._HMEM_MINE.clear()  # 本体を起動し直した（本体の中の控えは消え、ファイルの控えから読み戻す）
+s.hermes._HMEM_MINE.update(s.hermes._load_hmem_mine())
 asyncio.run(s.hermes._watch_memory())
-check("記憶: 画面で書いたあとに跡を保存できなくても、外す項目は持ち続け、次の見張りで本人の書き込みを学びにしない",
-      (r4.get("ok"), count() - n4, "保存できない間に画面で足した" in (MEM / "MEMORY.md").read_text()), (True, 0, True))
+check("記憶: 画面で書いたあとに跡を保存できなくても、外す項目はファイルにも控え、本体を起動し直したあとの見張りでも本人の書き込みを学びにしない",
+      (r4.get("ok"), count() - n4, "保存できない間に画面で足した" in (MEM / "MEMORY.md").read_text(), s.hermes.HMEM_MINE_FILE.exists()), (True, 0, True, False))
 # 画面で足した本文の改行が CRLF でも、読む側と同じく LF にそろえて照らす（本人の書き込みを学びにしない）
 asyncio.run(s.hermes._learn_memory())
 n6 = count()

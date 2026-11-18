@@ -1026,9 +1026,11 @@ async def _learn_skills() -> int:
             payload = json.loads(raw.decode("utf-8-sig"))["payload"]
             before = await asyncio.to_thread(hermes_learn.run_script, HERMES_CONTAINER, "snap", {"payload": payload})
             if before.get("result") != "snap" or not isinstance(before.get("skills"), dict):
-                _HLEARN_SKIP.add((pid, v))
                 hsk_log(id=pid, act="auto", summary=rec["summary"][:120], result="skipped", why=str(before.get("why") or before.get("result"))[:200])
-                continue
+                if before.get("result") == "unsupported":  # 扱えない形（読めない手順・別名・鍵の無い版など）: この版の書き足しは、起動し直すまで試し直さない
+                    _HLEARN_SKIP.add((pid, v))
+                    continue
+                break  # 時間切れ・コンテナの問題など一時的なもの: この回はやめて、次の回に試し直す
             diff = await asyncio.to_thread(hermes_skills.run_script, HERMES_CONTAINER, "diff", pid, raw, 40)
             entry = await asyncio.to_thread(_hlearn_reserve, {
                 "kind": "skill", "auto": True, "pid": pid, "summary": rec["summary"][:300], "origin": r["origin"],
@@ -1069,7 +1071,32 @@ async def _learn_skills() -> int:
     return applied
 
 
-_HMEM_MINE: dict[str, dict[str, list]] = {}  # 本体が書いて当たった項目で、まだ比べるもとに取り込めていないもの（記憶のファイルごと。_hlearn_lock の中で触る）
+HMEM_MINE_FILE = HLEARN_DIR / "memory-mine.json"  # _HMEM_MINE の控え（取り込む前に本体を起動し直しても失わない）
+
+
+def _load_hmem_mine() -> dict[str, dict[str, list]]:
+    """起動のとき、外す項目の控えを読む。読めない・形が違えば空。"""
+    try:
+        d = json.loads(HMEM_MINE_FILE.read_text())
+    except (OSError, ValueError, RecursionError):
+        return {}
+    ok = isinstance(d, dict) and all(isinstance(m, dict) and all(isinstance(m.get(k, []), list) for k in ("added", "removed")) for m in d.values())
+    return {t: {"added": [str(x) for x in m.get("added", [])], "removed": [str(x) for x in m.get("removed", [])]} for t, m in d.items()} if ok else {}
+
+
+def _save_hmem_mine():
+    """外す項目の控えを書く（空なら消す）。書けなければログだけ（本体の中には持っている）。_hlearn_lock の中で呼ぶ。"""
+    try:
+        if _HMEM_MINE:
+            core.write_json(HMEM_MINE_FILE, _HMEM_MINE)
+        else:
+            HMEM_MINE_FILE.unlink(missing_ok=True)
+    except OSError:
+        traceback.print_exc()
+
+
+# 本体が書いて当たった項目で、まだ比べるもとに取り込めていないもの（記憶のファイルごと。_hlearn_lock の中で触る）。控えのファイルにも書く
+_HMEM_MINE: dict[str, dict[str, list]] = _load_hmem_mine()
 
 
 async def _learn_memory(mine: dict | None = None):
@@ -1088,6 +1115,8 @@ async def _learn_memory(mine: dict | None = None):
             slot = _HMEM_MINE.setdefault(t, {"added": [], "removed": []})
             slot["added"] += m.get("added", [])
             slot["removed"] += m.get("removed", [])
+        if mine:
+            _save_hmem_mine()
         d = hlearn_state()
         if d is None:
             return
@@ -1109,8 +1138,10 @@ async def _learn_memory(mine: dict | None = None):
                 d["entries"].append(_hlearn_new(entry, detail))  # 控えを先に書く（書けなければ OSError で、跡も比べるもとも進めない）
             d["memory"] = {**(prev or {}), **cur}
             _hlearn_save(d)
-            for t in cur:  # 比べるもとに取り込めた記憶のファイルの分だけ、外す項目を手放す
-                _HMEM_MINE.pop(t, None)
+            if any(t in _HMEM_MINE for t in cur):  # 比べるもとに取り込めた記憶のファイルの分だけ、外す項目を手放す
+                for t in cur:
+                    _HMEM_MINE.pop(t, None)
+                _save_hmem_mine()
         except OSError:
             traceback.print_exc()
 
