@@ -319,13 +319,25 @@ from pathlib import Path
 ROOT = Path(os.environ["VL_TEST_SKILLS"])
 def _skills_dir():
     return ROOT
+def _read_frontmatter_name(skill_md):
+    # Hermes と同じ扱い: 頭の BOM を外し、--- の間を YAML として読む（引用符で囲んだキー・値も）。読めなければ None
+    try:
+        text = Path(skill_md).read_text(encoding="utf-8-sig", errors="replace")[:4000]
+    except OSError:
+        return None
+    if not text.startswith("---"):
+        return None
+    for line in text[3:].split("\\n---", 1)[0].splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            if k.strip().strip("'\\"") == "name":
+                return v.strip().strip("'\\"") or None
+    return None
 def _find_skill(name):
-    import re
     for p in ROOT.rglob("SKILL.md"):  # フォルダの名前でも、別名（frontmatter の name）でも見つかる（Hermes と同じ）
         if p.parent.is_symlink():
             continue
-        fm = re.match(r"---\\n(?:.*\\n)*?name:\\s*(\\S+)", p.read_text())
-        if p.parent.name == name or (fm and fm.group(1) == name):
+        if p.parent.name == name or _read_frontmatter_name(p) == name:
             return {"path": p.parent}
     return {"path": Path(os.environ["VL_TEST_OUTSIDE"])} if name == "outside" else None
 def _resolve_skill_dir(name, category=None):
@@ -363,6 +375,13 @@ def apply_skill_pending(payload):
     return json.dumps({"success": True})
 if os.environ.get("VL_TEST_NOLOCK"):  # 手順の鍵が無い版の Hermes
     del _skill_mutation_locks
+if os.environ.get("VL_TEST_NOFRONT"):  # 別名を読む関数が無い版の Hermes（別名では探さない。フォルダの名前だけ）
+    def _find_skill(name):
+        for p in ROOT.rglob("SKILL.md"):
+            if p.parent.name == name and not p.parent.is_symlink():
+                return {"path": p.parent}
+        return None
+    del _read_frontmatter_name
 """)
 (FAKE / "tools" / "write_approval.py").write_text("""import os
 from pathlib import Path
@@ -488,6 +507,13 @@ check("自動で当てる: 手順の鍵が無い版の Hermes では、控えを
 check("自動で当てる: 別名（frontmatter の名前）がフォルダの名前と違う手順は、どちらの名前で頼まれても扱わない（鍵がずれる）。同じなら扱う",
       (script("snap", {"payload": op("alias-fm")}).get("result"), script("snap", {"payload": op("fmhub")}).get("result"), script("snap", {"payload": op("same")}).get("result")),
       ("unsupported", "unsupported", "snap"))
+(SK2 / "voice-loop" / "bomq").mkdir(parents=True, exist_ok=True)
+(SK2 / "voice-loop" / "bomq" / "SKILL.md").write_text("\ufeff---\nname: bom-alias\n---\n本文\n")
+(SK2 / "voice-loop" / "quoted").mkdir(parents=True, exist_ok=True)
+(SK2 / "voice-loop" / "quoted" / "SKILL.md").write_text('---\n"name": "q-alias"\n---\n本文\n')
+check("自動で当てる: 別名は Hermes 自身の読み方で読む（BOM 付き・引用符で囲んだキーでも見落とさない）。読み方の無い版の Hermes では扱わない",
+      (script("snap", {"payload": op("bomq")}).get("result"), script("snap", {"payload": op("quoted")}).get("result"),
+       script("snap", {"payload": op("same")}, extra={"VL_TEST_NOFRONT": "1"}).get("result")), ("unsupported", "unsupported", "unsupported"))
 (SK2 / "voice-loop" / "ap" / "SKILL.md").write_text("前\n")
 pal = {"action": "batch", "operations": [{"action": "patch", "name": "ap", "old_string": "前", "new_string": "---\nname: newalias\n---\n"}]}
 a5 = apply_script("apapap05", pal, e0)

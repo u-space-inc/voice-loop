@@ -211,19 +211,13 @@ def restore_dir(root: str, rel: str, before: dict, expect: str) -> str:
     return "restored"
 
 
-def front_name(snap: dict) -> str | None:
-    """控えの SKILL.md の frontmatter の name（Hermes が手順を探す別名）。無ければ None、形が読めなければ ""。"""
-    raw = (snap.get("files") or {}).get("SKILL.md")
-    if not raw:
-        return None
-    text = base64.b64decode(raw).decode("utf-8", "replace")
-    if not text.startswith("---"):
-        return None
-    head = text.split("\n---", 1)[0]
-    for line in head.splitlines()[1:]:
-        if line.startswith("name:"):
-            return line[5:].strip().strip("'\"")
-    return None
+def front_name(sm, root: str, rel: str) -> str | None:
+    """手順の別名（SKILL.md の frontmatter の name）を、Hermes 自身の読み方（_read_frontmatter_name。Hermes が手順を別名で探すときと同じ）で読む。
+    無ければ None。この関数の無い版の Hermes では ValueError（別名を確かめられないので、自動では当てない）。"""
+    fn = getattr(sm, "_read_frontmatter_name", None)
+    if not callable(fn):
+        raise ValueError("この版の Hermes では手順の別名を確かめられないので、自動では当てません")
+    return fn(__import__("pathlib").Path(os.path.join(root, rel, "SKILL.md")))
 
 
 def snap_payload(sm, payload: dict) -> dict:
@@ -250,7 +244,7 @@ def snap_payload(sm, payload: dict) -> dict:
         rel = os.path.relpath(real, real_root)
         if rel not in out:
             out[rel] = snap_dir(root, rel)
-            alias = front_name(out[rel])  # 別名（frontmatter の名前）がフォルダの名前と違えば、Hermes が別名で書くときの鍵とずれる
+            alias = front_name(sm, root, rel)  # 別名（frontmatter の名前）がフォルダの名前と違えば、Hermes が別名で書くときの鍵とずれる
             if alias is not None and alias != os.path.basename(rel):
                 raise ValueError("別名（frontmatter の名前）がフォルダの名前と違う手順なので、自動では当てません")
             size = sum(len(v) for snap in out.values() for v in snap["files"].values())
@@ -321,8 +315,8 @@ if mode == "restore":
     for rel in skills:
         names.add(Path(rel).name)
         try:
-            alias = front_name(snap_dir(root, rel))
-        except (ValueError, OSError):
+            alias = front_name(sm, root, rel)
+        except ValueError:  # 別名を確かめられない版の Hermes（別名で探すこともない）では、フォルダの名前の鍵だけ
             alias = None
         if alias:
             names.add(alias)
