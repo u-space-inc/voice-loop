@@ -2650,11 +2650,12 @@ async def ws(sock: WebSocket):
     current: asyncio.Task | None = None
     send = client.send
 
-    async def turn(text: str, pane: str, cancel: asyncio.Event, key: str | None, reply_at: float | None = None, files: list[str] | None = None):
+    async def turn(text: str, pane: str, cancel: asyncio.Event, key: str | None, reply_at: float | None = None, files: list[str] | None = None,
+                   job: asyncio.Task | None = None):
         try:
             talker = TALKERS.get(pane)
-            if talker:  # herdr のセッションではなく、本体の外の話し相手（ハブ）
-                await talk_turn(talker, text, pane, cancel, reply_at, files)
+            if talker:  # herdr のセッションではなく、本体の外の話し相手（ハブ）。job は受け取ったその場で作った仕事（start_turn）
+                await talk_turn(talker, job, pane, cancel)
                 return
             why = attachments_shape_problem(files)
             extra = ""
@@ -2670,17 +2671,12 @@ async def ws(sock: WebSocket):
             traceback.print_exc()
             await send(type="error", text=f"{type(e).__name__}: {e}"[:300])
 
-    async def talk_turn(talker, text: str, pane: str, cancel: asyncio.Event, reply_at: float | None, files: list[str] | None):
-        if not talker.on():
+    async def talk_turn(talker, job: asyncio.Task | None, pane: str, cancel: asyncio.Event):
+        if job is None:  # 受け取ったときに相手が使えなかった
             await send(type="error", gone=True, text=talker.off_text)
             return
         await send(type="status", text=talker.sending_text())
-        # 受け取った発言は、ここから止めない。添付を置く（コンテナの中に。時間がかかる）・断る・往復するまでを 1 つの仕事にし（hub_accepted）、
-        # 受け取った順に進める（置いている間に次の発言が来ても、前の発言を捨てず、追い越させない）。
         # 画面が閉じても、止めても、返事は最後まで待って記録する（相手は答えて覚えているので、記録が欠けると画面と食い違う）
-        job = asyncio.create_task(hub_accepted(talker, text, pane, reply_at, files))
-        _tasks.add(job)
-        job.add_done_callback(_tasks.discard)
         reply, why, saved = await asyncio.shield(job)
         if why:
             await send(type="error", text=why[:300], saved=saved)
@@ -2726,7 +2722,16 @@ async def ws(sock: WebSocket):
         if current and not current.done():
             current.cancel()
         cancel = asyncio.Event()
-        current = asyncio.create_task(turn(text, pane, cancel, key, reply_at, files))
+        job = None
+        talker = TALKERS.get(pane)
+        if talker and talker.on():
+            # ハブが受け取った発言は、受け取ったその場で（待つものをはさまずに）1 つの仕事にする（hub_accepted: 添付を置く・断る・往復する）。
+            # 画面のターン（current）は次の発言で止めるが、この仕事は止めない。受け取った順に作るので、受け取った順に進む
+            # （画面のターンの中で作ると、状態の知らせを送る間や、ターンが動き出す前に次の発言が来たとき、前の発言が消える）
+            job = asyncio.create_task(hub_accepted(talker, text, pane, reply_at, files))
+            _tasks.add(job)
+            job.add_done_callback(_tasks.discard)
+        current = asyncio.create_task(turn(text, pane, cancel, key, reply_at, files, job))
 
     pending: dict = {}
     try:

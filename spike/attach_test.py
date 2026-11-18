@@ -11,6 +11,7 @@
     同時に動いた別の台本がフォルダを先に作った・古いものを先に消しても置ける
 使い方: uv run spike/attach_test.py"""
 import io
+import asyncio
 import json
 import os
 import stat
@@ -196,6 +197,75 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         while w.receive_json()["type"] not in ("reply", "error"):
             pass
     check("渡す: 声の発言にも添付を付けられる", (SENT[-1][1].startswith("声で頼む\n\n添付（画面から）:"), "（資料.pdf）" in SENT[-1][1]), (True, True))
+
+# ---------- 受け取った発言を、受け取ったその場で仕事にする ----------
+# 1 つ目の状態の知らせを送っている間に 2 つ目が届いても、1 つ目を捨てない（画面のターンの中で仕事を作ると、知らせを待つ間に止められて消えていた。
+# a2a 81fecd16 の再現を試験にした）。画面の口は作り物の接続、話し相手は作り物
+EXCHANGED: list[str] = []
+
+
+class FakeTalker:
+    off_text = "使えません"
+
+    def on(self):
+        return True
+
+    def sending_text(self):
+        return "送っています"
+
+    async def exchange(self, text, reply_at=None, extra=""):
+        EXCHANGED.append(text)
+        return "わかりました", "", True
+
+    async def refused(self, text, why):
+        EXCHANGED.append("断った:" + text)
+
+
+class SlowStatusSock:
+    """1 つ目の状態の知らせを送るところで止まり、その間に 2 つ目の発言を届ける接続。"""
+    def __init__(self):
+        self.n, self.status = 0, 0
+        self.first_status, self.done = asyncio.Event(), asyncio.Event()
+
+    async def accept(self):
+        pass
+
+    async def receive(self):
+        self.n += 1
+        if self.n == 1:
+            text = "一つ目"
+        elif self.n == 2:
+            await self.first_status.wait()
+            text = "二つ目"
+        else:
+            await self.done.wait()
+            return {"type": "websocket.disconnect"}
+        return {"type": "websocket.receive", "text": json.dumps({"type": "text", "pane": "fake-hub", "text": text, "speaker": 0})}
+
+    async def send_text(self, text):
+        d = json.loads(text)
+        if d["type"] == "status":
+            self.status += 1
+            if self.status == 1:
+                self.first_status.set()
+                await asyncio.Event().wait()  # 1 つ目の知らせは届かないまま（次の発言で止められる）
+        if d["type"] == "reply":
+            self.done.set()
+
+
+async def two_quick_turns():
+    await asyncio.wait_for(s.ws(SlowStatusSock()), 5)
+    if s._tasks:
+        await asyncio.gather(*list(s._tasks))
+
+
+real_talkers, real_speak = s.TALKERS, s.speak_to
+s.TALKERS, s.speak_to = {"fake-hub": FakeTalker()}, nothing
+try:
+    asyncio.run(two_quick_turns())
+finally:
+    s.TALKERS, s.speak_to = real_talkers, real_speak
+check("渡す: ハブへの 1 つ目の発言の知らせを送っている間に 2 つ目が届いても、1 つ目を捨てず、受け取った順に送る", EXCHANGED, ["一つ目", "二つ目"])
 
 # ---------- 片づけ ----------
 day = Path(TMP) / "state" / "attachments" / "20200101"
