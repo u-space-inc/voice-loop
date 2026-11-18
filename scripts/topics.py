@@ -133,6 +133,13 @@ def latest_for_session(session: str) -> str | None:
         return max(hit, key=lambda t: t["updated"])["id"] if hit else None
 
 
+def current_for_session(session: str) -> str | None:
+    """そのセッションの、いまの問いを結んでよい件（一番新しい件で、そのあと画面・声から直接送られていないもの）。無ければ None。"""
+    tid = latest_for_session(session)
+    t = get(tid) if tid else None
+    return tid if t and not t.get("direct") else None
+
+
 def mark_direct(session: str):
     """画面・声から（ハブを通さずに）そのセッションへ直接送った。そのセッションの一番新しい件に印を付け、いまの問いをその件のものとしない
     （直接送った別の話の問いを、前の件のリンクで見せない）。印は、ハブがまたその件で頼んだら外す。"""

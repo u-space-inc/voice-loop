@@ -78,6 +78,11 @@ topics.TOPICS.clear()
 topics.load()
 kept = bool(topics.get(dt).get("direct"))
 topics.touch(dt, "p", "s-direct")
+topics.mark_direct("s-direct")
+cur_after_direct = topics.current_for_session("s-direct")
+topics.touch(dt, "p", "s-direct")
+check("台帳: 直接送ったあとは、いまの問いを結んでよい件が無い（答えの見張り・承認待ちの通知は件に結ばない）。ハブがまた頼んだら戻る",
+      (cur_after_direct, topics.current_for_session("s-direct"), topics.current_for_session("")), (None, dt, None))
 check("台帳: 直接送った印は、セッションの一番新しい件に付き、起動し直しても残り、ハブがまたその件で頼んだら外れる",
       (marked, kept, topics.get(dt).get("direct")), (True, True, None))
 _max = topics.TOPIC_MAX
@@ -287,7 +292,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     got = c.get("/api/topic", params={"id": one["topic"]}).json()
     gone = [c.get("/api/topic", params={"id": x}).json() for x in ("../x", "t" + "e" * 10, "")]
 check("画面の口: 件を引くと、どのセッションの件かと題（と、あれば一番新しい報告・そのセッションの一番新しい件か）だけを返す。形の違う・無い件は gone",
-      (got, gone), ({"ok": True, "id": one["topic"], "pane": "w1:p1", "session": "s1", "project": "lp", "title": "内訳を出して", "report": None, "current": False},
+      (got, gone), ({"ok": True, "id": one["topic"], "pane": "w1:p1", "session": "s1", "project": "lp", "title": "内訳を出して", "report": None, "current": False, "ask": None},
                     [{"ok": False, "reason": "gone"}] * 3))
 with TestClient(s.app, base_url="http://host.docker.internal:8790") as c:
     r = c.get("/api/topic", params={"id": one["topic"]}, headers={"x-vl-key": "k1"})
@@ -387,12 +392,18 @@ AGENTS = [{"pane": "w1:p1", "title": "見積", "cwd": "/x/lp", "kind": "claude",
 s.list_agents = lambda: [dict(x) for x in AGENTS]
 s.pane_shows_trust = lambda pane: False
 SLOW = {"n": 0}  # 問いを読むのを 1 回だけ遅らせる（件を開く途中で待たせる）
+CHANGE = {"left": None}  # 数えて、その回から問いの画面を別の問いに替える（本体が件の問いを読んだあとで、問いが変わった）
+CHANGED = REAL_CHOICE.replace("試験の質問です。どれにしますか？", "直接送った別の話の問いです。どれにしますか？")
 
 
 def read_prompt(pane):
     if SLOW["n"] > 0:
         SLOW["n"] -= 1
         time.sleep(1.5)
+    if pane == "w2:p1" and CHANGE["left"] is not None:
+        if CHANGE["left"] <= 0:
+            return CHANGED
+        CHANGE["left"] -= 1
     return REAL_CHOICE if pane == "w2:p1" else ""
 
 
@@ -500,7 +511,7 @@ with sync_playwright() as p:
     page.select_option("#agent", "w1:p1")
     page.wait_for_timeout(300)
     page.evaluate(f"location.hash = '#t={OLDREP_T}'")
-    page.wait_for_function("!document.getElementById('replyBar').hidden", timeout=8000)
+    page.wait_for_function("[...document.querySelectorAll('#log .sys')].some(e => e.textContent.includes('古い報告の件: この件の報告は古いので'))", timeout=8000)
     check("画面: 画面の履歴（直近の 40 件）に出ていない古い報告も、本体が記録から探して返信先にする（そう知らせる）",
           (page.eval_on_selector("#replyTo", "e => e.textContent"), "古い報告の件: この件の報告は古いので画面の履歴には出ていませんが、返信先にしました" in logs(page)),
           ("↩ lp｜古い件 の報告に返信", True))
@@ -650,8 +661,8 @@ with sync_playwright() as p:
         lit = True
     except Exception:
         lit = False
-    check("画面: 問いの一覧の読み込みだけが失敗しても「問いなし」にせず、報告のほうへ進まない。件を覚えて開き直し、問いの欄を光らせる",
-          (lit, "つながったらこの件を開きます" in logs(fresh), fresh.eval_on_selector("#replyBar", "e => e.hidden")), (True, True, True))
+    check("画面: 問いの一覧の読み込みが一度失敗しても、報告のほうへ進まず、問いの欄を描けた時点で光らせる",
+          (lit, fresh.eval_on_selector("#replyBar", "e => e.hidden")), (True, True))
     fresh.evaluate("""() => { document.querySelectorAll('.flash').forEach(e => e.classList.remove('flash'));
       const of = window.fetch; let n = 0;  // 件を引く読み込みが、通信が切れて返らないまま止まる
       window.fetch = (u, ...a) => (String(u).startsWith('/api/topic') && ++n === 1) ? new Promise(() => {}) : of(u, ...a);
@@ -688,6 +699,18 @@ with sync_playwright() as p:
         replied = True
     except Exception:
         replied = False
+    fresh.evaluate("""() => { const of = window.fetch; let n = 0;  // ハブの会話の読み込みだけが返らない
+      window.fetch = (u, ...a) => (String(u).startsWith('/api/history') && ++n === 1) ? new Promise(() => {}) : of(u, ...a);
+      setReplyTarget(null); }""")
+    fresh.evaluate(f"location.hash = '#t={one['topic']}'")
+    try:
+        fresh.wait_for_function("!document.getElementById('replyBar').hidden", timeout=2500)
+        quick = True
+    except Exception:
+        quick = False
+    fresh.wait_for_function("[...document.querySelectorAll('#log .sys')].some(e => e.textContent.includes('返信先にしました'))", timeout=10000)
+    check("画面: ハブの会話の読み込みが返らなくても、件の報告を返信先にし（読み込みを待たない）、期限で見切って案内を出す",
+          (quick, fresh.eval_on_selector("#replyTo", "e => e.textContent")), (True, "↩ lp｜見積 の報告に返信"))
     check("画面: 話し相手の一覧を読めなかったときも「ハブが居ない」とせず、件を覚えて開き直す",
           (replied, "ハブが居ません" in logs(fresh)), (True, False))
     fresh.close()
@@ -722,6 +745,22 @@ with sync_playwright() as p:
     page.wait_for_function("[...document.querySelectorAll('#log .sys')].some(e => e.textContent.includes('受注の確認: この件の報告は、まだありません'))", timeout=8000)
     check("相手の位置: 画面から同じセッションへ直接送ったあとは、その問いが件のものか分からないので、件のリンクでは問いを光らせず報告のほうを開く",
           (cur, page.evaluate("[...document.querySelectorAll('#asks .ask.flash')].length")), (False, 0))
+    with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+        s.topics.touch(ASK_T, "w2:p1", "s2")  # ハブがまたこの件で頼んだ（直接送った印を外す）
+        tq = c.get("/api/topic", params={"id": ASK_T}).json()
+    check("画面の口: 問いの件なら、いまの問い（セッションと指紋）も返す", (tq.get("current"), (tq.get("ask") or {}).get("key"), len((tq.get("ask") or {}).get("fp", ""))),
+          (True, "s2", 40))
+    page.evaluate("asks.forEach(i => i.el.remove()); asks.clear(); document.querySelectorAll('.flash').forEach(e => e.classList.remove('flash')); document.querySelectorAll('#log .sys').forEach(e => e.remove())")
+    CHANGE["left"] = 1  # 本体が件の問いを読んだ（1 回目）あとで、問いが別の話の問いに変わる
+    try:
+        page.evaluate(f"location.hash = '#t={ASK_T}'")
+        page.wait_for_function("[...document.querySelectorAll('#log .sys')].some(e => e.textContent.includes('受注の確認: この件の報告は、まだありません'))", timeout=8000)
+        changed_lit = page.evaluate("[...document.querySelectorAll('#asks .ask.flash')].length")
+        shown_changed = page.evaluate("fp => { const it = asks.get('w2:p1'); return !!it && it.q.fp !== fp; }", tq["ask"]["fp"])  # 欄は出ている（別の指紋の問い）
+    finally:
+        CHANGE["left"] = None
+    check("相手の位置: 本体が件の問いを読んだあとで問いが変わったら（直接送った別の話の問いなど）、その問いは光らせず報告のほうを開く",
+          (changed_lit, shown_changed), (0, True))
     check("相手の位置: 件の URL で開いても、答えも送りもしない（herdr にも Hermes にも何も送らない・答える口を呼ばない）",
           ([x for x in SENT if x[:2] in (("agent", "send-keys"), ("agent", "prompt"))], ASKED, [u for u in posts if u.startswith(("/api/answer", "/api/hub", "/api/attach"))]),
           ([], [], []))

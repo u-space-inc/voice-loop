@@ -602,17 +602,16 @@ async function openTopic() {
   if (!reached) { later(); return; }
   if (!t || !t.ok) { sys('この件は見つかりませんでした（古くなったか、消えました）'); return; }
   closeViewer(); if (reading) setReading(false); // 画像を見ている・広げて読んでいる間に開いたら、普通の表示に戻す（光らせる欄が後ろに隠れて押せないため）
-  // 問いの欄を見せるのは、その件と同じセッション（空でないセッション ID が同じ）の問いで、その件がそのセッションの一番新しい件のときだけ
-  // （同じペインで作り直された別のセッションの問い・同じセッションのあとの件の問いは見せない。古い件ならその件の報告を開く）。
-  // 問いがあるかは、この処理が自分で本体に聞いて決める（並んで走る loadAsks の取り込みに負けて、古い一覧で報告のほうへ進まない）
-  let qs; try { qs = await topicFetch('/api/prompts'); } catch { qs = null; }
-  if (seq !== topicSeq) return;
-  if (!Array.isArray(qs)) { later(); return; } // 問いの一覧を読めなかったのは「問いなし」ではない（報告のほうへ進まない）
-  if (t.current === true && t.session && qs.some(q => q && q.pane === t.pane && q.key === t.session)) {
-    askFlash = { pane: t.pane, key: t.session, seq }; // 欄を描いたら光らせる（この loadAsks が並んだ取り込みに負けても、あとで描いた時点で）
+  // 問いの欄を見せるのは、本体がこの件の問いとして返した問い（同じセッションで、その件がそのセッションの一番新しい件、直接送られていない）だけ。
+  // 光らせるのは、本体が返した指紋と同じ問いの欄だけ（あとで変わった問い・直接送った別の話の問いは光らせない。古い件ならその件の報告を開く）
+  const ak = t.ask;
+  if (t.current === true && t.session && ak && ak.pane === t.pane && ak.key === t.session && typeof ak.fp === 'string') {
+    askFlash = { pane: ak.pane, key: ak.key, fp: ak.fp, seq }; // 欄を描いたら光らせる（並んで走る loadAsks の取り込みに負けても、あとで描いた時点で）
     await loadAsks();
-    if (seq === topicSeq) { flashAsk(); setStatus(`${t.project}｜問いに答えてください（押すまで答えません）`); }
-    return;
+    if (seq !== topicSeq) return;
+    const it = asks.get(ak.pane);
+    if (!it || (it.q.key === ak.key && it.q.fp === ak.fp)) { flashAsk(); setStatus(`${t.project}｜問いに答えてください（押すまで答えません）`); return; }
+    askFlash = null; // 問いがもう変わっていた。件の報告のほうを開く
   }
   if (!agents.length) await loadAgents();
   if (seq !== topicSeq) return;
@@ -620,13 +619,14 @@ async function openTopic() {
   const hub = agents.find(a => a.hub);
   if (!hub) { sys(`${t.project}｜${t.title}: 報告はハブの会話にありますが、ハブが居ません`); return; }
   if ($('agent').value !== hub.pane) { $('agent').value = hub.pane; setReplyTarget(null); localStorage.setItem(WANT, 'hub'); shownPane = hub.pane; applyTarget(); renderSessions(); } // PC の左の一覧の印も替える
-  // ハブの会話は、選んでいても読み直す（前に開いた件の読み込みが遅れて戻っても、loadThread が古いほうを捨てる。この件の案内は描き直したあとに出す）
-  await loadThread();
-  if (seq !== topicSeq) return;
-  // 返信先にするのは、本体が記録から探したその件の一番新しい報告（画面の履歴に出ていない古い報告でも）。吹き出しが出ていれば光らせる
+  // 返信先にするのは、本体が記録から探したその件の一番新しい報告（画面の履歴に出ていない古い報告でも）。会話の読み込みを待たずに付ける
   const r = t.report;
+  if (r && typeof r.at === 'number') setReplyTarget({ at: r.at, about: String(r.about || '') });
+  // ハブの会話は、選んでいても読み直す（前に開いた件の読み込みが遅れて戻っても、loadThread が古いほうを捨てる。この件の案内は描き直したあとに出す）。
+  // 読み込みが返らないまま止まっても、期限で見切って案内を出す
+  await Promise.race([loadThread(), new Promise(res => setTimeout(res, TOPIC_WAIT))]);
+  if (seq !== topicSeq) return;
   if (!r || typeof r.at !== 'number') { sys(`${t.project}｜${t.title}: この件の報告は、まだありません`); return; }
-  setReplyTarget({ at: r.at, about: String(r.about || '') });
   const el = [...$('log').querySelectorAll('.msg.ai')].find(e => e.dataset.topic === t.id && Number(e.dataset.at) === r.at);
   if (el) flash(el); else sys(`${t.project}｜${t.title}: この件の報告は古いので画面の履歴には出ていませんが、返信先にしました`);
   } finally { if (!keep && seq === topicSeq && pendingTopic === id) pendingTopic = null; } // 開き終えた（開けないと決まった）件は忘れる
@@ -772,7 +772,7 @@ function flashAsk() {
   const f = askFlash; if (!f) return;
   if (f.seq !== topicSeq) { askFlash = null; return; }
   const item = asks.get(f.pane);
-  if (item && item.q.key === f.key) { askFlash = null; flash(item.el); }
+  if (item && item.q.key === f.key && item.q.fp === f.fp) { askFlash = null; flash(item.el); }
 }
 function renderAsk(q) {
   const el = document.createElement('div'), head = document.createElement('div');

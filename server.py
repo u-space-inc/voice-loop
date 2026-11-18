@@ -1373,7 +1373,7 @@ async def watch_blocked():
                     told = True  # 見えている画面があって送らなかったときも（その画面の上に承認の欄が出ている）
                     name = f"{a['cwd'].rsplit('/', 1)[-1]}｜{a['title']}"
                     await push_all(name, "承認・入力待ちで止まっています", f"blocked-{p}", urgency="high",
-                                   url=topic_path(topics.latest_for_session(a.get("session") or "")))  # 押すと、そのセッションの件（問いの欄）を開く
+                                   url=topic_path(topics.current_for_session(a.get("session") or "")))  # 押すと、そのセッションの件（問いの欄）を開く（直接送った別の話のあとなら画面のはじめ）
                 held[p] = (who, since, told)
         except asyncio.CancelledError:
             raise
@@ -2185,7 +2185,7 @@ async def _hub_answer(body: dict):
         path = jsonl_path(a)
         start_watch({"pane": pane, "cwd": a["cwd"], "project": project, "title": a["title"], "text": "", "generic": True,
                      "offset": path.stat().st_size if path and path.exists() else 0, "was_working": True,
-                     "gen": WATCH_GEN.setdefault(pane, 0), "topic": topics.latest_for_session(a.get("session") or "")}, "answer")  # 答えた問いは、そのセッションの一番新しい件のもの
+                     "gen": WATCH_GEN.setdefault(pane, 0), "topic": topics.current_for_session(a.get("session") or "")}, "answer")  # 答えた問いは、そのセッションの一番新しい件のもの（直接送った別の話のあとなら、どの件にも結ばない）
     return JSONResponse({"ok": True, "project": project, "title": a["title"], "said": said})
 
 
@@ -2312,9 +2312,20 @@ async def api_topic(id: str = ""):
     # current: そのセッションの一番新しい件か。いまの問いは一番新しい件のものとする（同じセッションの古い件のリンクで、あとの件の問いを見せない）
     # 画面・声からそのセッションへ直接送ったあと（direct の印）は、いまの問いがこの件のものか分からないので、問いを見せず報告を開く。
     # 報告を読む間に直接送られた印も見るよう、待ちから戻ってから件を読み直して決める
-    now_t = topics.get(t["id"]) or {}
-    current = bool(t["session"]) and topics.latest_for_session(t["session"]) == t["id"] and not now_t.get("direct") and bool(now_t)
-    return JSONResponse({"ok": True, **{k: t[k] for k in ("id", "pane", "session", "project", "title")}, "report": rep, "current": current})
+    def eligible() -> bool:
+        now_t = topics.get(t["id"]) or {}
+        return bool(t["session"]) and bool(now_t) and topics.latest_for_session(t["session"]) == t["id"] and not now_t.get("direct")
+
+    current, ask = eligible(), None
+    if current:  # いまの問い（指紋つき）も本体が決めて返す。画面は、この指紋の問いだけを光らせる（あとで変わった問い・別の話の問いは光らせない）
+        a = next((x for x in await asyncio.to_thread(list_agents) if x["pane"] == t["pane"] and x.get("session") == t["session"]), None)
+        if a and (a["status"] == "blocked" or stepping(a)):
+            q = await asyncio.to_thread(_ask_of, a)
+            if q.get("kind") != "none" and isinstance(q.get("fp"), str):
+                ask = {"pane": a["pane"], "key": t["session"], "fp": q["fp"]}
+        if not eligible():  # 問いを読む間に直接送られた・次の件ができた
+            current, ask = False, None
+    return JSONResponse({"ok": True, **{k: t[k] for k in ("id", "pane", "session", "project", "title")}, "report": rep, "current": current, "ask": ask})
 
 
 @app.get("/api/prompts")
