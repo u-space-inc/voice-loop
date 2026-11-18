@@ -670,6 +670,14 @@ with sync_playwright() as p:
           (bool(tq2.get("ask")), fresh.evaluate("[...document.querySelectorAll('#asks .ask.flash')].length")), (True, 0))
     fresh.unroute("**/api/topic*")
     fresh.close()
+    fresh = browser.new_page()  # 無い件の URL で画面を新しく開いた（起動の会話の読み込みが、あとから描き直す）
+    fresh.set_viewport_size({"width": 390, "height": 844})
+    fresh.goto(BASE + "/#t=t0000000000")
+    fresh.wait_for_function("document.getElementById('conn').classList.contains('on')", timeout=8000)
+    fresh.wait_for_timeout(2500)
+    check("画面: 無い件の URL で新しく開いたとき、「見つかりませんでした」の案内が、起動の描き直しのあとも残る",
+          ("この件は見つかりませんでした" in logs(fresh), fresh.evaluate("location.hash")), (True, ""))
+    fresh.close()
     held = []
     fresh = browser.new_page()  # 声の一覧を待つ間（起動の途中）に、利用者が相手を選ぶ
     fresh.set_viewport_size({"width": 390, "height": 844})
