@@ -211,13 +211,19 @@ def restore_dir(root: str, rel: str, before: dict, expect: str) -> str:
     return "restored"
 
 
-def front_name(sm, root: str, rel: str) -> str | None:
-    """手順の別名（SKILL.md の frontmatter の name）を、Hermes 自身の読み方（_read_frontmatter_name。Hermes が手順を別名で探すときと同じ）で読む。
-    無ければ None。この関数の無い版の Hermes では ValueError（別名を確かめられないので、自動では当てない）。"""
-    fn = getattr(sm, "_read_frontmatter_name", None)
-    if not callable(fn):
+def front_name(sm, snap: dict) -> str | None:
+    """手順の別名（SKILL.md の frontmatter の name）を、控えとして読んだのと同じバイト列から、Hermes 自身の読み方
+    （_read_frontmatter_name と同じ: BOM を外し、先頭 4000 字を parse_frontmatter で読み、name の文字列を名前の上限で切る）で読む。
+    SKILL.md が無ければ None。読み方の無い版の Hermes・読めないときは例外（別名を確かめられないので、扱わない）。"""
+    if not callable(getattr(sm, "_read_frontmatter_name", None)):
         raise ValueError("この版の Hermes では手順の別名を確かめられないので、自動では当てません")
-    return fn(__import__("pathlib").Path(os.path.join(root, rel, "SKILL.md")))
+    raw = (snap.get("files") or {}).get("SKILL.md")
+    if raw is None:
+        return None
+    from agent.skill_utils import parse_frontmatter
+    fm, _ = parse_frontmatter(base64.b64decode(raw).decode("utf-8-sig", "replace")[:4000])
+    name = fm.get("name") if isinstance(fm, dict) else None
+    return name[:getattr(sm, "MAX_NAME_LENGTH", 64)] if isinstance(name, str) else None
 
 
 def snap_payload(sm, payload: dict) -> dict:
@@ -244,7 +250,7 @@ def snap_payload(sm, payload: dict) -> dict:
         rel = os.path.relpath(real, real_root)
         if rel not in out:
             out[rel] = snap_dir(root, rel)
-            alias = front_name(sm, root, rel)  # 別名（frontmatter の名前）がフォルダの名前と違えば、Hermes が別名で書くときの鍵とずれる
+            alias = front_name(sm, out[rel])  # 別名（frontmatter の名前）がフォルダの名前と違えば、Hermes が別名で書くときの鍵とずれる
             if alias is not None and alias != os.path.basename(rel):
                 raise ValueError("別名（frontmatter の名前）がフォルダの名前と違う手順なので、自動では当てません")
             size = sum(len(v) for snap in out.values() for v in snap["files"].values())
@@ -314,10 +320,12 @@ if mode == "restore":
     names = set()
     for rel in skills:
         names.add(Path(rel).name)
+        if not callable(getattr(sm, "_read_frontmatter_name", None)):
+            continue  # 別名を読む関数の無い版の Hermes（別名で探すこともない）では、フォルダの名前の鍵だけ
         try:
-            alias = front_name(sm, root, rel)
-        except ValueError:  # 別名を確かめられない版の Hermes（別名で探すこともない）では、フォルダの名前の鍵だけ
-            alias = None
+            alias = front_name(sm, snap_dir(root, rel))
+        except Exception as e:  # 関数があるのに読めない: 鍵を決められないので戻さない
+            done(result="failed", why="手順の別名を読めませんでした（" + type(e).__name__ + "）")
         if alias:
             names.add(alias)
     held = locks(sorted(names)) if callable(locks) else nullcontext()

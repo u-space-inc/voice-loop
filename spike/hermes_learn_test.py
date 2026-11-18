@@ -320,19 +320,16 @@ ROOT = Path(os.environ["VL_TEST_SKILLS"])
 def _skills_dir():
     return ROOT
 def _read_frontmatter_name(skill_md):
-    # Hermes と同じ扱い: 頭の BOM を外し、--- の間を YAML として読む（引用符で囲んだキー・値も）。読めなければ None
+    # Hermes と同じ: utf-8-sig で読み、parse_frontmatter の name。読めなければ None（読めないことを試験で起こせる）
+    if os.environ.get("VL_TEST_READFAIL"):
+        return None
+    from agent.skill_utils import parse_frontmatter
     try:
-        text = Path(skill_md).read_text(encoding="utf-8-sig", errors="replace")[:4000]
+        fm, _ = parse_frontmatter(Path(skill_md).read_text(encoding="utf-8-sig", errors="replace")[:4000])
     except OSError:
         return None
-    if not text.startswith("---"):
-        return None
-    for line in text[3:].split("\\n---", 1)[0].splitlines():
-        if ":" in line:
-            k, v = line.split(":", 1)
-            if k.strip().strip("'\\"") == "name":
-                return v.strip().strip("'\\"") or None
-    return None
+    n = fm.get("name")
+    return n[:64] if isinstance(n, str) else None
 def _find_skill(name):
     for p in ROOT.rglob("SKILL.md"):  # フォルダの名前でも、別名（frontmatter の name）でも見つかる（Hermes と同じ）
         if p.parent.is_symlink():
@@ -382,6 +379,25 @@ if os.environ.get("VL_TEST_NOFRONT"):  # 別名を読む関数が無い版の He
                 return {"path": p.parent}
         return None
     del _read_frontmatter_name
+""")
+(FAKE / "agent").mkdir(exist_ok=True)
+(FAKE / "agent" / "__init__.py").write_text("")
+(FAKE / "agent" / "skill_utils.py").write_text("""import re
+import os
+def parse_frontmatter(content):
+    # Hermes と同じ形: 頭の BOM を外し、--- の間を読む（YAML の代わりに、引用符で囲んだキー・値を外す 1 行ずつの読み方）
+    if os.environ.get("VL_TEST_PARSEFAIL"):
+        raise RuntimeError("読めない")
+    content = content.removeprefix("\\ufeff")
+    m = re.search(r"\\n---\\s*\\n", content[3:]) if content.startswith("---") else None
+    if not m:
+        return {}, content
+    fm = {}
+    for line in content[3:m.start() + 3].strip().split("\\n"):
+        if ":" in line:
+            k, v = line.split(":", 1)
+            fm[k.strip().strip("'\\"")] = v.strip().strip("'\\"")
+    return fm, content[m.end() + 3:]
 """)
 (FAKE / "tools" / "write_approval.py").write_text("""import os
 from pathlib import Path
@@ -514,6 +530,9 @@ check("自動で当てる: 別名（frontmatter の名前）がフォルダの�
 check("自動で当てる: 別名は Hermes 自身の読み方で読む（BOM 付き・引用符で囲んだキーでも見落とさない）。読み方の無い版の Hermes では扱わない",
       (script("snap", {"payload": op("bomq")}).get("result"), script("snap", {"payload": op("quoted")}).get("result"),
        script("snap", {"payload": op("same")}, extra={"VL_TEST_NOFRONT": "1"}).get("result")), ("unsupported", "unsupported", "unsupported"))
+check("自動で当てる: 別名は控えとして読んだ同じバイト列から読む（Hermes の読み取りが失敗して別名が無いように見えても、見落とさない）",
+      (script("snap", {"payload": op("fmhub")}, extra={"VL_TEST_READFAIL": "1"}).get("result"), script("snap", {"payload": op("bomq")}, extra={"VL_TEST_READFAIL": "1"}).get("result")),
+      ("unsupported", "unsupported"))
 (SK2 / "voice-loop" / "ap" / "SKILL.md").write_text("前\n")
 pal = {"action": "batch", "operations": [{"action": "patch", "name": "ap", "old_string": "前", "new_string": "---\nname: newalias\n---\n"}]}
 a5 = apply_script("apapap05", pal, e0)
@@ -535,6 +554,10 @@ fo = proc.stdout.read()
 proc.wait(timeout=60)
 proc.stderr.close()
 fres = json.loads(next((l for l in reversed(fo.decode().splitlines()) if l.startswith("VLRESULT ")), "VLRESULT {}")[len("VLRESULT "):])
+check("戻す: 別名を読む関数があるのに別名を読めないときは、鍵を決められないので戻さない（フォルダの名前の鍵だけに倒さない）",
+      (script("restore", {"skills": {"voice-loop/fmhub": {"before": fm_before, "expect": hl.digest(hl.snap_dir(str(SK2), "voice-loop/fmhub"))}}},
+              extra={"VL_TEST_PARSEFAIL": "1"}).get("result"), (SK2 / "voice-loop" / "fmhub" / "SKILL.md").read_text()),
+      ("failed", "---\nname: alias-fm\n---\nHermes が別名で書いた\n"))
 check("戻す: フォルダの名前と別名の両方の鍵を取る（Hermes が別名で書いている間も待ち、上書きしない）",
       (fres.get("result"), (SK2 / "voice-loop" / "fmhub" / "SKILL.md").read_text()), ("changed", "---\nname: alias-fm\n---\nHermes が別名で書いた\n"))
 for i in range(hl.SNAP_BATCH_SKILLS_MAX + 1):
