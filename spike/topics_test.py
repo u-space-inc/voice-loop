@@ -255,15 +255,26 @@ async def direct_during_send():
             again = await send("同じスレッドの続き（送る間に直接送られる）", (DM, "7.7"), ag=AG2)
             again["_closed"] = True
             cont = await send("続きをもう一つ（送る間に直接送られる）", (DM, "7.7"), ag=AG2)
+            cont["_closed"] = True
+            s.herdr = real_herdr
+            newer = await send("あとの別の件", (DM, "8.8"), ag=AG2)  # 同じセッションに、もっと新しい件ができた
+            newer["_closed"] = True
+            s.topics.touch(again["topic"], "w2:p1", "s2")  # 前の件の印を外しておく
+            s.topics.touch(newer["topic"], "w2:p1", "s2")
+            s.herdr = herdr_with_direct
+            older = await send("前の件（スレッド 7.7）の続き（送る間に直接送られる）", (DM, "7.7"), ag=AG2)
         finally:
             s.herdr = real_herdr
-        return again, cont
+        return again, cont, older
+
     return await go()
 
 
-again, cont = asyncio.run(direct_during_send())
+again, cont, older = asyncio.run(direct_during_send())
 check("相手の位置: ハブの依頼を送り終えるのを待つ間に直接送られたら、新しい件にも続きの件にも直接送った印を残す（いまの問いをその件のものとしない）",
       (bool(s.topics.get(again["topic"]).get("direct")), cont["topic"] == again["topic"], bool(s.topics.get(cont["topic"]).get("direct"))), (True, True, True))
+check("相手の位置: 一番新しい件とは別の、前の件の続きを送る間に直接送られても、その続きの件に印を付ける（印なしの一番新しい件にしない）",
+      (older["topic"] == again["topic"], bool(s.topics.get(older["topic"]).get("direct")), s.topics.current_for_session("s2")), (True, True, None))
 check("件の分け方: 頼んだ件ごとに件が付く（台帳にも載る）", all(s.topics.get(d["topic"]) for d in (one, three, four, six, eight)), True)
 
 

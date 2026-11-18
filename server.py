@@ -2022,6 +2022,8 @@ def topic_for(d: dict, keep_direct: bool = False) -> str:
                 HUB.reply_topic() if not slack else None):
         t = topics.get(tid)
         if t and session and t["session"] == session and topics.touch(tid, pane, session, slack, clear_direct=not keep_direct):
+            if keep_direct:  # 続きの件（いま一番新しい件になった）にも、はっきり印を付ける（あとの件に付いた印だけでは、この件が印なしになる）
+                topics.mark_direct(session)
             return tid
     tid = topics.new(pane, session, d["project"], d["text"] or f"{d['project']}｜{d['title']}", slack)
     if keep_direct:
