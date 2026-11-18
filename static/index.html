@@ -507,7 +507,7 @@ function decorate(el, m) {
     const h = node('div', 'rep'); h.appendChild(node('span', 'about', '報告｜' + (m.about || '')));
     if (typeof m.at === 'number') {
       const b = node('button', 'reply', '↩ 返信'); b.type = 'button'; b.title = 'この報告への返事として送る（次に話す・打つ発言に付けます）';
-      b.onclick = () => setReplyTarget({ at: m.at, about: m.about || '' });
+      b.onclick = () => { cancelTopic(); setReplyTarget({ at: m.at, about: m.about || '' }); };
       h.appendChild(b);
       el.dataset.at = String(m.at); el.dataset.about = m.about || '';
     }
@@ -575,6 +575,8 @@ function dropSent(list) { attachFiles = attachFiles.filter(f => !list.includes(f
 function flash(el) { el.classList.add('flash'); el.scrollIntoView({ block: 'center' }); clearTimeout(el._flash); el._flash = setTimeout(() => el.classList.remove('flash'), 4000); }
 let topicSeq = 0;
 let pendingTopic = null; // 本体に届かず開けなかった件。つながりしだい catchUp が開き直す（URL の #t= はもう外してある）
+// 利用者が相手・返信先を選んだ・外した・発言を送ったら、開いている途中の件（と、つながったら開く件）はやめる（あとから相手や返信先を上書きしない）
+function cancelTopic() { topicSeq++; pendingTopic = null; }
 async function openTopic() {
   const m = /^#t=(.*)$/s.exec(location.hash);
   if (!m && !pendingTopic) return;
@@ -697,10 +699,10 @@ async function showSetup(seq) {
   sys(`準備があと ${todo.length} つ残っています。`);
   todo.forEach((c, i) => sys(`${i + 1}. ${c.name}: ${c.todo}`));
 }
-$('replyClear').onclick = () => setReplyTarget(null);
+$('replyClear').onclick = () => { cancelTopic(); setReplyTarget(null); };
 $('attachBtn').onclick = () => $('attachInput').click();
 $('attachInput').onchange = () => { addAttach([...$('attachInput').files]); $('attachInput').value = ''; };
-$('agent').onchange = () => { topicSeq++; pendingTopic = null; setReplyTarget(null); // 利用者が相手を選んだら、開いている途中の件（と、つながったら開く件）はやめる
+$('agent').onchange = () => { cancelTopic(); setReplyTarget(null);
   localStorage.setItem(WANT, curKey()); shownPane = $('agent').value; applyTarget(); setStatus(linked() ? '準備できました' : UNREACHABLE); loadThread(); };
 
 // ---------- 承認で止まっているセッションへの返答（ボタン） ----------
@@ -1659,6 +1661,7 @@ async function startRec() {
     if (!$('agent').value) { setStatus('話し相手を選んでください'); return; }
     if (attachJob) { setStatus('添付を送っている途中なので、話した内容は送っていません'); return; }  // 前の発言の添付を送っている間は重ねない
     // 宛先・返信先・添付は話し終えた時点で固定する（添付を置いている間に相手や欄が変わっても、ずらさない）
+    cancelTopic();
     const pane = $('agent').value, key = curKey(), rf = replyFields(), list = attachFiles.slice();
     const files = await sendAttach(pane, list, '話した内容');
     if (!files) return;
@@ -1694,6 +1697,7 @@ $('typedForm').onsubmit = async e => {
   e.preventDefault(); if (attachJob) return;
   const t = $('typed').value.trim(); if ((!t && !attachFiles.length) || $('send').disabled || !$('agent').value || !linked()) return;
   // 宛先・返信先（とその件の名前）・添付は押した時点で固定する。待つ間に欄が変わっても、ここで決めたものだけを送る
+  cancelTopic();
   const pane = $('agent').value, key = curKey(), rf = replyFields(), about = rf.reply_at !== undefined ? replyTarget.about : '', list = attachFiles.slice();
   prime();  // 読み上げの許可は、押したその場で取る（添付を置き終えるのを待ってからでは、iPhone の Safari が押した操作と見ない）
   const files = await sendAttach(pane, list, '文と添付');

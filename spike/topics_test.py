@@ -494,6 +494,20 @@ with sync_playwright() as p:
           (page.eval_on_selector("#agent", "e => e.value"), page.eval_on_selector("#replyBar", "e => e.hidden"), SLOW["n"]), ("w1:p1", True, 0))
     page.evaluate(f"location.hash = '#t={one['topic']}'")
     page.wait_for_function("!document.getElementById('replyBar').hidden", timeout=8000)
+    s.hermes.hermes_log("ai", "別の件の報告", report=True, about="lp｜別件", pane="w1:p1")
+    page.evaluate("loadThread()")
+    page.wait_for_function("[...document.querySelectorAll('#log .msg.ai .reply')].length > 0", timeout=8000)
+    s.hermes.TALKER.history = lambda *a, **k: (time.sleep(1.5), real_hist(*a, **k))[1]  # 件の会話を読む間に、利用者が別の報告の「↩ 返信」を押す
+    try:
+        page.evaluate(f"location.hash = '#t={PREV_T}'")
+        page.wait_for_timeout(400)
+        page.evaluate("[...document.querySelectorAll('#log .msg.ai .reply')].pop().click()")
+        chosen = page.eval_on_selector("#replyTo", "e => e.textContent")
+        page.wait_for_timeout(2500)
+    finally:
+        s.hermes.TALKER.history = real_hist
+    check("画面: 件を開く途中に利用者が「↩ 返信」で別の報告を選んだら、件の処理は戻っても返信先を上書きしない",
+          (chosen != "↩ shop｜前の件 の報告に返信", page.eval_on_selector("#replyTo", "e => e.textContent") == chosen), (True, True))
     page.click("#readBtn")  # 広げて読んでいる間に、通知から件を開く
     page.evaluate("viewer = { back: null, cur: { el: null } }; document.getElementById('viewer').hidden = false; applyInert()")  # 画像を見ている間（の形）
     page.evaluate(f"location.hash = '#t={ASK_T}'")
