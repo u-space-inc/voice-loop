@@ -2012,12 +2012,15 @@ def topic_for(d: dict) -> str:
     1. まだ報告の来ていない同じセッションへの前の依頼にまとめた（merge_open。#54 の報告のまとめと同じ）→ その件
     2. Slack の同じスレッドから頼まれた（スレッドの無い、DM の一番上の依頼は続きと見なさない）→ そのスレッドの件
     3. 画面の「↩ 返信」で報告に返した発言を、ハブが扱っている間の依頼（Slack から頼まれた依頼は除く）→ その報告の件
-    どれでもなければ新しい件。続きの件は、いまの相手（pane・セッション）と Slack のスレッドを新しいほうに置き換える。同期で呼ぶ（dispatch の中、await しない）。"""
+    どれでもなければ新しい件。続きにするのは、前の件と同じセッション（空でないセッション ID が同じ）への依頼だけ。Slack のスレッドと返信中かは
+    ハブ（乗せられうる Hermes）の申告に頼るので、別のセッションへの依頼を前の件に結ぶと、前の件のリンク（Slack・通知）の行き先を別のセッションの
+    問いに書き換えられてしまう。続きの件は、Slack のスレッドを新しいほうに置き換える。同期で呼ぶ（dispatch の中、await しない）。"""
     pane, session, slack = d["pane"], d.get("session") or "", d.get("slack")
     for tid in (next((e.get("topic") for e in reversed(d.get("chain") or []) if e.get("topic")), None),
                 topics.by_slack(slack) if slack else None,
                 HUB.reply_topic() if not slack else None):
-        if tid and topics.touch(tid, pane, session, slack):
+        t = topics.get(tid)
+        if t and session and t["session"] == session and topics.touch(tid, pane, session, slack):
             return tid
     return topics.new(pane, session, d["project"], d["text"] or f"{d['project']}｜{d['title']}", slack)
 
@@ -2305,7 +2308,8 @@ async def api_topic(id: str = ""):
     t = topics.get(id)
     if not t:
         return JSONResponse({"ok": False, "reason": "gone"})
-    return JSONResponse({"ok": True, **{k: t[k] for k in ("id", "pane", "session", "project", "title")}})
+    rep = await asyncio.to_thread(HUB.topic_report, t["id"])  # その件の一番新しい報告（画面の履歴に出ていない古い報告も）
+    return JSONResponse({"ok": True, **{k: t[k] for k in ("id", "pane", "session", "project", "title")}, "report": rep})
 
 
 @app.get("/api/prompts")

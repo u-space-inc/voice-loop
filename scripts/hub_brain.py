@@ -68,6 +68,10 @@ class Brain:
         """画面の「↩ 返信」で報告に返した発言を、頭がいま扱っているなら、その報告の件（この間に頭が送った依頼は同じ件の続き）。無ければ空。"""
         return ""
 
+    def topic_report(self, tid: str) -> dict | None:
+        """件の一番新しい報告（{"at": 記録の時刻, "about": 名前}）。画面が件を開くとき、返信先にする。無ければ None。"""
+        return None
+
 
 class Talker:
     """herdr の外にいる話し相手。本体は pane の名前で見分ける（herdr の pane ではない）。"""

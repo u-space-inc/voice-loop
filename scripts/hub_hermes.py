@@ -215,6 +215,18 @@ def report_topic(at) -> str:
     return ""
 
 
+def topic_report(tid) -> dict | None:
+    """件の一番新しい報告（記録の時刻と名前）。画面の履歴（直近の 40 件）に出ていない古い報告も、記録の後ろ（返信の守りの report_ref と同じ範囲）から探す。
+    名前は report_ref と同じ形（1 行・80 字・制御文字などを空白に）。無ければ None。"""
+    if not isinstance(tid, str) or not topics.ID_RE.fullmatch(tid):
+        return None
+    for d in reversed(hermes_records() or []):
+        at = d.get("at")
+        if d.get("role") == "ai" and d.get("report") and d.get("topic") == tid and isinstance(at, (int, float)) and not isinstance(at, bool):
+            return {"at": at, "about": core._clip(" ".join(_REF_DROP.sub(" ", str(d.get("about") or "")).split()), 80)}
+    return None
+
+
 # 画面の「↩ 返信」で報告に返した発言を Hermes が扱っている間の、その報告の件。この間にハブが送った依頼は、同じ件の続きにする
 # （Hermes とのやり取りは pane_lock で一度にひとつ。Slack から頼まれた依頼は、Slack のスレッドで件を決めるので、これを使わない）
 REPLY_TOPIC = {"topic": ""}
@@ -1517,6 +1529,9 @@ class Hermes(Brain, Talker):
 
     def reply_topic(self) -> str:
         return reply_topic()
+
+    def topic_report(self, tid: str) -> dict | None:
+        return topic_report(tid)
 
     def report_begin(self, headline: str, about: str) -> bool:
         """Hermes の会話は本体が記録する（画面が無くても、あとで履歴に出る）。"""

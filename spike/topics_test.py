@@ -165,8 +165,12 @@ async def settle():
         await asyncio.sleep(0.02)
 
 
-async def send(text, slack=None):
-    await s.dispatch(AG, text, "send", slack)
+AG2 = {"pane": "w2:p1", "cwd": "/x/shop", "kind": "claude", "session": "s2", "status": "working", "title": "受注", "name": "", "hub": False}
+AG0 = {"pane": "w3:p1", "cwd": "/x/new", "kind": "claude", "session": None, "status": "working", "title": "立てた直後", "name": "", "hub": False}
+
+
+async def send(text, slack=None, ag=None):
+    await s.dispatch(ag or AG, text, "send", slack)
     await settle()
     return started[-1]
 
@@ -188,18 +192,28 @@ async def rules():
         seven = await send("返信の中で頼んだ")
         seven["_closed"] = True
         eight = await send("返信の間に Slack から", (DM, ""))
+        eight["_closed"] = True
+        ten = await send("返信の中で別のセッションへ", ag=AG2)
+        ten["_closed"] = True
+        zero = await send("返信の中でセッション ID の無い相手へ", ag=AG0)
+        zero["_closed"] = True
     finally:
         s.hermes.REPLY_TOPIC["topic"] = ""
-    return one, two, three, four, five, six, seven, eight
+    nine = await send("同じスレッドを名乗って別のセッションへ", (DM, "5.5"), ag=AG2)
+    return one, two, three, four, five, six, seven, eight, nine, ten, zero
 
 
-one, two, three, four, five, six, seven, eight = asyncio.run(rules())
+one, two, three, four, five, six, seven, eight, nine, ten, zero = asyncio.run(rules())
 check("件の分け方: まだ報告の来ていない同じセッションへの依頼は同じ件。完了を報告し始めたあとの依頼は新しい件",
       (one["topic"] == two["topic"], three["topic"] != two["topic"], s.topics.get(one["topic"])["title"]), (True, True, "内訳を出して"))
 check("件の分け方: Slack の同じスレッドからの依頼は同じ件。スレッドの無い（DM の一番上の）依頼は新しい件",
       (five["topic"] == four["topic"], six["topic"] not in (four["topic"], five["topic"]), s.topics.get(four["topic"])["slack"]), (True, True, [DM, "5.5"]))
 check("件の分け方: 画面の「↩ 返信」で報告に返した発言の中の依頼は、その報告の件。その間に Slack から頼まれた依頼には使わない",
       (seven["topic"] == one["topic"], eight["topic"] != one["topic"]), (True, True))
+check("相手の位置: Slack の同じスレッド・返信中でも、別のセッション（セッション ID の分からない相手も）への依頼は新しい件。前の件の行き先（セッション）は書き換わらない",
+      (nine["topic"] not in (four["topic"], five["topic"]), ten["topic"] != one["topic"], zero["topic"] != one["topic"],
+       s.topics.get(four["topic"])["session"], s.topics.get(one["topic"])["session"], s.topics.get(nine["topic"])["session"]),
+      (True, True, True, "s1", "s1", "s2"))
 check("件の分け方: 頼んだ件ごとに件が付く（台帳にも載る）", all(s.topics.get(d["topic"]) for d in (one, three, four, six, eight)), True)
 
 
@@ -255,8 +269,9 @@ check("相手の位置: 通知に載せる開く場所は、/ か /#t=<件> だ�
 with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     got = c.get("/api/topic", params={"id": one["topic"]}).json()
     gone = [c.get("/api/topic", params={"id": x}).json() for x in ("../x", "t" + "e" * 10, "")]
-check("画面の口: 件を引くと、どのセッションの件かと題だけを返す。形の違う・無い件は gone",
-      (got, gone), ({"ok": True, "id": one["topic"], "pane": "w1:p1", "session": "s1", "project": "lp", "title": "内訳を出して"}, [{"ok": False, "reason": "gone"}] * 3))
+check("画面の口: 件を引くと、どのセッションの件かと題（と、あれば一番新しい報告）だけを返す。形の違う・無い件は gone",
+      (got, gone), ({"ok": True, "id": one["topic"], "pane": "w1:p1", "session": "s1", "project": "lp", "title": "内訳を出して", "report": None},
+                    [{"ok": False, "reason": "gone"}] * 3))
 with TestClient(s.app, base_url="http://host.docker.internal:8790") as c:
     r = c.get("/api/topic", params={"id": one["topic"]}, headers={"x-vl-key": "k1"})
 check("相手の位置: コンテナ（Hermes）からは、鍵があっても件を引けない（画面だけの口）", (r.status_code, "pane" in r.text), (403, False))
@@ -268,6 +283,9 @@ s.hermes.hermes_log("ai", "偽の件", report=True, about="x", pane="w1:p1", top
 hist = {m["at"]: m.get("topic") for m in s.hermes.hermes_history() if m.get("report")}
 check("ハブの記録: 報告の件を履歴に出す。件の無い報告（0.29.0 より前）・形の違う件は出さない",
       (hist.get(1700000000.25), hist.get(1700000000.5), hist.get(1700000000.75)), (one["topic"], None, None))
+check("ハブの記録: 件の一番新しい報告（記録の時刻と名前）を引ける。形の違う件・報告の無い件は None",
+      (s.HUB.topic_report(one["topic"]), s.HUB.topic_report("<x>"), s.HUB.topic_report(two["topic"] if two["topic"] != one["topic"] else three["topic"])),
+      ({"at": 1700000000.25, "about": "lp｜見積"}, None, None))
 check("ハブの記録: 返信先の報告の件を引ける（無ければ空）",
       (s.hermes.report_topic(1700000000.25), s.hermes.report_topic(1700000000.5), s.hermes.report_topic(1700000000.75), s.hermes.report_topic(True)),
       (one["topic"], "", "", ""))
@@ -342,11 +360,22 @@ AGENTS = [{"pane": "w1:p1", "title": "見積", "cwd": "/x/lp", "kind": "claude",
           {"pane": "w2:p1", "title": "受注", "cwd": "/x/shop", "kind": "claude", "session": "s2", "status": "blocked", "name": "", "hub": False}]
 s.list_agents = lambda: [dict(x) for x in AGENTS]
 s.pane_shows_trust = lambda pane: False
-s.read_prompt = lambda pane: REAL_CHOICE if pane == "w2:p1" else ""
+SLOW = {"n": 0}  # 問いを読むのを 1 回だけ遅らせる（件を開く途中で待たせる）
+
+
+def read_prompt(pane):
+    if SLOW["n"] > 0:
+        SLOW["n"] -= 1
+        time.sleep(1.5)
+    return REAL_CHOICE if pane == "w2:p1" else ""
+
+
+s.read_prompt = read_prompt
 s.read_dialog = lambda pane, *_: (_ for _ in ()).throw(RuntimeError("この試験では読まない"))
 s.herdr = lambda *a, **k: (SENT.append(a), {"result": {}})[1]
 s.hermes.ask_hermes = lambda text: (ASKED.append(text), "わかりました")[1]
 ASK_T = s.topics.new("w2:p1", "s2", "shop", "受注の確認")
+NOSESS_T = s.topics.new("w2:p1", "", "shop", "セッション ID の分からない件")
 OLD_T = s.topics.new("w2:p1", "s-old", "shop", "前のセッションの件")
 NOREP_T = s.topics.new("w1:p1", "s1", "lp", "まだ報告の無い件")
 s.topics.link = lambda tid: None
@@ -382,6 +411,11 @@ with sync_playwright() as p:
     page.wait_for_function("document.getElementById('replyBar') && !document.getElementById('replyBar').hidden || [...document.querySelectorAll('#log .sys')].some(e => e.textContent.includes('前のセッションの件'))", timeout=8000)
     check("相手の位置: 同じペインでも別のセッションの件なら、いまの問いの欄を出さない（報告を探す）",
           ("前のセッションの件: この件の報告は、まだありません" in logs(page), page.eval_on_selector("#agent", "e => e.value")), (True, "hermes"))
+    page.evaluate("document.querySelectorAll('.flash').forEach(e => e.classList.remove('flash'))")  # 前に光らせた欄の光りを消してから
+    page.evaluate(f"location.hash = '#t={NOSESS_T}'")
+    page.wait_for_function("[...document.querySelectorAll('#log .sys')].some(e => e.textContent.includes('セッション ID の分からない件'))", timeout=8000)
+    check("相手の位置: セッション ID の分からない件では、同じペインの問いの欄を出さない",
+          page.evaluate("[...document.querySelectorAll('#asks .ask')].some(e => e.classList.contains('flash'))"), False)
     page.select_option("#agent", "w1:p1")
     page.wait_for_timeout(300)
     page.evaluate(f"location.hash = '#t={one['topic']}'")
@@ -392,7 +426,50 @@ with sync_playwright() as p:
           ("hermes", "↩ lp｜見積 の報告に返信", True))
     page.evaluate(f"location.hash = '#t={NOREP_T}'")
     page.wait_for_function("[...document.querySelectorAll('#log .sys')].some(e => e.textContent.includes('まだ報告の無い件'))", timeout=8000)
-    check("画面: 報告がまだ無い件は、そう知らせるだけ", "まだ報告の無い件: この件の報告は、まだありません" in logs(page), True)
+    check("画面: 報告がまだ無い件は、そう知らせるだけ。前に選んでいた返信先（別の件の報告）は外す",
+          ("まだ報告の無い件: この件の報告は、まだありません" in logs(page), page.eval_on_selector("#replyBar", "e => e.hidden")), (True, True))
+    real_hist = s.hermes.TALKER.history
+    s.hermes.TALKER.history = lambda *a, **k: (time.sleep(1.5), real_hist(*a, **k))[1]  # ハブの会話を読むのが遅い間に、次の件を開く
+    try:
+        page.select_option("#agent", "w1:p1")
+        page.wait_for_timeout(300)
+        page.evaluate(f"location.hash = '#t={one['topic']}'")
+        page.wait_for_timeout(300)
+        page.evaluate(f"location.hash = '#t={ASK_T}'")
+        page.wait_for_timeout(600)
+        ask_lit = page.evaluate("[...document.querySelectorAll('#asks .ask.flash')].length")
+        page.wait_for_timeout(2000)
+    finally:
+        s.hermes.TALKER.history = real_hist
+    check("画面: 前に開いた件の処理が遅れて戻っても、あとで開いた件の表示を上書きしない（返信先を付けない・報告を光らせない）",
+          (ask_lit, page.eval_on_selector("#replyBar", "e => e.hidden"), page.evaluate("document.querySelectorAll('#log .msg.ai.flash').length")), (1, True, 0))
+    OLDREP_T = s.topics.new("w1:p1", "s1", "lp", "古い報告の件")
+    s.hermes.hermes_log("ai", "古い報告の本文", report=True, about="lp｜古い件", pane="w1:p1", topic=OLDREP_T)
+    for i in range(45):  # 画面の履歴（直近の 40 件）から押し出す
+        s.hermes.hermes_log("ai", f"あとの発言 {i}")
+    page.select_option("#agent", "w1:p1")
+    page.wait_for_timeout(300)
+    page.evaluate(f"location.hash = '#t={OLDREP_T}'")
+    page.wait_for_function("!document.getElementById('replyBar').hidden", timeout=8000)
+    check("画面: 画面の履歴（直近の 40 件）に出ていない古い報告も、本体が記録から探して返信先にする（そう知らせる）",
+          (page.eval_on_selector("#replyTo", "e => e.textContent"), "古い報告の件: この件の報告は古いので画面の履歴には出ていませんが、返信先にしました" in logs(page)),
+          ("↩ lp｜古い件 の報告に返信", True))
+    SLOW["n"] = 1
+    page.evaluate(f"location.hash = '#t={one['topic']}'")  # ハブを選んだまま、問いを読む間に待たせる
+    page.wait_for_timeout(300)
+    page.evaluate(f"location.hash = '#t={ASK_T}'")
+    page.wait_for_timeout(2500)
+    check("画面: 問いを読む間に次の件を開いたら、前の件の処理は戻っても返信先を付けない",
+          (page.eval_on_selector("#replyBar", "e => e.hidden"), page.evaluate("[...document.querySelectorAll('#asks .ask.flash')].length"), SLOW["n"]), (True, 1, 0))
+    page.evaluate("document.querySelectorAll('.flash').forEach(e => e.classList.remove('flash'))")
+    SLOW["n"] = 1
+    page.evaluate(f"location.hash = '#t={ASK_T}'")  # 問いの件を開き、問いを読む間に待たせる
+    page.wait_for_timeout(300)
+    page.evaluate(f"location.hash = '#t={one['topic']}'")
+    page.wait_for_timeout(2500)
+    check("画面: 問いを読む間に次の件を開いたら、前の件の処理は戻っても問いの欄を光らせない（あとで開いた件の返信先は残す）",
+          (page.evaluate("[...document.querySelectorAll('#asks .ask.flash')].length"), page.eval_on_selector("#replyTo", "e => e.textContent"), SLOW["n"]),
+          (0, "↩ lp｜見積 の報告に返信", 0))
     fetched = []
     page.on("request", lambda r: fetched.append(r.url) if "/api/topic" in r.url else None)
     for bad in ("../x", "t0123456789&x=1", "javascript:alert(1)", "T0123456789"):
@@ -407,15 +484,16 @@ with sync_playwright() as p:
     fetched.clear()
     seen = []
     for data in ({"type": "open", "url": "https://evil.example/#t=" + one["topic"]}, {"type": "open", "url": "/#t=../x"}, {"type": "open", "url": 5},
-                 {"type": "x", "url": f"/#t={one['topic']}"}):
+                 {"type": "x", "url": f"/#t={one['topic']}"}, {"type": "open", "url": f"/other?x=1#t={one['topic']}"}, {"type": "open", "url": f"/?x=1#t={one['topic']}"}):
         page.evaluate("d => navigator.serviceWorker.dispatchEvent(new MessageEvent('message', { data: d }))", data)  # 1 つずつ（あとの知らせで上書きされないように）
         page.wait_for_timeout(400)
         seen.append((page.eval_on_selector("#agent", "e => e.value"), len(fetched)))
     check("相手の位置: 通知からの知らせでも、この画面の中の #t=<件> でなければ開かない・本体にも聞かない（ほかのサイトの URL・形の違う件・別の種類の知らせ）",
-          (seen, logs(page).count("この件")), ([("w1:p1", 0)] * 4, 0))
+          (seen, logs(page).count("この件")), ([("w1:p1", 0)] * 6, 0))
     page.evaluate("u => navigator.serviceWorker.dispatchEvent(new MessageEvent('message', { data: { type: 'open', url: u } }))", f"/#t={one['topic']}")
-    page.wait_for_selector(f'#log .msg.ai.flash[data-topic="{one["topic"]}"]', timeout=8000)
-    check("画面: 通知を押したとき、開いていた画面は sw.js から渡された件を開く", page.eval_on_selector("#agent", "e => e.value"), "hermes")
+    page.wait_for_function("!document.getElementById('replyBar').hidden", timeout=8000)  # この件の報告は、上で履歴から押し出された（返信先にはする）
+    check("画面: 通知を押したとき、開いていた画面は sw.js から渡された件を開く",
+          (page.eval_on_selector("#agent", "e => e.value"), page.eval_on_selector("#replyTo", "e => e.textContent")), ("hermes", "↩ lp｜見積 の報告に返信"))
     sw = page.evaluate(SW_CASES, [SW, BASE, [[f"/#t={one['topic']}", False], ["https://evil.example/", False], ["/#t=../x", False], [f"/x#t={one['topic']}", False],
                                              [f"/?a=1#t={one['topic']}", False], [f"/#t={one['topic']}", True], ["/", True], ["https://evil.example/#t=" + one["topic"], True]]])
     check("sw.js: 通知を押したとき開くのは / か /#t=<件> だけ。開いている画面があれば寄せて件を渡す（ほかのサイト・形の違う場所は / にする）", sw,

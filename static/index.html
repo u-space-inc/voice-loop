@@ -572,21 +572,25 @@ function dropSent(list) { attachFiles = attachFiles.filter(f => !list.includes(f
 // 件の URL（/#t=<件>。プッシュ通知・Slack のリンク）で開いたとき。その件のセッションが問いで止まっていれば、その問いの欄を見せる。
 // そうでなければ、ハブの会話にあるその件の一番新しい報告を「↩ 返信」の状態にする。開くだけで、答える・送るは利用者が押す。
 // 件の形が違う・見つからないときは知らせるだけ。読み直しで繰り返さないよう、URL の #t= は外す
-function flash(el) { el.classList.add('flash'); el.scrollIntoView({ block: 'center' }); setTimeout(() => el.classList.remove('flash'), 4000); }
+function flash(el) { el.classList.add('flash'); el.scrollIntoView({ block: 'center' }); clearTimeout(el._flash); el._flash = setTimeout(() => el.classList.remove('flash'), 4000); }
 let topicSeq = 0;
 async function openTopic() {
   const m = /^#t=(.*)$/s.exec(location.hash);
   if (!m) return;
   history.replaceState(null, '', location.pathname + location.search);
+  const seq = ++topicSeq; // 前に開いていた件の処理は、待ちから戻っても何も変えない（あとで開いた件が勝つ）
+  setReplyTarget(null); // 別の件を開いたら、前に選んでいた返信先は外す（開いた件の報告に付け直すときだけ付ける）
   if (!TOPIC_RE.test(m[1])) { sys('この件のリンクの形が違うので、開けませんでした'); return; }
-  const seq = ++topicSeq;
   let t; try { t = await (await fetch('/api/topic?id=' + m[1])).json(); } catch { t = null; }
   if (seq !== topicSeq) return;
   if (!t || !t.ok) { sys('この件は見つかりませんでした（古くなったか、本体に届きません）'); return; }
   await loadAsks();
+  if (seq !== topicSeq) return;
   const item = asks.get(t.pane);
-  if (item && (!t.session || item.q.key === t.session)) { flash(item.el); setStatus(`${t.project}｜問いに答えてください（押すまで答えません）`); return; }
+  // 問いの欄を見せるのは、その件と同じセッション（空でないセッション ID が同じ）の問いだけ（同じペインで作り直された別のセッションの問いは見せない）
+  if (item && t.session && item.q.key === t.session) { flash(item.el); setStatus(`${t.project}｜問いに答えてください（押すまで答えません）`); return; }
   if (!agents.length) await loadAgents();
+  if (seq !== topicSeq) return;
   const hub = agents.find(a => a.hub);
   if (!hub) { sys(`${t.project}｜${t.title}: 報告はハブの会話にありますが、ハブが居ません`); return; }
   if ($('agent').value !== hub.pane) {
@@ -594,11 +598,12 @@ async function openTopic() {
     await loadThread();
     if (seq !== topicSeq) return;
   }
-  const reps = [...$('log').querySelectorAll('.msg.ai')].filter(el => el.dataset.topic === t.id && el.dataset.at);
-  const last = reps[reps.length - 1];
-  if (!last) { sys(`${t.project}｜${t.title}: この件の報告は、まだありません`); return; }
-  setReplyTarget({ at: Number(last.dataset.at), about: last.dataset.about || '' });
-  flash(last);
+  // 返信先にするのは、本体が記録から探したその件の一番新しい報告（画面の履歴に出ていない古い報告でも）。吹き出しが出ていれば光らせる
+  const r = t.report;
+  if (!r || typeof r.at !== 'number') { sys(`${t.project}｜${t.title}: この件の報告は、まだありません`); return; }
+  setReplyTarget({ at: r.at, about: String(r.about || '') });
+  const el = [...$('log').querySelectorAll('.msg.ai')].find(e => e.dataset.topic === t.id && Number(e.dataset.at) === r.at);
+  if (el) flash(el); else sys(`${t.project}｜${t.title}: この件の報告は古いので画面の履歴には出ていませんが、返信先にしました`);
 }
 window.addEventListener('hashchange', () => openTopic());
 // 通知を押したとき、開いていた画面には sw.js が件の場所を渡す（この画面の中の #t= だけを受ける）
@@ -606,7 +611,7 @@ navigator.serviceWorker?.addEventListener('message', e => {
   const d = e.data;
   if (!d || d.type !== 'open' || typeof d.url !== 'string') return;
   let u; try { u = new URL(d.url, location.origin); } catch { return; }
-  if (u.origin === location.origin && /^#t=t[0-9a-f]{10}$/.test(u.hash)) location.hash = u.hash;
+  if (u.origin === location.origin && u.pathname === '/' && !u.search && /^#t=t[0-9a-f]{10}$/.test(u.hash)) location.hash = u.hash;
 });
 // 返信先の報告（{ at, about }）。ハブの会話のときだけ付けて送り、送ったら外す。相手を替えたら外す
 let replyTarget = null;
