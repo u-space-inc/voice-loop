@@ -483,6 +483,13 @@ with sync_playwright() as p:
           (page.eval_on_selector("#agent", "e => e.value"), page.eval_on_selector("#replyBar", "e => e.hidden"), SLOW["n"]), ("w1:p1", True, 0))
     page.evaluate(f"location.hash = '#t={one['topic']}'")
     page.wait_for_function("!document.getElementById('replyBar').hidden", timeout=8000)
+    page.click("#readBtn")  # 広げて読んでいる間に、通知から件を開く
+    page.evaluate("viewer = { back: null, cur: { el: null } }; document.getElementById('viewer').hidden = false; applyInert()")  # 画像を見ている間（の形）
+    page.evaluate(f"location.hash = '#t={ASK_T}'")
+    page.wait_for_function('[...document.querySelectorAll("#asks .ask.flash")].length === 1', timeout=8000)
+    check("画面: 画像を見ている・広げて読んでいる間に件を開いたら、普通の表示に戻して光らせる（押せる）",
+          page.evaluate("[document.body.classList.contains('reading'), document.getElementById('viewer').hidden, document.getElementById('asks').closest('[inert]') === null]"),
+          [False, True, True])
     check("画面: PC の幅で件を開いてハブに替えたら、左の一覧の印もハブに替える",
           page.evaluate("[...document.querySelectorAll('#sessions .sess.on')].map(e => e.classList.contains('hub'))"), [True])
     SLOW["n"] = 1

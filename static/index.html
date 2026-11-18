@@ -588,6 +588,7 @@ async function openTopic() {
   if (seq !== topicSeq) return;
   if (!reached) { pendingTopic = id; sys('本体に届かないので、つながったらこの件を開きます'); return; }
   if (!t || !t.ok) { sys('この件は見つかりませんでした（古くなったか、消えました）'); return; }
+  closeViewer(); if (reading) setReading(false); // 画像を見ている・広げて読んでいる間に開いたら、普通の表示に戻す（光らせる欄が後ろに隠れて押せないため）
   await loadAsks();
   if (seq !== topicSeq) return;
   const item = asks.get(t.pane);
