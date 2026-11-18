@@ -27,6 +27,8 @@ LIMIT = 5  # 1 日（日本時間）に自動で当てる手順の書き足し�
 SNAP_FILE_MAX = 256 * 1024  # 手順のフォルダの中の 1 ファイルの上限
 SNAP_TOTAL_MAX = 1024 * 1024  # 1 つの手順のフォルダの合計の上限
 SNAP_FILES_MAX = 200
+SNAP_BATCH_SKILLS_MAX = 20  # 1 つの書き足しが触る手順の数の上限（超えたら自動では当てない）
+SNAP_BATCH_TOTAL_MAX = 4 * 1024 * 1024  # 1 つの書き足しが触る手順の、控えの合計の上限（base64 の字数。超えたら自動では当てない）
 
 
 def _parts(rel: str) -> list[str]:
@@ -174,7 +176,7 @@ def restore_dir(root: str, rel: str, before: dict, expect: str) -> str:
         dfd = _open_parent(root, parts, make=True)
         try:
             _same(root, base, held if held else _ident(root, base), dfd, parts)
-            tmp = f".vl-restore-{os.getpid()}-{parts[-1]}"
+            tmp = f".vl-restore-{os.urandom(6).hex()}"  # 元の名前を入れない固定の長さ（長い名前でも、名前の長さの上限を超えない）
             mode = modes.get(k, 0o644) & 0o777  # 控えた権限（setuid などの上の位は落とす）。控えに無ければ 0644
             tfd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dfd)
             with os.fdopen(tfd, "wb") as f:
@@ -246,18 +248,27 @@ if mode == "snap":
             rel = os.path.relpath(real, real_root)
             if rel not in out:
                 out[rel] = snap_dir(root, rel)
+                size = sum(len(v) for snap in out.values() for v in snap["files"].values())
+                if len(out) > SNAP_BATCH_SKILLS_MAX or size > SNAP_BATCH_TOTAL_MAX:  # 書き足し全体でも大きすぎる控えは作らない（自動では当てない）
+                    done(result="unsupported", why="書き足しが触る手順が多すぎるか、大きすぎます")
     except Exception as e:  # 読めない形（symlink・大きすぎる）や、Hermes の探し方の失敗。自動では当てない
         done(result="unsupported", why=(type(e).__name__ + ": " + str(e))[:200])
     done(result="snap", skills=out)
 if mode == "restore":
     skills = req.get("skills") or {}
+    # Hermes が手順を書き換えるときと同じ鍵（手順ごとのファイルの鍵）を、指紋を照らしてから戻し終えるまで持つ
+    # （照らしたあとに Hermes が書いた中身を、戻すで上書きしない）。この鍵の無い版の Hermes では、鍵なしで戻す
+    from contextlib import nullcontext
+    locks = getattr(sm, "_skill_mutation_locks", None)
+    held = locks([Path(rel).name for rel in skills]) if callable(locks) else nullcontext()
     try:
-        for rel, it in skills.items():
-            if digest(snap_dir(root, rel)) != it["expect"]:
-                done(result="changed", why="当てたあとに手順が変わっています")
-        for rel, it in skills.items():
-            if restore_dir(root, rel, it["before"], it["expect"]) != "restored":
-                done(result="changed", why="戻す途中で手順が変わりました")
+        with held:
+            for rel, it in skills.items():
+                if digest(snap_dir(root, rel)) != it["expect"]:
+                    done(result="changed", why="当てたあとに手順が変わっています")
+            for rel, it in skills.items():
+                if restore_dir(root, rel, it["before"], it["expect"]) != "restored":
+                    done(result="changed", why="戻す途中で手順が変わりました")
     except (ValueError, OSError) as e:
         done(result="failed", why=type(e).__name__ + ": " + str(e)[:200])
     done(result="restored")
@@ -265,6 +276,7 @@ done(result="error", why="知らない種類です")
 '''
 SCRIPT = ("import base64, hashlib, json, os, stat\n"
           + f"SNAP_FILE_MAX = {SNAP_FILE_MAX}\nSNAP_TOTAL_MAX = {SNAP_TOTAL_MAX}\nSNAP_FILES_MAX = {SNAP_FILES_MAX}\n"
+          + f"SNAP_BATCH_SKILLS_MAX = {SNAP_BATCH_SKILLS_MAX}\nSNAP_BATCH_TOTAL_MAX = {SNAP_BATCH_TOTAL_MAX}\n"
           + "".join(inspect.getsource(f) + "\n" for f in (_parts, _open_parent, _ident, _same, snap_dir, digest, restore_dir)) + _SCRIPT_MAIN)
 
 

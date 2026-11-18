@@ -104,6 +104,15 @@ check("戻す: 実行できる台本の権限（x）を控えて、同じ権限�
 os.chmod(SK / "voice-loop" / "tool" / "scripts" / "run.sh", 0o700)
 check("指紋: 権限が変われば変わる（当てたあとに権限を変えられたら、戻さない）", hl.digest(hl.snap_dir(str(SK), "voice-loop/tool")) != hl.digest(tb), True)
 check("戻す: 控えの権限の形が違えば、何も書かずに断る", raises(lambda: hl.restore_dir(str(SK), "voice-loop/tool", {**tb, "modes": {"SKILL.md": "rwx"}}, hl.digest(hl.snap_dir(str(SK), "voice-loop/tool")))), True)
+longname = "r" * 250 + ".md"  # 名前の長さの上限（255）に近いファイル
+(SK / "voice-loop" / "tool" / longname).write_text("長い名前\n")
+lb = hl.snap_dir(str(SK), "voice-loop/tool")
+(SK / "voice-loop" / "tool" / longname).write_text("長い名前を書き換えた\n")
+try:
+    lr = hl.restore_dir(str(SK), "voice-loop/tool", lb, hl.digest(hl.snap_dir(str(SK), "voice-loop/tool")))
+except OSError as e:
+    lr = type(e).__name__
+check("戻す: 名前の長さの上限に近いファイルも戻せる（一時のファイルの名前に元の名前を入れない）", (lr, (SK / "voice-loop" / "tool" / longname).read_text()), ("restored", "長い名前\n"))
 (SK / "voice-loop" / "new" / "scripts").mkdir(parents=True)
 (SK / "voice-loop" / "new" / "SKILL.md").write_text("作られた\n")
 (SK / "voice-loop" / "new" / "scripts" / "x.py").write_text("print(1)\n")
@@ -292,14 +301,23 @@ def _find_skill(name):
     return {"path": Path(os.environ["VL_TEST_OUTSIDE"])} if name == "outside" else None
 def _resolve_skill_dir(name, category=None):
     return ROOT / (category or "") / name
+import contextlib, fcntl
+def _skill_mutation_locks(names):
+    stack = contextlib.ExitStack()
+    for n in sorted(set(names)):
+        p = ROOT / ".locks" / (n + ".lock")
+        p.parent.mkdir(exist_ok=True)
+        f = stack.enter_context(open(p, "a"))
+        fcntl.flock(f, fcntl.LOCK_EX)
+    return stack
 """)
 SK2 = Path(TMP) / "skills2"
 (SK2 / "voice-loop" / "hub").mkdir(parents=True)
 (SK2 / "voice-loop" / "hub" / "SKILL.md").write_text("前\n")
 
 
-def script(mode, req):
-    p = subprocess.run([sys.executable, "-c", hl.SCRIPT, hl.CHECK_MARK if mode == "snap" else hl.MARK, mode], input=json.dumps(req).encode(),
+def script(mode, req, text=None):
+    p = subprocess.run([sys.executable, "-c", text or hl.SCRIPT, hl.CHECK_MARK if mode == "snap" else hl.MARK, mode], input=json.dumps(req).encode(),
                        capture_output=True, cwd=FAKE, env={**os.environ, "PYTHONPATH": str(FAKE), "VL_TEST_SKILLS": str(SK2), "VL_TEST_OUTSIDE": str(OUTSIDE)}, timeout=60)
     return s.hermes.hermes_skills.read_result(p)
 
@@ -321,6 +339,36 @@ check("台本の入口: restore は指紋が違えば何も書かずに changed�
        script("restore", {"skills": {"voice-loop/hub": {"before": sn["skills"]["voice-loop/hub"], "expect": hl.digest(after2)}}}).get("result"),
        (SK2 / "voice-loop" / "hub" / "SKILL.md").read_text()),
       ("changed", "後\n", "restored", "前\n"))
+# 戻す台本は、Hermes が手順を書き換えるときと同じ鍵を、指紋を照らしてから戻し終えるまで持つ（鍵を持つ Hermes の書き込みを上書きしない）
+(SK2 / "voice-loop" / "hub" / "SKILL.md").write_text("後\n")
+lock_before, lock_expect = sn["skills"]["voice-loop/hub"], hl.digest(hl.snap_dir(str(SK2), "voice-loop/hub"))
+(SK2 / ".locks").mkdir(exist_ok=True)
+lockf = open(SK2 / ".locks" / "hub.lock", "a")
+import fcntl  # noqa: E402
+fcntl.flock(lockf, fcntl.LOCK_EX)  # Hermes が手順を書き換えている
+proc = subprocess.Popen([sys.executable, "-c", hl.SCRIPT, hl.MARK, "restore"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        cwd=FAKE, env={**os.environ, "PYTHONPATH": str(FAKE), "VL_TEST_SKILLS": str(SK2), "VL_TEST_OUTSIDE": str(OUTSIDE)})
+proc.stdin.write(json.dumps({"skills": {"voice-loop/hub": {"before": lock_before, "expect": lock_expect}}}).encode())
+proc.stdin.close()
+time.sleep(1.0)  # 台本は鍵を待っている（鍵が無ければ、この間に戻してしまう）
+(SK2 / "voice-loop" / "hub" / "SKILL.md").write_text("Hermes が鍵を持って書いた\n")
+fcntl.flock(lockf, fcntl.LOCK_UN)
+lockf.close()
+pout = proc.stdout.read()
+proc.wait(timeout=60)
+proc.stderr.close()
+lres = json.loads(next((l for l in reversed(pout.decode().splitlines()) if l.startswith("VLRESULT ")), "VLRESULT {}")[len("VLRESULT "):])
+check("戻す: Hermes が手順を書き換えている間（同じ鍵）は待ち、照らしてから書いたものは上書きしない", (lres.get("result"), (SK2 / "voice-loop" / "hub" / "SKILL.md").read_text()),
+      ("changed", "Hermes が鍵を持って書いた\n"))
+for i in range(hl.SNAP_BATCH_SKILLS_MAX + 1):
+    (SK2 / "many" / f"m{i:02d}").mkdir(parents=True, exist_ok=True)
+    (SK2 / "many" / f"m{i:02d}" / "SKILL.md").write_text("小さい\n")
+manyb = {"action": "batch", "operations": [{"action": "patch", "name": f"m{i:02d}", "old_string": "a", "new_string": "b"} for i in range(hl.SNAP_BATCH_SKILLS_MAX + 1)]}
+small = hl.SCRIPT.replace(f"SNAP_BATCH_TOTAL_MAX = {hl.SNAP_BATCH_TOTAL_MAX}", "SNAP_BATCH_TOTAL_MAX = 30")
+twob = {"action": "batch", "operations": [{"action": "patch", "name": n, "old_string": "a", "new_string": "b"} for n in ("m00", "m01")]}
+check("台本の入口: 書き足し全体で触る手順が多すぎる・控えの合計が大きすぎるときは、自動では当てない（unsupported）",
+      (script("snap", {"payload": manyb}).get("result"), script("snap", {"payload": twob}, small).get("result"), script("snap", {"payload": twob}).get("result")),
+      ("unsupported", "unsupported", "snap"))
 (SK2 / "voice-loop" / "hub" / "SKILL.md").write_text("後\n")
 moved = Path(TMP) / "moved-hub"
 held = hl._ident(str(SK2), ["voice-loop", "hub"])
