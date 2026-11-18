@@ -2328,7 +2328,8 @@ async def api_topic(id: str = ""):
         if a and (a["status"] == "blocked" or stepping(a)):
             q = await asyncio.to_thread(_ask_of, a)
             if q.get("kind") != "none" and isinstance(q.get("fp"), str):
-                ask = {"pane": a["pane"], "key": t["session"], "fp": q["fp"]}
+                ask = {"pane": a["pane"], "key": t["session"], "fp": q["fp"],  # fp は画面の末尾の指紋。sfp は 1 問ずつの問い全体の指紋（長い問いの違いも見分ける）
+                       **({"sfp": q["sfp"]} if isinstance(q.get("sfp"), str) else {})}
         if not eligible():  # 問いを読む間に直接送られた・次の件ができた
             current, ask = False, None
     return JSONResponse({"ok": True, **{k: t[k] for k in ("id", "pane", "session", "project", "title")}, "report": rep, "current": current, "ask": ask})

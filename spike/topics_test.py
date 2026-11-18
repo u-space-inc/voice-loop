@@ -641,6 +641,35 @@ with sync_playwright() as p:
         check(f"画面: 件の URL で画面を新しく開いても、その件を開く（{'問いの欄' if target == ASK_T else '報告の返信先'}・URL の #t= は外す）",
               (opened, fresh.evaluate("location.hash")), (True, ""))
         fresh.close()
+    for target, ready, what in ((ASK_T, '[...document.querySelectorAll("#asks .ask.flash")].length === 1', "問いの欄"),
+                                (one["topic"], '!document.getElementById("replyBar").hidden', "報告の返信先")):
+        hung = []
+        fresh = browser.new_page()  # 件の URL で新しく開いたとき、ハブの会話の読み込みだけが返らない
+        fresh.set_viewport_size({"width": 390, "height": 844})
+        fresh.route("**/api/history*", lambda r: hung.append(r))
+        fresh.goto(BASE + f"/#t={target}", wait_until="domcontentloaded")
+        try:
+            fresh.wait_for_function(ready, timeout=10000)
+            ok_ = True
+        except Exception:
+            ok_ = False
+        check(f"画面: 件の URL で新しく開いたとき、会話の読み込みが返らなくても件を開く（{what}）", ok_, True)
+        fresh.unroute("**/api/history*")
+        fresh.close()
+    tq2 = None
+    with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+        tq2 = c.get("/api/topic", params={"id": ASK_T}).json()
+    fresh = browser.new_page()  # 本体が返した問い全体の指紋（sfp）が、描いた問いと違う（長い問いで末尾だけが同じ）
+    fresh.set_viewport_size({"width": 390, "height": 844})
+    if tq2.get("ask"):
+        tq2["ask"]["sfp"] = "0" * 16
+    fresh.route("**/api/topic*", lambda r: r.fulfill(json=tq2))
+    fresh.goto(BASE + f"/#t={ASK_T}")
+    fresh.wait_for_function("[...document.querySelectorAll('#log .sys')].some(e => e.textContent.includes('受注の確認: この件の報告は、まだありません'))", timeout=10000)
+    check("相手の位置: 問い全体の指紋（sfp）が違えば、末尾の指紋が同じでも光らせず、件の報告のほうを開く",
+          (bool(tq2.get("ask")), fresh.evaluate("[...document.querySelectorAll('#asks .ask.flash')].length")), (True, 0))
+    fresh.unroute("**/api/topic*")
+    fresh.close()
     held = []
     fresh = browser.new_page()  # 声の一覧を待つ間（起動の途中）に、利用者が相手を選ぶ
     fresh.set_viewport_size({"width": 390, "height": 844})

@@ -613,9 +613,9 @@ async function openTopic() {
     if (!Array.isArray(qs)) { later(); return; }
     ++asksSeq; applyAsks(qs);
     const it = asks.get(ak.pane);
-    if (it && it.q.key === ak.key && it.q.fp === ak.fp) { flash(it.el); setStatus(`${t.project}｜問いに答えてください（押すまで答えません）`); return; }
+    if (it && it.q.key === ak.key && it.q.fp === ak.fp && (it.q.sfp || null) === (typeof ak.sfp === 'string' ? ak.sfp : null)) { flash(it.el); setStatus(`${t.project}｜問いに答えてください（押すまで答えません）`); return; }
   }
-  if (!agents.length) await loadAgents();
+  if (!agents.length) await Promise.race([loadAgents(), new Promise(res => setTimeout(res, TOPIC_WAIT))]); // 一覧は届いても、会話の読み込みで止まることがある
   if (seq !== topicSeq) return;
   if (!agents.length) { later(); return; } // 話し相手の一覧を読めなかった（ハブが居ないのとは違う）
   const hub = agents.find(a => a.hub);
@@ -1650,9 +1650,9 @@ function linked() { return !!ws && ws.readyState === 1; }
 async function catchUp() {
   await ensureSpeakers();
   agentsSig = ''; shownPane = null; // 一覧と履歴を描き直させる
+  if (location.hash || pendingTopic) openTopic(); // 件の URL で開いた・本体に届かず開けなかった件（一覧と会話の読み込みを待たない）
   await loadAgents();
   loadAsks();
-  if (location.hash || pendingTopic) openTopic(); // 件の URL で開いた・本体に届かず開けなかった件（一覧が届いてから）
 }
 // 声の一覧がまだ無ければ読む。読めなければ、つながっている間は3秒ごとに読み直す（重ねて読みに行かない）
 let speakersBusy = false;
@@ -1766,8 +1766,10 @@ setInterval(() => { if (!document.hidden && document.activeElement !== $('agent'
 setInterval(() => { if (!document.hidden) loadAsks(); }, 5000); // 承認で止まっているセッションを、話し相手の画面のまま上に並べる
 loadAsks();
 // 一覧と声を読んでからつなぐ。届かないときは5秒で見切って案内を出し、つなぎに行く（つながりしだい catchUp で取り直す）
-// 件の URL（通知・Slack のリンク）で新しく開いたときは、一覧が届いてから件を開く（初めの表示では hashchange が起きない。届かなければ catchUp が開く）
-Promise.race([Promise.allSettled([loadAgents(), ensureSpeakers()]).then(() => { if (location.hash) openTopic(); return true; }), new Promise(r => setTimeout(() => r(false), 5000))])
+// 件の URL（通知・Slack のリンク）で新しく開いたときは、起動の読み込み（一覧・会話・声）を待たずに件を開く（初めの表示では hashchange が起きない。
+// 届かなければ、件を覚えておき catchUp と少し待ってから開き直す）
+if (location.hash) openTopic();
+Promise.race([Promise.allSettled([loadAgents(), ensureSpeakers()]).then(() => true), new Promise(r => setTimeout(() => r(false), 5000))])
   .then(replied => { if (!replied) setStatus(UNREACHABLE); connect(); });
 </script>
 </body>
