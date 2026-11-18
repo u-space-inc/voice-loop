@@ -65,6 +65,7 @@ def _load_config_env():
 _load_config_env()
 import hub_hermes as hermes  # noqa: E402  頭の部品。読み込みのときに config.env の値を読むので、ここで読み込む
 import slack_report  # noqa: E402  Slack から頼まれた件の報告を、同じスレッドにも返す（config.env の値を読むので、ここで読み込む）
+import topics  # noqa: E402  件（頼んだ件・報告・Slack のスレッド・問いを結ぶ単位）。件の URL（/#t=<件>）で画面を開く
 WHISPER = os.environ.get("VL_WHISPER", "http://127.0.0.1:8080/v1/audio/transcriptions")
 # 声のエンジン。どちらも同じ形の API（audio_query → synthesis）で、違うのは呼び先と既定の声だけ
 VOICE_ENGINES = {
@@ -1277,15 +1278,22 @@ def _push_send(subs: list[dict], payload: dict, urgency: str) -> tuple[int, list
     return sent, gone
 
 
-async def push_all(title: str, body: str, tag: str, urgency: str = "normal", only: list[dict] | None = None) -> str:
+def topic_path(tid: str | None) -> str:
+    """通知を押したときに開く場所。件があればその件（/#t=<件>）、無ければ画面のはじめ。"""
+    return f"/#t={tid}" if isinstance(tid, str) and topics.ID_RE.fullmatch(tid) else "/"
+
+
+async def push_all(title: str, body: str, tag: str, urgency: str = "normal", only: list[dict] | None = None, url: str = "/") -> str:
     """どの画面も見えていなければ、購読している端末すべてに知らせる。結果は sent / visible / none / failed / error。
-    only を渡すと、見えている画面の有無に関係なく、その購読だけに送る（🔔 を押したときの試しの通知）。"""
+    only を渡すと、見えている画面の有無に関係なく、その購読だけに送る（🔔 を押したときの試しの通知）。
+    url は、通知を押したときに開く場所（topic_path が作る、この画面の中の場所だけ）。"""
     if only is None and any(c.visible and time.time() - c.seen < VISIBLE_TTL for c in CLIENTS):
         return "visible"
     subs = only if only is not None else await asyncio.to_thread(push_subs)
     if not subs:
         return "none"
-    payload = {"title": _clip(title, 80), "body": _clip(body, 120), "tag": tag, "url": "/"}
+    payload = {"title": _clip(title, 80), "body": _clip(body, 120), "tag": tag,
+               "url": url if url.startswith("/#t=") and topics.ID_RE.fullmatch(url[4:]) else "/"}
     try:
         sent, gone = await asyncio.to_thread(_push_send, subs, payload, urgency)
         if gone:
@@ -1364,7 +1372,8 @@ async def watch_blocked():
                 if not told and time.time() - since >= BLOCKED_NOTIFY_AFTER:
                     told = True  # 見えている画面があって送らなかったときも（その画面の上に承認の欄が出ている）
                     name = f"{a['cwd'].rsplit('/', 1)[-1]}｜{a['title']}"
-                    await push_all(name, "承認・入力待ちで止まっています", f"blocked-{p}", urgency="high")
+                    await push_all(name, "承認・入力待ちで止まっています", f"blocked-{p}", urgency="high",
+                                   url=topic_path(topics.current_for_session(a.get("session") or "")))  # 押すと、そのセッションの件（問いの欄）を開く（直接送った別の話のあとなら画面のはじめ）
                 held[p] = (who, since, told)
         except asyncio.CancelledError:
             raise
@@ -1448,6 +1457,7 @@ def _load_tasks():
 
 
 _load_tasks()
+topics.load()
 
 
 @app.get("/api/hub/tasks")
@@ -1646,7 +1656,9 @@ async def report(d: dict, kind: str):
         tail = {"no_hub": "（ハブが居ないので、声の報告はありません）", "failed": "（ハブから報告を受け取れませんでした）",
                 "waiting": "（ハブの報告は、このあと届きます）"}.get(outcome, "")
         while True:
-            r = await push_all(f"{d['project']}｜{d['title']}", PUSH_BY_REPORT[kind] + tail, f"report-{d['pane']}")
+            tid = d.get("topic")  # 件ごとの通知（同じセッションの別の件の通知を上書きしない）。押すとその件を開く
+            r = await push_all(f"{d['project']}｜{d['title']}", PUSH_BY_REPORT[kind] + tail,
+                               f"topic-{tid}" if topics.ID_RE.fullmatch(tid or "") else f"report-{d['pane']}", url=topic_path(tid))
             if r != "visible":
                 st["settled"] = True
                 return
@@ -1723,7 +1735,7 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
                       "gone": ("のセッションが見つからなくなりました", "閉じられた可能性があることを、")}[kind]
     if not hub:
         hlog(f"報告できません（ハブが居ない）: {label} {kind}", flush=True)
-        relay_slack(d, label, headline, "")
+        relay_slack(d, label, headline, "", ask=kind == "blocked")
         if kind in ("done", "more", "gone"):
             d["_slack_done"] = True
         return "no_hub"
@@ -1753,20 +1765,20 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
             REPORTING = False
             report_idle().set()
         hlog(f"報告 {kind}: {label} → {state}（画面 {len(CLIENTS)}）", flush=True)
-        saved = await HUB.report_end(state, reply, label, saved, str(d.get("pane", "")))
+        saved = await HUB.report_end(state, reply, label, saved, str(d.get("pane", "")), str(d.get("topic") or ""))
         if state != "done" or not reply.strip():
-            relay_slack(d, label, headline, "")
+            relay_slack(d, label, headline, "", ask=kind == "blocked")
             if kind in ("done", "more", "gone"):
                 d["_slack_done"] = True
             return "failed"
         notify("ok")
-        relay_slack(d, label, headline, reply)  # 報告は REPORTING の中で作られたもの（その間、ハブは次の指示を送れない）
+        relay_slack(d, label, headline, reply, ask=kind == "blocked")  # 報告は REPORTING の中で作られたもの（その間、ハブは次の指示を送れない）
         if kind in ("done", "more", "gone"):
             d["_slack_done"] = True  # 完了の報告を送った。このあとの見張りの失敗は重ねて知らせない（途中経過のあとの失敗は知らせる）
         clients = list(CLIENTS)
         for c in clients:
             try:
-                await c.send(type="reply", pane=hub["pane"], text=reply, report=True, about=label, saved=saved)
+                await c.send(type="reply", pane=hub["pane"], text=reply, report=True, about=label, saved=saved, topic=str(d.get("topic") or ""))
             except Exception:
                 clients.remove(c)
         if clients:
@@ -1891,7 +1903,7 @@ def merge_open(d: dict, prev: dict | None):
     if (not prev or prev.get("_closed") or prev.get("_merged_into") or not prev.get("text")
             or prev.get("cwd") != d["cwd"] or prev.get("session") != d.get("session")):
         return
-    d["chain"] = [*prev.get("chain", []), {k: prev.get(k) for k in ("text", "offset", "slack", "overlap", "session", "sent_gen")}]
+    d["chain"] = [*prev.get("chain", []), {k: prev.get(k) for k in ("text", "offset", "slack", "overlap", "session", "sent_gen", "topic")}]
     prev["_merged_into"] = d
     old, new = chain_dest(prev), chain_dest(d)
     if old and old != new:
@@ -1909,7 +1921,7 @@ def post_slack(dest: tuple[str, str], text: str, label: str):
     job.add_done_callback(_tasks.discard)
 
 
-def relay_slack(d: dict, label: str, headline: str, reply: str, fallback: str = slack_report.NO_REPORT):
+def relay_slack(d: dict, label: str, headline: str, reply: str, fallback: str = slack_report.NO_REPORT, ask: bool = False):
     """Slack から頼まれた件なら、報告を同じスレッドにも送る（裏で。声と画面の報告を遅らせない）。送り先は slack_report.origin が決めた DM だけ。
     同じセッションに続けて頼んでまとめた件（chain）は、一番新しい Slack のスレッドに 1 回だけ送り、まとめた依頼を並べる。
     ハブの報告（reply）は、ハブが hubctl read --task でこの件の範囲を読み分けて書いたもの。本文を載せないのは、この件の記録を読めないときだけ
@@ -1918,7 +1930,8 @@ def relay_slack(d: dict, label: str, headline: str, reply: str, fallback: str = 
     - セッションの記録で、この件の指示のほかに利用者の側の行がある（端末・画面・声から直接の発言・ほかの件の指示・ほかのセッションやエージェントからの知らせ・読めない行）か、
       最初の指示が作業中に届いた（別の作業の返答と同じターンに続く）
     - 報告を待つ間に、同じセッションへ次の指示が送られようとした（SENT_GEN。送る前に進む・増えるだけ）か、送る途中でほかの指示と重なった（overlap）か、
-      まとめた依頼の間に、画面・声から直接の発言があった（SENT_GEN が続いていない）"""
+      まとめた依頼の間に、画面・声から直接の発言があった（SENT_GEN が続いていない）
+    末尾に、この件を画面で開くリンクを付ける（ask: 承認・入力待ちなら「画面でこの問いに答える」）。取り返せない答えは、Slack ではなく画面と声で受ける"""
     dest = chain_dest(d)
     d["_slack_pending"] = False
     if not dest:
@@ -1934,9 +1947,11 @@ def relay_slack(d: dict, label: str, headline: str, reply: str, fallback: str = 
     one_session = not any(e.get("session") != d.get("session") for e in chain)  # まとめた依頼が同じセッションの記録にある（まとめるときにも確かめている）
 
     async def go():
-        text = slack_report.text_for(label, headline, "", fallback, asks)
+        link = await asyncio.to_thread(topics.link, d.get("topic"))
+        tail = {"link": link or "", "ask": ask}
+        text = slack_report.text_for(label, headline, "", fallback, asks, **tail)
         if reply.strip():
-            text = slack_report.text_for(label, headline, "", slack_report.NOT_FOUND, asks)
+            text = slack_report.text_for(label, headline, "", slack_report.NOT_FOUND, asks, **tail)
             path = d.get("path")
             try:
                 first = chain[0]["offset"] if chain else d["offset"]
@@ -1944,7 +1959,7 @@ def relay_slack(d: dict, label: str, headline: str, reply: str, fallback: str = 
                 if path and one_session and await asyncio.to_thread(same_session, d):
                     _msgs, found, mixed = await asyncio.to_thread(task_range, Path(path), first, texts)
                     if found:
-                        text = slack_report.text_for(label, headline, reply, asks=asks, note=slack_report.MIXED if mixed or not quiet else "")
+                        text = slack_report.text_for(label, headline, reply, asks=asks, note=slack_report.MIXED if mixed or not quiet else "", **tail)
             except Exception:  # 読めない記録（消えた・読めない）は、本文を載せずに定型文を送る
                 hlog(f"Slack への報告: 記録を読めません（{label}）", flush=True)
         if d.get("_merged_into"):  # 次の件にまとめた件は、自分では送らない（途中経過も。報告は次の件がまとめてする）。送る直前に見る（記録を確かめる間にまとめられることもある）
@@ -1984,11 +1999,36 @@ async def dispatch(a: dict, text: str, kind: str = "send", slack: tuple[str, str
          "was_working": a["status"] == "working", "gen": WATCH_GEN[pane], "sent_gen": sent_gen, "overlap": overlap, "slack": slack,
          "session": a.get("session")}
     merge_open(d, OPEN_WATCH.get(pane))  # 前の件がまだ報告前なら、この件にまとめる（ここから start_watch までは await しない）
+    d["topic"] = topic_for(d, keep_direct=SENT_GEN.get(pane) != sent_gen)  # 送り終えるのを待つ間に、画面・声から直接送られていた（印を残す）
     OPEN_WATCH[pane] = d
     start_watch(d, kind)
     if slack_chain(d):
         task_set(d.get("task"), "watching", f"同じセッションへの前の {len(slack_chain(d))} 件の指示と、まとめて報告します")
     return {"ok": True, "project": project, "title": a["title"], "was_working": a["status"] == "working", "task": d["task"], "slack": bool(slack)}
+
+
+def topic_for(d: dict, keep_direct: bool = False) -> str:
+    """この依頼の件を決める（2026-11-19 本人が A を選んだ: 続きなら同じ件、それ以外は新しい件）。続きは、次の順に見る:
+    1. まだ報告の来ていない同じセッションへの前の依頼にまとめた（merge_open。#54 の報告のまとめと同じ）→ その件
+    2. Slack の同じスレッドから頼まれた（スレッドの無い、DM の一番上の依頼は続きと見なさない）→ そのスレッドの件
+    3. 画面の「↩ 返信」で報告に返した発言を、ハブが扱っている間の依頼（Slack から頼まれた依頼は除く）→ その報告の件
+    どれでもなければ新しい件。続きにするのは、前の件と同じセッション（空でないセッション ID が同じ）への依頼だけ。Slack のスレッドと返信中かは
+    ハブ（乗せられうる Hermes）の申告に頼るので、別のセッションへの依頼を前の件に結ぶと、前の件のリンク（Slack・通知）の行き先を別のセッションの
+    問いに書き換えられてしまう。続きの件は、Slack のスレッドを新しいほうに置き換える。同期で呼ぶ（dispatch の中、await しない）。
+    keep_direct: この依頼を送り終えるのを待つ間に、同じセッションへ画面・声から直接送られていた。直接送った印を外さない（新しい件にも付ける）"""
+    pane, session, slack = d["pane"], d.get("session") or "", d.get("slack")
+    for tid in (next((e.get("topic") for e in reversed(d.get("chain") or []) if e.get("topic")), None),
+                topics.by_slack(slack, session) if slack and session else None,
+                HUB.reply_topic() if not slack else None):
+        t = topics.get(tid)
+        if t and session and t["session"] == session and topics.touch(tid, pane, session, slack, clear_direct=not keep_direct):
+            if keep_direct:  # 続きの件（いま一番新しい件になった）にも、はっきり印を付ける（あとの件に付いた印だけでは、この件が印なしになる）
+                topics.mark_direct(session)
+            return tid
+    tid = topics.new(pane, session, d["project"], d["text"] or f"{d['project']}｜{d['title']}", slack)
+    if keep_direct:
+        topics.mark_direct(session)
+    return tid
 
 
 def report_idle() -> asyncio.Event:
@@ -2151,7 +2191,7 @@ async def _hub_answer(body: dict):
         path = jsonl_path(a)
         start_watch({"pane": pane, "cwd": a["cwd"], "project": project, "title": a["title"], "text": "", "generic": True,
                      "offset": path.stat().st_size if path and path.exists() else 0, "was_working": True,
-                     "gen": WATCH_GEN.setdefault(pane, 0)}, "answer")
+                     "gen": WATCH_GEN.setdefault(pane, 0), "topic": topics.current_for_session(a.get("session") or "")}, "answer")  # 答えた問いは、そのセッションの一番新しい件のもの（直接送った別の話のあとなら、どの件にも結ばない）
     return JSONResponse({"ok": True, "project": project, "title": a["title"], "said": said})
 
 
@@ -2265,6 +2305,34 @@ def _asked(pane: str, key: str) -> tuple[dict | None, dict]:
     if not a or not key or a.get("session") != key:
         return None, {"kind": "gone"}
     return a, _ask_of(a)
+
+
+@app.get("/api/topic")
+async def api_topic(id: str = ""):
+    """件の URL（/#t=<件>）で画面を開いたとき、画面がその件を引く口（画面だけ。コンテナからは使えない）。
+    返すのは、どのセッションの件か（pane・セッション）と題だけ。開いた画面がするのは、選ぶ・出すだけ。"""
+    t = topics.get(id)
+    if not t:
+        return JSONResponse({"ok": False, "reason": "gone"})
+    rep = await asyncio.to_thread(HUB.topic_report, t["id"])  # その件の一番新しい報告（画面の履歴に出ていない古い報告も）
+    # current: そのセッションの一番新しい件か。いまの問いは一番新しい件のものとする（同じセッションの古い件のリンクで、あとの件の問いを見せない）
+    # 画面・声からそのセッションへ直接送ったあと（direct の印）は、いまの問いがこの件のものか分からないので、問いを見せず報告を開く。
+    # 報告を読む間に直接送られた印も見るよう、待ちから戻ってから件を読み直して決める
+    def eligible() -> bool:
+        now_t = topics.get(t["id"]) or {}
+        return bool(t["session"]) and bool(now_t) and topics.latest_for_session(t["session"]) == t["id"] and not now_t.get("direct")
+
+    current, ask = eligible(), None
+    if current:  # いまの問い（指紋つき）も本体が決めて返す。画面は、この指紋の問いだけを光らせる（あとで変わった問い・別の話の問いは光らせない）
+        a = next((x for x in await asyncio.to_thread(list_agents) if x["pane"] == t["pane"] and x.get("session") == t["session"]), None)
+        if a and (a["status"] == "blocked" or stepping(a)):
+            q = await asyncio.to_thread(_ask_of, a)
+            if q.get("kind") != "none" and isinstance(q.get("fp"), str):
+                ask = {"pane": a["pane"], "key": t["session"], "fp": q["fp"],  # fp は画面の末尾の指紋。sfp は 1 問ずつの問い全体の指紋（長い問いの違いも見分ける）
+                       **({"sfp": q["sfp"]} if isinstance(q.get("sfp"), str) else {})}
+        if not eligible():  # 問いを読む間に直接送られた・次の件ができた
+            current, ask = False, None
+    return JSONResponse({"ok": True, **{k: t[k] for k in ("id", "pane", "session", "project", "title")}, "report": rep, "current": current, "ask": ask})
 
 
 @app.get("/api/prompts")
@@ -2699,6 +2767,7 @@ async def ws(sock: WebSocket):
         SENT_GEN[pane] = SENT_GEN.get(pane, 0) + 1  # 画面・声からの直接の指示も、前の件の Slack への報告に新しい結果を載せない（送る前に進める）
         async with pane_lock(pane):  # ハブが自動通知に応答している最中なら、それが終わってから送る
             SENT_GEN[pane] = SENT_GEN.get(pane, 0) + 1  # 順番を待つ間に、ハブ経由の件が送られていることがある。実際に送る直前にも進める
+            topics.mark_direct(agent.get("session") or "")  # 直接送った話の問いを、前の件のリンクで見せない
             # 返事が来るまで（止められても、送る処理が裏で終わるまで）に送られたハブ経由の件は、重なった件として扱う
             state, reply = await asyncio.shield(track_send(pane, ask(agent, text + extra)))
             if cancel.is_set():

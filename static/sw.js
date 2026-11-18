@@ -71,11 +71,16 @@ self.addEventListener('push', e => {
   }));
 });
 
+// 通知を押したとき。開く場所は、この画面のはじめ（/）か件（/#t=<件>）だけ（ほかの形は / にする）。
+// 開いている画面があれば、そこへ寄せて件の場所を渡す（画面が #t= を受けて、その件を開く）。無ければ件の場所で開く
 self.addEventListener('notificationclick', e => {
   e.notification.close();
-  const url = new URL((e.notification.data && e.notification.data.url) || '/', self.location.origin).href;
+  let url = new URL((e.notification.data && e.notification.data.url) || '/', self.location.origin);
+  if (url.origin !== self.location.origin || url.pathname !== '/' || url.search || !(url.hash === '' || /^#t=t[0-9a-f]{10}$/.test(url.hash))) url = new URL('/', self.location.origin);
   e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
     const open = list.find(c => new URL(c.url).origin === self.location.origin);
-    return open ? open.focus() : self.clients.openWindow(url);
+    if (!open) return self.clients.openWindow(url.href);
+    if (url.hash) open.postMessage({ type: 'open', url: url.href });
+    return open.focus();
   }));
 });

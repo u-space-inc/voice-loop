@@ -23,6 +23,7 @@
   .msg.me { align-self:flex-end; background:var(--me); border-bottom-right-radius:4px; white-space:pre-wrap; }
   .msg.ai { align-self:flex-start; background:var(--ai); border:1px solid var(--line); border-bottom-left-radius:4px; }
   .msg.ai.speaking { border-color: var(--ok); }
+  .flash { outline:2px solid var(--ok); outline-offset:2px; } /* 件の URL で開いた問い・報告 */
   .msg.pending { opacity:.6; }
   .sys { align-self:center; color:var(--mute); font-size:12px; text-align:center; }
   .msg .rep { display:flex; align-items:center; gap:8px; margin:0 0 6px; font-size:12px; color:var(--mute); white-space:normal; }
@@ -499,15 +500,18 @@ function renderThread(msgs) {
   if (!msgs.length) sys('このセッションにはまだ会話がありません');
   msgs.forEach(m => m.role === 'note' ? sys('通知: ' + m.text) : m.role === 'error' ? sys('⚠ ' + m.text) : decorate(bubble(m.role, m.text), m)); // note = ハブへの自動通知（頼んだ件が片づいた等）。error = Hermes に届かなかった・返事が無かった
 }
+const TOPIC_RE = /^t[0-9a-f]{10}$/; // 件の id（scripts/topics.py の ID_RE と同じ形）
 // ハブの会話の吹き出しに、どの件の報告か（report・about）と「↩ 返信」、報告への返信として送った発言には返信先（reply_to）を出す。文字としてだけ入れる
 function decorate(el, m) {
   if (m.role === 'ai' && m.report) {
     const h = node('div', 'rep'); h.appendChild(node('span', 'about', '報告｜' + (m.about || '')));
     if (typeof m.at === 'number') {
       const b = node('button', 'reply', '↩ 返信'); b.type = 'button'; b.title = 'この報告への返事として送る（次に話す・打つ発言に付けます）';
-      b.onclick = () => setReplyTarget({ at: m.at, about: m.about || '' });
+      b.onclick = () => { cancelTopic(); setReplyTarget({ at: m.at, about: m.about || '' }); };
       h.appendChild(b);
+      el.dataset.at = String(m.at); el.dataset.about = m.about || '';
     }
+    if (TOPIC_RE.test(m.topic || '')) el.dataset.topic = m.topic; // どの件の報告か（件の URL で開くときに探す）
     el.prepend(h);
   } else if (m.role === 'me' && m.reply_to) el.prepend(node('div', 'rep', '↩ ' + m.reply_to + ' の報告へ'));
   return el;
@@ -565,6 +569,78 @@ async function sendAttach(pane, list, how) {
 }
 // 送った添付だけを外す（送っている間に足したものは残す）
 function dropSent(list) { attachFiles = attachFiles.filter(f => !list.includes(f)); renderAttach(); }
+// 件の URL（/#t=<件>。プッシュ通知・Slack のリンク）で開いたとき。その件のセッションが問いで止まっていれば、その問いの欄を見せる。
+// そうでなければ、ハブの会話にあるその件の一番新しい報告を「↩ 返信」の状態にする。開くだけで、答える・送るは利用者が押す。
+// 件の形が違う・見つからないときは知らせるだけ。読み直しで繰り返さないよう、URL の #t= は外す
+function flash(el) { el.classList.add('flash'); el.scrollIntoView({ block: 'center' }); clearTimeout(el._flash); el._flash = setTimeout(() => el.classList.remove('flash'), 4000); }
+let topicSeq = 0;
+let pendingTopic = null; // 本体に届かず開けなかった件。つながりしだい catchUp が開き直す（URL の #t= はもう外してある）
+// 利用者が相手・返信先を選んだ・外した・発言を送ったら、開いている途中の件（と、つながったら開く件）はやめる（あとから相手や返信先を上書きしない）
+// 起動を待つ間でまだ取り込んでいない URL の #t= も外す（起動のあとで件を開かない）
+function cancelTopic() { topicSeq++; pendingTopic = null; if (/^#t=/.test(location.hash)) history.replaceState(null, '', location.pathname + location.search); }
+// 件を開くときの読み込み。返らないまま止まったら（つながったまま応答が無い）見切って、届かなかったものとして開き直しに回す
+const TOPIC_WAIT = 6000;
+async function topicFetch(url) {
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), TOPIC_WAIT);
+  try { return await (await fetch(url, { signal: ctl.signal })).json(); } finally { clearTimeout(timer); }
+}
+async function openTopic() {
+  const m = /^#t=(.*)$/s.exec(location.hash);
+  if (!m && !pendingTopic) return;
+  const id = m ? m[1] : pendingTopic;
+  if (m) history.replaceState(null, '', location.pathname + location.search);
+  pendingTopic = id; // 開き終えるまで覚えておく（読み込みが止まったままつながり直したら、catchUp が開き直す。前の処理は世代で捨てる）
+  const seq = ++topicSeq; // 前に開いていた件の処理は、待ちから戻っても何も変えない（あとで開いた件が勝つ）
+  let keep = false;
+  try {
+  setReplyTarget(null); // 別の件を開いたら、前に選んでいた返信先は外す（開いた件の報告に付け直すときだけ付ける）
+  if (!TOPIC_RE.test(id)) { sys('この件のリンクの形が違うので、開けませんでした'); return; }
+  let t, reached = true; try { t = await topicFetch('/api/topic?id=' + id); } catch { t = null; reached = false; }
+  if (seq !== topicSeq) return;
+  // 届かなかった件は覚えておき、つながったとき（catchUp）と、つながっていれば少し待ってから開き直す
+  const later = () => { keep = true; pendingTopic = id; sys('本体に届かないので、つながったらこの件を開きます'); setTimeout(() => { if (pendingTopic === id && linked()) openTopic(); }, 3000); };
+  if (!reached) { later(); return; }
+  if (!t || !t.ok) { sys('この件は見つかりませんでした（古くなったか、消えました）'); return; }
+  closeViewer(); if (reading) setReading(false); // 画像を見ている・広げて読んでいる間に開いたら、普通の表示に戻す（光らせる欄が後ろに隠れて押せないため）
+  // 問いの欄を見せるのは、本体がこの件の問いとして返した問い（同じセッションで、その件がそのセッションの一番新しい件、直接送られていない）だけ。
+  // 光らせるのは、本体が返した指紋と同じ問いの欄だけ（あとで変わった問い・直接送った別の話の問いは光らせない。古い件ならその件の報告を開く）
+  // 問いの一覧は、この処理が自分で（期限つきで）読み、その場で描いてから照らす（並んで走る loadAsks の取り込みに左右されない）。
+  // 読めなかった・返らなかったら、件を覚えて開き直す。描いた問いの指紋が違えば（問いがもう変わっていた）、件の報告のほうを開く
+  const ak = t.ask;
+  if (t.current === true && t.session && ak && ak.pane === t.pane && ak.key === t.session && typeof ak.fp === 'string') {
+    let qs; try { qs = await topicFetch('/api/prompts'); } catch { qs = null; }
+    if (seq !== topicSeq) return;
+    if (!Array.isArray(qs)) { later(); return; }
+    ++asksSeq; applyAsks(qs);
+    const it = asks.get(ak.pane);
+    if (it && it.q.key === ak.key && it.q.fp === ak.fp && (it.q.sfp || null) === (typeof ak.sfp === 'string' ? ak.sfp : null)) { flash(it.el); setStatus(`${t.project}｜問いに答えてください（押すまで答えません）`); return; }
+  }
+  if (!agents.length) await Promise.race([loadAgents(), new Promise(res => setTimeout(res, TOPIC_WAIT))]); // 一覧は届いても、会話の読み込みで止まることがある
+  if (seq !== topicSeq) return;
+  if (!agents.length) { later(); return; } // 話し相手の一覧を読めなかった（ハブが居ないのとは違う）
+  const hub = agents.find(a => a.hub);
+  if (!hub) { sys(`${t.project}｜${t.title}: 報告はハブの会話にありますが、ハブが居ません`); return; }
+  if ($('agent').value !== hub.pane) { $('agent').value = hub.pane; setReplyTarget(null); localStorage.setItem(WANT, 'hub'); shownPane = hub.pane; applyTarget(); renderSessions(); } // PC の左の一覧の印も替える
+  // 返信先にするのは、本体が記録から探したその件の一番新しい報告（画面の履歴に出ていない古い報告でも）。会話の読み込みを待たずに付ける
+  const r = t.report;
+  if (r && typeof r.at === 'number') setReplyTarget({ at: r.at, about: String(r.about || '') });
+  // ハブの会話は、選んでいても読み直す（前に開いた件の読み込みが遅れて戻っても、loadThread が古いほうを捨てる。この件の案内は描き直したあとに出す）。
+  // 読み込みが返らないまま止まっても、期限で見切って案内を出す
+  await Promise.race([loadThread(), new Promise(res => setTimeout(res, TOPIC_WAIT))]);
+  if (seq !== topicSeq) return;
+  if (!r || typeof r.at !== 'number') { sys(`${t.project}｜${t.title}: この件の報告は、まだありません`); return; }
+  const el = [...$('log').querySelectorAll('.msg.ai')].find(e => e.dataset.topic === t.id && Number(e.dataset.at) === r.at);
+  if (el) flash(el); else sys(`${t.project}｜${t.title}: この件の報告は古いので画面の履歴には出ていませんが、返信先にしました`);
+  } finally { if (!keep && seq === topicSeq && pendingTopic === id) pendingTopic = null; } // 開き終えた（開けないと決まった）件は忘れる
+}
+window.addEventListener('hashchange', () => openTopic());
+// 通知を押したとき、開いていた画面には sw.js が件の場所を渡す（この画面の中の #t= だけを受ける）
+navigator.serviceWorker?.addEventListener('message', e => {
+  const d = e.data;
+  if (!d || d.type !== 'open' || typeof d.url !== 'string') return;
+  let u; try { u = new URL(d.url, location.origin); } catch { return; }
+  if (u.origin === location.origin && u.pathname === '/' && !u.search && /^#t=t[0-9a-f]{10}$/.test(u.hash)) location.hash = u.hash;
+});
 // 返信先の報告（{ at, about }）。ハブの会話のときだけ付けて送り、送ったら外す。相手を替えたら外す
 let replyTarget = null;
 function setReplyTarget(t) {
@@ -644,10 +720,11 @@ async function showSetup(seq) {
   sys(`準備があと ${todo.length} つ残っています。`);
   todo.forEach((c, i) => sys(`${i + 1}. ${c.name}: ${c.todo}`));
 }
-$('replyClear').onclick = () => setReplyTarget(null);
+$('replyClear').onclick = () => { cancelTopic(); setReplyTarget(null); };
 $('attachBtn').onclick = () => $('attachInput').click();
 $('attachInput').onchange = () => { addAttach([...$('attachInput').files]); $('attachInput').value = ''; };
-$('agent').onchange = () => { setReplyTarget(null); localStorage.setItem(WANT, curKey()); shownPane = $('agent').value; applyTarget(); setStatus(linked() ? '準備できました' : UNREACHABLE); loadThread(); };
+$('agent').onchange = () => { cancelTopic(); setReplyTarget(null);
+  localStorage.setItem(WANT, curKey()); shownPane = $('agent').value; applyTarget(); setStatus(linked() ? '準備できました' : UNREACHABLE); loadThread(); };
 
 // ---------- 承認で止まっているセッションへの返答（ボタン） ----------
 // 話し相手（ハブなど）の画面のまま、承認で止まっているセッションをすべて画面の上に並べる（名前・聞かれている中身・許可（今回だけ）・断る）。
@@ -676,6 +753,11 @@ async function loadAsks() {
   const seq = ++asksSeq;
   let list; try { list = await (await fetch('/api/prompts')).json(); } catch { list = []; } // 読めないときは、ボタンを出さないほうに倒す
   if (seq !== asksSeq) return;
+  applyAsks(list);
+}
+// 読んだ問いの一覧を、上の欄に描く（件の URL で開く処理も、自分で読んだ一覧をここで描く。そのとき asksSeq を進め、並んで走る古い読み込みを捨てる）
+function applyAsks(list) {
+  if (!Array.isArray(list)) list = [];
   const now = Date.now();
   // 答えたばかりのセッションは、3秒のあいだは中身を問わず、同じ問いなら15秒のあいだ出し直さない
   // （答えた直後は、herdr の状態がまだ「止まっている」で、画面は書き換わる途中のため）
@@ -1531,7 +1613,7 @@ function connect() {
   const sock = ws, giveUp = setTimeout(() => { if (sock.readyState === 0) sock.close(); }, 5000); // 通信が止まって待たされるときは見切る
   ws.onopen = () => {
     clearTimeout(giveUp); $('conn').classList.add('on'); setStatus('準備できました'); applyTarget(); hello(); clog('connected ' + navigator.userAgent);
-    if (away || !agentsSig || !$('speaker').options.length) { away = false; catchUp(); } // 起動時に読めなかったものも取り直す
+    if (away || !agentsSig || !$('speaker').options.length || pendingTopic) { away = false; catchUp(); } // 起動時に読めなかったもの（開けなかった件も）を取り直す
   };
   ws.onclose = () => {
     clearTimeout(giveUp); if (sock !== ws) return;
@@ -1568,6 +1650,7 @@ function linked() { return !!ws && ws.readyState === 1; }
 async function catchUp() {
   await ensureSpeakers();
   agentsSig = ''; shownPane = null; // 一覧と履歴を描き直させる
+  if (location.hash || pendingTopic) openTopic(); // 件の URL で開いた・本体に届かず開けなかった件（一覧と会話の読み込みを待たない）
   await loadAgents();
   loadAsks();
 }
@@ -1604,6 +1687,7 @@ async function startRec() {
     if (!$('agent').value) { setStatus('話し相手を選んでください'); return; }
     if (attachJob) { setStatus('添付を送っている途中なので、話した内容は送っていません'); return; }  // 前の発言の添付を送っている間は重ねない
     // 宛先・返信先・添付は話し終えた時点で固定する（添付を置いている間に相手や欄が変わっても、ずらさない）
+    cancelTopic();
     const pane = $('agent').value, key = curKey(), rf = replyFields(), list = attachFiles.slice();
     const files = await sendAttach(pane, list, '話した内容');
     if (!files) return;
@@ -1639,6 +1723,7 @@ $('typedForm').onsubmit = async e => {
   e.preventDefault(); if (attachJob) return;
   const t = $('typed').value.trim(); if ((!t && !attachFiles.length) || $('send').disabled || !$('agent').value || !linked()) return;
   // 宛先・返信先（とその件の名前）・添付は押した時点で固定する。待つ間に欄が変わっても、ここで決めたものだけを送る
+  cancelTopic();
   const pane = $('agent').value, key = curKey(), rf = replyFields(), about = rf.reply_at !== undefined ? replyTarget.about : '', list = attachFiles.slice();
   prime();  // 読み上げの許可は、押したその場で取る（添付を置き終えるのを待ってからでは、iPhone の Safari が押した操作と見ない）
   const files = await sendAttach(pane, list, '文と添付');
@@ -1681,6 +1766,9 @@ setInterval(() => { if (!document.hidden && document.activeElement !== $('agent'
 setInterval(() => { if (!document.hidden) loadAsks(); }, 5000); // 承認で止まっているセッションを、話し相手の画面のまま上に並べる
 loadAsks();
 // 一覧と声を読んでからつなぐ。届かないときは5秒で見切って案内を出し、つなぎに行く（つながりしだい catchUp で取り直す）
+// 件の URL（通知・Slack のリンク）で新しく開いたときは、起動の読み込み（一覧・会話・声）を待たずに件を開く（初めの表示では hashchange が起きない。
+// 届かなければ、件を覚えておき catchUp と少し待ってから開き直す）
+if (location.hash) openTopic();
 Promise.race([Promise.allSettled([loadAgents(), ensureSpeakers()]).then(() => true), new Promise(r => setTimeout(() => r(false), 5000))])
   .then(replied => { if (!replied) setStatus(UNREACHABLE); connect(); });
 </script>
