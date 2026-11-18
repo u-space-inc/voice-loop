@@ -619,6 +619,19 @@ with sync_playwright() as p:
         lit = False
     check("画面: 問いの一覧の読み込みだけが失敗しても「問いなし」にせず、報告のほうへ進まない。件を覚えて開き直し、問いの欄を光らせる",
           (lit, "つながったらこの件を開きます" in logs(fresh), fresh.eval_on_selector("#replyBar", "e => e.hidden")), (True, True, True))
+    fresh.evaluate("""() => { document.querySelectorAll('.flash').forEach(e => e.classList.remove('flash'));
+      const of = window.fetch; let n = 0;  // 件を引く読み込みが、通信が切れて返らないまま止まる
+      window.fetch = (u, ...a) => (String(u).startsWith('/api/topic') && ++n === 1) ? new Promise(() => {}) : of(u, ...a);
+    }""")
+    fresh.evaluate(f"location.hash = '#t={ASK_T}'")
+    fresh.wait_for_timeout(500)
+    fresh.evaluate("catchUp()")  # つながり直したとき（ws.onopen）と同じ取り直し
+    try:
+        fresh.wait_for_function('[...document.querySelectorAll("#asks .ask.flash")].length === 1', timeout=8000)
+        lit = True
+    except Exception:
+        lit = False
+    check("画面: 件を引く読み込みが止まったままつながり直しても、件を覚えていて開き直す", (lit, fresh.evaluate("pendingTopic")), (True, None))
     fresh.evaluate("""() => { agents = []; agentsSig = '';
       const of = window.fetch; let n = 0;  // 報告の件を開くときに、話し相手の一覧の読み込みだけが一度失敗する
       window.fetch = (u, ...a) => (String(u).startsWith('/api/agents') && ++n === 1) ? Promise.reject(new TypeError('Failed to fetch')) : of(u, ...a);
