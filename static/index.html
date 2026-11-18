@@ -595,12 +595,17 @@ async function openTopic() {
   }
   if (!t || !t.ok) { sys('この件は見つかりませんでした（古くなったか、消えました）'); return; }
   closeViewer(); if (reading) setReading(false); // 画像を見ている・広げて読んでいる間に開いたら、普通の表示に戻す（光らせる欄が後ろに隠れて押せないため）
-  await loadAsks();
-  if (seq !== topicSeq) return;
-  const item = asks.get(t.pane);
   // 問いの欄を見せるのは、その件と同じセッション（空でないセッション ID が同じ）の問いで、その件がそのセッションの一番新しい件のときだけ
-  // （同じペインで作り直された別のセッションの問い・同じセッションのあとの件の問いは見せない。古い件ならその件の報告を開く）
-  if (item && t.current === true && t.session && item.q.key === t.session) { flash(item.el); setStatus(`${t.project}｜問いに答えてください（押すまで答えません）`); return; }
+  // （同じペインで作り直された別のセッションの問い・同じセッションのあとの件の問いは見せない。古い件ならその件の報告を開く）。
+  // 問いがあるかは、この処理が自分で本体に聞いて決める（並んで走る loadAsks の取り込みに負けて、古い一覧で報告のほうへ進まない）
+  let qs; try { qs = await (await fetch('/api/prompts')).json(); } catch { qs = []; }
+  if (seq !== topicSeq) return;
+  if (t.current === true && t.session && Array.isArray(qs) && qs.some(q => q && q.pane === t.pane && q.key === t.session)) {
+    askFlash = { pane: t.pane, key: t.session, seq }; // 欄を描いたら光らせる（この loadAsks が並んだ取り込みに負けても、あとで描いた時点で）
+    await loadAsks();
+    if (seq === topicSeq) { flashAsk(); setStatus(`${t.project}｜問いに答えてください（押すまで答えません）`); }
+    return;
+  }
   if (!agents.length) await loadAgents();
   if (seq !== topicSeq) return;
   const hub = agents.find(a => a.hub);
@@ -749,6 +754,15 @@ async function loadAsks() {
     if (item) { disarm(item); item.el.replaceWith(el); } else $('asks').appendChild(el);
     asks.set(q.pane, { q, el, armed: null, armedFor: null, busy: false });
   }
+  flashAsk();
+}
+// 件の URL で開いた問いの欄を、描いた時点で光らせる（開いた件のあとに利用者が別の件・相手を選んだら光らせない）
+let askFlash = null;
+function flashAsk() {
+  const f = askFlash; if (!f) return;
+  if (f.seq !== topicSeq) { askFlash = null; return; }
+  const item = asks.get(f.pane);
+  if (item && item.q.key === f.key) { askFlash = null; flash(item.el); }
 }
 function renderAsk(q) {
   const el = document.createElement('div'), head = document.createElement('div');

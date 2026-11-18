@@ -590,6 +590,23 @@ with sync_playwright() as p:
     except Exception:
         reopened = False
     check("画面: 本体に届かない間に件の URL で開いても、件を覚えておき、つながってから開く", (waited, reopened, fresh.evaluate("location.hash")), (True, True, ""))
+    fresh.evaluate("""() => {  // 件を開く途中の問いの読み込みに、並んで走る遅い loadAsks（5 秒ごとの更新など）が重なる
+      asks.forEach(i => i.el.remove()); asks.clear();
+      const of = window.fetch; let n = 0;
+      window.fetch = (u, ...a) => {
+        if (String(u).startsWith('/api/prompts')) {
+          n++;
+          if (n === 1) { setTimeout(() => loadAsks(), 0); return new Promise(r => setTimeout(() => r(of(u, ...a)), 300)); }
+          if (n === 2) return new Promise(r => setTimeout(() => r(of(u, ...a)), 1500));
+        }
+        return of(u, ...a);
+      };
+    }""")
+    fresh.evaluate(f"location.hash = '#t={ASK_T}'")
+    fresh.wait_for_timeout(2500)
+    check("画面: 件を開く途中に並んで走る問いの読み込みがあっても、承認待ちの件は問いの欄を光らせる（報告のほうへ進まない）",
+          (fresh.evaluate("[...document.querySelectorAll('#asks .ask.flash')].length"), fresh.eval_on_selector("#replyBar", "e => e.hidden"),
+           "この件の報告は" in logs(fresh)), (1, True, False))
     fresh.close()
     fresh = browser.new_page()  # 一覧と声は読めて、件を引く口だけが一度失敗した（つながり直しは起きない）
     fresh.set_viewport_size({"width": 390, "height": 844})
