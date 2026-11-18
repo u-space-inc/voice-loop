@@ -1384,6 +1384,7 @@ const MEM_FAIL = {
   stale: '画面が古くなっていました。読み直しました', changed: 'その項目は、いまの記憶にありません（Hermes が書き換えたか、消しました）。読み直しました',
   refused: 'Hermes が断りました', invalid: '文の形が受け付けられません', busy: '前の書き込みが終わるのを待っています',
   unverifiable: '前の書き込みが終わったか確かめられないので、書きません', state: '状態を書けないので、書きません',
+  unreadable: '記憶を読めないので、書きません',
   off: 'Hermes がハブでないか、置き場がありません', unknown: '当たったか分かりません。読み直して確かめてください（自動では送り直しません）',
 };
 const memTyping = () => { const a = document.activeElement; return !!a && a.tagName === 'TEXTAREA' && $('memPanel').contains(a); };

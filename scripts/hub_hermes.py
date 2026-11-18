@@ -786,6 +786,11 @@ async def _hmem_write(op: str, body: dict) -> JSONResponse:
     # 書いてから比べるもとを進めるまでを、見張りの読み取り（_learn_memory）と同じ鍵の中で行う
     # （書いたあとの記憶を見張りが先に読むと、画面で書いたものが Hermes の学びとして残り、「戻す」で本人の書き込みを消せてしまう）
     async with HMEM_LEARN_LOCK:
+        # 書く前に、見張りと同じ読み取りで、ここまでの Hermes の変化を跡に残す（Hermes が足した項目を、見張りが読む前に画面で中身を変えずに保存したなど、
+        # 画面で書く項目と同じ中身の Hermes の変化を、外す項目に紛れさせて跡から落とさない）。読めない・跡を書けないときは書かない
+        why = await _learn_memory(target)
+        if why:
+            return JSONResponse({"ok": False, "reason": why})
         # 画面で書いて当たった項目だけを、Hermes の学びとして跡に残さない（当たらなかった・分からないものは外さない。ほかの変化は跡に残す）。
         # 読む側（記憶のファイルの読み取り）と同じく、改行を LF にそろえて前後の空白を外したもので照らす
         mine = {"added": [_hmem_norm(req["content"])] if op in ("add", "edit") else [], "removed": [req["entry"]] if op in ("edit", "remove") else []}
@@ -1167,15 +1172,17 @@ async def _hmem_run_mine(op: str, req: dict, target: str, mine: dict) -> dict:
 _HMEM_MINE: dict[str, dict] = _load_hmem_mine()
 
 
-async def _learn_memory():
+async def _learn_memory(need: str | None = None) -> str:
     """記憶を読み、前に読んだとき（比べるもと）から足された・消えた項目を跡に残し、比べるもとを進める。
     本体が書いた項目（_HMEM_MINE。画面で足す・直す・消したとき、学んだことを戻したとき）は跡から外し、ほかの変化（同じ間に Hermes が書いたもの）は
     跡に残す。跡と比べるもとは、同じ 1 回の書き込みで進める（跡を書けなければ、比べるもとも進めない。次に読んだときに残し直す）。
     外す項目の手放し方: 確かに書けたもの（sure）は、比べるもとに取り込めたら手放す（書いたあとに読んでいるので、もう比べるもとに入っている。
     中身を変えない保存も、ここで消える）。書けたか分からないもの（maybe）は、照らし合って外したものだけを手放し、まだ現れないものは
-    HMEM_MINE_KEEP まで持ち続ける（期限を過ぎたものは、差分を見る前に手放す）。読めない記憶のファイルは比べない。"""
+    HMEM_MINE_KEEP まで持ち続ける（期限を過ぎたものは、差分を見る前に手放す）。読めない記憶のファイルは比べない。
+    戻り値は、跡と比べるもとを進めて need の記憶のファイルも読めたら ""。進められなければ "off"・"state"、need を読めなければ "unreadable"
+    （本体が記憶を書く前に呼び、"" でなければ書かない）。"""
     if not hsk_on():
-        return
+        return "off"
     got = await asyncio.to_thread(hermes_memory.read_targets, HERMES_HOME)
     cur = {t: v["entries"] for t, v in got.items() if v["status"] in ("ok", "missing")}
     with _hlearn_lock:
@@ -1189,7 +1196,7 @@ async def _learn_memory():
             _save_hmem_mine()
         d = hlearn_state()
         if d is None:
-            return
+            return "state"
         prev = d.get("memory")
         new, used = [], {}
         if prev is not None:
@@ -1213,7 +1220,7 @@ async def _learn_memory():
             _hlearn_save(d)
         except OSError:
             traceback.print_exc()
-            return
+            return "state"
         changed = False
         for t in cur:  # 比べるもとに取り込めた記憶のファイルの分だけ手放す
             slot = _HMEM_MINE.get(t)
@@ -1233,6 +1240,7 @@ async def _learn_memory():
             changed = True
         if changed:
             _save_hmem_mine()
+    return "" if need is None or need in cur else "unreadable"
 
 
 def _hlearn_detail(eid: str) -> dict | None:
@@ -1318,12 +1326,18 @@ async def api_hermes_learned_undo(body: dict):
                 return JSONResponse({"ok": False, "reason": "changed"})
             await asyncio.to_thread(_hlearn_set, eid, note=f"戻せたか分かりません（{core._clip(str(out.get('why') or res), 120)}）", can_undo=False)
             return JSONResponse({"ok": False, "reason": "unknown", "why": str(out.get("why") or res)[:200]})
-        got = await asyncio.to_thread(hermes_memory.read_targets, HERMES_HOME)
         t = e.get("target")
-        if t not in hermes_memory.TARGETS or got.get(t, {}).get("status") not in ("ok", "missing"):
+        if t not in hermes_memory.TARGETS:
             return JSONResponse({"ok": False, "reason": "unreadable"})
-        now, skipped, failed = got[t]["entries"], 0, []
+        skipped, failed = 0, []
         async with HMEM_LEARN_LOCK:  # 書いてから比べるもとを進めるまで、見張りに読ませない
+            why = await _learn_memory(t)  # 戻す前に、ここまでの Hermes の変化を跡に残す（戻す項目と同じ中身の Hermes の変化を、外す項目に紛れさせない）
+            if why:
+                return JSONResponse({"ok": False, "reason": why})
+            got = await asyncio.to_thread(hermes_memory.read_targets, HERMES_HOME)
+            if got.get(t, {}).get("status") not in ("ok", "missing"):
+                return JSONResponse({"ok": False, "reason": "unreadable"})
+            now = got[t]["entries"]
             for x in det.get("added", []):
                 if x not in now:
                     skipped += 1

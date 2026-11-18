@@ -682,10 +682,10 @@ def fake_mem_run(container, op, req=None, wait=90, env=None):
     MCALLS.append((op, dict(req or {})))
     path = MEM / s.hermes.hermes_memory.TARGETS[req["target"]]
     items = [x for x in path.read_text().split(D) if x]
-    if op == "remove":
+    if op in ("remove", "edit"):
         if req["entry"] not in items:
             return {"result": "changed"}
-        items = [x for x in items if x != req["entry"]]
+        items = [req["content"] if x == req["entry"] else x for x in items] if op == "edit" else [x for x in items if x != req["entry"]]
     elif op == "add":
         items.append(req["content"])
     path.write_text(D.join(items))
@@ -795,7 +795,19 @@ def save_fails(d):
     raise OSError("書けない")
 
 
-s.hermes._hlearn_save = save_fails
+def save_fails_after(n):
+    """n 回目までは書け、そのあとは書けない（画面で書く前の読み取りは書け、書いたあとの跡を保存できない）"""
+    calls = []
+
+    def run(d):
+        calls.append(1)
+        if len(calls) > n:
+            raise OSError("書けない")
+        return real_save(d)
+    return run
+
+
+s.hermes._hlearn_save = save_fails_after(1)
 try:
     r4 = json.loads(asyncio.run(s.hermes._hmem_write("add", {"target": "memory", "content": "保存できない間に画面で足した"})).body)
 finally:
@@ -886,12 +898,13 @@ check("記憶: 期限（HMEM_MINE_KEEP）を過ぎても現れない外す項目
 # 確かに書けた本人の書き込みは、比べるもとに取り込めるまで、期限を過ぎても外す（跡の状態を長く保存できなかった）
 asyncio.run(s.hermes._learn_memory())
 n11 = count()
-s.hermes._hlearn_save = save_fails
+s.hermes._hlearn_save = save_fails_after(1)
 try:
     r11 = json.loads(asyncio.run(s.hermes._hmem_write("add", {"target": "memory", "content": "長く保存できない間に足した"})).body)
 finally:
     s.hermes._hlearn_save = real_save
-s.hermes._HMEM_MINE["memory"]["at"] = time.time() - s.hermes.HMEM_MINE_KEEP - 1  # 期限を過ぎた
+if "memory" in s.hermes._HMEM_MINE:
+    s.hermes._HMEM_MINE["memory"]["at"] = time.time() - s.hermes.HMEM_MINE_KEEP - 1  # 期限を過ぎた
 asyncio.run(s.hermes._watch_memory())
 check("記憶: 確かに書けた本人の書き込みは、期限を過ぎても比べるもとに取り込めるまで外す（学びにしない）", (r11.get("ok"), count() - n11, "memory" in s.hermes._HMEM_MINE),
       (True, 0, False))
@@ -907,6 +920,82 @@ left = s.hermes._HMEM_MINE.get("memory")
 asyncio.run(s.hermes._watch_memory())
 check("記憶: 中身を変えずに保存しても外す項目を残さない（あとで Hermes が同じ項目を消したことは跡に残す）",
       (r12.get("ok"), left, count() - n12, [e["summary"] for e in learned()["entries"] if e["kind"] == "memory"][0]), (True, None, 1, same[:120]))
+# Hermes が足した項目を、見張りが読む前に画面で中身を変えずに保存した: Hermes が足したことは跡に残す（画面で書く前に読み取る）
+asyncio.run(s.hermes._learn_memory())
+n13 = count()
+(MEM / "MEMORY.md").write_text(D.join([x for x in (MEM / "MEMORY.md").read_text().split(D) if x] + ["見張りの前に Hermes が足した"]))
+v13 = s.hermes.hermes_memory.version("memory", "見張りの前に Hermes が足した")
+s.hermes.HMEM_SHOWN[v13] = ("memory", "見張りの前に Hermes が足した")
+r13 = json.loads(asyncio.run(s.hermes._hmem_write("edit", {"target": "memory", "v": v13, "content": "見張りの前に Hermes が足した"})).body)
+asyncio.run(s.hermes._watch_memory())
+lm13 = [e for e in learned()["entries"] if e["kind"] == "memory"][0]
+check("記憶: Hermes が足した項目を、見張りが読む前に画面で中身を変えずに保存しても、Hermes が足したことは跡に残す（戻せる）",
+      (r13.get("ok"), count() - n13, lm13["summary"], lm13["added"], lm13["removed"], lm13["can_undo"]), (True, 1, "見張りの前に Hermes が足した", 1, 0, True))
+# 同じく、見張りが読む前に画面で別の中身に直した: Hermes が足したことは跡に残し、画面で直したことは跡にしない
+n14 = count()
+(MEM / "MEMORY.md").write_text(D.join([x for x in (MEM / "MEMORY.md").read_text().split(D) if x] + ["Hermes がまた足した"]))
+v14 = s.hermes.hermes_memory.version("memory", "Hermes がまた足した")
+s.hermes.HMEM_SHOWN[v14] = ("memory", "Hermes がまた足した")
+r14 = json.loads(asyncio.run(s.hermes._hmem_write("edit", {"target": "memory", "v": v14, "content": "画面で直した中身"})).body)
+asyncio.run(s.hermes._watch_memory())
+check("記憶: Hermes が足した項目を、見張りが読む前に画面で直しても、Hermes が足したことは跡に残し、画面で直したことは跡にしない",
+      (r14.get("ok"), count() - n14, [e["summary"] for e in learned()["entries"] if e["kind"] == "memory"][0]), (True, 1, "Hermes がまた足した"))
+# 書く前の読み取りで跡を保存できない・記憶を読めないときは、画面からも書かない
+before15 = (MEM / "MEMORY.md").read_text()
+s.hermes._hlearn_save = save_fails
+try:
+    r15 = json.loads(asyncio.run(s.hermes._hmem_write("add", {"target": "memory", "content": "書く前の跡を保存できない"})).body)
+finally:
+    s.hermes._hlearn_save = real_save
+real_rt = s.hermes.hermes_memory.read_targets
+
+
+def memory_unreadable(home):
+    got = real_rt(home)
+    got["memory"] = {"status": "unreadable", "entries": []}
+    return got
+
+
+s.hermes.hermes_memory.read_targets = memory_unreadable
+try:
+    r16 = json.loads(asyncio.run(s.hermes._hmem_write("add", {"target": "memory", "content": "書く前に読めない"})).body)
+finally:
+    s.hermes.hermes_memory.read_targets = real_rt
+check("記憶: 書く前の読み取りで跡を保存できない・記憶を読めないときは、画面からも書かない（断る）",
+      (r15.get("reason"), r16.get("reason"), (MEM / "MEMORY.md").read_text() == before15), ("state", "unreadable", True))
+# 戻すも、戻す前に読み取る: Hermes が消した項目を、見張りが読む前に Hermes がまた足していたら、足したことを跡に残し、戻すは足し直さない（飛ばす）
+asyncio.run(s.hermes._learn_memory())
+(MEM / "USER.md").write_text(D.join([x for x in (MEM / "USER.md").read_text().split(D) if x] + ["消されてまた足される"]))
+asyncio.run(s.hermes._learn_memory())
+(MEM / "USER.md").write_text(D.join([x for x in (MEM / "USER.md").read_text().split(D) if x and x != "消されてまた足される"]))
+asyncio.run(s.hermes._learn_memory())
+gone17 = [e for e in learned()["entries"] if e["kind"] == "memory" and e["summary"] == "消されてまた足される" and e["removed"] == 1][0]
+n17 = count()
+(MEM / "USER.md").write_text(D.join([x for x in (MEM / "USER.md").read_text().split(D) if x] + ["消されてまた足される"]))  # 見張りの前に Hermes がまた足した
+with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+    MCALLS.clear()
+    ru17 = c.post("/api/hermes/learned/undo", json={"id": gone17["id"]}).json()
+asyncio.run(s.hermes._watch_memory())
+check("記憶の戻す: 戻す前に読み取り、見張りの前に Hermes がまた足した項目は跡に残し、戻すは飛ばす（書かない）",
+      (ru17, MCALLS, count() - n17, [e["summary"] for e in learned()["entries"] if e["kind"] == "memory"][0]),
+      ({"ok": True, "skipped": 1}, [], 1, "消されてまた足される"))
+# 戻す前の読み取り: Hermes が足して（跡 1）消した（跡 2）項目を、見張りの前にまた足していたとき、跡 1 を戻しても、また足したことは跡に残す
+asyncio.run(s.hermes._learn_memory())
+(MEM / "USER.md").write_text(D.join([x for x in (MEM / "USER.md").read_text().split(D) if x] + ["足して消してまた足す"]))
+asyncio.run(s.hermes._learn_memory())
+first18 = [e for e in learned()["entries"] if e["kind"] == "memory" and e["summary"] == "足して消してまた足す" and e["added"] == 1][0]
+(MEM / "USER.md").write_text(D.join([x for x in (MEM / "USER.md").read_text().split(D) if x and x != "足して消してまた足す"]))
+asyncio.run(s.hermes._learn_memory())
+(MEM / "USER.md").write_text(D.join([x for x in (MEM / "USER.md").read_text().split(D) if x] + ["足して消してまた足す"]))  # 見張りの前にまた足した
+n18 = count()
+with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+    MCALLS.clear()
+    ru18 = c.post("/api/hermes/learned/undo", json={"id": first18["id"]}).json()
+asyncio.run(s.hermes._watch_memory())
+again18 = [e for e in learned()["entries"] if e["kind"] == "memory"][0]
+check("記憶の戻す: 戻す前に読み取り、見張りの前に Hermes がまた足した項目は、戻すで消しても、また足したことを跡に残す",
+      (ru18, [(op, r.get("entry")) for op, r in MCALLS], count() - n18, again18["summary"], again18["added"]),
+      ({"ok": True, "skipped": 0}, [("remove", "足して消してまた足す")], 1, "足して消してまた足す", 1))
 # 見張りの 1 回: 手順の承認待ちを読めなくても、記憶は見る
 n5 = count()
 real_pending = s.hermes.hermes_skills.pending_ids
