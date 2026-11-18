@@ -2310,8 +2310,10 @@ async def api_topic(id: str = ""):
         return JSONResponse({"ok": False, "reason": "gone"})
     rep = await asyncio.to_thread(HUB.topic_report, t["id"])  # その件の一番新しい報告（画面の履歴に出ていない古い報告も）
     # current: そのセッションの一番新しい件か。いまの問いは一番新しい件のものとする（同じセッションの古い件のリンクで、あとの件の問いを見せない）
-    # 画面・声からそのセッションへ直接送ったあと（direct の印）は、いまの問いがこの件のものか分からないので、問いを見せず報告を開く
-    current = bool(t["session"]) and topics.latest_for_session(t["session"]) == t["id"] and not t.get("direct")
+    # 画面・声からそのセッションへ直接送ったあと（direct の印）は、いまの問いがこの件のものか分からないので、問いを見せず報告を開く。
+    # 報告を読む間に直接送られた印も見るよう、待ちから戻ってから件を読み直して決める
+    now_t = topics.get(t["id"]) or {}
+    current = bool(t["session"]) and topics.latest_for_session(t["session"]) == t["id"] and not now_t.get("direct") and bool(now_t)
     return JSONResponse({"ok": True, **{k: t[k] for k in ("id", "pane", "session", "project", "title")}, "report": rep, "current": current})
 
 

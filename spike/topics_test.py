@@ -292,6 +292,15 @@ check("画面の口: 件を引くと、どのセッションの件かと題（�
 with TestClient(s.app, base_url="http://host.docker.internal:8790") as c:
     r = c.get("/api/topic", params={"id": one["topic"]}, headers={"x-vl-key": "k1"})
 check("相手の位置: コンテナ（Hermes）からは、鍵があっても件を引けない（画面だけの口）", (r.status_code, "pane" in r.text), (403, False))
+race_t = s.topics.new("w5:p1", "s-race", "race", "報告を読む間に直接送られる件")
+real_topic_report = s.HUB.topic_report
+s.HUB.topic_report = lambda tid: (s.topics.mark_direct("s-race"), real_topic_report(tid))[1]  # 報告を読む間に、別の画面から直接送られた
+try:
+    with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+        race_cur = c.get("/api/topic", params={"id": race_t}).json().get("current")
+finally:
+    s.HUB.topic_report = real_topic_report
+check("相手の位置: 報告を読む間に直接送られても、その印を見て「いまの問いの件」としない", (race_cur, bool(s.topics.get(race_t).get("direct"))), (False, True))
 
 # ---------- ハブの記録 ----------
 s.hermes.hermes_log("ai", "lp の件が終わりました", report=True, about="lp｜見積", pane="w1:p1", topic=one["topic"], at=1700000000.25)
