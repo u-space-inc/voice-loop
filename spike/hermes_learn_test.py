@@ -841,7 +841,7 @@ try:
 finally:
     s.hermes.core.write_json = real_wj
 check("記憶: 外す項目の控えのファイルに書けなければ、画面からも記憶を書かない（断る）",
-      (r7.get("ok"), r7.get("reason"), (MEM / "MEMORY.md").read_text() == before_mem, s.hermes._HMEM_MINE.get("memory", {}).get("maybe_added", [])), (False, "state", True, []))
+      (r7.get("ok"), r7.get("reason"), (MEM / "MEMORY.md").read_text() == before_mem, s.hermes._maybe(s.hermes._HMEM_MINE.get("memory", {"maybe_added": []}), "added")), (False, "state", True, []))
 # 結果が分からない（時間切れ・失敗）書き込み: 外す項目は持ち続ける（書いていた・遅れて書き終えた、のどちらでも本人の書き込みを学びにしない）
 def uncertain_run(write: bool):
     def run(container, op, req=None, wait=90, env=None):
@@ -865,11 +865,11 @@ r9 = json.loads(asyncio.run(s.hermes._hmem_write("add", {"target": "memory", "co
 s.hermes.hermes_memory.run_script = fake_mem_run
 s.hermes.HMEM_FILE.unlink(missing_ok=True)
 asyncio.run(s.hermes._watch_memory())  # まだ現れない（台本は動いている）
-kept = "遅れて書き終える" in s.hermes._HMEM_MINE.get("memory", {}).get("maybe_added", [])
+kept = "遅れて書き終える" in s.hermes._maybe(s.hermes._HMEM_MINE.get("memory", {"maybe_added": []}), "added")
 (MEM / "MEMORY.md").write_text(D.join([x for x in (MEM / "MEMORY.md").read_text().split(D) if x] + ["遅れて書き終える"]))  # 遅れて書き終えた
 asyncio.run(s.hermes._watch_memory())
 check("記憶: 時間切れのあとで遅れて書き終えた本人の書き込みも学びにしない（外す項目は、照らし合うまで持ち続ける）",
-      (r9.get("reason"), kept, count() - n8, "遅れて書き終える" in s.hermes._HMEM_MINE.get("memory", {}).get("maybe_added", [])), ("unknown", True, 0, False))
+      (r9.get("reason"), kept, count() - n8, "遅れて書き終える" in s.hermes._maybe(s.hermes._HMEM_MINE.get("memory", {"maybe_added": []}), "added")), ("unknown", True, 0, False))
 # 比べるもとがまだ無いとき（初めての読み取りの前）に結果の分からない書き込みをし、本体を起動し直し、遅れて書き終えた
 st = json.loads(s.hermes.HLEARN_FILE.read_text())
 st["memory"] = None
@@ -887,14 +887,34 @@ asyncio.run(s.hermes._watch_memory())
 check("記憶: 比べるもとがまだ無いときの、結果の分からない本人の書き込みも、起動し直して遅れて書き終えても学びにしない", count() - n9, 0)
 asyncio.run(s.hermes._learn_memory())
 n10 = count()
-s.hermes._HMEM_MINE["memory"] = {"sure_added": [], "sure_removed": [], "maybe_added": ["期限のあとに Hermes が足した"], "maybe_removed": [], "at": time.time() - s.hermes.HMEM_MINE_KEEP - 1}
+s.hermes._HMEM_MINE["memory"] = {"sure_added": [], "sure_removed": [], "maybe_added": [["期限のあとに Hermes が足した", time.time() - s.hermes.HMEM_MINE_KEEP - 1]], "maybe_removed": []}
 (MEM / "MEMORY.md").write_text(D.join([x for x in (MEM / "MEMORY.md").read_text().split(D) if x] + ["期限のあとに Hermes が足した"]))
 asyncio.run(s.hermes._watch_memory())
 check("記憶: 期限を過ぎた外す項目は差分を見る前に手放す（期限のあとに Hermes が同じ中身を足した変化を、跡から落とさない）",
       (count() - n10, [e["summary"] for e in learned()["entries"] if e["kind"] == "memory"][0]), (1, "期限のあとに Hermes が足した"))
-s.hermes._HMEM_MINE["memory"] = {"sure_added": [], "sure_removed": [], "maybe_added": ["ずっと現れない"], "maybe_removed": [], "at": time.time() - s.hermes.HMEM_MINE_KEEP - 1}
+s.hermes._HMEM_MINE["memory"] = {"sure_added": [], "sure_removed": [], "maybe_added": [["ずっと現れない", time.time() - s.hermes.HMEM_MINE_KEEP - 1]], "maybe_removed": []}
 asyncio.run(s.hermes._watch_memory())
 check("記憶: 期限（HMEM_MINE_KEEP）を過ぎても現れない外す項目は手放す", "memory" in s.hermes._HMEM_MINE, False)
+# 期限は項目ごと: 結果の分からない書き込みのあとに、同じ記憶のファイルへ別の書き込みをしても、前の項目の期限を延ばさない
+asyncio.run(s.hermes._learn_memory())
+n19 = count()
+real_time = time.time
+clock = [real_time() - s.hermes.HMEM_MINE_KEEP - 100]  # 時刻は過去から今へ進める（跡の新しい順を崩さない）
+time.time = lambda: clock[0]
+try:
+    s.hermes.hermes_memory.run_script = uncertain_run(False)
+    asyncio.run(s.hermes._hmem_write("add", {"target": "memory", "content": "期限は項目ごと"}))
+    s.hermes.hermes_memory.run_script = fake_mem_run
+    s.hermes.HMEM_FILE.unlink(missing_ok=True)
+    clock[0] += s.hermes.HMEM_MINE_KEEP - 100
+    r19 = json.loads(asyncio.run(s.hermes._hmem_write("add", {"target": "memory", "content": "あとから画面で足した"})).body)
+    clock[0] = real_time()  # 前の書き込みから HMEM_MINE_KEEP + 100 秒あまり、あとの書き込みから 200 秒あまり
+    (MEM / "MEMORY.md").write_text(D.join([x for x in (MEM / "MEMORY.md").read_text().split(D) if x] + ["期限は項目ごと"]))  # 期限のあとに Hermes が同じ中身を足した
+    asyncio.run(s.hermes._watch_memory())
+finally:
+    time.time = real_time
+check("記憶: 外す項目の期限は項目ごと（あとの書き込みで前の項目の期限を延ばさず、期限のあとに Hermes が同じ中身を足したことは跡に残す）",
+      (r19.get("ok"), count() - n19, [e["summary"] for e in learned()["entries"] if e["kind"] == "memory"][0]), (True, 1, "期限は項目ごと"))
 # 確かに書けた本人の書き込みは、比べるもとに取り込めるまで、期限を過ぎても外す（跡の状態を長く保存できなかった）
 asyncio.run(s.hermes._learn_memory())
 n11 = count()
@@ -903,8 +923,9 @@ try:
     r11 = json.loads(asyncio.run(s.hermes._hmem_write("add", {"target": "memory", "content": "長く保存できない間に足した"})).body)
 finally:
     s.hermes._hlearn_save = real_save
-if "memory" in s.hermes._HMEM_MINE:
-    s.hermes._HMEM_MINE["memory"]["at"] = time.time() - s.hermes.HMEM_MINE_KEEP - 1  # 期限を過ぎた
+for side in ("added", "removed"):  # 期限を過ぎた
+    for m in s.hermes._HMEM_MINE.get("memory", {}).get("maybe_" + side, []):
+        m[1] = time.time() - s.hermes.HMEM_MINE_KEEP - 1
 asyncio.run(s.hermes._watch_memory())
 check("記憶: 確かに書けた本人の書き込みは、期限を過ぎても比べるもとに取り込めるまで外す（学びにしない）", (r11.get("ok"), count() - n11, "memory" in s.hermes._HMEM_MINE),
       (True, 0, False))
