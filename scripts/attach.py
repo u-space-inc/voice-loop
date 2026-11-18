@@ -129,6 +129,7 @@ def _tidy(root: Path, now: float):
 # 引数は「目印 名前」。中身を stdin で受け取り、結果を「VLRESULT {JSON}」の 1 行で返す（hermes_skills と同じ読み方）。
 # 置き場（VL_ATTACH_ROOT、ふだんは /opt/data）の voice-loop/attachments を、根から 1 段ずつ symlink をたどらずに開き（無ければ作る）、
 # O_EXCL・O_NOFOLLOW で書く。同じフォルダの、KEEP より古い名前の形の合うふつうのファイルを消す。
+# 同時に動いた別の台本が、フォルダを先に作った・古いファイルを先に消した場合は、そのまま続ける（発言を断らない）。
 _SCRIPT_MAIN = r'''
 import json, os, re, stat, sys, time
 
@@ -152,15 +153,21 @@ try:
         try:
             nfd = os.open(p, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
         except FileNotFoundError:
-            os.mkdir(p, 0o750, dir_fd=fd)
+            try:
+                os.mkdir(p, 0o750, dir_fd=fd)
+            except FileExistsError:
+                pass  # 同時に動いた別の台本が先に作った（開くのは同じく symlink をたどらずに）
             nfd = os.open(p, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
         os.close(fd)
         fd = nfd
     now = time.time()
     for old in os.listdir(fd):
-        st = os.stat(old, dir_fd=fd, follow_symlinks=False)
-        if NAME_RE.fullmatch(old) and stat.S_ISREG(st.st_mode) and now - st.st_mtime > KEEP:
-            os.unlink(old, dir_fd=fd)
+        try:
+            st = os.stat(old, dir_fd=fd, follow_symlinks=False)
+            if NAME_RE.fullmatch(old) and stat.S_ISREG(st.st_mode) and now - st.st_mtime > KEEP:
+                os.unlink(old, dir_fd=fd)
+        except FileNotFoundError:
+            continue  # 同時に動いた別の台本が先に消した
     ffd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640, dir_fd=fd)
     with os.fdopen(ffd, "wb") as f:
         f.write(data)

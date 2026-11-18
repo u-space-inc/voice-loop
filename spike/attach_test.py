@@ -7,8 +7,10 @@
   - 渡す: セッションには状態フォルダの場所を、ハブ（Hermes）にはコンテナの中に置いた場所を、発言の末尾に書く（ハブの承認の守りが見る発言には入れない）・知らない id・多すぎる・形の違う添付は
     送らずに断る・コンテナに置けなければ送らない・声の発言にも付けられる
   - 片づけ: 7 日より古い添付を消す（名前の形が合うふつうのファイルだけ）
-  - コンテナの中の台本: 置き場の voice-loop/attachments に O_EXCL で書く・途中が symlink なら書かない・名前の形が違えば書かない・古いものを消す
+  - コンテナの中の台本: 置き場の voice-loop/attachments に O_EXCL で書く・途中が symlink なら書かない・名前の形が違えば書かない・古いものを消す・
+    同時に動いた別の台本がフォルダを先に作った・古いものを先に消しても置ける
 使い方: uv run spike/attach_test.py"""
+import io
 import json
 import os
 import stat
@@ -236,6 +238,75 @@ oldc.write_bytes(PNG)
 os.utime(oldc, (time.time() - 8 * 86400,) * 2)
 put(attach.new_name(".txt"), "新しい".encode())
 check("台本: 置くついでに、7 日より古い添付を消す", oldc.exists(), False)
+
+
+def put_racing(name, data, root, **swap):
+    """台本をこの試験の中で動かし、os の関数を swap に差し替える（同時に動いた別の台本が、間に作った・消したことを決まった所で起こす）。
+    台本の終わり（os._exit）は、試験を止めずに戻るよう差し替える。"""
+    class Done(Exception):
+        pass
+
+    def fake_exit(code):
+        raise Done()
+
+    saved = {k: getattr(os, k) for k in (*swap, "_exit")}
+    saved_io = (sys.argv, sys.stdin, sys.stdout)
+    out = io.StringIO()
+    os.environ["VL_ATTACH_ROOT"] = str(root)
+    sys.argv, sys.stdin, sys.stdout = ["-c", attach.MARK, name], io.TextIOWrapper(io.BytesIO(data)), out
+    for k, v in {**swap, "_exit": fake_exit}.items():
+        setattr(os, k, v)
+    try:
+        exec(attach.SCRIPT, {"__name__": "__main__"})
+    except Done:
+        pass
+    finally:
+        for k, v in saved.items():
+            setattr(os, k, v)
+        sys.argv, sys.stdin, sys.stdout = saved_io
+        os.environ.pop("VL_ATTACH_ROOT", None)
+    line = next((l for l in reversed(out.getvalue().splitlines()) if l.startswith("VLRESULT ")), "VLRESULT {}")
+    return json.loads(line[len("VLRESULT "):])
+
+
+real_mkdir, real_stat, real_unlink = os.mkdir, os.stat, os.unlink
+RROOT = Path(TMP) / "container-race"
+RROOT.mkdir()
+
+
+def mkdir_raced(p, mode=0o777, *, dir_fd=None):
+    real_mkdir(p, mode, dir_fd=dir_fd)  # 別の台本が先に作った
+    raise FileExistsError(p)
+
+
+o = put_racing(attach.new_name(".png"), PNG, RROOT, mkdir=mkdir_raced)
+check("台本: 同時に動いた別の台本が置き場のフォルダを先に作っても、置ける", o.get("result"), "put")
+EROOT, OUTSIDE = Path(TMP) / "container-race-evil", Path(TMP) / "outside"
+EROOT.mkdir()
+OUTSIDE.mkdir()
+
+
+def mkdir_symlinked(p, mode=0o777, *, dir_fd=None):
+    os.symlink(str(OUTSIDE), p, dir_fd=dir_fd)  # 相手の位置: 乗せられた Hermes が、その瞬間にフォルダの代わりに symlink を置いた
+    raise FileExistsError(p)
+
+
+o = put_racing(attach.new_name(".png"), PNG, EROOT, mkdir=mkdir_symlinked)
+check("台本: 先に作られたのがフォルダでなく symlink なら、たどらずに書かない", (o.get("result"), list(OUTSIDE.iterdir())), ("error", []))
+oldr = RROOT / "voice-loop" / "attachments" / "20200101-000000-0badc0de.png"
+oldr.parent.mkdir(parents=True, exist_ok=True)  # 上の試験に頼らない
+oldr.write_bytes(PNG)
+os.utime(oldr, (time.time() - 8 * 86400,) * 2)
+
+
+def stat_raced(p, *a, dir_fd=None, follow_symlinks=True):
+    if p == oldr.name:
+        real_unlink(p, dir_fd=dir_fd)  # 別の台本が先に消した
+    return real_stat(p, *a, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+
+o = put_racing(attach.new_name(".png"), PNG, RROOT, stat=stat_raced)
+check("台本: 同時に動いた別の台本が古い添付を先に消しても、置ける", (o.get("result"), oldr.exists()), ("put", False))
 
 ok = sum(r[1] for r in results)
 for name, passed, got, want in results:
