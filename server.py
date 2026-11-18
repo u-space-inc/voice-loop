@@ -2017,7 +2017,7 @@ def topic_for(d: dict) -> str:
     問いに書き換えられてしまう。続きの件は、Slack のスレッドを新しいほうに置き換える。同期で呼ぶ（dispatch の中、await しない）。"""
     pane, session, slack = d["pane"], d.get("session") or "", d.get("slack")
     for tid in (next((e.get("topic") for e in reversed(d.get("chain") or []) if e.get("topic")), None),
-                topics.by_slack(slack) if slack else None,
+                topics.by_slack(slack, session) if slack and session else None,
                 HUB.reply_topic() if not slack else None):
         t = topics.get(tid)
         if t and session and t["session"] == session and topics.touch(tid, pane, session, slack):

@@ -111,13 +111,14 @@ def get(tid) -> dict | None:
         return dict(t) if t and _live(t) else None
 
 
-def by_slack(dest) -> str | None:
-    """Slack の同じスレッドから頼まれた件（一番新しいもの）。スレッドの無い（DM の一番上の）依頼は、続きと見なさない。"""
+def by_slack(dest, session: str = "") -> str | None:
+    """Slack の同じスレッドから頼まれた件（一番新しいもの）。スレッドの無い（DM の一番上の）依頼は、続きと見なさない。
+    session を渡すと、そのセッションの件だけから選ぶ（同じスレッドから別のセッションにも頼んだとき、あとの件に紛れない）。"""
     d = _slack(dest)
     if not d or not d[1]:
         return None
     with _lock:
-        hit = [t for t in TOPICS.values() if t.get("slack") == d and _live(t)]
+        hit = [t for t in TOPICS.values() if t.get("slack") == d and _live(t) and (not session or t["session"] == session)]
         return max(hit, key=lambda t: t["updated"])["id"] if hit else None
 
 

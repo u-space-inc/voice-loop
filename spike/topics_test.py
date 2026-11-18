@@ -204,10 +204,12 @@ async def rules():
     finally:
         s.hermes.REPLY_TOPIC["topic"] = ""
     nine = await send("同じスレッドを名乗って別のセッションへ", (DM, "5.5"), ag=AG2)
-    return one, two, three, four, five, six, seven, eight, nine, ten, zero
+    nine["_closed"] = True
+    back = await send("同じスレッドから、前のセッションの続き", (DM, "5.5"))
+    return one, two, three, four, five, six, seven, eight, nine, ten, zero, back
 
 
-one, two, three, four, five, six, seven, eight, nine, ten, zero = asyncio.run(rules())
+one, two, three, four, five, six, seven, eight, nine, ten, zero, back = asyncio.run(rules())
 check("件の分け方: まだ報告の来ていない同じセッションへの依頼は同じ件。完了を報告し始めたあとの依頼は新しい件",
       (one["topic"] == two["topic"], three["topic"] != two["topic"], s.topics.get(one["topic"])["title"]), (True, True, "内訳を出して"))
 check("件の分け方: Slack の同じスレッドからの依頼は同じ件。スレッドの無い（DM の一番上の）依頼は新しい件",
@@ -218,6 +220,8 @@ check("相手の位置: Slack の同じスレッド・返信中でも、別の�
       (nine["topic"] not in (four["topic"], five["topic"]), ten["topic"] != one["topic"], zero["topic"] != one["topic"],
        s.topics.get(four["topic"])["session"], s.topics.get(one["topic"])["session"], s.topics.get(nine["topic"])["session"]),
       (True, True, True, "s1", "s1", "s2"))
+check("件の分け方: 同じスレッドから別のセッションにも頼んだあと、前のセッションの続きを頼んだら、前のセッションの件に戻る",
+      (back["topic"] == four["topic"], back["topic"] != nine["topic"]), (True, True))
 check("件の分け方: 頼んだ件ごとに件が付く（台帳にも載る）", all(s.topics.get(d["topic"]) for d in (one, three, four, six, eight)), True)
 
 
@@ -586,6 +590,18 @@ with sync_playwright() as p:
     except Exception:
         reopened = False
     check("画面: 本体に届かない間に件の URL で開いても、件を覚えておき、つながってから開く", (waited, reopened, fresh.evaluate("location.hash")), (True, True, ""))
+    fresh.close()
+    fresh = browser.new_page()  # 一覧と声は読めて、件を引く口だけが一度失敗した（つながり直しは起きない）
+    fresh.set_viewport_size({"width": 390, "height": 844})
+    tries = []
+    fresh.route("**/api/topic*", lambda r: (tries.append(1), r.abort() if len(tries) == 1 else r.continue_()))
+    fresh.goto(BASE + f"/#t={ASK_T}")
+    try:
+        fresh.wait_for_function('[...document.querySelectorAll("#asks .ask.flash")].length === 1', timeout=10000)
+        reopened = True
+    except Exception:
+        reopened = False
+    check("画面: 件を引く口だけが一度失敗しても、つながっていれば開き直す", (reopened, len(tries) >= 2), (True, True))
     fresh.close()
     sw = page.evaluate(SW_CASES, [SW, BASE, [[f"/#t={one['topic']}", False], ["https://evil.example/", False], ["/#t=../x", False], [f"/x#t={one['topic']}", False],
                                              [f"/?a=1#t={one['topic']}", False], [f"/#t={one['topic']}", True], ["/", True], ["https://evil.example/#t=" + one["topic"], True]]])
