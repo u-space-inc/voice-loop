@@ -588,19 +588,18 @@ async function openTopic() {
   if (!TOPIC_RE.test(id)) { sys('この件のリンクの形が違うので、開けませんでした'); return; }
   let t, reached = true; try { t = await (await fetch('/api/topic?id=' + id)).json(); } catch { t = null; reached = false; }
   if (seq !== topicSeq) return;
-  if (!reached) { // 届かなかった件は覚えておき、つながったとき（catchUp）と、つながっていれば少し待ってから開き直す
-    pendingTopic = id; sys('本体に届かないので、つながったらこの件を開きます');
-    setTimeout(() => { if (pendingTopic === id && linked()) openTopic(); }, 3000);
-    return;
-  }
+  // 届かなかった件は覚えておき、つながったとき（catchUp）と、つながっていれば少し待ってから開き直す
+  const later = () => { pendingTopic = id; sys('本体に届かないので、つながったらこの件を開きます'); setTimeout(() => { if (pendingTopic === id && linked()) openTopic(); }, 3000); };
+  if (!reached) { later(); return; }
   if (!t || !t.ok) { sys('この件は見つかりませんでした（古くなったか、消えました）'); return; }
   closeViewer(); if (reading) setReading(false); // 画像を見ている・広げて読んでいる間に開いたら、普通の表示に戻す（光らせる欄が後ろに隠れて押せないため）
   // 問いの欄を見せるのは、その件と同じセッション（空でないセッション ID が同じ）の問いで、その件がそのセッションの一番新しい件のときだけ
   // （同じペインで作り直された別のセッションの問い・同じセッションのあとの件の問いは見せない。古い件ならその件の報告を開く）。
   // 問いがあるかは、この処理が自分で本体に聞いて決める（並んで走る loadAsks の取り込みに負けて、古い一覧で報告のほうへ進まない）
-  let qs; try { qs = await (await fetch('/api/prompts')).json(); } catch { qs = []; }
+  let qs; try { qs = await (await fetch('/api/prompts')).json(); } catch { qs = null; }
   if (seq !== topicSeq) return;
-  if (t.current === true && t.session && Array.isArray(qs) && qs.some(q => q && q.pane === t.pane && q.key === t.session)) {
+  if (!Array.isArray(qs)) { later(); return; } // 問いの一覧を読めなかったのは「問いなし」ではない（報告のほうへ進まない）
+  if (t.current === true && t.session && qs.some(q => q && q.pane === t.pane && q.key === t.session)) {
     askFlash = { pane: t.pane, key: t.session, seq }; // 欄を描いたら光らせる（この loadAsks が並んだ取り込みに負けても、あとで描いた時点で）
     await loadAsks();
     if (seq === topicSeq) { flashAsk(); setStatus(`${t.project}｜問いに答えてください（押すまで答えません）`); }

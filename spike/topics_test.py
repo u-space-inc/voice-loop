@@ -607,6 +607,18 @@ with sync_playwright() as p:
     check("画面: 件を開く途中に並んで走る問いの読み込みがあっても、承認待ちの件は問いの欄を光らせる（報告のほうへ進まない）",
           (fresh.evaluate("[...document.querySelectorAll('#asks .ask.flash')].length"), fresh.eval_on_selector("#replyBar", "e => e.hidden"),
            "この件の報告は" in logs(fresh)), (1, True, False))
+    fresh.evaluate("""() => { document.querySelectorAll('.flash').forEach(e => e.classList.remove('flash'));
+      const of = window.fetch; let n = 0;  // 問いの一覧の読み込みだけが一度失敗する
+      window.fetch = (u, ...a) => (String(u).startsWith('/api/prompts') && ++n === 1) ? Promise.reject(new TypeError('Failed to fetch')) : of(u, ...a);
+    }""")
+    fresh.evaluate(f"location.hash = '#t={ASK_T}'")
+    try:
+        fresh.wait_for_function('[...document.querySelectorAll("#asks .ask.flash")].length === 1', timeout=10000)
+        lit = True
+    except Exception:
+        lit = False
+    check("画面: 問いの一覧の読み込みだけが失敗しても「問いなし」にせず、報告のほうへ進まない。件を覚えて開き直し、問いの欄を光らせる",
+          (lit, "つながったらこの件を開きます" in logs(fresh), fresh.eval_on_selector("#replyBar", "e => e.hidden")), (True, True, True))
     fresh.close()
     fresh = browser.new_page()  # 一覧と声は読めて、件を引く口だけが一度失敗した（つながり直しは起きない）
     fresh.set_viewport_size({"width": 390, "height": 844})
