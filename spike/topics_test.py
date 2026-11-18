@@ -675,8 +675,13 @@ with sync_playwright() as p:
     fresh.goto(BASE + "/#t=t0000000000")
     fresh.wait_for_function("document.getElementById('conn').classList.contains('on')", timeout=8000)
     fresh.wait_for_timeout(2500)
-    check("画面: 無い件の URL で新しく開いたとき、「見つかりませんでした」の案内が、起動の描き直しのあとも残る",
-          ("この件は見つかりませんでした" in logs(fresh), fresh.evaluate("location.hash")), (True, ""))
+    fresh.evaluate("loadThread()")  # 画面が見えたとき・つながり直したときの読み直し（会話の欄を描き直す）
+    fresh.wait_for_timeout(800)
+    check("画面: 無い件の URL で新しく開いたとき、「見つかりませんでした」の案内が、会話の欄の描き直しのあとも残る（会話の欄の外の案内）",
+          (fresh.evaluate("document.getElementById('topicMsg').hidden"), "この件は見つかりませんでした" in fresh.evaluate("document.getElementById('topicMsgText').textContent"),
+           fresh.evaluate("location.hash")), (False, True, ""))
+    fresh.click("#topicMsgClose")
+    check("画面: 件の案内は ✕ で消える", fresh.evaluate("document.getElementById('topicMsg').hidden"), True)
     fresh.close()
     held = []
     fresh = browser.new_page()  # 声の一覧を待つ間（起動の途中）に、利用者が相手を選ぶ
