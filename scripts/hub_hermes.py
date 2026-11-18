@@ -403,7 +403,9 @@ def _hsk_archive(pid: str, data: dict | None):
 
 
 def _recover_hermes_skills():
-    """起動のとき、当てている途中で本体が止まった id は「分からない」にし、前の処理の終わりを確かめるまで採る・捨てるを断る。"""
+    """起動のとき、当てている途中で本体が止まった id は「分からない」にし、前の処理の終わりを確かめるまで採る・捨てるを断る。
+    学んだことの跡のほうも、当てている途中のものを「分からない」にする（_recover_hlearn）。"""
+    _recover_hlearn()
     with _hsk_lock:
         d = hsk_state()
         stuck = [k for k, v in d["items"].items() if v["state"] == "applying"] if d else []
@@ -935,6 +937,22 @@ def _hlearn_today() -> int:
     return d["days"].get(_hlearn_day(time.time()), 0)
 
 
+def _recover_hlearn():
+    """起動のとき、学んだことの跡で「当てている途中」のまま残ったもの（当てる前に跡を書いたあと、結果を書く前に本体が止まった）を、
+    「分からない」・戻せないにする（いつまでも「当てている途中」と出さない）。"""
+    with _hlearn_lock:
+        d = hlearn_state()
+        stuck = [e for e in (d or {}).get("entries", []) if e.get("state") == "applying"]
+        if not stuck:
+            return
+        for e in stuck:
+            e.update(state="unknown", can_undo=False, note="当てている途中で本体が止まりました。当たったか分かりません（手順のファイルか Hermes の対話画面で確かめてください）")
+        try:
+            _hlearn_save(d)
+        except OSError:
+            traceback.print_exc()
+
+
 def _hlearn_reserve(entry: dict, detail: dict) -> dict | None:
     """当てる前に、今日の枠を 1 つ使い、跡（当てている途中）と控え（前の中身・差分）を書く。上限に届いている・書けないときは None（当てない）。"""
     eid = f"l{os.urandom(6).hex()}"
@@ -1044,6 +1062,9 @@ async def _learn_skills() -> int:
     return applied
 
 
+_HMEM_MINE: dict[str, dict[str, list]] = {}  # 本体が書いて当たった項目で、まだ比べるもとに取り込めていないもの（記憶のファイルごと。_hlearn_lock の中で触る）
+
+
 async def _learn_memory(mine: dict | None = None):
     """記憶を読み、前に読んだとき（比べるもと）から足された・消えた項目を跡に残し、比べるもとを進める。
     mine は、本体が書いた項目（{記憶のファイル: {"added": [...], "removed": [...]}}。画面で足す・直す・消したとき、学んだことを戻したとき）。
@@ -1055,6 +1076,11 @@ async def _learn_memory(mine: dict | None = None):
     got = await asyncio.to_thread(hermes_memory.read_targets, HERMES_HOME)
     cur = {t: v["entries"] for t, v in got.items() if v["status"] in ("ok", "missing")}
     with _hlearn_lock:
+        # 外す項目は、比べるもとを進められるまで持ち続ける（跡の状態を読めない・書けないときに失うと、次の見張りで本人の書き込みが学びになる）
+        for t, m in (mine or {}).items():
+            slot = _HMEM_MINE.setdefault(t, {"added": [], "removed": []})
+            slot["added"] += m.get("added", [])
+            slot["removed"] += m.get("removed", [])
         d = hlearn_state()
         if d is None:
             return
@@ -1064,7 +1090,7 @@ async def _learn_memory(mine: dict | None = None):
             for t, now in cur.items():
                 if t not in prev:
                     continue
-                skip = (mine or {}).get(t) or {}
+                skip = _HMEM_MINE.get(t) or {}
                 added = [e for e in now if e not in prev[t] and e not in skip.get("added", [])]
                 removed = [e for e in prev[t] if e not in now and e not in skip.get("removed", [])]
                 if added or removed:
@@ -1076,6 +1102,8 @@ async def _learn_memory(mine: dict | None = None):
                 d["entries"].append(_hlearn_new(entry, detail))  # 控えを先に書く（書けなければ OSError で、跡も比べるもとも進めない）
             d["memory"] = {**(prev or {}), **cur}
             _hlearn_save(d)
+            for t in cur:  # 比べるもとに取り込めた記憶のファイルの分だけ、外す項目を手放す
+                _HMEM_MINE.pop(t, None)
         except OSError:
             traceback.print_exc()
 
@@ -1210,21 +1238,30 @@ async def watch_hermes_skills():
     当てたら、どの画面も見えていなければ 1 通知らせる（中身は載せない）。当てずに残った新しい承認待ちも 1 通知らせる。"""
     while True:
         await asyncio.sleep(60)
-        try:
-            ids = await asyncio.to_thread(hermes_skills.pending_ids, HERMES_HOME) if HERMES_HOME.is_dir() else None
-            if ids is None:
-                continue
+        await _watch_once()
+
+
+async def _watch_once():
+    """見張りの 1 回。手順（承認待ちを読む・当てる・知らせる）と記憶は別々に動かす（手順の承認待ちを読めなくても、記憶の変化は跡に残す）。"""
+    try:
+        ids = await asyncio.to_thread(hermes_skills.pending_ids, HERMES_HOME) if HERMES_HOME.is_dir() else None
+        if ids is not None:
             new = await asyncio.to_thread(_hsk_tidy, set(ids))
             applied = await _learn_skills() if ids else 0
-            await _watch_memory()
             if applied:
                 await core.push_all("voice-loop｜Hermes", f"ハブが手順を {applied} 件書き足しました（💡 の「学んだこと」で見て、戻せます）", "hermes-skills")
             elif new and await asyncio.to_thread(hermes_skills.pending_ids, HERMES_HOME):
                 await core.push_all("voice-loop｜Hermes", f"ハブが手順への書き足しを {len(new)} 件出しました（今日の自動の上限か、画面で扱えない形です。💡 で見られます）", "hermes-skills")
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            traceback.print_exc()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        traceback.print_exc()
+    try:
+        await _watch_memory()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        traceback.print_exc()
 
 
 class Hermes(Brain, Talker):

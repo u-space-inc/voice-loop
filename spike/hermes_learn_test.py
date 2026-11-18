@@ -505,6 +505,44 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     ru3 = c.post("/api/hermes/learned/undo", json={"id": gone["id"]}).json()
 check("記憶の戻す: 書けない項目（長すぎる）を足し直せないときは、戻したことにしない（一部を戻せなかった）",
       (ru3.get("reason"), [e["state"] for e in learned()["entries"] if e["id"] == gone["id"]]), ("partial", ["applied"]))
+# 画面で書いたあとに跡を保存できなくても、外す項目は持ち続ける（次の見張りで本人の書き込みを学びにしない）
+asyncio.run(s.hermes._learn_memory())
+n4 = count()
+real_save = s.hermes._hlearn_save
+
+
+def save_fails(d):
+    raise OSError("書けない")
+
+
+s.hermes._hlearn_save = save_fails
+try:
+    r4 = json.loads(asyncio.run(s.hermes._hmem_write("add", {"target": "memory", "content": "保存できない間に画面で足した"})).body)
+finally:
+    s.hermes._hlearn_save = real_save
+asyncio.run(s.hermes._watch_memory())
+check("記憶: 画面で書いたあとに跡を保存できなくても、外す項目は持ち続け、次の見張りで本人の書き込みを学びにしない",
+      (r4.get("ok"), count() - n4, "保存できない間に画面で足した" in (MEM / "MEMORY.md").read_text()), (True, 0, True))
+# 見張りの 1 回: 手順の承認待ちを読めなくても、記憶は見る
+n5 = count()
+real_pending = s.hermes.hermes_skills.pending_ids
+s.hermes.hermes_skills.pending_ids = lambda home: None
+(MEM / "USER.md").write_text(D.join([x for x in (MEM / "USER.md").read_text().split(D) if x] + ["手順を読めない間に足した"]))
+try:
+    asyncio.run(s.hermes._watch_once())
+finally:
+    s.hermes.hermes_skills.pending_ids = real_pending
+check("見張り: 手順の承認待ちを読めなくても、記憶の変化は跡に残す", (count() - n5, [e["summary"] for e in learned()["entries"] if e["kind"] == "memory"][0]),
+      (1, "手順を読めない間に足した"))
+# 起動のとき: 当てている途中のまま残った跡は「分からない」・戻せないにする
+st = json.loads(s.hermes.HLEARN_FILE.read_text())
+st["entries"].append({"id": "lstuck00000a", "at": time.time(), "state": "applying", "note": "", "kind": "skill", "auto": True, "pid": "zzzz0001",
+                      "summary": "途中で止まった", "places": ["voice-loop/hub"], "can_undo": False})
+s.hermes.HLEARN_FILE.write_text(json.dumps(st))
+s.hermes._recover_hermes_skills()
+stuck = [e for e in learned()["entries"] if e["id"] == "lstuck00000a"]
+check("起動: 当てている途中のまま残った学んだことの跡は「分からない」・戻せないにする", [(e["state"], e["can_undo"], "本体が止まりました" in e["note"]) for e in stuck],
+      [("unknown", False, True)])
 # 画面で書いている間（書いたあと、比べるもとを進める前）に見張りが読んでも、画面で書いたものを Hermes の学びにしない。
 # 鍵を待たせるので、ほかの試験のあと（別のイベントループ）に置く
 GATE, WROTE = threading.Event(), threading.Event()
