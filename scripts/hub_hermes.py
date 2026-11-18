@@ -24,6 +24,7 @@ import attach  # 画面から添付したファイルを Hermes のコンテナ�
 import hermes_memory  # Hermes の記憶を画面（PC の「記憶」）で足す・直す・消す
 import hermes_learn  # Hermes の学びを自動で当て、跡を残し、画面の「戻す」で戻す
 import hermes_skills  # Hermes の手順の書き足しを画面で採る・捨てる、Hermes の記憶を読む
+import topics  # 件（頼んだ件・報告・Slack のスレッド・問いを結ぶ単位）
 from hub_brain import Brain, Talker
 from places import CONFIG_DIR, STATE_DIR
 
@@ -178,6 +179,8 @@ def hermes_history(limit: int = 40) -> list[dict]:
         m = {"role": d["role"], "text": d["text"]}
         if d["role"] == "ai" and d.get("report"):  # 頼んだ件の報告: 画面が「どの件の報告か」を出し、返信で記録の時刻を指す
             m.update(report=True, about=str(d.get("about") or ""), at=d.get("at"))
+            if isinstance(d.get("topic"), str) and topics.ID_RE.fullmatch(d["topic"]):  # どの件の報告か（画面が件の URL で開くときに探す）
+                m["topic"] = d["topic"]
         if d["role"] == "me" and d.get("reply_to"):  # 報告への返信として送った発言
             m["reply_to"] = str(d["reply_to"])
         out.append(m)
@@ -199,6 +202,26 @@ def report_ref(at) -> tuple[str, str, str]:
             return (core._clip(" ".join(_REF_DROP.sub(" ", str(d.get("about") or "")).split()), 80), str(d.get("text") or ""),
                     str(d.get("pane") or ""))
     return "", "", ""
+
+
+def report_topic(at) -> str:
+    """画面の「返信」が指した報告の件（記録にあれば）。無い（0.29.0 より前の報告など）ときは空。"""
+    if isinstance(at, bool) or not isinstance(at, (int, float)):
+        return ""
+    for d in reversed(hermes_records() or []):
+        if d.get("role") == "ai" and d.get("report") and d.get("at") == at:
+            t = d.get("topic")
+            return t if isinstance(t, str) and topics.ID_RE.fullmatch(t) else ""
+    return ""
+
+
+# 画面の「↩ 返信」で報告に返した発言を Hermes が扱っている間の、その報告の件。この間にハブが送った依頼は、同じ件の続きにする
+# （Hermes とのやり取りは pane_lock で一度にひとつ。Slack から頼まれた依頼は、Slack のスレッドで件を決めるので、これを使わない）
+REPLY_TOPIC = {"topic": ""}
+
+
+def reply_topic() -> str:
+    return REPLY_TOPIC["topic"]
 
 
 # ユーザーの発言と Hermes（ハブ）の返答の台帳。Hermes は herdr のセッションではないので、本体が直接持つ。
@@ -273,6 +296,7 @@ async def hermes_exchange(text: str, reply_at: float | None = None, extra: str =
             _unsaved.discard(turn)
             return "", why, saved
         turn = hermes_turn_begin(text, ref, ref_text if ref else None, ref_pane, extra)  # 発言の台帳。承認に答える・閉じるの守りが「見たあとの発言か」を見る
+        REPLY_TOPIC["topic"] = await asyncio.to_thread(report_topic, reply_at) if ref else ""
         try:
             reply = await asyncio.to_thread(ask_hermes, (f"〔返信: {ref} の報告〕\n{text}" if ref else text) + extra)
         except Exception as e:
@@ -284,6 +308,8 @@ async def hermes_exchange(text: str, reply_at: float | None = None, extra: str =
         else:
             hermes_turn_end(turn, reply)
             why = "" if reply else "Hermes の返事が空でした"
+        finally:
+            REPLY_TOPIC["topic"] = ""
         if why and not hermes_log("error", why[:300], turn=turn):
             _unsaved.add(turn)
         saved = turn not in _unsaved
@@ -1489,15 +1515,19 @@ class Hermes(Brain, Talker):
     async def report_target(self) -> dict | None:
         return hermes_agent() if HERMES_KEY else None
 
+    def reply_topic(self) -> str:
+        return reply_topic()
+
     def report_begin(self, headline: str, about: str) -> bool:
         """Hermes の会話は本体が記録する（画面が無くても、あとで履歴に出る）。"""
         return hermes_log("note", headline, about=about)
 
-    async def report_end(self, state: str, reply: str, about: str, saved: bool, pane: str = "") -> bool:
+    async def report_end(self, state: str, reply: str, about: str, saved: bool, pane: str = "", topic: str = "") -> bool:
         # 利用者が次に聞くのはこの報告（受け取れなければ本体の失敗の知らせ）。記録に書けたかに関係なく、ここで置き換える
         HERMES_HEARD["text"] = reply if state == "done" and reply.strip() else ""
         if state == "done" and reply.strip():
-            return hermes_log("ai", reply, report=True, about=about, pane=pane) and saved  # pane: どのセッションの報告か（返信の守りが照らす）
+            # pane: どのセッションの報告か（返信の守りが照らす）。topic: どの件の報告か（件の URL で開くとき・返信の続きを同じ件にするとき）
+            return hermes_log("ai", reply, report=True, about=about, pane=pane, **({"topic": topic} if topics.ID_RE.fullmatch(topic or "") else {})) and saved
         failed = f"ハブから報告を受け取れませんでした: {core._clip(reply, 200) or '返事が空でした'}"
         saved = hermes_log("error", failed, about=about) and saved
         for c in list(core.CLIENTS):  # 開いている画面には、いま知らせる（記録に書けなければ、ここでしか伝わらない）

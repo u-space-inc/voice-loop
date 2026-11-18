@@ -112,13 +112,14 @@ async def fake_ask(hub, note):
     return ANSWER
 
 
-async def fake_end(state, reply, about, saved, pane=""):
+async def fake_end(state, reply, about, saved, pane="", topic=""):
     return False
 
 
 s.HUB.report_target = fake_target
 s.HUB.report_begin = lambda headline, about: False
 s.HUB.report_end = fake_end
+s.topics.link = lambda tid: None  # 件を画面で開くリンクは topics_test で確かめる（本物の tailscale を読まない）
 s.ask = fake_ask
 
 

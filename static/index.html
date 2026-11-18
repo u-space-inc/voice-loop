@@ -23,6 +23,7 @@
   .msg.me { align-self:flex-end; background:var(--me); border-bottom-right-radius:4px; white-space:pre-wrap; }
   .msg.ai { align-self:flex-start; background:var(--ai); border:1px solid var(--line); border-bottom-left-radius:4px; }
   .msg.ai.speaking { border-color: var(--ok); }
+  .flash { outline:2px solid var(--ok); outline-offset:2px; } /* 件の URL で開いた問い・報告 */
   .msg.pending { opacity:.6; }
   .sys { align-self:center; color:var(--mute); font-size:12px; text-align:center; }
   .msg .rep { display:flex; align-items:center; gap:8px; margin:0 0 6px; font-size:12px; color:var(--mute); white-space:normal; }
@@ -499,6 +500,7 @@ function renderThread(msgs) {
   if (!msgs.length) sys('このセッションにはまだ会話がありません');
   msgs.forEach(m => m.role === 'note' ? sys('通知: ' + m.text) : m.role === 'error' ? sys('⚠ ' + m.text) : decorate(bubble(m.role, m.text), m)); // note = ハブへの自動通知（頼んだ件が片づいた等）。error = Hermes に届かなかった・返事が無かった
 }
+const TOPIC_RE = /^t[0-9a-f]{10}$/; // 件の id（scripts/topics.py の ID_RE と同じ形）
 // ハブの会話の吹き出しに、どの件の報告か（report・about）と「↩ 返信」、報告への返信として送った発言には返信先（reply_to）を出す。文字としてだけ入れる
 function decorate(el, m) {
   if (m.role === 'ai' && m.report) {
@@ -507,7 +509,9 @@ function decorate(el, m) {
       const b = node('button', 'reply', '↩ 返信'); b.type = 'button'; b.title = 'この報告への返事として送る（次に話す・打つ発言に付けます）';
       b.onclick = () => setReplyTarget({ at: m.at, about: m.about || '' });
       h.appendChild(b);
+      el.dataset.at = String(m.at); el.dataset.about = m.about || '';
     }
+    if (TOPIC_RE.test(m.topic || '')) el.dataset.topic = m.topic; // どの件の報告か（件の URL で開くときに探す）
     el.prepend(h);
   } else if (m.role === 'me' && m.reply_to) el.prepend(node('div', 'rep', '↩ ' + m.reply_to + ' の報告へ'));
   return el;
@@ -565,6 +569,45 @@ async function sendAttach(pane, list, how) {
 }
 // 送った添付だけを外す（送っている間に足したものは残す）
 function dropSent(list) { attachFiles = attachFiles.filter(f => !list.includes(f)); renderAttach(); }
+// 件の URL（/#t=<件>。プッシュ通知・Slack のリンク）で開いたとき。その件のセッションが問いで止まっていれば、その問いの欄を見せる。
+// そうでなければ、ハブの会話にあるその件の一番新しい報告を「↩ 返信」の状態にする。開くだけで、答える・送るは利用者が押す。
+// 件の形が違う・見つからないときは知らせるだけ。読み直しで繰り返さないよう、URL の #t= は外す
+function flash(el) { el.classList.add('flash'); el.scrollIntoView({ block: 'center' }); setTimeout(() => el.classList.remove('flash'), 4000); }
+let topicSeq = 0;
+async function openTopic() {
+  const m = /^#t=(.*)$/s.exec(location.hash);
+  if (!m) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  if (!TOPIC_RE.test(m[1])) { sys('この件のリンクの形が違うので、開けませんでした'); return; }
+  const seq = ++topicSeq;
+  let t; try { t = await (await fetch('/api/topic?id=' + m[1])).json(); } catch { t = null; }
+  if (seq !== topicSeq) return;
+  if (!t || !t.ok) { sys('この件は見つかりませんでした（古くなったか、本体に届きません）'); return; }
+  await loadAsks();
+  const item = asks.get(t.pane);
+  if (item && (!t.session || item.q.key === t.session)) { flash(item.el); setStatus(`${t.project}｜問いに答えてください（押すまで答えません）`); return; }
+  if (!agents.length) await loadAgents();
+  const hub = agents.find(a => a.hub);
+  if (!hub) { sys(`${t.project}｜${t.title}: 報告はハブの会話にありますが、ハブが居ません`); return; }
+  if ($('agent').value !== hub.pane) {
+    $('agent').value = hub.pane; setReplyTarget(null); localStorage.setItem(WANT, 'hub'); shownPane = hub.pane; applyTarget();
+    await loadThread();
+    if (seq !== topicSeq) return;
+  }
+  const reps = [...$('log').querySelectorAll('.msg.ai')].filter(el => el.dataset.topic === t.id && el.dataset.at);
+  const last = reps[reps.length - 1];
+  if (!last) { sys(`${t.project}｜${t.title}: この件の報告は、まだありません`); return; }
+  setReplyTarget({ at: Number(last.dataset.at), about: last.dataset.about || '' });
+  flash(last);
+}
+window.addEventListener('hashchange', () => openTopic());
+// 通知を押したとき、開いていた画面には sw.js が件の場所を渡す（この画面の中の #t= だけを受ける）
+navigator.serviceWorker?.addEventListener('message', e => {
+  const d = e.data;
+  if (!d || d.type !== 'open' || typeof d.url !== 'string') return;
+  let u; try { u = new URL(d.url, location.origin); } catch { return; }
+  if (u.origin === location.origin && /^#t=t[0-9a-f]{10}$/.test(u.hash)) location.hash = u.hash;
+});
 // 返信先の報告（{ at, about }）。ハブの会話のときだけ付けて送り、送ったら外す。相手を替えたら外す
 let replyTarget = null;
 function setReplyTarget(t) {
@@ -1570,6 +1613,7 @@ async function catchUp() {
   agentsSig = ''; shownPane = null; // 一覧と履歴を描き直させる
   await loadAgents();
   loadAsks();
+  if (location.hash) openTopic(); // 件の URL で開いた（一覧が届いてから）
 }
 // 声の一覧がまだ無ければ読む。読めなければ、つながっている間は3秒ごとに読み直す（重ねて読みに行かない）
 let speakersBusy = false;

@@ -60,9 +60,13 @@ class Brain:
         """報告の前。頭が記録を持たないときだけ、本体が見出しを記録する。記録に書けたら True。"""
         return True
 
-    async def report_end(self, state: str, reply: str, about: str, saved: bool, pane: str = "") -> bool:
-        """報告のあと。記録に書けたかを返す。"""
+    async def report_end(self, state: str, reply: str, about: str, saved: bool, pane: str = "", topic: str = "") -> bool:
+        """報告のあと。記録に書けたかを返す。topic は、どの件の報告か（記録を持つ頭は、報告の記録に書く）。"""
         return saved
+
+    def reply_topic(self) -> str:
+        """画面の「↩ 返信」で報告に返した発言を、頭がいま扱っているなら、その報告の件（この間に頭が送った依頼は同じ件の続き）。無ければ空。"""
+        return ""
 
 
 class Talker:

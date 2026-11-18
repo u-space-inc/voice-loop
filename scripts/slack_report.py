@@ -62,10 +62,15 @@ def one_line(text: str, n: int) -> str:
     return t if len(t) <= n else t[: n - 1] + "…"
 
 
-def text_for(label: str, headline: str, reply: str, fallback: str = NO_REPORT, asks=(), note: str = "") -> str:
+LINK_RE = re.compile(r"https://[A-Za-z0-9.-]+(?::\d{1,5})?/#t=t[0-9a-f]{10}")  # 件を画面で開く URL（topics.link が作る形だけ）
+OPEN, ANSWER = "画面で開く", "画面でこの問いに答える"
+
+
+def text_for(label: str, headline: str, reply: str, fallback: str = NO_REPORT, asks=(), note: str = "", link: str = "", ask: bool = False) -> str:
     """Slack に送る文。見出し（案件｜件名と、何が起きたか）と、ハブの報告。報告が無ければ fallback（画面で確かめるよう書く）。
     asks は、同じセッションに続けて頼んでまとめた依頼の (文, どこから) の並び（古い順）。あれば見出しのあとに並べる。
-    note は、報告の頭に付ける 1 行（この件の間にほかのやり取りが混ざったときの MIXED）。報告が無ければ付けない。"""
+    note は、報告の頭に付ける 1 行（この件の間にほかのやり取りが混ざったときの MIXED）。報告が無ければ付けない。
+    link は、この件を画面で開く URL（形が違えば付けない）。最後の行に付け、長すぎて切るときも残す。ask なら「画面でこの問いに答える」。"""
     body = (f"{note}\n{reply.strip()}" if note else reply.strip()) if reply.strip() else fallback
     if asks:
         shown = list(asks)[-ASKS_SHOWN:]
@@ -77,7 +82,9 @@ def text_for(label: str, headline: str, reply: str, fallback: str = NO_REPORT, a
     else:
         text = f"【{label}{headline}】\n{body}"
     text = _MEDIA.sub("MEDIA：", _CTRL.sub(" ", text)).replace("<", "＜").replace(">", "＞")
-    return text if len(text) <= LIMIT else text[: LIMIT - 1] + "…"
+    tail = f"\n\n{ANSWER if ask else OPEN}: {link}" if LINK_RE.fullmatch(link or "") else ""
+    room = LIMIT - len(tail)
+    return (text if len(text) <= room else text[: room - 1] + "…") + tail
 
 
 def pointer_text(label: str, next_text: str) -> str:
