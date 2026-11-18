@@ -1071,20 +1071,22 @@ async def _learn_skills() -> int:
 
 
 HMEM_MINE_FILE = HLEARN_DIR / "memory-mine.json"  # _HMEM_MINE の控え（取り込む前に本体を起動し直しても失わない）
-HMEM_MINE_KEEP = 600  # まだ記憶に現れない「外す項目」を持ち続ける秒数（時間切れの台本が遅れて書き終える分を待つ）
+HMEM_MINE_KEEP = 600  # 書けたか分からない「外す項目」を持ち続ける秒数（時間切れの台本が遅れて書き終える分を待つ）
 HMEM_NOT_WRITTEN = ("changed", "refused", "invalid", "state", "busy", "unverifiable")  # 記憶を確かに書いていない結果
+_MINE_KEYS = ("sure_added", "sure_removed", "maybe_added", "maybe_removed")
 
 
-def _load_hmem_mine() -> dict[str, dict[str, list]]:
+def _load_hmem_mine() -> dict[str, dict]:
     """起動のとき、外す項目の控えを読む。読めない・形が違えば空。"""
     try:
         d = json.loads(HMEM_MINE_FILE.read_text())
     except (OSError, ValueError, RecursionError):
         return {}
-    ok = isinstance(d, dict) and all(isinstance(m, dict) and all(isinstance(m.get(k, []), list) for k in ("added", "removed")) for m in d.values())
-    return {t: {"added": [str(x) for x in m.get("added", [])], "removed": [str(x) for x in m.get("removed", [])],
+    if not isinstance(d, dict) or not all(isinstance(m, dict) and all(isinstance(m.get(k, []), list) for k in _MINE_KEYS) for m in d.values()):
+        return {}
+    return {t: {**{k: [str(x) for x in m.get(k, [])] for k in _MINE_KEYS},
                 "at": float(m["at"]) if isinstance(m.get("at"), (int, float)) and not isinstance(m.get("at"), bool) else time.time()}
-            for t, m in d.items()} if ok else {}
+            for t, m in d.items()}
 
 
 def _save_hmem_mine() -> bool:
@@ -1105,64 +1107,85 @@ def _hmem_norm(t: str) -> str:
     return t.replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
-def _hmem_mine_change(target: str, mine: dict, add: bool) -> bool:
-    """外す項目を足す（add）・引く。足したときは控えのファイルに書けたかを返す（書けなければ足したぶんを戻して False）。"""
+def _mine_slot(target: str) -> dict:
+    return _HMEM_MINE.setdefault(target, {**{k: [] for k in _MINE_KEYS}, "at": time.time()})
+
+
+def _mine_tidy(target: str):
+    slot = _HMEM_MINE.get(target)
+    if slot is not None and not any(slot[k] for k in _MINE_KEYS):
+        _HMEM_MINE.pop(target, None)
+
+
+def _hmem_mine_change(target: str, mine: dict, phase: str) -> bool:
+    """本体が書く記憶の項目（mine: {"added": [...], "removed": [...]}）を「外す項目」として扱う。phase:
+      plan  … 書く前。「書けたか分からない」（maybe）に足して控えのファイルに書く。書けなければ戻して False（書かない）
+      done  … 書けた。maybe から「確かに書けた」（sure）へ移す（sure は期限で消さず、比べるもとに取り込めたら手放す）
+      drop  … 確かに書いていない。maybe から外す
+    書けたか分からない結果のときは、maybe のまま（照らし合うか、HMEM_MINE_KEEP を過ぎるまで）。"""
     with _hlearn_lock:
-        slot = _HMEM_MINE.setdefault(target, {"added": [], "removed": []})
-        if add:
-            slot["at"] = time.time()  # まだ現れない項目を持ち続ける期限の起点（HMEM_MINE_KEEP）
-        for k in ("added", "removed"):
-            for x in mine.get(k, []):
-                if add:
-                    slot[k].append(x)
-                elif x in slot[k]:
-                    slot[k].remove(x)
-        if add and not _save_hmem_mine():
-            for k in ("added", "removed"):
-                for x in mine.get(k, []):
-                    if x in slot[k]:
-                        slot[k].remove(x)
-            return False
-        if not add:
-            _save_hmem_mine()
+        slot = _mine_slot(target)
+        for side in ("added", "removed"):
+            for x in mine.get(side, []):
+                if phase == "plan":
+                    slot["maybe_" + side].append(x)
+                elif x in slot["maybe_" + side]:
+                    slot["maybe_" + side].remove(x)
+                    if phase == "done":
+                        slot["sure_" + side].append(x)
+        if phase == "plan":
+            slot["at"] = time.time()
+            if not _save_hmem_mine():
+                for side in ("added", "removed"):
+                    for x in mine.get(side, []):
+                        if x in slot["maybe_" + side]:
+                            slot["maybe_" + side].remove(x)
+                _mine_tidy(target)
+                return False
+            return True
+        _mine_tidy(target)
+        _save_hmem_mine()
         return True
 
 
 async def _hmem_run_mine(op: str, req: dict, target: str, mine: dict) -> dict:
     """本体が記憶を書く（画面の足す・直す・消す、戻す）。書く前に、書く項目を「外す項目」として控えのファイルにも書き
-    （書けなければ書かない: 本体を起動し直すと、本人の書き込みが学びになるため）、当たらなかったら控えから外す。HMEM_LEARN_LOCK の中で呼ぶ。"""
-    if not await asyncio.to_thread(_hmem_mine_change, target, mine, True):
+    （書けなければ書かない: 本体を起動し直すと、本人の書き込みが学びになるため）、結果で sure・外す・maybe のままに分ける。
+    HMEM_LEARN_LOCK の中で呼ぶ。"""
+    if not await asyncio.to_thread(_hmem_mine_change, target, mine, "plan"):
         return {"result": "state", "why": "学んだことの控え（状態フォルダの hermes-learned/）に書けないので、書いていません"}
     out = await _hmem_run(op, req)
-    if out.get("result") in HMEM_NOT_WRITTEN:  # 確かに書いていないときだけ外す（時間切れなど分からないときは、あとで書き終わっても学びにしない）
-        await asyncio.to_thread(_hmem_mine_change, target, mine, False)
+    res = out.get("result")
+    if res == "applied":
+        await asyncio.to_thread(_hmem_mine_change, target, mine, "done")
+    elif res in HMEM_NOT_WRITTEN:  # 確かに書いていないときだけ外す（時間切れなど分からないときは、あとで書き終わっても学びにしない）
+        await asyncio.to_thread(_hmem_mine_change, target, mine, "drop")
     return out
 
 
-# 本体が書いて当たった項目で、まだ比べるもとに取り込めていないもの（記憶のファイルごと。_hlearn_lock の中で触る）。控えのファイルにも書く
-_HMEM_MINE: dict[str, dict[str, list]] = _load_hmem_mine()
+# 本体が書いた（書こうとした）記憶の項目で、まだ比べるもとに取り込めていないもの（記憶のファイルごと。_hlearn_lock の中で触る）。控えのファイルにも書く
+_HMEM_MINE: dict[str, dict] = _load_hmem_mine()
 
 
-async def _learn_memory(mine: dict | None = None):
+async def _learn_memory():
     """記憶を読み、前に読んだとき（比べるもと）から足された・消えた項目を跡に残し、比べるもとを進める。
-    mine は、本体が書いた項目（{記憶のファイル: {"added": [...], "removed": [...]}}。画面で足す・直す・消したとき、学んだことを戻したとき）。
-    その項目だけを跡から外し、ほかの変化（同じ間に Hermes が書いたもの）は跡に残す。
-    跡と比べるもとは、同じ 1 回の書き込みで進める（跡を書けなければ、比べるもとも進めない。次に読んだときに残し直す）。
-    読めない記憶のファイルは比べない。"""
+    本体が書いた項目（_HMEM_MINE。画面で足す・直す・消したとき、学んだことを戻したとき）は跡から外し、ほかの変化（同じ間に Hermes が書いたもの）は
+    跡に残す。跡と比べるもとは、同じ 1 回の書き込みで進める（跡を書けなければ、比べるもとも進めない。次に読んだときに残し直す）。
+    外す項目の手放し方: 確かに書けたもの（sure）は、比べるもとに取り込めたら手放す（書いたあとに読んでいるので、もう比べるもとに入っている。
+    中身を変えない保存も、ここで消える）。書けたか分からないもの（maybe）は、照らし合って外したものだけを手放し、まだ現れないものは
+    HMEM_MINE_KEEP まで持ち続ける（期限を過ぎたものは、差分を見る前に手放す）。読めない記憶のファイルは比べない。"""
     if not hsk_on():
         return
     got = await asyncio.to_thread(hermes_memory.read_targets, HERMES_HOME)
     cur = {t: v["entries"] for t, v in got.items() if v["status"] in ("ok", "missing")}
     with _hlearn_lock:
-        # 外す項目は、比べるもとを進められるまで持ち続ける（跡の状態を読めない・書けないときに失うと、次の見張りで本人の書き込みが学びになる）
-        for t, m in (mine or {}).items():
-            slot = _HMEM_MINE.setdefault(t, {"added": [], "removed": []})
-            slot["added"] += m.get("added", [])
-            slot["removed"] += m.get("removed", [])
-        expired = [t for t, slot in _HMEM_MINE.items() if time.time() - slot.get("at", 0) > HMEM_MINE_KEEP]
-        for t in expired:  # 期限切れの外す項目は、差分を見る前に手放す（期限のあとに Hermes が同じ中身を書いた変化を、跡から落とさない）
-            _HMEM_MINE.pop(t, None)
-        if mine or expired:
+        expired = False
+        for t, slot in list(_HMEM_MINE.items()):  # 期限切れの maybe は、差分を見る前に手放す（期限のあとに Hermes が同じ中身を書いた変化を、跡から落とさない）
+            if time.time() - slot.get("at", 0) > HMEM_MINE_KEEP and (slot["maybe_added"] or slot["maybe_removed"]):
+                slot["maybe_added"], slot["maybe_removed"] = [], []
+                _mine_tidy(t)
+                expired = True
+        if expired:
             _save_hmem_mine()
         d = hlearn_state()
         if d is None:
@@ -1173,12 +1196,12 @@ async def _learn_memory(mine: dict | None = None):
             for t, now in cur.items():
                 if t not in prev:
                     continue
-                skip = _HMEM_MINE.get(t) or {}
-                added = [e for e in now if e not in prev[t] and e not in skip.get("added", [])]
-                removed = [e for e in prev[t] if e not in now and e not in skip.get("removed", [])]
-                if skip:  # 照らし合って外した項目だけを手放す（まだ現れない項目は、期限まで持ち続ける）
-                    used[t] = ([e for e in skip.get("added", []) if e in now and e not in prev[t]],
-                               [e for e in skip.get("removed", []) if e in prev[t] and e not in now])
+                slot = _HMEM_MINE.get(t) or {k: [] for k in _MINE_KEYS}
+                skip_a, skip_r = slot["sure_added"] + slot["maybe_added"], slot["sure_removed"] + slot["maybe_removed"]
+                added = [e for e in now if e not in prev[t] and e not in skip_a]
+                removed = [e for e in prev[t] if e not in now and e not in skip_r]
+                used[t] = ([e for e in slot["maybe_added"] if e in now and e not in prev[t]],  # 照らし合った maybe
+                           [e for e in slot["maybe_removed"] if e in prev[t] and e not in now])
                 if added or removed:
                     new.append(({"kind": "memory", "target": t, "added": len(added), "removed": len(removed),
                                  "summary": core._clip(added[0] if added else removed[0], 120), "can_undo": True},
@@ -1188,25 +1211,28 @@ async def _learn_memory(mine: dict | None = None):
                 d["entries"].append(_hlearn_new(entry, detail))  # 控えを先に書く（書けなければ OSError で、跡も比べるもとも進めない）
             d["memory"] = {**(prev or {}), **cur}
             _hlearn_save(d)
-            if any(t in _HMEM_MINE for t in cur):  # 比べるもとに取り込めた記憶のファイルの分だけ、照らし合った項目と期限切れを手放す
-                for t in cur:
-                    slot = _HMEM_MINE.get(t)
-                    if slot is None:
-                        continue
-                    if prev is None or t not in prev:  # 初めて読んだ（比べるもとが無い）: もう比べるもとに入った項目だけを手放し、まだ現れないものは持ち続ける
-                        ua = [x for x in slot["added"] if x in cur[t]]
-                        ur = [x for x in slot["removed"] if x not in cur[t]]
-                    else:
-                        ua, ur = used.get(t, ([], []))
-                    for x in ua:
-                        slot["added"].remove(x)
-                    for x in ur:
-                        slot["removed"].remove(x)
-                    if (not slot["added"] and not slot["removed"]) or time.time() - slot.get("at", 0) > HMEM_MINE_KEEP:
-                        _HMEM_MINE.pop(t, None)
-                _save_hmem_mine()
         except OSError:
             traceback.print_exc()
+            return
+        changed = False
+        for t in cur:  # 比べるもとに取り込めた記憶のファイルの分だけ手放す
+            slot = _HMEM_MINE.get(t)
+            if slot is None:
+                continue
+            slot["sure_added"], slot["sure_removed"] = [], []
+            if prev is None or t not in prev:  # 初めて読んだ（比べるもとが無い）: もう比べるもとに入った maybe だけを手放す
+                ua = [x for x in slot["maybe_added"] if x in cur[t]]
+                ur = [x for x in slot["maybe_removed"] if x not in cur[t]]
+            else:
+                ua, ur = used.get(t, ([], []))
+            for x in ua:
+                slot["maybe_added"].remove(x)
+            for x in ur:
+                slot["maybe_removed"].remove(x)
+            _mine_tidy(t)
+            changed = True
+        if changed:
+            _save_hmem_mine()
 
 
 def _hlearn_detail(eid: str) -> dict | None:
