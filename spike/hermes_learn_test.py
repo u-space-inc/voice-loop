@@ -530,6 +530,14 @@ check("自動で当てる: 別名（frontmatter の名前）がフォルダの�
 check("自動で当てる: 別名は Hermes 自身の読み方で読む（BOM 付き・引用符で囲んだキーでも見落とさない）。読み方の無い版の Hermes では扱わない",
       (script("snap", {"payload": op("bomq")}).get("result"), script("snap", {"payload": op("quoted")}).get("result"),
        script("snap", {"payload": op("same")}, extra={"VL_TEST_NOFRONT": "1"}).get("result")), ("unsupported", "unsupported", "unsupported"))
+(SK2 / "voice-loop" / "crlf").mkdir(parents=True, exist_ok=True)
+(SK2 / "voice-loop" / "crlf" / "SKILL.md").write_bytes("---\rname: cr-alias\r---\r本文\r".encode())
+(SK2 / "voice-loop" / "crlf2").mkdir(parents=True, exist_ok=True)
+crlf2 = "---\r\n" + "a: b\r\n" * 700 + "name: crlf-alias\r\n---\r\n本文\r\n"  # 名前の行は、CRLF のままなら 4000 字の外、LF にそろえると内
+assert crlf2.index("name:") > 4000 and crlf2.replace("\r\n", "\n").index("---\n本文") < 4000
+(SK2 / "voice-loop" / "crlf2" / "SKILL.md").write_bytes(crlf2.encode())
+check("自動で当てる: 改行が CR・CRLF の SKILL.md も、Hermes と同じく LF にそろえてから読む（別名を見落とさない・4000 字の境界も同じ）",
+      (script("snap", {"payload": op("crlf")}).get("result"), script("snap", {"payload": op("crlf2")}).get("result")), ("unsupported", "unsupported"))
 check("自動で当てる: 別名は控えとして読んだ同じバイト列から読む（Hermes の読み取りが失敗して別名が無いように見えても、見落とさない）",
       (script("snap", {"payload": op("fmhub")}, extra={"VL_TEST_READFAIL": "1"}).get("result"), script("snap", {"payload": op("bomq")}, extra={"VL_TEST_READFAIL": "1"}).get("result")),
       ("unsupported", "unsupported"))

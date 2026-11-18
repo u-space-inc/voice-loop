@@ -213,7 +213,7 @@ def restore_dir(root: str, rel: str, before: dict, expect: str) -> str:
 
 def front_name(sm, snap: dict) -> str | None:
     """手順の別名（SKILL.md の frontmatter の name）を、控えとして読んだのと同じバイト列から、Hermes 自身の読み方
-    （_read_frontmatter_name と同じ: BOM を外し、先頭 4000 字を parse_frontmatter で読み、name の文字列を名前の上限で切る）で読む。
+    （_read_frontmatter_name と同じ: BOM を外し、改行を LF にそろえ、先頭 4000 字を parse_frontmatter で読み、name の文字列を名前の上限で切る）で読む。
     SKILL.md が無ければ None。読み方の無い版の Hermes・読めないときは例外（別名を確かめられないので、扱わない）。"""
     if not callable(getattr(sm, "_read_frontmatter_name", None)):
         raise ValueError("この版の Hermes では手順の別名を確かめられないので、自動では当てません")
@@ -221,7 +221,8 @@ def front_name(sm, snap: dict) -> str | None:
     if raw is None:
         return None
     from agent.skill_utils import parse_frontmatter
-    fm, _ = parse_frontmatter(base64.b64decode(raw).decode("utf-8-sig", "replace")[:4000])
+    text = base64.b64decode(raw).decode("utf-8-sig", "replace").replace("\r\n", "\n").replace("\r", "\n")  # read_text と同じ改行の扱い
+    fm, _ = parse_frontmatter(text[:4000])
     name = fm.get("name") if isinstance(fm, dict) else None
     return name[:getattr(sm, "MAX_NAME_LENGTH", 64)] if isinstance(name, str) else None
 
