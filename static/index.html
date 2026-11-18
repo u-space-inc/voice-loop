@@ -594,13 +594,13 @@ async function openTopic() {
   let keep = false;
   try {
   setReplyTarget(null); // 別の件を開いたら、前に選んでいた返信先は外す（開いた件の報告に付け直すときだけ付ける）
-  if (!TOPIC_RE.test(id)) { sys('この件のリンクの形が違うので、開けませんでした'); return; }
+  if (!TOPIC_RE.test(id)) { topicNote(seq, 'この件のリンクの形が違うので、開けませんでした'); return; }
   let t, reached = true; try { t = await topicFetch('/api/topic?id=' + id); } catch { t = null; reached = false; }
   if (seq !== topicSeq) return;
   // 届かなかった件は覚えておき、つながったとき（catchUp）と、つながっていれば少し待ってから開き直す
   const later = () => { keep = true; pendingTopic = id; sys('本体に届かないので、つながったらこの件を開きます'); setTimeout(() => { if (pendingTopic === id && linked()) openTopic(); }, 3000); };
   if (!reached) { later(); return; }
-  if (!t || !t.ok) { sys('この件は見つかりませんでした（古くなったか、消えました）'); return; }
+  if (!t || !t.ok) { topicNote(seq, 'この件は見つかりませんでした（古くなったか、消えました）'); return; }
   closeViewer(); if (reading) setReading(false); // 画像を見ている・広げて読んでいる間に開いたら、普通の表示に戻す（光らせる欄が後ろに隠れて押せないため）
   // 問いの欄を見せるのは、本体がこの件の問いとして返した問い（同じセッションで、その件がそのセッションの一番新しい件、直接送られていない）だけ。
   // 光らせるのは、本体が返した指紋と同じ問いの欄だけ（あとで変わった問い・直接送った別の話の問いは光らせない。古い件ならその件の報告を開く）
@@ -619,7 +619,7 @@ async function openTopic() {
   if (seq !== topicSeq) return;
   if (!agents.length) { later(); return; } // 話し相手の一覧を読めなかった（ハブが居ないのとは違う）
   const hub = agents.find(a => a.hub);
-  if (!hub) { sys(`${t.project}｜${t.title}: 報告はハブの会話にありますが、ハブが居ません`); return; }
+  if (!hub) { topicNote(seq, `${t.project}｜${t.title}: 報告はハブの会話にありますが、ハブが居ません`); return; }
   if ($('agent').value !== hub.pane) { $('agent').value = hub.pane; setReplyTarget(null); localStorage.setItem(WANT, 'hub'); shownPane = hub.pane; applyTarget(); renderSessions(); } // PC の左の一覧の印も替える
   // 返信先にするのは、本体が記録から探したその件の一番新しい報告（画面の履歴に出ていない古い報告でも）。会話の読み込みを待たずに付ける
   const r = t.report;
@@ -628,10 +628,18 @@ async function openTopic() {
   // 読み込みが返らないまま止まっても、期限で見切って案内を出す
   await Promise.race([loadThread(), new Promise(res => setTimeout(res, TOPIC_WAIT))]);
   if (seq !== topicSeq) return;
-  if (!r || typeof r.at !== 'number') { sys(`${t.project}｜${t.title}: この件の報告は、まだありません`); return; }
+  if (!r || typeof r.at !== 'number') { topicNote(seq, `${t.project}｜${t.title}: この件の報告は、まだありません`, false); return; } // 会話の読み込みは上で待った（見切った）
   const el = [...$('log').querySelectorAll('.msg.ai')].find(e => e.dataset.topic === t.id && Number(e.dataset.at) === r.at);
-  if (el) flash(el); else sys(`${t.project}｜${t.title}: この件の報告は古いので画面の履歴には出ていませんが、返信先にしました`);
+  if (el) flash(el); else topicNote(seq, `${t.project}｜${t.title}: この件の報告は古いので画面の履歴には出ていませんが、返信先にしました`, false);
   } finally { if (!keep && seq === topicSeq && pendingTopic === id) pendingTopic = null; } // 開き終えた（開けないと決まった）件は忘れる
+}
+// 件の案内を出す。起動の読み込みと会話の読み込みが済んでから（描き直しで消えないように。返らなければ期限で見切る）。あとで別の件を開いたら出さない
+async function topicNote(seq, msg, wait = true) {
+  const end = Date.now() + (wait ? TOPIC_WAIT : 0); // wait=false: 会話の読み込みは呼ぶ側が待った（見切った）ので、すぐ出す
+  const until = p => Promise.race([p, new Promise(r => setTimeout(r, Math.max(0, end - Date.now())))]);
+  await until(bootLoad);
+  for (let p = null; p !== threadLoad && Date.now() < end;) { p = threadLoad; await until(p); }
+  if (seq === topicSeq) sys(msg);
 }
 window.addEventListener('hashchange', () => openTopic());
 // 通知を押したとき、開いていた画面には sw.js が件の場所を渡す（この画面の中の #t= だけを受ける）
@@ -650,7 +658,10 @@ function setReplyTarget(t) {
   if (t && wide) $('typed').focus();
 }
 const replyFields = () => { const a = curAgent(); return replyTarget && a && a.hub ? { reply_at: replyTarget.at } : {}; };
-async function loadThread() {
+// 会話の読み込み（描き直すと、それまでの案内が消える）。件の案内は、これと起動の読み込みが済んでから出す（topicNote）
+let threadLoad = Promise.resolve(), bootLoad = Promise.resolve();
+function loadThread() { const p = loadThreadNow(); threadLoad = p; return p; }
+async function loadThreadNow() {
   const pane = $('agent').value; if (!pane) return;
   const seq = ++loadSeq;
   try {
@@ -1769,7 +1780,8 @@ loadAsks();
 // 件の URL（通知・Slack のリンク）で新しく開いたときは、起動の読み込み（一覧・会話・声）を待たずに件を開く（初めの表示では hashchange が起きない。
 // 届かなければ、件を覚えておき catchUp と少し待ってから開き直す）
 if (location.hash) openTopic();
-Promise.race([Promise.allSettled([loadAgents(), ensureSpeakers()]).then(() => true), new Promise(r => setTimeout(() => r(false), 5000))])
+bootLoad = Promise.allSettled([loadAgents(), ensureSpeakers()]);
+Promise.race([bootLoad.then(() => true), new Promise(r => setTimeout(() => r(false), 5000))])
   .then(replied => { if (!replied) setStatus(UNREACHABLE); connect(); });
 </script>
 </body>
