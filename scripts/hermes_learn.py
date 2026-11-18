@@ -232,11 +232,14 @@ real_root = os.path.realpath(root)
 if mode == "snap":
     payload = req.get("payload") or {}
     ops = payload.get("operations") if payload.get("action") == "batch" else [payload]
-    out = {}
+    out, planned = {}, {}
     try:
         for op in ops:
             found = sm._find_skill(op["name"])
-            p = Path(found["path"]) if found else sm._resolve_skill_dir(op["name"], op.get("category"))
+            # まだ無い手順は、同じ書き足しの中で先に出てきた作る先にそろえる（作ったあとの操作は、作られた手順に当たるため）
+            p = Path(found["path"]) if found else planned.get(op["name"]) or sm._resolve_skill_dir(op["name"], op.get("category"))
+            if not found:
+                planned.setdefault(op["name"], p)
             real = os.path.realpath(str(p))
             if real == real_root or not real.startswith(real_root + os.sep):
                 done(result="unsupported", why="手順の置き場の外の手順です")

@@ -17,6 +17,7 @@ import os
 import stat
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -309,6 +310,9 @@ check("台本の入口: snap は置き場の根からの場所ごとに中身を
       (sn.get("result"), sorted(sn.get("skills", {})), script("snap", {"payload": op("new", category="voice-loop")}).get("skills"),
        script("snap", {"payload": op("outside")}).get("result")),
       ("snap", ["voice-loop/hub"], {"voice-loop/new": {"exists": False, "files": {}, "modes": {}}}, "unsupported"))
+mk = {"action": "batch", "operations": [{"action": "create", "name": "made", "category": "voice-loop", "content": "x"},
+                                         {"action": "write_file", "name": "made", "file_path": "references/a.md", "file_content": "y"}]}
+check("台本の入口: 同じ書き足しの中で作る手順に、続けてカテゴリを省いて書いても、控える置き場は作る先の 1 つ", sorted(script("snap", {"payload": mk}).get("skills", {})), ["voice-loop/made"])
 (SK2 / "voice-loop" / "hub" / "SKILL.md").write_text("後\n")
 after2 = hl.snap_dir(str(SK2), "voice-loop/hub")
 check("台本の入口: restore は指紋が違えば何も書かずに changed、合えば戻して restored",
@@ -399,6 +403,8 @@ def fake_mem_run(container, op, req=None, wait=90, env=None):
     path = MEM / s.hermes.hermes_memory.TARGETS[req["target"]]
     items = [x for x in path.read_text().split(D) if x]
     if op == "remove":
+        if req["entry"] not in items:
+            return {"result": "changed"}
         items = [x for x in items if x != req["entry"]]
     elif op == "add":
         items.append(req["content"])
@@ -475,6 +481,61 @@ mid = count()
 asyncio.run(s.hermes._learn_memory())
 check("記憶: 跡を書けなかった回は比べるもとも進めず、次に読んだときにその変化を跡に残す",
       (mid - n1, count() - n1, [e["summary"] for e in learned()["entries"] if e["kind"] == "memory"][0]), (0, 1, "書けなかった回に足した"))
+
+# 画面の操作が当たらなかった（古い画面から、Hermes がもう消した項目を消した）: Hermes が消したことは跡に残す
+asyncio.run(s.hermes._learn_memory())
+n3 = count()
+items = [x for x in (MEM / "MEMORY.md").read_text().split(D) if x]
+victim = items[0]
+vv = s.hermes.hermes_memory.version("memory", victim)
+s.hermes.HMEM_SHOWN[vv] = ("memory", victim)  # 古い画面に出ていた
+(MEM / "MEMORY.md").write_text(D.join(items[1:]))  # Hermes が先に消した
+rr = json.loads(asyncio.run(s.hermes._hmem_write("remove", {"target": "memory", "v": vv})).body)
+lm = [e for e in learned()["entries"] if e["kind"] == "memory"][0]
+check("記憶: 画面の操作が当たらなかったら、その項目を跡から外さない（Hermes が先に消したことは跡に残す）",
+      (rr.get("reason"), count() - n3, lm["target"], lm["removed"], lm["summary"]), ("changed", 1, "memory", 1, victim[:120]))
+# 戻すで、画面の口では書けない項目（長すぎる）を足し直せないときは、戻したことにしない
+longx = "長" * (s.hermes.hermes_memory.TEXT_MAX + 1)
+(MEM / "USER.md").write_text(D.join([x for x in (MEM / "USER.md").read_text().split(D) if x] + [longx]))
+asyncio.run(s.hermes._learn_memory())
+(MEM / "USER.md").write_text(D.join([x for x in (MEM / "USER.md").read_text().split(D) if x and x != longx]))
+asyncio.run(s.hermes._learn_memory())
+gone = [e for e in learned()["entries"] if e["kind"] == "memory" and e["removed"] == 1 and e["target"] == "user"][0]
+with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+    ru3 = c.post("/api/hermes/learned/undo", json={"id": gone["id"]}).json()
+check("記憶の戻す: 書けない項目（長すぎる）を足し直せないときは、戻したことにしない（一部を戻せなかった）",
+      (ru3.get("reason"), [e["state"] for e in learned()["entries"] if e["id"] == gone["id"]]), ("partial", ["applied"]))
+# 画面で書いている間（書いたあと、比べるもとを進める前）に見張りが読んでも、画面で書いたものを Hermes の学びにしない。
+# 鍵を待たせるので、ほかの試験のあと（別のイベントループ）に置く
+GATE, WROTE = threading.Event(), threading.Event()
+
+
+def slow_mem_run(container, op, req=None, wait=90, env=None):
+    out = fake_mem_run(container, op, req, wait, env)
+    if op == "add" and (req or {}).get("content") == "画面で遅く足す":
+        WROTE.set()
+        GATE.wait(5)  # 書いたあと、答えを返すまでの間
+    return out
+
+
+asyncio.run(s.hermes._learn_memory())
+n2 = count()
+s.hermes.hermes_memory.run_script = slow_mem_run
+
+
+async def overlap():
+    w = asyncio.create_task(s.hermes._hmem_write("add", {"target": "memory", "content": "画面で遅く足す"}))
+    await asyncio.to_thread(WROTE.wait, 5)
+    watch = asyncio.create_task(s.hermes._watch_memory())
+    await asyncio.sleep(0.3)
+    GATE.set()
+    await asyncio.gather(w, watch)
+
+
+asyncio.run(overlap())
+s.hermes.hermes_memory.run_script = fake_mem_run
+check("記憶: 画面で書いている間に見張りが読んでも、画面で書いたものを Hermes の学びとして残さない（同じ鍵で待つ）",
+      (count() - n2, "画面で遅く足す" in (MEM / "MEMORY.md").read_text()), (0, True))
 
 ok = sum(r[1] for r in results)
 for name, passed, got, want in results:
