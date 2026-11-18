@@ -130,8 +130,8 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     s.hermes.HERMES_HEARD["text"] = "proj の「テスト」が許可を求めています。許可しますか？"
     with c.websocket_connect("ws://127.0.0.1:8790/ws") as w:
         mr = say(w, s.hermes.HERMES_PANE, "はい", ["nosuchid"])
-    check("渡す: ハブへの発言を添付のせいで断ったら、断った発言も台帳に載せ、前に聞いた問いを失効させる（送り直しの「はい」を、その問いや確認への答えに使わせない）",
-          (mr["type"], s.hermes.HERMES_HEARD["text"], [(r[1], r[3]) for r in list(s.hermes.HERMES_TURNS)[-1:]]), ("error", "", [("はい", "")]))
+    check("渡す: ハブへの発言を添付のせいで断ったら、断った発言も台帳に（空の発言として。承認・閉じる許可にしない）載せ、前に聞いた問いを失効させる（送り直しの「はい」を、その問いや確認への答えに使わせない）",
+          (mr["type"], s.hermes.HERMES_HEARD["text"], [(r[1], r[3]) for r in list(s.hermes.HERMES_TURNS)[-1:]]), ("error", "", [("", "")]))
     hid = up("写真.png", PNG, pane=s.hermes.HERMES_PANE).json()["id"]
     with c.websocket_connect("ws://127.0.0.1:8790/ws") as w:
         m = say(w, s.hermes.HERMES_PANE, "これを見て", [hid])

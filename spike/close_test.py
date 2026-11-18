@@ -68,6 +68,22 @@ check("聞いた次の発言が「はい」なら閉じる", close(confirmed=Tru
 check("閉じたら、聞いている印を消し、閉じた pane として覚える", ("w9:p1" in s.CLOSING, "w9:p1" in s.CLOSED), (False, True))
 check("もう一度 confirmed しても、聞き直しから", close(confirmed=True), ("confirm", []))
 
+# 相手の位置: 本体が送らずに断った「はい」（添付の形・宛先・返信先が無い）を、乗せられたハブが閉じる許可に使う
+s.CLOSED.clear(); s.CLOSING.clear()
+asked()
+s.TALKERS[s.hermes.HERMES_PANE].refused("はい", "添付が見つかりません。送っていません")
+check("断った発言: 閉じるの確認の次に、本体が添付のせいで断った「はい」は、閉じる許可にならない（聞き直し）", close(confirmed=True), ("not_yes", []))
+say("はい")
+check("断った発言: そのあとの「はい」も、断った発言をはさんだので閉じない（聞き直しから）", close(confirmed=True), ("not_asked", []))
+s.CLOSED.clear(); s.CLOSING.clear()
+asked()
+real_ref = s.hermes.report_ref
+s.hermes.report_ref = lambda at: ("", "", "")
+asyncio.run(s.hermes.hermes_exchange("はい", 99.5))  # 返信先の報告が見つからない → 送らずに断る
+s.hermes.report_ref = real_ref
+check("断った発言: 返信先が見つからずに断った「はい」も、閉じる許可にならない", close(confirmed=True), ("not_yes", []))
+check("断った発言: 記録には利用者の言葉を残す（台帳だけ空）", [json.loads(l)["text"] for l in s.hermes.HERMES_LOG.read_text().splitlines() if '"role": "me"' in l][-1], "はい")
+
 s.CLOSED.clear(); s.CLOSING.clear()
 say("別のテストも閉じて", ASK)
 check("聞かずにいきなり confirmed は閉じない（ここから聞く）", close(confirmed=True), ("confirm", []))

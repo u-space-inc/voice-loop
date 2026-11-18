@@ -211,12 +211,14 @@ HERMES_HEARD = {"text": ""}
 _unsaved: set[str] = set()  # 記録に書けなかった発言の ID（画面に「記録に残っていない」と知らせるため）
 
 
-def hermes_turn_begin(text: str, reply_to: str = "", heard: str | None = None, reply_pane: str = "", extra: str = "") -> str:
+def hermes_turn_begin(text: str, reply_to: str = "", heard: str | None = None, reply_pane: str = "", extra: str = "", refused: bool = False) -> str:
     """発言を台帳と記録に載せる。返信のときは heard に返信先の報告の文を渡す: 承認に答える・閉じるの守りが「発言の直前に聞いた文」として見るのは、
     最後に届いた返事ではなく、利用者が返信を押した報告になる（古い報告への「はい」が、そのあとに届いた別件の問いへの答えにならない）。
-    extra（本体が足す添付の行）は記録にだけ付ける（画面の履歴に残す）。守りの台帳は利用者の言葉のまま。"""
+    extra（本体が足す添付の行）は記録にだけ付ける（画面の履歴に残す）。守りの台帳は利用者の言葉のまま。
+    refused は、本体が送らずに断った発言（添付・返信先が無い）。台帳には空の発言として載せる: 「すぐ次の発言」を進めて前の問い・確認を失効させ、
+    断った発言そのものは承認にも閉じる許可にもならない（閉じるの守りは、聞いたときの返答と「次の発言」の文を見るので、聞いた文を空にするだけでは足りない）。"""
     turn = f"h{os.urandom(6).hex()}"
-    HERMES_TURNS.append([turn, text, "", HERMES_HEARD["text"] if heard is None else heard, reply_to, reply_pane])  # 守りの台帳は、利用者の言葉のまま（返信の前置き・添付の行は入れない）
+    HERMES_TURNS.append([turn, "" if refused else text, "", HERMES_HEARD["text"] if heard is None else heard, reply_to, reply_pane])  # 守りの台帳は、利用者の言葉のまま（返信の前置き・添付の行は入れない）
     if not hermes_log("me", text + extra, turn=turn, **({"reply_to": reply_to, "reply_pane": reply_pane} if reply_to else {})):
         _unsaved.add(turn)
     return turn
@@ -262,7 +264,7 @@ async def hermes_exchange(text: str, reply_at: float | None = None, extra: str =
             # 送らずに断る。断った発言も台帳と記録に載せる（承認に答える・閉じるの「すぐ次の発言」を進め、前の確認を失効させる）。
             # 利用者が最後に聞くのは本体の断り（前に聞いた問いへの答えに、次の発言を使わせない。失敗のときと同じ）
             why = "返信先の報告が見つかりませんでした（記録が回ったか、読めません）。送っていません。返信を選び直すか、返信をやめて送ってください"
-            turn = hermes_turn_begin(text, heard="", extra=extra)
+            turn = hermes_turn_begin(text, heard="", extra=extra, refused=True)
             HERMES_HEARD["text"] = ""
             if not hermes_log("error", why, turn=turn):
                 _unsaved.add(turn)
@@ -862,7 +864,7 @@ class Hermes(Brain, Talker):
         return ask_hermes(text)
 
     def refused(self, text: str, why: str):
-        turn = hermes_turn_begin(text, heard="")  # 断った発言も台帳に載せる（「すぐ次の発言」を進め、保留中の確認を失効させる）
+        turn = hermes_turn_begin(text, heard="", refused=True)  # 断った発言も台帳に載せる（「すぐ次の発言」を進め、保留中の確認を失効させる。承認・閉じる許可にはならない）
         HERMES_HEARD["text"] = ""  # 利用者が聞くのは本体の断り（前に聞いた問いへの答えに、次の発言を使わせない。失敗のときと同じ）
         hermes_log("error", why[:300], turn=turn)
         _unsaved.discard(turn)  # 画面には断りをそのまま出すので、記録に書けたかは返さない

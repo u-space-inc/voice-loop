@@ -344,10 +344,10 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         w.send_bytes(b"x" * 3000)
         e2 = settle(w)
     s.transcribe = real_tr
-    check("変な返信先: 文字でも声でも、Hermes に送らず、選び直しを頼む（断った発言は台帳に載せ、聞いた文は空）",
+    check("変な返信先: 文字でも声でも、Hermes に送らず、選び直しを頼む（断った発言は台帳に空の発言として載せ、聞いた文も空）",
           (e1.startswith("返信先の報告が見つかりませんでした"), e2.startswith("返信先の報告が見つかりませんでした"), len(calls) - n_calls,
            [(r[1], r[3]) for r in list(s.hermes.HERMES_TURNS)[-2:]]),
-          (True, True, 0, [("はい", ""), ("はい", "")]))
+          (True, True, 0, [("", ""), ("", "")]))
 
     # ---- Hermes 以外の相手の履歴は、これまでどおり
     check("記録を読めない相手は none", c.get("/api/history", params={"pane": "w9:p9"}).json(), {"source": "none", "messages": []})
