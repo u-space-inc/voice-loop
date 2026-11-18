@@ -213,7 +213,9 @@ def restore_dir(root: str, rel: str, before: dict, expect: str) -> str:
 
 def snap_payload(sm, payload: dict) -> dict:
     """書き足し（payload）が触る手順のフォルダの中身を、置き場の根からの場所ごとに読む（コンテナの中で、Hermes の部品 sm を使う）。
-    置き場の外の手順・書き足し全体で大きすぎるときは ValueError。"""
+    置き場の外の手順・書き足し全体で大きすぎる・手順の鍵が無い版の Hermes・名前とフォルダの名前が違う手順は ValueError（自動では当てない）。"""
+    if not callable(getattr(sm, "_skill_mutation_locks", None)):
+        raise ValueError("この版の Hermes には手順の鍵が無いので、自動では当てません（画面の「採る」は使えます）")
     root = str(sm._skills_dir())
     real_root = os.path.realpath(root)
     ops = payload.get("operations") if payload.get("action") == "batch" else [payload]
@@ -224,6 +226,9 @@ def snap_payload(sm, payload: dict) -> dict:
         p = found["path"] if found else planned.get(op["name"]) or sm._resolve_skill_dir(op["name"], op.get("category"))
         if not found:
             planned.setdefault(op["name"], p)
+        # Hermes の手順の鍵は名前の末尾で決まる。別名（frontmatter の名前）で見つかる手順は、鍵がフォルダの名前とずれるので扱わない
+        if os.path.basename(str(p).rstrip("/")) != op["name"].rsplit("/", 1)[-1]:
+            raise ValueError("手順の名前とフォルダの名前が違うので、自動では当てません")
         real = os.path.realpath(str(p))
         if real == real_root or not real.startswith(real_root + os.sep):
             raise ValueError("手順の置き場の外の手順です")
@@ -243,8 +248,9 @@ def learn_hold(payload: dict):
     from tools import skill_manager_tool as sm
     ops = payload.get("operations") if payload.get("action") == "batch" else [payload]
     locks = getattr(sm, "_skill_mutation_locks", None)
-    if callable(locks):
-        globals()["_LEARN_LOCKS"] = locks([op["name"] for op in ops])  # 持ち続ける（台本の終わりで離れる）
+    if not callable(locks):  # 鍵が無い版の Hermes では、自動では当てない（控えのあとの書き込みを混ぜない保証が無いため）
+        done(result="unsupported", why="この版の Hermes には手順の鍵が無いので、自動では当てません")
+    globals()["_LEARN_LOCKS"] = locks([op["name"] for op in ops])  # 持ち続ける（台本の終わりで離れる）
     try:
         now = {k: digest(v) for k, v in snap_payload(sm, payload).items()}
     except Exception as e:

@@ -320,6 +320,7 @@ ROOT = Path(os.environ["VL_TEST_SKILLS"])
 def _skills_dir():
     return ROOT
 def _find_skill(name):
+    name = {"alias-hub": "hub"}.get(name, name)  # 別名（frontmatter の名前）でも見つかる（Hermes と同じ）
     for p in ROOT.rglob("SKILL.md"):
         if p.parent.name == name and not p.parent.is_symlink():
             return {"path": p.parent}
@@ -356,6 +357,8 @@ def apply_skill_pending(payload):
             Path(d).mkdir(parents=True, exist_ok=True)
             (Path(d) / "SKILL.md").write_text("当てた: " + op.get("new_string", ""))
     return json.dumps({"success": True})
+if os.environ.get("VL_TEST_NOLOCK"):  # 手順の鍵が無い版の Hermes
+    del _skill_mutation_locks
 """)
 (FAKE / "tools" / "write_approval.py").write_text("""import os
 from pathlib import Path
@@ -376,9 +379,10 @@ SK2 = Path(TMP) / "skills2"
 (SK2 / "voice-loop" / "hub" / "SKILL.md").write_text("前\n")
 
 
-def script(mode, req, text=None):
+def script(mode, req, text=None, extra=None):
     p = subprocess.run([sys.executable, "-c", text or hl.SCRIPT, hl.CHECK_MARK if mode == "snap" else hl.MARK, mode], input=json.dumps(req).encode(),
-                       capture_output=True, cwd=FAKE, env={**os.environ, "PYTHONPATH": str(FAKE), "VL_TEST_SKILLS": str(SK2), "VL_TEST_OUTSIDE": str(OUTSIDE)}, timeout=60)
+                       capture_output=True, cwd=FAKE, env={**os.environ, "PYTHONPATH": str(FAKE), "VL_TEST_SKILLS": str(SK2), "VL_TEST_OUTSIDE": str(OUTSIDE), **(extra or {})},
+                       timeout=60)
     return s.hermes.hermes_skills.read_result(p)
 
 
@@ -424,12 +428,12 @@ PEND2 = Path(TMP) / "pending2"
 PEND2.mkdir()
 
 
-def apply_script(pid, payload, expect, hold=None):
+def apply_script(pid, payload, expect, hold=None, extra=None):
     """自動で当てる台本（APPLY_SCRIPT）を、偽の Hermes で動かす。hold は、台本が鍵を待っている間に Hermes として行うこと。"""
     raw = json.dumps({"id": pid, "payload": payload}).encode()
     (PEND2 / f"{pid}.json").write_bytes(raw)
     env = {**os.environ, "PYTHONPATH": str(FAKE), "VL_TEST_SKILLS": str(SK2), "VL_TEST_OUTSIDE": str(OUTSIDE), "VL_TEST_PENDING": str(PEND2),
-           "VL_LEARN_EXPECT": json.dumps(expect)}
+           "VL_LEARN_EXPECT": json.dumps(expect), **(extra or {})}
     pr = subprocess.Popen([sys.executable, "-c", hl.APPLY_SCRIPT, s.hermes.hermes_skills.MARK, "approve", pid], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, cwd=FAKE, env=env)
     pr.stdin.write(raw)
@@ -469,6 +473,12 @@ a3 = apply_script("apapap03", pa, e0, hermes_edits)
 check("自動で当てる台本: Hermes が手順を書き換えている間（同じ鍵）は待ち、その間に変わっていたら当てない（控えのあとの書き込みを、当てた中身に混ぜない）",
       (a3.get("result"), (SK2 / "voice-loop" / "ap" / "SKILL.md").read_text(), (PEND2 / "apapap03.json").exists()),
       ("changed", "Hermes が鍵を持って書いた\n", True))
+(SK2 / "voice-loop" / "ap" / "SKILL.md").write_text("前\n")
+check("自動で当てる: 手順の鍵が無い版の Hermes では、控えを取る段で断り（今日の枠を使わない）、当てる台本でも当てない",
+      (script("snap", {"payload": pa}, extra={"VL_TEST_NOLOCK": "1"}).get("result"), apply_script("apapap04", pa, e0, extra={"VL_TEST_NOLOCK": "1"}).get("result"),
+       (SK2 / "voice-loop" / "ap" / "SKILL.md").read_text()), ("unsupported", "unsupported", "前\n"))
+check("自動で当てる: 別名（frontmatter の名前）で見つかる手順は、鍵がフォルダの名前とずれるので扱わない",
+      (script("snap", {"payload": op("alias-hub")}).get("result"), script("snap", {"payload": op("hub")}).get("result")), ("unsupported", "snap"))
 for i in range(hl.SNAP_BATCH_SKILLS_MAX + 1):
     (SK2 / "many" / f"m{i:02d}").mkdir(parents=True, exist_ok=True)
     (SK2 / "many" / f"m{i:02d}" / "SKILL.md").write_text("小さい\n")
