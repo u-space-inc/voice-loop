@@ -607,6 +607,7 @@ async function openTopic() {
   }
   if (!agents.length) await loadAgents();
   if (seq !== topicSeq) return;
+  if (!agents.length) { later(); return; } // 話し相手の一覧を読めなかった（ハブが居ないのとは違う）
   const hub = agents.find(a => a.hub);
   if (!hub) { sys(`${t.project}｜${t.title}: 報告はハブの会話にありますが、ハブが居ません`); return; }
   if ($('agent').value !== hub.pane) { $('agent').value = hub.pane; setReplyTarget(null); localStorage.setItem(WANT, 'hub'); shownPane = hub.pane; applyTarget(); renderSessions(); } // PC の左の一覧の印も替える

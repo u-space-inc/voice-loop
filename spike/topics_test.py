@@ -619,6 +619,18 @@ with sync_playwright() as p:
         lit = False
     check("画面: 問いの一覧の読み込みだけが失敗しても「問いなし」にせず、報告のほうへ進まない。件を覚えて開き直し、問いの欄を光らせる",
           (lit, "つながったらこの件を開きます" in logs(fresh), fresh.eval_on_selector("#replyBar", "e => e.hidden")), (True, True, True))
+    fresh.evaluate("""() => { agents = []; agentsSig = '';
+      const of = window.fetch; let n = 0;  // 報告の件を開くときに、話し相手の一覧の読み込みだけが一度失敗する
+      window.fetch = (u, ...a) => (String(u).startsWith('/api/agents') && ++n === 1) ? Promise.reject(new TypeError('Failed to fetch')) : of(u, ...a);
+    }""")
+    fresh.evaluate(f"location.hash = '#t={one['topic']}'")
+    try:
+        fresh.wait_for_function("!document.getElementById('replyBar').hidden", timeout=10000)
+        replied = True
+    except Exception:
+        replied = False
+    check("画面: 話し相手の一覧を読めなかったときも「ハブが居ない」とせず、件を覚えて開き直す",
+          (replied, "ハブが居ません" in logs(fresh)), (True, False))
     fresh.close()
     fresh = browser.new_page()  # 一覧と声は読めて、件を引く口だけが一度失敗した（つながり直しは起きない）
     fresh.set_viewport_size({"width": 390, "height": 844})
