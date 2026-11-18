@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import sys
+import threading
 import tempfile
 from pathlib import Path
 
@@ -71,7 +72,7 @@ check("もう一度 confirmed しても、聞き直しから", close(confirmed=T
 # 相手の位置: 本体が送らずに断った「はい」（添付の形・宛先・返信先が無い）を、乗せられたハブが閉じる許可に使う
 s.CLOSED.clear(); s.CLOSING.clear()
 asked()
-s.TALKERS[s.hermes.HERMES_PANE].refused("はい", "添付が見つかりません。送っていません")
+asyncio.run(s.TALKERS[s.hermes.HERMES_PANE].refused("はい", "添付が見つかりません。送っていません"))
 check("断った発言: 閉じるの確認の次に、本体が添付のせいで断った「はい」は、閉じる許可にならない（聞き直し）", close(confirmed=True), ("not_yes", []))
 say("はい")
 check("断った発言: そのあとの「はい」も、断った発言をはさんだので閉じない（聞き直しから）", close(confirmed=True), ("not_asked", []))
@@ -195,6 +196,27 @@ s.spawn_session = lambda directory, project, model: (spawned.append(project), {"
 s.list_agents = lambda: [{**TARGET, "pane": f"w5:p{i}", "name": f"hubjob-blog-{i}"} for i in range(5)]
 r = json.loads(asyncio.run(s.hub_spawn({"project": "blog"})).body)
 check("ハブが立てたものが5つ居ても、6つ目を立てる", (r["ok"], spawned), (True, ["blog"]))
+
+# 相手の位置: 前の往復（画面が止めても裏で続く）が Hermes の返事を待つ間に、次の発言を添付のせいで断る。あとから届いた古い問いを、
+# 断ったあとの「聞いた文」にしない（断りは往復と同じ鍵の順番で載せる）。鍵を待たせるので、ほかの試験のあと（別のイベントループ）に置く
+gate = threading.Event()
+real_ask = s.hermes.ask_hermes
+s.hermes.ask_hermes = lambda text: (gate.wait(5), ASK)[1]
+
+
+async def race():
+    first = asyncio.create_task(s.hermes.hermes_exchange("テストのセッションを閉じて"))
+    await asyncio.sleep(0.3)  # 前の往復は、Hermes の返事（閉じていいかの問い）を待っている
+    second = asyncio.create_task(s.TALKERS[s.hermes.HERMES_PANE].refused("はい", "添付が見つかりません。送っていません"))
+    await asyncio.sleep(0.3)
+    gate.set()
+    await asyncio.gather(first, second)
+
+
+asyncio.run(race())
+s.hermes.ask_hermes = real_ask
+check("断った発言: 前の往復が返事を待つ間に断っても、断りはそのあとに載せ、最後に聞いた文は空（古い問いを次の発言の「聞いた文」にしない）",
+      (s.hermes.HERMES_HEARD["text"], [(r[1], r[2]) for r in list(s.hermes.HERMES_TURNS)[-2:]]), ("", [("テストのセッションを閉じて", ASK), ("", "")]))
 
 bad = [f"{name}: {g!r}（期待 {w!r}）" for name, ok, g, w in results if not ok]
 print("\n".join(bad) or f"{len(results)} 例、すべて期待どおり")

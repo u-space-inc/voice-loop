@@ -17,6 +17,7 @@ import re
 import secrets
 import stat
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -88,15 +89,30 @@ def save(root: Path, name: str, data: bytes) -> Path:
     return d / name
 
 
+_TIDY_LOCK = threading.Lock()  # 片づけは 1 つずつ（同時に添付を受けたとき、片方が消した日付のフォルダを、もう片方が読みに行かない）
+
+
 def tidy(root: Path, now: float | None = None):
-    """KEEP より古い添付を消す（名前の形が合うふつうのファイルだけ。symlink はたどらない）。空になった日付のフォルダも消す。"""
-    now = now or time.time()
+    """KEEP より古い添付を消す（名前の形が合うふつうのファイルだけ。symlink はたどらない）。空になった日付のフォルダも消す。
+    読む途中でフォルダが消えていても止まらない（別の処理が消したもの）。"""
+    with _TIDY_LOCK:
+        try:
+            _tidy(root, now or time.time())
+        except FileNotFoundError:
+            pass
+
+
+def _tidy(root: Path, now: float):
     if not root.is_dir() or root.is_symlink():
         return
     for d in root.iterdir():
         if not re.fullmatch(r"\d{8}", d.name) or d.is_symlink() or not d.is_dir():
             continue
-        for f in d.iterdir():
+        try:
+            files = list(d.iterdir())
+        except FileNotFoundError:
+            continue
+        for f in files:
             try:
                 st = f.lstat()
             except OSError:

@@ -183,6 +183,34 @@ os.utime(other, (time.time() - 8 * 86400,) * 2)
 attach.tidy(Path(TMP) / "state" / "attachments")
 check("片づけ: 7 日より古い添付を消す（名前の形が違うものは消さない）", (old.exists(), other.exists()), (False, True))
 
+# 相手の位置ではなく並び: 同時に添付を受けて片づけが重なり、読む直前に日付のフォルダが消えても止まらない
+gone = Path(TMP) / "state" / "attachments" / "20200102"
+gone.mkdir()
+real_iterdir = Path.iterdir
+
+
+def racing_iterdir(self):
+    if self == gone and self.exists():
+        self.rmdir()  # 別の片づけが先に消した
+    return real_iterdir(self)
+
+
+Path.iterdir = racing_iterdir
+try:
+    attach.tidy(Path(TMP) / "state" / "attachments")
+    raced = "ok"
+except Exception as e:  # noqa: BLE001
+    raced = type(e).__name__
+finally:
+    Path.iterdir = real_iterdir
+check("片づけ: 読む直前に日付のフォルダが消えても止まらない（同時に添付を受けたとき）", (raced, gone.exists()), ("ok", False))
+real_tidy = attach.tidy
+attach.tidy = lambda root, now=None: (_ for _ in ()).throw(FileNotFoundError("消えた"))
+with TestClient(s.app, base_url="http://127.0.0.1:8790", raise_server_exceptions=False) as c:
+    tr = c.post("/api/attach", params={"name": "a.png", "pane": "w9:p1"}, content=PNG, headers=HDR)
+attach.tidy = real_tidy
+check("片づけ: 片づけが失敗しても、置けた添付は受け取る（500 にしない）", (tr.status_code, tr.json().get("ok") if "json" in tr.headers.get("content-type", "") else None), (200, True))
+
 # ---------- コンテナの中の台本（置き場を一時のフォルダにして直に動かす） ----------
 CROOT = Path(TMP) / "container-data"
 CROOT.mkdir()

@@ -638,7 +638,10 @@ async def api_attach(request: Request, name: str = "", pane: str = ""):
     for k in [k for k, v in ATTACHED.items() if now - v["at"] > ATTACH_ID_KEEP]:
         ATTACHED.pop(k, None)
     ATTACHED[aid] = {"path": path, "file": file, "name": attach.shown_name(name), "at": now, "pane": pane}
-    await asyncio.to_thread(attach.tidy, ATTACH_DIR)
+    try:  # 片づけの失敗で、置けた添付を断らない
+        await asyncio.to_thread(attach.tidy, ATTACH_DIR)
+    except OSError:
+        traceback.print_exc()
     hlog(f"添付を受け取りました: {file}（{len(data)} バイト）", flush=True)
     return JSONResponse({"ok": True, "id": aid, "name": ATTACHED[aid]["name"], "size": len(data)})
 
@@ -2631,9 +2634,14 @@ async def ws(sock: WebSocket):
             if not why:
                 extra, why = await attachment_lines(files, TALKERS.get(pane), pane)
             if why:  # 送らずに断る。ハブには、利用者が最後に聞いたのは本体の断りだと伝える（前の問いへの答えに、次の発言を使わせない）
-                if pane in TALKERS:
-                    await asyncio.to_thread(TALKERS[pane].refused, text, why)
+                job = None
+                if pane in TALKERS:  # 断りの記録は、前の往復と同じ鍵の順番で載せる。画面が次の発言で止めても、載せるのは止めない
+                    job = asyncio.create_task(TALKERS[pane].refused(text, why))
+                    _tasks.add(job)
+                    job.add_done_callback(_tasks.discard)
                 await send(type="error", text=why)
+                if job:
+                    await asyncio.shield(job)
                 return
             await run_turn(text, pane, cancel, key, reply_at, extra)
         except asyncio.CancelledError:
