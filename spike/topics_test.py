@@ -273,8 +273,8 @@ check("相手の位置: 通知に載せる開く場所は、/ か /#t=<件> だ�
 with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     got = c.get("/api/topic", params={"id": one["topic"]}).json()
     gone = [c.get("/api/topic", params={"id": x}).json() for x in ("../x", "t" + "e" * 10, "")]
-check("画面の口: 件を引くと、どのセッションの件かと題（と、あれば一番新しい報告）だけを返す。形の違う・無い件は gone",
-      (got, gone), ({"ok": True, "id": one["topic"], "pane": "w1:p1", "session": "s1", "project": "lp", "title": "内訳を出して", "report": None},
+check("画面の口: 件を引くと、どのセッションの件かと題（と、あれば一番新しい報告・そのセッションの一番新しい件か）だけを返す。形の違う・無い件は gone",
+      (got, gone), ({"ok": True, "id": one["topic"], "pane": "w1:p1", "session": "s1", "project": "lp", "title": "内訳を出して", "report": None, "current": False},
                     [{"ok": False, "reason": "gone"}] * 3))
 with TestClient(s.app, base_url="http://host.docker.internal:8790") as c:
     r = c.get("/api/topic", params={"id": one["topic"]}, headers={"x-vl-key": "k1"})
@@ -382,6 +382,9 @@ ASK_T = s.topics.new("w2:p1", "s2", "shop", "受注の確認")
 NOSESS_T = s.topics.new("w2:p1", "", "shop", "セッション ID の分からない件")
 OLD_T = s.topics.new("w2:p1", "s-old", "shop", "前のセッションの件")
 NOREP_T = s.topics.new("w1:p1", "s1", "lp", "まだ報告の無い件")
+PREV_T = s.topics.new("w2:p1", "s2", "shop", "同じセッションの前の件")
+s.topics.TOPICS[PREV_T]["updated"] -= 100  # 問いの件（ASK_T）より前に動いた
+s.hermes.hermes_log("ai", "前の件は片づきました", report=True, about="shop｜前の件", pane="w2:p1", topic=PREV_T)
 s.topics.link = lambda tid: None
 
 srv = uvicorn.Server(uvicorn.Config(s.app, host="127.0.0.1", port=PORT, log_level="warning"))
@@ -411,6 +414,14 @@ with sync_playwright() as p:
     page.wait_for_selector('#asks .ask[data-pane="w2:p1"].flash', timeout=8000)
     check("画面: 件の URL で開くと、その件のセッションの問いの欄を見せる（話し相手は替えない・URL の #t= は外す）",
           (page.eval_on_selector("#agent", "e => e.value"), page.evaluate("location.hash")), ("w1:p1", ""))
+    page.evaluate("document.querySelectorAll('.flash').forEach(e => e.classList.remove('flash'))")
+    page.evaluate(f"location.hash = '#t={PREV_T}'")
+    page.wait_for_function("!document.getElementById('replyBar').hidden", timeout=8000)
+    check("相手の位置: 同じセッションでも、あとの件の問いで止まっているなら、前の件のリンクでは問いの欄を出さず、前の件の報告を返信先にする",
+          (page.evaluate("[...document.querySelectorAll('#asks .ask.flash')].length"), page.eval_on_selector("#replyTo", "e => e.textContent")),
+          (0, "↩ shop｜前の件 の報告に返信"))
+    page.select_option("#agent", "w1:p1")
+    page.wait_for_timeout(300)
     page.evaluate(f"location.hash = '#t={OLD_T}'")
     page.wait_for_function("document.getElementById('replyBar') && !document.getElementById('replyBar').hidden || [...document.querySelectorAll('#log .sys')].some(e => e.textContent.includes('前のセッションの件'))", timeout=8000)
     check("相手の位置: 同じペインでも別のセッションの件なら、いまの問いの欄を出さない（報告を探す）",

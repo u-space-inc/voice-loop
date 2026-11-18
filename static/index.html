@@ -592,8 +592,9 @@ async function openTopic() {
   await loadAsks();
   if (seq !== topicSeq) return;
   const item = asks.get(t.pane);
-  // 問いの欄を見せるのは、その件と同じセッション（空でないセッション ID が同じ）の問いだけ（同じペインで作り直された別のセッションの問いは見せない）
-  if (item && t.session && item.q.key === t.session) { flash(item.el); setStatus(`${t.project}｜問いに答えてください（押すまで答えません）`); return; }
+  // 問いの欄を見せるのは、その件と同じセッション（空でないセッション ID が同じ）の問いで、その件がそのセッションの一番新しい件のときだけ
+  // （同じペインで作り直された別のセッションの問い・同じセッションのあとの件の問いは見せない。古い件ならその件の報告を開く）
+  if (item && t.current === true && t.session && item.q.key === t.session) { flash(item.el); setStatus(`${t.project}｜問いに答えてください（押すまで答えません）`); return; }
   if (!agents.length) await loadAgents();
   if (seq !== topicSeq) return;
   const hub = agents.find(a => a.hub);

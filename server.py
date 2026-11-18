@@ -2309,7 +2309,9 @@ async def api_topic(id: str = ""):
     if not t:
         return JSONResponse({"ok": False, "reason": "gone"})
     rep = await asyncio.to_thread(HUB.topic_report, t["id"])  # その件の一番新しい報告（画面の履歴に出ていない古い報告も）
-    return JSONResponse({"ok": True, **{k: t[k] for k in ("id", "pane", "session", "project", "title")}, "report": rep})
+    # current: そのセッションの一番新しい件か。いまの問いは一番新しい件のものとする（同じセッションの古い件のリンクで、あとの件の問いを見せない）
+    current = bool(t["session"]) and topics.latest_for_session(t["session"]) == t["id"]
+    return JSONResponse({"ok": True, **{k: t[k] for k in ("id", "pane", "session", "project", "title")}, "report": rep, "current": current})
 
 
 @app.get("/api/prompts")
