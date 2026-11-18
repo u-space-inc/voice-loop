@@ -1076,6 +1076,54 @@ function hskCard(it) {
   acts.appendChild(no); c.appendChild(acts);
   return c;
 }
+// 学んだこと: Hermes の手順の書き足し（本体が 1 日の上限まで自動で当てたもの）と、記憶の変化の跡。中身は開いたときに取る。
+// 押せるのは「戻す」（2 段）だけ。戻せないもの（当てたあとに変わった・控えが無い）は、そう出す
+const LEARN_FAIL = { gone: 'この跡はもうありません', done: 'もう戻しました', cannot: 'これは戻せません', busy: '前の処理が終わるのを待っています',
+  state: '状態を書けないので、戻していません', changed: '当てたあとに手順が変わっているので、戻せませんでした', unknown: '戻せたか分かりません',
+  unreadable: '記憶を読めないので、戻していません', partial: '一部を戻せませんでした', off: 'Hermes の置き場がありません' };
+const learnOpen = new Set();
+const LEARN_PAGE = 30;
+let learnShown = LEARN_PAGE;  // 学んだことの跡を、新しいほうから何件まで出すか（「さらに見る」で増やす。開き直すと戻る）
+function learnCard(e) {
+  const c = node('div', 'prop hsk learn');
+  const memName = { user: 'あなたについて', memory: 'メモ' }[e.target] || e.target;
+  c.appendChild(node('div', 'text', e.kind === 'skill' ? '手順｜' + (e.summary || '（要約なし）')
+    : `記憶（${memName}）｜足した ${e.added}・消した ${e.removed}${e.summary ? '：' + e.summary : ''}`));
+  const stateText = { applying: '当てている途中', unknown: '当たったか分かりません', failed: '当てられませんでした', skipped: '当てる前に止めました', undone: '戻しました' };
+  c.appendChild(node('div', 'sitMeta', stamp(e.at) + '・' + (stateText[e.state] || (e.kind === 'skill' ? '自動で当てました' : 'Hermes が書きました'))));
+  if (e.note) c.appendChild(node('div', 'risky', e.note));
+  const det = document.createElement('details');
+  det.appendChild(node('summary', null, '中身を見る'));
+  const pre = node('pre', 'diff');
+  det.appendChild(pre);
+  det.ontoggle = async () => {
+    if (!det.open) { learnOpen.delete(e.id); return; }
+    learnOpen.add(e.id); pre.textContent = '読んでいます…';
+    let r; try { r = await postJSON('/api/hermes/learned/detail', { id: e.id }); } catch { r = { ok: false, reason: '本体に届きません' }; }
+    if (!r.ok) { pre.textContent = '中身を読めませんでした: ' + (LEARN_FAIL[r.reason] || r.reason); return; }
+    showDiff(pre, e.kind === 'skill' ? (r.diff || '（差分を取れませんでした）') : [...r.removed.map(x => '- ' + x), ...r.added.map(x => '+ ' + x)].join('\n') || '（中身がありません）');
+  };
+  if (learnOpen.has(e.id)) det.open = true;
+  c.appendChild(det);
+  if (e.state === 'applied' && e.can_undo) {
+    const acts = node('div', 'acts'), back = node('button', null, '戻す');
+    let timer = null;
+    const reset = () => { clearTimeout(timer); sitHold = false; back.className = ''; back.textContent = '戻す'; };
+    back.onclick = async () => {
+      if (!back.classList.contains('sure')) {  // 1段目: 確かめを出す。10 秒で戻る
+        sitHold = true; back.className = 'sure'; back.textContent = e.kind === 'skill' ? '当てる前の手順に戻す' : '記憶を前に戻す';
+        timer = setTimeout(reset, 10000); return;
+      }
+      clearTimeout(timer); back.disabled = true; back.textContent = '戻しています…';
+      let r; try { r = await postJSON('/api/hermes/learned/undo', { id: e.id }); } catch { r = { ok: false, reason: 'unknown', why: '本体から答えが届きませんでした' }; }
+      sitNote = r.ok ? ['戻しました' + (r.skipped ? `（もう変わっていた ${r.skipped} 項目は飛ばしました）` : ''), false]
+        : ['戻せませんでした: ' + (LEARN_FAIL[r.reason] || r.reason) + (r.why ? `（${r.why}）` : ''), true];
+      sys(sitNote[0]); sitHold = false; loadSituation();
+    };
+    acts.appendChild(back); c.appendChild(acts);
+  }
+  return c;
+}
 // ハブ（Hermes）の会話を新しくする: 前の会話を持ち越さずに始め直す（設定した時刻にも毎朝新しくなる。既定 4 時）。記憶と手順書は残り、直した記憶はここから効く。2段
 function hubSessionRow(a, hold = v => { sitHold = v; }, done = (msg, bad) => { sitNote = [msg, bad]; loadSituation(); }) {
   const row = node('div', 'sitHead');
@@ -1102,7 +1150,7 @@ async function loadSituation() {
   const box = $('sitBody');
   // 読めなかったときは、知らせが無いことと分けて出す（本体が止まった・接続が切れたときに「ありません」と見せない）
   const get = url => fetch(url).then(r => r.ok ? r.json() : FAILED).catch(() => FAILED);
-  const [h, nt] = await Promise.all([get('/api/hermes/skills'), get('/api/notices')]);
+  const [h, nt, lr] = await Promise.all([get('/api/hermes/skills'), get('/api/notices'), get('/api/hermes/learned')]);
   if (sitHold) return;  // 読んでいるあいだに「採る」などが押された
   if (h === FAILED && nt === FAILED) { box.textContent = '読めませんでした（接続を確かめてください）'; return; }  // 数の札はそのまま
   const notes = nt === FAILED ? [] : nt.rows;
@@ -1131,8 +1179,19 @@ async function loadSituation() {
       box.appendChild(c);
     }
   }
+  if (lr === FAILED) box.appendChild(node('div', 'sitMeta bad', '学んだことを読めませんでした（接続を確かめてください）'));
+  else if (lr.on && (lr.entries.length || lr.problem)) {
+    box.appendChild(node('h4', null, `学んだこと（Hermes。今日自動で当てた手順 ${lr.today ?? '?'}/${lr.limit ?? '?'}）— 手順の書き足しは本体が自動で当て、記憶は Hermes が書きます。違えば「戻す」で戻せます`));
+    if (lr.problem) box.appendChild(node('div', 'sitMeta bad', lr.problem));
+    for (const e of lr.entries.slice(0, learnShown)) box.appendChild(learnCard(e));
+    if (lr.entries.length > learnShown) {  // 古い跡も、画面から中身を見て戻せるように（跡は消さないので、上を戻しても下は押し出されない）
+      const more = node('button', 'learnMore', `さらに ${Math.min(LEARN_PAGE, lr.entries.length - learnShown)} 件を見る（残り ${lr.entries.length - learnShown} 件）`);
+      more.onclick = () => { learnShown += LEARN_PAGE; loadSituation(); };
+      box.appendChild(more);
+    }
+  }
   if (h !== FAILED && h.on && (h.items.length || h.unreadable || h.problem)) {
-    box.appendChild(node('h4', null, `ハブが手順に書き足したいこと（Hermes・${h.items.length}）— 採ると Hermes の手順に入り、次からの会話で使われます`));
+    box.appendChild(node('h4', null, `自動で当てていない手順の書き足し（Hermes・${h.items.length}）— 今日の上限を超えた分は次の日に自動で当てます。採ると、いま当てます`));
     if (h.problem) box.appendChild(node('div', 'sitMeta bad', h.problem));
     if (h.verify) box.appendChild(node('div', 'sitMeta bad', '前の処理が終わったか確かめています。確かめられるまで、採る・捨てるは断ります'));
     if (h.unreadable) box.appendChild(node('div', 'sitMeta bad', `読めない記録 ${h.unreadable} 件（symlink・大きすぎるもの・形の違うものは読みません。Hermes の対話画面の /skills で見てください）`));
@@ -1325,6 +1384,7 @@ const MEM_FAIL = {
   stale: '画面が古くなっていました。読み直しました', changed: 'その項目は、いまの記憶にありません（Hermes が書き換えたか、消しました）。読み直しました',
   refused: 'Hermes が断りました', invalid: '文の形が受け付けられません', busy: '前の書き込みが終わるのを待っています',
   unverifiable: '前の書き込みが終わったか確かめられないので、書きません', state: '状態を書けないので、書きません',
+  unreadable: '記憶を読めないので、書きません',
   off: 'Hermes がハブでないか、置き場がありません', unknown: '当たったか分かりません。読み直して確かめてください（自動では送り直しません）',
 };
 const memTyping = () => { const a = document.activeElement; return !!a && a.tagName === 'TEXTAREA' && $('memPanel').contains(a); };

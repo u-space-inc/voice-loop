@@ -221,6 +221,9 @@ why = shape_problem(rec.get("payload"))
 if why:
     done(result="unsupported", why=why)
 from tools.skill_manager_tool import apply_skill_pending
+# 自動で当てるとき（hermes_learn.APPLY_SCRIPT）は、Hermes の手順の鍵を取り、控えを取ったときから変わっていないかを確かめてから当て、
+# 当てたあとの指紋を取り終えるまで鍵を持つ（台本の終わりで離す）。画面の「採る」のときは、この台本には無い
+learn_after = globals()["LEARN_HOLD"](rec["payload"]) if "LEARN_HOLD" in globals() else None
 try:
     res = apply_skill_pending(rec["payload"])
 except Exception as e:
@@ -231,7 +234,7 @@ except Exception:
     data = None
 if not isinstance(data, dict) or data.get("success") is not True or data.get("staged"):
     done(result="failed", why=str(data.get("error") if isinstance(data, dict) and data.get("error") else res)[:300])
-done(result="applied", discarded=bool(wa.discard_pending(wa.SKILLS, pid)))
+done(result="applied", discarded=bool(wa.discard_pending(wa.SKILLS, pid)), **({"after": learn_after()} if learn_after else {}))
 '''
 SCRIPT = ("import re\n" + inspect.getsource(shape_problem)
           + f"\nID_RE = re.compile({ID_RE.pattern!r})\nRECORD_MAX = {RECORD_MAX}\nDIFF_MAX = {DIFF_MAX}\n" + _SCRIPT_MAIN)
@@ -243,20 +246,21 @@ def docker_bin() -> str | None:
         (str(d / "docker") for d in DOCKER_DIRS if (d / "docker").is_file()), None)
 
 
-def command(container: str, mode: str, pid: str, env: dict | None = None) -> list[str] | None:
-    """台本を動かす命令。docker が無ければ None。env は試験のときだけ（一時の置き場を指す）。"""
+def command(container: str, mode: str, pid: str, env: dict | None = None, script: str | None = None) -> list[str] | None:
+    """台本を動かす命令。docker が無ければ None。env は台本に渡す値（試験の一時の置き場・自動で当てるときの控えの指紋）。
+    script は台本の差し替え（自動で当てるときの hermes_learn.APPLY_SCRIPT。目印は同じ）。"""
     exe = docker_bin()
     if not exe:
         return None
     extra = [a for k, v in (env or {}).items() for a in ("-e", f"{k}={v}")]
     return [exe, "exec", "-i", "-u", USER, "-w", WORKDIR, *extra, container,
-            "timeout", "--kill-after=5", str(RUN_LIMIT), PY, "-c", SCRIPT,
+            "timeout", "--kill-after=5", str(RUN_LIMIT), PY, "-c", script or SCRIPT,
             MARK if mode in ("approve", "reject") else CHECK_MARK, mode, pid]
 
 
-def run_script(container: str, mode: str, pid: str, raw: bytes, wait: float = HOST_WAIT, env: dict | None = None) -> dict:
+def run_script(container: str, mode: str, pid: str, raw: bytes, wait: float = HOST_WAIT, env: dict | None = None, script: str | None = None) -> dict:
     """台本を動かして結果を返す（{"result": …}）。動かせない・形の違う答え → error、時間切れ → timeout（どちらも why つき）。"""
-    cmd = command(container, mode, pid, env)
+    cmd = command(container, mode, pid, env, script)
     if not cmd:
         return {"result": "error", "why": "docker が見つかりません（config.env の VL_DOCKER に場所を書けます）"}
     try:
@@ -265,6 +269,11 @@ def run_script(container: str, mode: str, pid: str, raw: bytes, wait: float = HO
         return {"result": "timeout", "why": f"{wait:.0f} 秒待っても終わりませんでした"}
     except OSError as e:
         return {"result": "error", "why": f"docker を動かせません（{type(e).__name__}）"}
+    return read_result(p)
+
+
+def read_result(p: subprocess.CompletedProcess) -> dict:
+    """台本の答え（最後の「VLRESULT {JSON}」の行）を読む。打ち切り → timeout、動かせない・形の違う答え → error（why つき）。"""
     if p.returncode in (124, 137):  # timeout が打ち切った
         return {"result": "timeout", "why": "コンテナの中で時間切れになりました"}
     line = next((l for l in reversed(p.stdout.decode("utf-8", "replace").splitlines()) if l.startswith("VLRESULT ")), "")
