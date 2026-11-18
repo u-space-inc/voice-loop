@@ -251,6 +251,8 @@ def snap_payload(sm, payload: dict) -> dict:
         rel = os.path.relpath(real, real_root)
         if rel not in out:
             out[rel] = snap_dir(root, rel)
+            if any(k.endswith("/SKILL.md") for k in out[rel]["files"]):  # 中に別の手順を含む手順（控える範囲と、取る鍵の範囲がずれる）は扱わない
+                raise ValueError("中に別の手順を含む手順なので、自動では当てません")
             alias = front_name(sm, out[rel])  # 別名（frontmatter の名前）がフォルダの名前と違えば、Hermes が別名で書くときの鍵とずれる
             if alias is not None and alias != os.path.basename(rel):
                 raise ValueError("別名（frontmatter の名前）がフォルダの名前と違う手順なので、自動では当てません")

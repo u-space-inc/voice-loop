@@ -786,15 +786,14 @@ async def _hmem_write(op: str, body: dict) -> JSONResponse:
     # 書いてから比べるもとを進めるまでを、見張りの読み取り（_learn_memory）と同じ鍵の中で行う
     # （書いたあとの記憶を見張りが先に読むと、画面で書いたものが Hermes の学びとして残り、「戻す」で本人の書き込みを消せてしまう）
     async with HMEM_LEARN_LOCK:
-        out = await _hmem_run(op, req)
+        # 画面で書いて当たった項目だけを、Hermes の学びとして跡に残さない（当たらなかった・分からないものは外さない。ほかの変化は跡に残す）。
+        # 読む側（記憶のファイルの読み取り）と同じく、改行を LF にそろえて前後の空白を外したもので照らす
+        mine = {"added": [_hmem_norm(req["content"])] if op in ("add", "edit") else [], "removed": [req["entry"]] if op in ("edit", "remove") else []}
+        out = await _hmem_run_mine(op, req, target, mine)
         res = out.get("result")
         if res in ("state", "busy", "unverifiable"):
             return JSONResponse({"ok": False, "reason": res})
-        # 画面で書いて当たった項目だけを、Hermes の学びとして跡に残さない（当たらなかった・分からないものは外さない。ほかの変化は跡に残す）
-        # 読む側（記憶のファイルの読み取り）と同じく、改行を LF にそろえて前後の空白を外したもので照らす
-        norm = lambda t: t.replace("\r\n", "\n").replace("\r", "\n").strip()
-        mine = {"added": [norm(req["content"])] if op in ("add", "edit") else [], "removed": [req["entry"]] if op in ("edit", "remove") else []}
-        await _learn_memory(mine={target: mine} if res == "applied" else None)
+        await _learn_memory()
     if res == "applied":
         return JSONResponse({"ok": True, "shape": out.get("shape", "")})
     if res in HMEM_DONE:
@@ -1084,15 +1083,54 @@ def _load_hmem_mine() -> dict[str, dict[str, list]]:
     return {t: {"added": [str(x) for x in m.get("added", [])], "removed": [str(x) for x in m.get("removed", [])]} for t, m in d.items()} if ok else {}
 
 
-def _save_hmem_mine():
-    """外す項目の控えを書く（空なら消す）。書けなければログだけ（本体の中には持っている）。_hlearn_lock の中で呼ぶ。"""
+def _save_hmem_mine() -> bool:
+    """外す項目の控えを書く（空なら消す）。書けたか。_hlearn_lock の中で呼ぶ。"""
     try:
         if _HMEM_MINE:
             core.write_json(HMEM_MINE_FILE, _HMEM_MINE)
         else:
             HMEM_MINE_FILE.unlink(missing_ok=True)
+        return True
     except OSError:
         traceback.print_exc()
+        return False
+
+
+def _hmem_norm(t: str) -> str:
+    """読む側（記憶のファイルの読み取り）と同じ形: 改行を LF にそろえ、前後の空白を外す。"""
+    return t.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _hmem_mine_change(target: str, mine: dict, add: bool) -> bool:
+    """外す項目を足す（add）・引く。足したときは控えのファイルに書けたかを返す（書けなければ足したぶんを戻して False）。"""
+    with _hlearn_lock:
+        slot = _HMEM_MINE.setdefault(target, {"added": [], "removed": []})
+        for k in ("added", "removed"):
+            for x in mine.get(k, []):
+                if add:
+                    slot[k].append(x)
+                elif x in slot[k]:
+                    slot[k].remove(x)
+        if add and not _save_hmem_mine():
+            for k in ("added", "removed"):
+                for x in mine.get(k, []):
+                    if x in slot[k]:
+                        slot[k].remove(x)
+            return False
+        if not add:
+            _save_hmem_mine()
+        return True
+
+
+async def _hmem_run_mine(op: str, req: dict, target: str, mine: dict) -> dict:
+    """本体が記憶を書く（画面の足す・直す・消す、戻す）。書く前に、書く項目を「外す項目」として控えのファイルにも書き
+    （書けなければ書かない: 本体を起動し直すと、本人の書き込みが学びになるため）、当たらなかったら控えから外す。HMEM_LEARN_LOCK の中で呼ぶ。"""
+    if not await asyncio.to_thread(_hmem_mine_change, target, mine, True):
+        return {"result": "state", "why": "学んだことの控え（状態フォルダの hermes-learned/）に書けないので、書いていません"}
+    out = await _hmem_run(op, req)
+    if out.get("result") != "applied":
+        await asyncio.to_thread(_hmem_mine_change, target, mine, False)
+    return out
 
 
 # 本体が書いて当たった項目で、まだ比べるもとに取り込めていないもの（記憶のファイルごと。_hlearn_lock の中で触る）。控えのファイルにも書く
@@ -1234,16 +1272,13 @@ async def api_hermes_learned_undo(body: dict):
         if t not in hermes_memory.TARGETS or got.get(t, {}).get("status") not in ("ok", "missing"):
             return JSONResponse({"ok": False, "reason": "unreadable"})
         now, skipped, failed = got[t]["entries"], 0, []
-        mine = {"added": [], "removed": []}  # 戻すで変えて当たった項目（Hermes の学びとして跡に残さない）
         async with HMEM_LEARN_LOCK:  # 書いてから比べるもとを進めるまで、見張りに読ませない
             for x in det.get("added", []):
                 if x not in now:
                     skipped += 1
                     continue
-                out = await _hmem_run("remove", {"target": t, "entry": x})
-                if out.get("result") == "applied":
-                    mine["removed"].append(x)
-                else:
+                out = await _hmem_run_mine("remove", {"target": t, "entry": x}, t, {"added": [], "removed": [x]})
+                if out.get("result") != "applied":
                     failed.append(str(out.get("result")))
             for x in det.get("removed", []):
                 if x in now:
@@ -1252,12 +1287,10 @@ async def api_hermes_learned_undo(body: dict):
                 if hermes_memory.text_problem(x):  # 長すぎるなど、画面の口では書けない項目は、戻せなかったとして扱う（飛ばしたことにしない）
                     failed.append("書けない項目")
                     continue
-                out = await _hmem_run("add", {"target": t, "content": x})
-                if out.get("result") == "applied":
-                    mine["added"].append(x.strip())
-                else:
+                out = await _hmem_run_mine("add", {"target": t, "content": x}, t, {"added": [_hmem_norm(x)], "removed": []})
+                if out.get("result") != "applied":
                     failed.append(str(out.get("result")))
-            await _learn_memory(mine={t: mine})
+            await _learn_memory()
         if failed:
             await asyncio.to_thread(_hlearn_set, eid, note=f"一部を戻せませんでした（{', '.join(failed)[:80]}）")
             return JSONResponse({"ok": False, "reason": "partial", "why": ", ".join(failed)[:200]})

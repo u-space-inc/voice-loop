@@ -585,7 +585,9 @@ check("戻す: フォルダの名前と別名の両方の鍵を取る（Hermes �
 (SK2 / "voice-loop" / "par" / "kid" / "SKILL.md").write_text("子\n")
 pk = {"action": "batch", "operations": [{"action": "patch", "name": n, "old_string": "a", "new_string": "b"} for n in ("par", "kid", "hub")]}
 check("自動で当てる: 1 つの書き足しが親と子の関係にある手順のフォルダを両方触るときは、自動では当てない（二度戻して途中で止まらないように）",
-      (script("snap", {"payload": pk}).get("result"), script("snap", {"payload": {**pk, "operations": pk["operations"][:1]}}).get("result")), ("unsupported", "snap"))
+      (script("snap", {"payload": pk}).get("result"), script("snap", {"payload": {**pk, "operations": pk["operations"][1:2]}}).get("result")), ("unsupported", "snap"))
+check("自動で当てる: 親の手順だけでも、中に別の手順（子の SKILL.md）を含むなら自動では当てない（控える範囲と、取る鍵の範囲がずれる）",
+      script("snap", {"payload": {**pk, "operations": pk["operations"][:1]}}).get("result"), "unsupported")
 (SK2 / "voice-loop" / "par-x").mkdir(parents=True, exist_ok=True)
 (SK2 / "voice-loop" / "par-x" / "SKILL.md").write_text("間\n")
 pk2 = {"action": "batch", "operations": [{"action": "patch", "name": n, "old_string": "a", "new_string": "b"} for n in ("par", "par-x", "kid")]}
@@ -809,6 +811,25 @@ n6 = count()
 r6 = json.loads(asyncio.run(s.hermes._hmem_write("add", {"target": "memory", "content": "改行\r\nのある本文"})).body)
 asyncio.run(s.hermes._watch_memory())
 check("記憶: 画面で足した本文の改行が CRLF でも、読む側と同じく LF にそろえて照らし、本人の書き込みを学びにしない", (r6.get("ok"), count() - n6), (True, 0))
+# 外す項目の控えのファイルに書けなければ、画面からも記憶を書かない（起動し直すと本人の書き込みが学びになるため）
+n7 = count()
+before_mem = (MEM / "MEMORY.md").read_text()
+real_wj = s.hermes.core.write_json
+
+
+def mine_write_fails(path, data):
+    if Path(path).name == "memory-mine.json":
+        raise OSError("控えに書けない")
+    return real_wj(path, data)
+
+
+s.hermes.core.write_json = mine_write_fails
+try:
+    r7 = json.loads(asyncio.run(s.hermes._hmem_write("add", {"target": "memory", "content": "控えに書けない間に足そうとした"})).body)
+finally:
+    s.hermes.core.write_json = real_wj
+check("記憶: 外す項目の控えのファイルに書けなければ、画面からも記憶を書かない（断る）",
+      (r7.get("ok"), r7.get("reason"), (MEM / "MEMORY.md").read_text() == before_mem, s.hermes._HMEM_MINE.get("memory", {}).get("added", [])), (False, "state", True, []))
 # 見張りの 1 回: 手順の承認待ちを読めなくても、記憶は見る
 n5 = count()
 real_pending = s.hermes.hermes_skills.pending_ids
