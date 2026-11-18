@@ -785,7 +785,9 @@ async def _hmem_write(op: str, body: dict) -> JSONResponse:
     res = out.get("result")
     if res in ("state", "busy", "unverifiable"):
         return JSONResponse({"ok": False, "reason": res})
-    await _learn_memory(silent=True)  # 画面で書いたものは、Hermes の学びとして跡に残さない
+    # 画面で書いた項目は、Hermes の学びとして跡に残さない（ほかの変化は、Hermes の学びとして先に残す）
+    mine = {"added": [req["content"].strip()] if op in ("add", "edit") else [], "removed": [req["entry"]] if op in ("edit", "remove") else []}
+    await _learn_memory(mine={target: mine})
     if res == "applied":
         return JSONResponse({"ok": True, "shape": out.get("shape", "")})
     if res in HMEM_DONE:
@@ -864,14 +866,22 @@ def _hlearn_save(d: dict):
     now = time.time()
     d["days"] = {k: v for k, v in d.get("days", {}).items() if k >= _hlearn_day(now - 31 * 86400)}
     for e in d["entries"]:
-        if e.get("kind") == "skill" and e.get("can_undo") and now - e.get("at", 0) >= HLEARN_UNDO_KEEP:
+        # 戻せるかに関わらず（時間切れ・当てたあとを読めなかったものも、当てる前の中身は控えてある）、90 日を過ぎたら控えを外す
+        if e.get("kind") == "skill" and not e.get("pruned") and now - e.get("at", 0) >= HLEARN_UNDO_KEEP:
             path = HLEARN_DIR / f"{e['id']}.json"
-            with suppress(OSError, ValueError):
+            try:
                 det = json.loads(path.read_text())
-                det.pop("before", None)
-                det.pop("expect", None)
-                core.write_json(path, det)
-            e.update(can_undo=False, note="90 日を過ぎたので、戻すための控えを片づけました（跡と差分は残ります）")
+                if isinstance(det, dict) and ("before" in det or "expect" in det):
+                    det.pop("before", None)
+                    det.pop("expect", None)
+                    core.write_json(path, det)
+            except FileNotFoundError:
+                pass
+            except (OSError, ValueError, RecursionError):
+                continue  # 外せなかったら、次に書くときにもう一度
+            if e.get("can_undo"):
+                e.update(can_undo=False, note="90 日を過ぎたので、戻すための控えを片づけました（跡と差分は残ります）")
+            e["pruned"] = True
     core.write_json(HLEARN_FILE, d)
 
 
@@ -879,10 +889,16 @@ def _hlearn_day(t: float) -> str:
     return time.strftime("%Y-%m-%d", time.gmtime(t + 9 * 3600))  # 日本時間の日付
 
 
-def _hlearn_add(entry: dict, detail: dict) -> dict:
-    """跡を 1 つ足す（控えは別のファイル、0600）。書けなければ OSError。"""
+def _hlearn_new(entry: dict, detail: dict) -> dict:
+    """跡の 1 つを作り、控え（別のファイル、0600）を書く。状態にはまだ足さない。書けなければ OSError。"""
     entry = {"id": f"l{os.urandom(6).hex()}", "at": time.time(), "state": "applied", "note": "", **entry}
     core.write_json(HLEARN_DIR / f"{entry['id']}.json", detail)
+    return entry
+
+
+def _hlearn_add(entry: dict, detail: dict) -> dict:
+    """跡を 1 つ足す（控えは別のファイル、0600）。書けなければ OSError。"""
+    entry = _hlearn_new(entry, detail)
     with _hlearn_lock:
         d = hlearn_state()
         if d is None:
@@ -1024,9 +1040,12 @@ async def _learn_skills() -> int:
     return applied
 
 
-async def _learn_memory(silent: bool = False):
-    """記憶を読み、前に読んだときから足された・消えた項目を跡に残す。silent は跡に残さず、読んだ中身だけを覚える
-    （画面で足す・直す・消したとき、学んだことを戻したとき）。読めない記憶のファイルは比べない。"""
+async def _learn_memory(mine: dict | None = None):
+    """記憶を読み、前に読んだとき（比べるもと）から足された・消えた項目を跡に残し、比べるもとを進める。
+    mine は、本体が書いた項目（{記憶のファイル: {"added": [...], "removed": [...]}}。画面で足す・直す・消したとき、学んだことを戻したとき）。
+    その項目だけを跡から外し、ほかの変化（同じ間に Hermes が書いたもの）は跡に残す。
+    跡と比べるもとは、同じ 1 回の書き込みで進める（跡を書けなければ、比べるもとも進めない。次に読んだときに残し直す）。
+    読めない記憶のファイルは比べない。"""
     if not hsk_on():
         return
     got = await asyncio.to_thread(hermes_memory.read_targets, HERMES_HOME)
@@ -1036,26 +1055,23 @@ async def _learn_memory(silent: bool = False):
         if d is None:
             return
         prev = d.get("memory")
-        d["memory"] = {**(prev or {}), **cur}
-        changes = []
-        if prev is not None and not silent:
+        new = []
+        if prev is not None:
             for t, now in cur.items():
                 if t not in prev:
                     continue
-                added, removed = [e for e in now if e not in prev[t]], [e for e in prev[t] if e not in now]
+                skip = (mine or {}).get(t) or {}
+                added = [e for e in now if e not in prev[t] and e not in skip.get("added", [])]
+                removed = [e for e in prev[t] if e not in now and e not in skip.get("removed", [])]
                 if added or removed:
-                    changes.append({"kind": "memory", "target": t, "added": len(added), "removed": len(removed),
-                                    "summary": core._clip(added[0] if added else removed[0], 120), "can_undo": True}, )
-                    changes[-1]["_detail"] = {"added": added, "removed": removed}
+                    new.append(({"kind": "memory", "target": t, "added": len(added), "removed": len(removed),
+                                 "summary": core._clip(added[0] if added else removed[0], 120), "can_undo": True},
+                                {"added": added, "removed": removed}))
         try:
+            for entry, detail in new:
+                d["entries"].append(_hlearn_new(entry, detail))  # 控えを先に書く（書けなければ OSError で、跡も比べるもとも進めない）
+            d["memory"] = {**(prev or {}), **cur}
             _hlearn_save(d)
-        except OSError:
-            traceback.print_exc()
-            return
-    for c in changes:
-        detail = c.pop("_detail")
-        try:
-            await asyncio.to_thread(_hlearn_add, c, detail)
         except OSError:
             traceback.print_exc()
 
@@ -1148,10 +1164,12 @@ async def api_hermes_learned_undo(body: dict):
         if t not in hermes_memory.TARGETS or got.get(t, {}).get("status") not in ("ok", "missing"):
             return JSONResponse({"ok": False, "reason": "unreadable"})
         now, skipped, failed = got[t]["entries"], 0, []
+        mine = {"added": [], "removed": []}  # 戻すで変えた項目（Hermes の学びとして跡に残さない）
         for x in det.get("added", []):
             if x not in now:
                 skipped += 1
                 continue
+            mine["removed"].append(x)
             out = await _hmem_run("remove", {"target": t, "entry": x})
             if out.get("result") != "applied":
                 failed.append(str(out.get("result")))
@@ -1159,10 +1177,11 @@ async def api_hermes_learned_undo(body: dict):
             if x in now or hermes_memory.text_problem(x):
                 skipped += 1
                 continue
+            mine["added"].append(x.strip())
             out = await _hmem_run("add", {"target": t, "content": x})
             if out.get("result") != "applied":
                 failed.append(str(out.get("result")))
-        await _learn_memory(silent=True)
+        await _learn_memory(mine={t: mine})
         if failed:
             await asyncio.to_thread(_hlearn_set, eid, note=f"一部を戻せませんでした（{', '.join(failed)[:80]}）")
             return JSONResponse({"ok": False, "reason": "partial", "why": ", ".join(failed)[:200]})

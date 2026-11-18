@@ -1082,6 +1082,8 @@ const LEARN_FAIL = { gone: 'この跡はもうありません', done: 'もう戻
   state: '状態を書けないので、戻していません', changed: '当てたあとに手順が変わっているので、戻せませんでした', unknown: '戻せたか分かりません',
   unreadable: '記憶を読めないので、戻していません', partial: '一部を戻せませんでした', off: 'Hermes の置き場がありません' };
 const learnOpen = new Set();
+const LEARN_PAGE = 30;
+let learnShown = LEARN_PAGE;  // 学んだことの跡を、新しいほうから何件まで出すか（「さらに見る」で増やす。開き直すと戻る）
 function learnCard(e) {
   const c = node('div', 'prop hsk learn');
   const memName = { user: 'あなたについて', memory: 'メモ' }[e.target] || e.target;
@@ -1181,7 +1183,12 @@ async function loadSituation() {
   else if (lr.on && (lr.entries.length || lr.problem)) {
     box.appendChild(node('h4', null, `学んだこと（Hermes。今日自動で当てた手順 ${lr.today ?? '?'}/${lr.limit ?? '?'}）— 手順の書き足しは本体が自動で当て、記憶は Hermes が書きます。違えば「戻す」で戻せます`));
     if (lr.problem) box.appendChild(node('div', 'sitMeta bad', lr.problem));
-    for (const e of lr.entries.slice(0, 30)) box.appendChild(learnCard(e));
+    for (const e of lr.entries.slice(0, learnShown)) box.appendChild(learnCard(e));
+    if (lr.entries.length > learnShown) {  // 古い跡も、画面から中身を見て戻せるように（跡は消さないので、上を戻しても下は押し出されない）
+      const more = node('button', 'learnMore', `さらに ${Math.min(LEARN_PAGE, lr.entries.length - learnShown)} 件を見る（残り ${lr.entries.length - learnShown} 件）`);
+      more.onclick = () => { learnShown += LEARN_PAGE; loadSituation(); };
+      box.appendChild(more);
+    }
   }
   if (h !== FAILED && h.on && (h.items.length || h.unreadable || h.problem)) {
     box.appendChild(node('h4', null, `自動で当てていない手順の書き足し（Hermes・${h.items.length}）— 今日の上限を超えた分は次の日に自動で当てます。採ると、いま当てます`));

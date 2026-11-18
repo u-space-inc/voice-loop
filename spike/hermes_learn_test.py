@@ -56,6 +56,14 @@ s.push_all = fake_push
 s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.hermes.watch_hermes_skills = nothing
 s.list_agents = lambda: []
 
+def raises(fn):
+    try:
+        fn()
+    except (ValueError, OSError):
+        return True
+    return False
+
+
 # ---------- 1. 手順のフォルダを読む・戻す（コンテナの中で動く関数を、ここで直に） ----------
 SK = Path(TMP) / "skills"
 (SK / "voice-loop" / "hub" / "references").mkdir(parents=True)
@@ -64,7 +72,7 @@ SK = Path(TMP) / "skills"
 before = hl.snap_dir(str(SK), "voice-loop/hub")
 check("読む: フォルダの中のファイルを、場所ごとに base64 で", (before["exists"], sorted(before["files"]), base64.b64decode(before["files"]["SKILL.md"]).decode()),
       (True, ["SKILL.md", "references/a.md"], "前の手順\n"))
-check("読む: 無い手順は exists が False", hl.snap_dir(str(SK), "voice-loop/none"), {"exists": False, "files": {}})
+check("読む: 無い手順は exists が False", hl.snap_dir(str(SK), "voice-loop/none"), {"exists": False, "files": {}, "modes": {}})
 (SK / "voice-loop" / "hub" / "SKILL.md").write_text("当てたあとの手順\n")
 (SK / "voice-loop" / "hub" / "references" / "b.md").write_text("足された\n")
 after = hl.snap_dir(str(SK), "voice-loop/hub")
@@ -74,6 +82,27 @@ check("戻す: いまの中身が当てた直後と違えば、何も書かな�
 check("戻す: 前の中身を書き、当てたときに増えたファイルを消す", (hl.restore_dir(str(SK), "voice-loop/hub", before, hl.digest(after)),
       (SK / "voice-loop" / "hub" / "SKILL.md").read_text(), (SK / "voice-loop" / "hub" / "references" / "b.md").exists(), hl.digest(hl.snap_dir(str(SK), "voice-loop/hub")) == hl.digest(before)),
       ("restored", "前の手順\n", False, True))
+# 実行できる台本を含む手順: SKILL.md だけを当てて戻しても、台本の x は残る。権限を変えたら指紋も変わる
+(SK / "voice-loop" / "tool" / "scripts").mkdir(parents=True)
+(SK / "voice-loop" / "tool" / "SKILL.md").write_text("前\n")
+(SK / "voice-loop" / "tool" / "scripts" / "run.sh").write_text("#!/bin/sh\necho ok\n")
+os.chmod(SK / "voice-loop" / "tool" / "scripts" / "run.sh", 0o755)
+os.chmod(SK / "voice-loop" / "tool" / "SKILL.md", 0o644)
+tb = hl.snap_dir(str(SK), "voice-loop/tool")
+(SK / "voice-loop" / "tool" / "SKILL.md").write_text("当てたあと\n")
+ta = hl.snap_dir(str(SK), "voice-loop/tool")
+old_umask = os.umask(0o077)  # umask に左右されないこと
+try:
+    tr = hl.restore_dir(str(SK), "voice-loop/tool", tb, hl.digest(ta))
+finally:
+    os.umask(old_umask)
+check("戻す: 実行できる台本の権限（x）を控えて、同じ権限で書き戻す（umask に左右されない）",
+      (tb["modes"], tr, oct(os.stat(SK / "voice-loop" / "tool" / "scripts" / "run.sh").st_mode & 0o777), oct(os.stat(SK / "voice-loop" / "tool" / "SKILL.md").st_mode & 0o777),
+       (SK / "voice-loop" / "tool" / "SKILL.md").read_text()),
+      ({"SKILL.md": 0o644, "scripts/run.sh": 0o755}, "restored", "0o755", "0o644", "前\n"))
+os.chmod(SK / "voice-loop" / "tool" / "scripts" / "run.sh", 0o700)
+check("指紋: 権限が変われば変わる（当てたあとに権限を変えられたら、戻さない）", hl.digest(hl.snap_dir(str(SK), "voice-loop/tool")) != hl.digest(tb), True)
+check("戻す: 控えの権限の形が違えば、何も書かずに断る", raises(lambda: hl.restore_dir(str(SK), "voice-loop/tool", {**tb, "modes": {"SKILL.md": "rwx"}}, hl.digest(hl.snap_dir(str(SK), "voice-loop/tool")))), True)
 (SK / "voice-loop" / "new" / "scripts").mkdir(parents=True)
 (SK / "voice-loop" / "new" / "SKILL.md").write_text("作られた\n")
 (SK / "voice-loop" / "new" / "scripts" / "x.py").write_text("print(1)\n")
@@ -96,14 +125,6 @@ OUTSIDE = Path(TMP) / "outside"
 OUTSIDE.mkdir()
 (OUTSIDE / "secret.txt").write_text("外のファイル")
 (SK / "voice-loop" / "hub" / "link.md").symlink_to(OUTSIDE / "secret.txt")
-
-
-def raises(fn):
-    try:
-        fn()
-    except (ValueError, OSError):
-        return True
-    return False
 
 
 check("読む: フォルダの中の symlink は断る（たどらない）", raises(lambda: hl.snap_dir(str(SK), "voice-loop/hub")), True)
@@ -287,7 +308,7 @@ sn = script("snap", {"payload": op("hub")})
 check("台本の入口: snap は置き場の根からの場所ごとに中身を返す・作る手順は exists が False・置き場の外の手順は扱わない",
       (sn.get("result"), sorted(sn.get("skills", {})), script("snap", {"payload": op("new", category="voice-loop")}).get("skills"),
        script("snap", {"payload": op("outside")}).get("result")),
-      ("snap", ["voice-loop/hub"], {"voice-loop/new": {"exists": False, "files": {}}}, "unsupported"))
+      ("snap", ["voice-loop/hub"], {"voice-loop/new": {"exists": False, "files": {}, "modes": {}}}, "unsupported"))
 (SK2 / "voice-loop" / "hub" / "SKILL.md").write_text("後\n")
 after2 = hl.snap_dir(str(SK2), "voice-loop/hub")
 check("台本の入口: restore は指紋が違えば何も書かずに changed、合えば戻して restored",
@@ -352,6 +373,16 @@ kept = [e for e in learned()["entries"] if e["id"] == old["id"]]
 odet = json.loads((s.hermes.HLEARN_DIR / f"{old['id']}.json").read_text())
 check("跡: 古い跡も消さない（変わった跡は全部残す）。90 日を過ぎたら戻すための控えだけを片づけ、戻せない印にする（差分は残す）",
       (len(kept), kept[0]["can_undo"] if kept else None, "before" in odet, bool(odet.get("diff"))), (1, False, False, True))
+st = json.loads(s.hermes.HLEARN_FILE.read_text())
+nu = s.hermes._hlearn_new({"kind": "skill", "pid": "zz", "summary": "時間切れ", "state": "unknown", "can_undo": False}, {"before": {"x": 1}, "expect": "e", "diff": "差分"})
+nu["at"] -= 100 * 86400
+st["entries"].append(nu)
+s.hermes.HLEARN_FILE.write_text(json.dumps(st))
+s.hermes._hlearn_set("lnone")
+ndet = json.loads((s.hermes.HLEARN_DIR / f"{nu['id']}.json").read_text())
+check("跡: 戻せない跡（時間切れ・当てたあとを読めなかった）も、90 日を過ぎたら当てる前の中身の控えを外す（差分は残す）",
+      ("before" in ndet, "expect" in ndet, ndet.get("diff"), [e.get("pruned") for e in json.loads(s.hermes.HLEARN_FILE.read_text())["entries"] if e["id"] == nu["id"]]),
+      (False, False, "差分", [True]))
 
 # ---------- 4. 記憶 ----------
 MEM = HOME / "memories"
@@ -403,11 +434,47 @@ check("記憶の戻す: 足された項目を消し、消えた項目を足し�
 asyncio.run(s.hermes._learn_memory())
 mem2 = [e for e in learned()["entries"] if e["kind"] == "memory" and e["state"] == "applied"][0]
 (MEM / "USER.md").write_text(D.join(["名前は山田", "朝は 7 時に起きる"]))  # Hermes がもう消した
-asyncio.run(s.hermes._learn_memory(silent=True))
+asyncio.run(s.hermes._learn_memory())  # Hermes が消したことも跡に残る
 with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     MCALLS.clear()
     ru2 = c.post("/api/hermes/learned/undo", json={"id": mem2["id"]}).json()
 check("記憶の戻す: もう変わっていた項目は飛ばす（書かない）", (ru2, MCALLS), ({"ok": True, "skipped": 1}, []))
+
+# 画面で書く前に、Hermes が別の記憶のファイル（と同じファイル）を書き換えていた: Hermes の変化は跡に残し、画面で書いた項目だけを外す
+asyncio.run(s.hermes._learn_memory())
+n0 = count()
+(MEM / "USER.md").write_text(D.join(["名前は山田", "朝は 7 時に起きる", "Hermes が足した"]))
+(MEM / "MEMORY.md").write_text(D.join([x for x in (MEM / "MEMORY.md").read_text().split(D) if x] + ["Hermes も同じファイルに足した"]))
+with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+    s.hermes.HMEM_SHOWN.clear()
+    c.get("/api/hermes/memory")
+    c.post("/api/hermes/memory/add", json={"target": "memory", "content": "画面でもう一つ"})
+mems = [e for e in learned()["entries"] if e["kind"] == "memory"][: count() - n0]
+with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+    dets = {e["target"]: c.post("/api/hermes/learned/detail", json={"id": e["id"]}).json() for e in mems}
+check("記憶: 画面で書く前に Hermes が書き換えていた分は跡に残し、画面で書いた項目だけを外す（同じファイルでも）",
+      (count() - n0, dets.get("user", {}).get("added"), dets.get("memory", {}).get("added")), (2, ["Hermes が足した"], ["Hermes も同じファイルに足した"]))
+# 跡を書けなければ、比べるもとも進めない（次に読んだときに残し直す）
+n1 = count()
+(MEM / "USER.md").write_text(D.join(["名前は山田", "朝は 7 時に起きる", "Hermes が足した", "書けなかった回に足した"]))
+real_write = s.hermes.core.write_json
+
+
+def write_fails(path, data):
+    if Path(path).parent == s.hermes.HLEARN_DIR and Path(path).name != "state.json":
+        raise OSError("控えを書けません")
+    return real_write(path, data)
+
+
+s.hermes.core.write_json = write_fails
+try:
+    asyncio.run(s.hermes._learn_memory())
+finally:
+    s.hermes.core.write_json = real_write
+mid = count()
+asyncio.run(s.hermes._learn_memory())
+check("記憶: 跡を書けなかった回は比べるもとも進めず、次に読んだときにその変化を跡に残す",
+      (mid - n1, count() - n1, [e["summary"] for e in learned()["entries"] if e["kind"] == "memory"][0]), (0, 1, "書けなかった回に足した"))
 
 ok = sum(r[1] for r in results)
 for name, passed, got, want in results:

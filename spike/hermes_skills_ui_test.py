@@ -3,7 +3,7 @@ iPhone を名乗る WebKit）で開く。Hermes の置き場は一時のフォ�
 見ること: 欄が出る（要約・いつ・どこから）、扱えない形は採るを出さない、差分は開いたときに取り、描き直しても開いたまま、
 文は文字として出す（タグを解釈しない）、「採る」は2段（1回目では当てない・描き直しで確かめが消えない）、採った・捨てたの案内、
 分からないの赤い案内と採るが消えること、コンテナが使えないときの理由、承認待ちが無ければ欄を出さない。
-差分は行ごとに色を分ける（文字として入れる）。学んだこと（Chromium・WebKit）: 自動で当てた手順と記憶の跡を出す（文字として）・中身を開く・
+差分は行ごとに色を分ける（文字として入れる）。学んだこと（Chromium・WebKit）: 自動で当てた手順と記憶の跡を出す（文字として。30 件を超えたら「さらに見る」）・中身を開く・
 「戻す」は 2 段（1 回目では戻さない）・戻すと「戻しました」・戻せない跡には「戻す」を出さない。PC の幅（Chromium）では ⤢ で広げて読む（差分を高さで切らず字を大きく・開いた差分と確かめは残る・Esc で戻る）。
 使い方: uv run spike/hermes_skills_ui_test.py"""
 import json
@@ -251,6 +251,20 @@ def run_learned(page, who):
     back.click()
     check(f"{who} 2 回目で戻し、案内と「戻しました」を出す", wait(lambda: "戻しました" in body(page) and LCALLS == ["restore"])
           and cards.filter(has_text="返事").first.locator(".acts").count(), 0)
+    # 跡が 30 件を超えても、古いものに画面から届く（「さらに見る」）
+    for i in range(30):
+        s.hermes._hlearn_add({"kind": "memory", "target": "memory", "added": 1, "removed": 0, "summary": f"足した{i:02d}", "can_undo": True},
+                             {"added": [f"足した{i:02d}"], "removed": []})
+    page.evaluate("loadSituation()")
+    wait(lambda: page.locator("#sitBody .learnMore").count() == 1)
+    more = page.locator("#sitBody .learnMore")
+    first_n = cards.count()
+    check(f"{who} 跡が 30 件を超えたら、新しい 30 件と「さらに見る」（残りの数）を出す", (first_n, (more.text_content() or "") if more.count() else ""),
+          (30, "さらに 5 件を見る（残り 5 件）"))
+    if more.count():
+        more.click()
+    check(f"{who} 「さらに見る」で、古い跡（最初の手順の跡）も出す", wait(lambda: cards.count() == 35 and page.locator("#sitBody .learnMore").count() == 0)
+          and cards.filter(has_text="当てられなかった手順").count(), 1)
 
 
 def run_wide(page, who):

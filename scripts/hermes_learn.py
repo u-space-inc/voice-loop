@@ -90,20 +90,20 @@ def _same(root: str, base: list[str], held, dfd: int, parts: list[str]):
 
 
 def snap_dir(root: str, rel: str) -> dict:
-    """置き場の根 root の下の rel（手順のフォルダ）の中身: {"exists": bool, "files": {フォルダからの場所: base64}}。
+    """置き場の根 root の下の rel（手順のフォルダ）の中身: {"exists": bool, "files": {フォルダからの場所: base64}, "modes": {場所: 権限の 9 ビット}}。
     symlink・通常でないもの・大きすぎるものがあれば ValueError（読めない手順は自動で当てない・戻さない）。"""
     parts = _parts(rel)
     parent = _open_parent(root, parts)
     if parent is None:
-        return {"exists": False, "files": {}}
+        return {"exists": False, "files": {}, "modes": {}}
     try:
         try:
             fd = os.open(parts[-1], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
         except FileNotFoundError:
-            return {"exists": False, "files": {}}
+            return {"exists": False, "files": {}, "modes": {}}
     finally:
         os.close(parent)
-    files, total = {}, [0]
+    files, modes, total = {}, {}, [0]
 
     def walk(dfd: int, prefix: str):
         for name in sorted(os.listdir(dfd)):
@@ -127,6 +127,7 @@ def snap_dir(root: str, rel: str) -> dict:
                 if len(data) > SNAP_FILE_MAX or total[0] > SNAP_TOTAL_MAX:
                     raise ValueError("手順のフォルダが大きすぎます")
                 files[prefix + name] = base64.b64encode(data).decode()
+                modes[prefix + name] = stat.S_IMODE(fst.st_mode) & 0o777  # 実行できる台本の x も控える（戻すときに同じ権限で書く）
             else:
                 raise ValueError("手順のフォルダに symlink か通常でないファイルがあります")
 
@@ -134,12 +135,13 @@ def snap_dir(root: str, rel: str) -> dict:
         walk(fd, "")
     finally:
         os.close(fd)
-    return {"exists": True, "files": files}
+    return {"exists": True, "files": files, "modes": modes}
 
 
 def digest(snap: dict) -> str:
-    """中身の指紋（あるか・ファイルの場所と中身）。"""
-    return hashlib.sha256(json.dumps([bool(snap.get("exists")), sorted((snap.get("files") or {}).items())]).encode()).hexdigest()
+    """中身の指紋（あるか・ファイルの場所と中身・権限）。"""
+    return hashlib.sha256(json.dumps([bool(snap.get("exists")), sorted((snap.get("files") or {}).items()),
+                                      sorted((snap.get("modes") or {}).items())]).encode()).hexdigest()
 
 
 def restore_dir(root: str, rel: str, before: dict, expect: str) -> str:
@@ -149,8 +151,11 @@ def restore_dir(root: str, rel: str, before: dict, expect: str) -> str:
     if digest(now) != expect:
         return "changed"
     want = {k: base64.b64decode(v, validate=True) for k, v in (before.get("files") or {}).items()} if before.get("exists") else {}
+    modes = before.get("modes") or {}
     for k in want:
         _parts(k)
+        if not isinstance(modes.get(k, 0o644), int) or isinstance(modes.get(k, 0o644), bool):
+            raise ValueError("控えの権限の形が違います")
     base = _parts(rel)
     held = _ident(root, base)  # 戻し始めるときの手順のフォルダ（と途中のフォルダ）。書くたびに、根から同じものをたどれるかを確かめる
     for k in sorted(set(now["files"]) - set(want), key=lambda p: -p.count("/")):  # 当てたときに増えたファイルを消す
@@ -170,9 +175,11 @@ def restore_dir(root: str, rel: str, before: dict, expect: str) -> str:
         try:
             _same(root, base, held if held else _ident(root, base), dfd, parts)
             tmp = f".vl-restore-{os.getpid()}-{parts[-1]}"
-            tfd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=dfd)
+            mode = modes.get(k, 0o644) & 0o777  # 控えた権限（setuid などの上の位は落とす）。控えに無ければ 0644
+            tfd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dfd)
             with os.fdopen(tfd, "wb") as f:
                 f.write(data)
+                os.fchmod(tfd, mode)  # umask に左右されずに、控えた権限にする
             os.replace(tmp, parts[-1], src_dir_fd=dfd, dst_dir_fd=dfd)
         finally:
             os.close(dfd)
