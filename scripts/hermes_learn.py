@@ -211,6 +211,21 @@ def restore_dir(root: str, rel: str, before: dict, expect: str) -> str:
     return "restored"
 
 
+def front_name(snap: dict) -> str | None:
+    """控えの SKILL.md の frontmatter の name（Hermes が手順を探す別名）。無ければ None、形が読めなければ ""。"""
+    raw = (snap.get("files") or {}).get("SKILL.md")
+    if not raw:
+        return None
+    text = base64.b64decode(raw).decode("utf-8", "replace")
+    if not text.startswith("---"):
+        return None
+    head = text.split("\n---", 1)[0]
+    for line in head.splitlines()[1:]:
+        if line.startswith("name:"):
+            return line[5:].strip().strip("'\"")
+    return None
+
+
 def snap_payload(sm, payload: dict) -> dict:
     """書き足し（payload）が触る手順のフォルダの中身を、置き場の根からの場所ごとに読む（コンテナの中で、Hermes の部品 sm を使う）。
     置き場の外の手順・書き足し全体で大きすぎる・手順の鍵が無い版の Hermes・名前とフォルダの名前が違う手順は ValueError（自動では当てない）。"""
@@ -235,6 +250,9 @@ def snap_payload(sm, payload: dict) -> dict:
         rel = os.path.relpath(real, real_root)
         if rel not in out:
             out[rel] = snap_dir(root, rel)
+            alias = front_name(out[rel])  # 別名（frontmatter の名前）がフォルダの名前と違えば、Hermes が別名で書くときの鍵とずれる
+            if alias is not None and alias != os.path.basename(rel):
+                raise ValueError("別名（frontmatter の名前）がフォルダの名前と違う手順なので、自動では当てません")
             size = sum(len(v) for snap in out.values() for v in snap["files"].values())
             if len(out) > SNAP_BATCH_SKILLS_MAX or size > SNAP_BATCH_TOTAL_MAX:  # 書き足し全体でも大きすぎる控えは作らない（自動では当てない）
                 raise ValueError("書き足しが触る手順が多すぎるか、大きすぎます")
@@ -258,7 +276,7 @@ def learn_hold(payload: dict):
     if now != json.loads(os.environ.get("VL_LEARN_EXPECT") or "{}"):
         done(result="changed", why="控えを取ったあとに手順が変わりました")
 
-    def after():
+    def after():  # 当てて別名ができた（読めない）ときは None（戻せない）
         try:
             return {k: digest(v) for k, v in snap_payload(sm, payload).items()}
         except Exception:
@@ -298,7 +316,17 @@ if mode == "restore":
     # （照らしたあとに Hermes が書いた中身を、戻すで上書きしない）。この鍵の無い版の Hermes では、鍵なしで戻す
     from contextlib import nullcontext
     locks = getattr(sm, "_skill_mutation_locks", None)
-    held = locks([Path(rel).name for rel in skills]) if callable(locks) else nullcontext()
+    # フォルダの名前と、いまの別名（frontmatter の名前）の両方の鍵を取る（Hermes がどちらの名前で書いても待たせる）
+    names = set()
+    for rel in skills:
+        names.add(Path(rel).name)
+        try:
+            alias = front_name(snap_dir(root, rel))
+        except (ValueError, OSError):
+            alias = None
+        if alias:
+            names.add(alias)
+    held = locks(sorted(names)) if callable(locks) else nullcontext()
     try:
         with held:
             for rel, it in skills.items():
@@ -315,12 +343,12 @@ done(result="error", why="知らない種類です")
 SCRIPT = ("import base64, hashlib, json, os, stat\n"
           + f"SNAP_FILE_MAX = {SNAP_FILE_MAX}\nSNAP_TOTAL_MAX = {SNAP_TOTAL_MAX}\nSNAP_FILES_MAX = {SNAP_FILES_MAX}\n"
           + f"SNAP_BATCH_SKILLS_MAX = {SNAP_BATCH_SKILLS_MAX}\nSNAP_BATCH_TOTAL_MAX = {SNAP_BATCH_TOTAL_MAX}\n"
-          + "".join(inspect.getsource(f) + "\n" for f in (_parts, _open_parent, _ident, _same, snap_dir, digest, restore_dir, snap_payload)) + _SCRIPT_MAIN)
+          + "".join(inspect.getsource(f) + "\n" for f in (_parts, _open_parent, _ident, _same, snap_dir, digest, restore_dir, front_name, snap_payload)) + _SCRIPT_MAIN)
 # 自動で当てる台本: hermes_skills の台本（approve）の前に、控えの確かめ（learn_hold）を足したもの。目印は hermes_skills と同じ
 APPLY_SCRIPT = ("import base64, hashlib, json, os, stat\n"
                 + f"SNAP_FILE_MAX = {SNAP_FILE_MAX}\nSNAP_TOTAL_MAX = {SNAP_TOTAL_MAX}\nSNAP_FILES_MAX = {SNAP_FILES_MAX}\n"
                 + f"SNAP_BATCH_SKILLS_MAX = {SNAP_BATCH_SKILLS_MAX}\nSNAP_BATCH_TOTAL_MAX = {SNAP_BATCH_TOTAL_MAX}\n"
-                + "".join(inspect.getsource(f) + "\n" for f in (_parts, _open_parent, _ident, _same, snap_dir, digest, snap_payload, learn_hold))
+                + "".join(inspect.getsource(f) + "\n" for f in (_parts, _open_parent, _ident, _same, snap_dir, digest, front_name, snap_payload, learn_hold))
                 + "LEARN_HOLD = learn_hold\n" + hermes_skills.SCRIPT)
 
 

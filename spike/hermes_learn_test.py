@@ -320,9 +320,12 @@ ROOT = Path(os.environ["VL_TEST_SKILLS"])
 def _skills_dir():
     return ROOT
 def _find_skill(name):
-    name = {"alias-hub": "hub"}.get(name, name)  # 別名（frontmatter の名前）でも見つかる（Hermes と同じ）
-    for p in ROOT.rglob("SKILL.md"):
-        if p.parent.name == name and not p.parent.is_symlink():
+    import re
+    for p in ROOT.rglob("SKILL.md"):  # フォルダの名前でも、別名（frontmatter の name）でも見つかる（Hermes と同じ）
+        if p.parent.is_symlink():
+            continue
+        fm = re.match(r"---\\n(?:.*\\n)*?name:\\s*(\\S+)", p.read_text())
+        if p.parent.name == name or (fm and fm.group(1) == name):
             return {"path": p.parent}
     return {"path": Path(os.environ["VL_TEST_OUTSIDE"])} if name == "outside" else None
 def _resolve_skill_dir(name, category=None):
@@ -355,7 +358,8 @@ def apply_skill_pending(payload):
             f = _find_skill(op["name"])
             d = f["path"] if f else _resolve_skill_dir(op["name"], op.get("category"))
             Path(d).mkdir(parents=True, exist_ok=True)
-            (Path(d) / "SKILL.md").write_text("当てた: " + op.get("new_string", ""))
+            ns = op.get("new_string", "")
+            (Path(d) / "SKILL.md").write_text(ns if ns.startswith("---") else "当てた: " + ns)
     return json.dumps({"success": True})
 if os.environ.get("VL_TEST_NOLOCK"):  # 手順の鍵が無い版の Hermes
     del _skill_mutation_locks
@@ -477,8 +481,36 @@ check("自動で当てる台本: Hermes が手順を書き換えている間（�
 check("自動で当てる: 手順の鍵が無い版の Hermes では、控えを取る段で断り（今日の枠を使わない）、当てる台本でも当てない",
       (script("snap", {"payload": pa}, extra={"VL_TEST_NOLOCK": "1"}).get("result"), apply_script("apapap04", pa, e0, extra={"VL_TEST_NOLOCK": "1"}).get("result"),
        (SK2 / "voice-loop" / "ap" / "SKILL.md").read_text()), ("unsupported", "unsupported", "前\n"))
-check("自動で当てる: 別名（frontmatter の名前）で見つかる手順は、鍵がフォルダの名前とずれるので扱わない",
-      (script("snap", {"payload": op("alias-hub")}).get("result"), script("snap", {"payload": op("hub")}).get("result")), ("unsupported", "snap"))
+(SK2 / "voice-loop" / "fmhub").mkdir(parents=True, exist_ok=True)
+(SK2 / "voice-loop" / "fmhub" / "SKILL.md").write_text("---\nname: alias-fm\n---\n本文\n")
+(SK2 / "voice-loop" / "same").mkdir(parents=True, exist_ok=True)
+(SK2 / "voice-loop" / "same" / "SKILL.md").write_text("---\nname: same\n---\n本文\n")
+check("自動で当てる: 別名（frontmatter の名前）がフォルダの名前と違う手順は、どちらの名前で頼まれても扱わない（鍵がずれる）。同じなら扱う",
+      (script("snap", {"payload": op("alias-fm")}).get("result"), script("snap", {"payload": op("fmhub")}).get("result"), script("snap", {"payload": op("same")}).get("result")),
+      ("unsupported", "unsupported", "snap"))
+(SK2 / "voice-loop" / "ap" / "SKILL.md").write_text("前\n")
+pal = {"action": "batch", "operations": [{"action": "patch", "name": "ap", "old_string": "前", "new_string": "---\nname: newalias\n---\n"}]}
+a5 = apply_script("apapap05", pal, e0)
+check("自動で当てる台本: 当てて別名ができたら、当てた直後の指紋を返さない（戻せない）", (a5.get("result"), a5.get("after")), ("applied", None))
+fm_before = hl.snap_dir(str(SK2), "voice-loop/fmhub")
+(SK2 / "voice-loop" / "fmhub" / "SKILL.md").write_text("---\nname: alias-fm\n---\n当てたあと\n")
+fm_expect = hl.digest(hl.snap_dir(str(SK2), "voice-loop/fmhub"))
+lk2 = open(SK2 / ".locks" / "alias-fm.lock", "a")
+fcntl.flock(lk2, fcntl.LOCK_EX)  # Hermes が別名で手順を書き換えている
+proc = subprocess.Popen([sys.executable, "-c", hl.SCRIPT, hl.MARK, "restore"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        cwd=FAKE, env={**os.environ, "PYTHONPATH": str(FAKE), "VL_TEST_SKILLS": str(SK2), "VL_TEST_OUTSIDE": str(OUTSIDE)})
+proc.stdin.write(json.dumps({"skills": {"voice-loop/fmhub": {"before": fm_before, "expect": fm_expect}}}).encode())
+proc.stdin.close()
+time.sleep(1.0)
+(SK2 / "voice-loop" / "fmhub" / "SKILL.md").write_text("---\nname: alias-fm\n---\nHermes が別名で書いた\n")
+fcntl.flock(lk2, fcntl.LOCK_UN)
+lk2.close()
+fo = proc.stdout.read()
+proc.wait(timeout=60)
+proc.stderr.close()
+fres = json.loads(next((l for l in reversed(fo.decode().splitlines()) if l.startswith("VLRESULT ")), "VLRESULT {}")[len("VLRESULT "):])
+check("戻す: フォルダの名前と別名の両方の鍵を取る（Hermes が別名で書いている間も待ち、上書きしない）",
+      (fres.get("result"), (SK2 / "voice-loop" / "fmhub" / "SKILL.md").read_text()), ("changed", "---\nname: alias-fm\n---\nHermes が別名で書いた\n"))
 for i in range(hl.SNAP_BATCH_SKILLS_MAX + 1):
     (SK2 / "many" / f"m{i:02d}").mkdir(parents=True, exist_ok=True)
     (SK2 / "many" / f"m{i:02d}" / "SKILL.md").write_text("小さい\n")
