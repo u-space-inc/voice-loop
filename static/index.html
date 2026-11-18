@@ -535,16 +535,36 @@ function addAttach(list) {
   }
   renderAttach();
 }
-// 選んだ添付を本体に送り、id の並びを返す。1 つでも送れなければ null（発言は送らない。添付は外さずに残す）
-async function uploadAttach(pane) {
+// 添付を本体に送っている途中の発言（{ cancelled, ctl }。同時に 1 つだけ）。送り終えるまで、文字・声の次の発言は受けない。停止・Esc で取り消す
+let attachJob = null;
+// 送ると決めた時点の添付（list）を本体に送り、id の並びを返す。1 つでも送れないか、取り消されたら null（発言は送らない。添付は外さずに残す）
+async function uploadAttach(pane, list, job) {
   const ids = [];
-  for (const f of attachFiles) {
-    let r; try { r = await (await fetch('/api/attach?name=' + encodeURIComponent(f.name) + '&pane=' + encodeURIComponent(pane), { method: 'POST', body: f })).json(); } catch { r = { ok: false, why: '本体に届きません' }; }
+  for (const f of list) {
+    if (job.cancelled) return null;
+    let r; try { r = await (await fetch('/api/attach?name=' + encodeURIComponent(f.name) + '&pane=' + encodeURIComponent(pane), { method: 'POST', body: f, signal: job.ctl.signal })).json(); } catch { r = { ok: false, why: '本体に届きません' }; }
+    if (job.cancelled) return null;
     if (!r.ok) { sys(`添付 ${f.name} を送れませんでした: ${r.why || r.reason}`); return null; }
     ids.push(r.id);
   }
   return ids;
 }
+// 発言に付ける添付を送る。送ると決めた時点の添付・宛先で送り、待つ間に起きたこと（取り消し・相手の替わり・つながりの切れ）を確かめる。
+// 送ってよければ id の並び、送らないなら null（理由は sys か setStatus で出す。how は「文と添付」「話した内容」）
+async function sendAttach(pane, list, how) {
+  if (!list.length) return [];
+  const job = attachJob = { cancelled: false, ctl: new AbortController() };
+  setStatus('添付を送っています…');
+  let files;
+  try { files = await uploadAttach(pane, list, job); } finally { attachJob = null; }
+  if (job.cancelled) { sys(`添付を置いている途中で止めたので、送っていません${how === '話した内容' ? '（話した内容も送っていません）' : '（文と添付は残しています）'}`); return null; }
+  if (!files) { setStatus(how === '話した内容' ? '添付を送れなかったので、話した内容は送っていません' : ''); return null; }
+  if ($('agent').value !== pane) { sys(`添付を置いている間に相手が替わったので、送っていません${how === '話した内容' ? '' : '（文と添付は残しています）'}`); setStatus(''); return null; }
+  if (!linked()) { sys(`添付を置いている間に本体とのつながりが切れたので、送っていません${how === '話した内容' ? '' : '（文と添付は残しています）'}`); setStatus(UNREACHABLE); return null; }
+  return files;
+}
+// 送った添付だけを外す（送っている間に足したものは残す）
+function dropSent(list) { attachFiles = attachFiles.filter(f => !list.includes(f)); renderAttach(); }
 // 返信先の報告（{ at, about }）。ハブの会話のときだけ付けて送り、送ったら外す。相手を替えたら外す
 let replyTarget = null;
 function setReplyTarget(t) {
@@ -1522,15 +1542,14 @@ async function startRec() {
     if (blob.size < 2000) { setStatus('短すぎました'); return; }
     sendTurnStart();
     if (!$('agent').value) { setStatus('話し相手を選んでください'); return; }
-    const pane = $('agent').value, key = curKey(), rf = replyFields();  // 宛先は話し終えた時点で固定する（添付を置いている間に相手が替わっても、ずらさない）
-    let files = [];
-    if (attachFiles.length) {
-      setStatus('添付を送っています…'); files = await uploadAttach(pane);
-      if (!files) { setStatus('添付を送れなかったので、話した内容は送っていません'); return; }
-      if ($('agent').value !== pane) { setStatus('添付を置いている間に相手が替わったので、送っていません'); return; }
-    }
+    if (attachJob) { setStatus('添付を送っている途中なので、話した内容は送っていません'); return; }  // 前の発言の添付を送っている間は重ねない
+    // 宛先・返信先・添付は話し終えた時点で固定する（添付を置いている間に相手や欄が変わっても、ずらさない）
+    const pane = $('agent').value, key = curKey(), rf = replyFields(), list = attachFiles.slice();
+    const files = await sendAttach(pane, list, '話した内容');
+    if (!files) return;
     ws.send(JSON.stringify({ type: 'turn', pane, key, speaker: $('speaker').value, filename: 'rec.' + ext, ...rf, ...(files.length ? { attachments: files } : {}) }));
-    setReplyTarget(null); attachFiles = []; renderAttach();
+    if (rf.reply_at !== undefined && replyTarget && replyTarget.at === rf.reply_at) setReplyTarget(null);
+    dropSent(list);
     ws.send(await blob.arrayBuffer());
     setStatus('聞き取り中…');
   };
@@ -1539,8 +1558,11 @@ async function startRec() {
 }
 function stopRec() { if (rec && rec.state !== 'inactive') rec.stop(); $('talk').classList.remove('rec'); $('talk').textContent = 'タップして話す'; }
 
-$('talk').onclick = () => { if (!$('agent').value) return; if (rec && rec.state === 'recording') stopRec(); else startRec().catch(e => { setStatus('マイクが使えません: ' + e.message); clog('mic failed: ' + e.name + ' ' + e.message); }); };
-$('stop').onclick = () => { if (linked()) ws.send(JSON.stringify({ type: 'stop' })); stopPlayback(); setStatus('止めました'); };
+$('talk').onclick = () => { if (!$('agent').value) return; if (rec && rec.state === 'recording') stopRec(); else if (attachJob) setStatus('添付を送っています。送り終えてから話してください'); else startRec().catch(e => { setStatus('マイクが使えません: ' + e.message); clog('mic failed: ' + e.name + ' ' + e.message); }); };
+$('stop').onclick = () => {
+  if (attachJob) { attachJob.cancelled = true; attachJob.ctl.abort(); }  // 添付を送っている途中の発言も取り消す（送り終えてから発言が出ないように）
+  if (linked()) ws.send(JSON.stringify({ type: 'stop' })); stopPlayback(); setStatus('止めました');
+};
 // 文字の欄は、行の数に合わせて伸びる（上限は CSS の max-height。超えたら欄の中で送る）
 const fitTyped = () => { const el = $('typed'); el.style.height = 'auto'; el.style.height = (el.scrollHeight + 2) + 'px'; };
 $('typed').addEventListener('input', fitTyped);
@@ -1553,19 +1575,20 @@ $('typed').addEventListener('keydown', e => {
 $('typedForm').onsubmit = async e => {
   // 「送る」を押せない間（届かない・声がまだ決まっていない）は、Enter でも送らず、打った文をそのまま残す。
   // Enter の requestSubmit() はボタンの無効を見ないので、ここでボタンと同じ可否（applyTarget）を確かめる。添付だけでも送れる
-  e.preventDefault(); const t = $('typed').value.trim(); if ((!t && !attachFiles.length) || $('send').disabled || !$('agent').value || !linked()) return;
-  const pane = $('agent').value, key = curKey(), rf = replyFields(), names = attachFiles.map(f => f.name);  // 宛先は押した時点で固定する
-  let files = [];
-  if (attachFiles.length) {
-    setStatus('添付を送っています…'); files = await uploadAttach(pane);
-    if (!files) { setStatus(''); return; }  // 送れなければ、文も添付も残す
-    if ($('agent').value !== pane) { sys('添付を置いている間に相手が替わったので、送っていません（文と添付は残しています）'); setStatus(''); return; }
-  }
+  // 添付を送っている間は、重ねて送らない（Enter・「送る」を続けて押しても 1 回だけ）
+  e.preventDefault(); if (attachJob) return;
+  const t = $('typed').value.trim(); if ((!t && !attachFiles.length) || $('send').disabled || !$('agent').value || !linked()) return;
+  // 宛先・返信先（とその件の名前）・添付は押した時点で固定する。待つ間に欄が変わっても、ここで決めたものだけを送る
+  const pane = $('agent').value, key = curKey(), rf = replyFields(), about = rf.reply_at !== undefined ? replyTarget.about : '', list = attachFiles.slice();
+  const files = await sendAttach(pane, list, '文と添付');
+  if (!files) return;  // 送らないときは、文も添付も残す
   sendTurnStart(); prime();
-  const shown = t + (names.length ? (t ? '\n' : '') + '📎 ' + names.join('、') : '');
-  $('typed').value = ''; fitTyped(); decorate(bubble('me', shown, 'pending'), { role: 'me', reply_to: rf.reply_at !== undefined ? replyTarget.about : '' }); localPush('me', shown);
+  const shown = t + (list.length ? (t ? '\n' : '') + '📎 ' + list.map(f => f.name).join('、') : '');
+  if ($('typed').value.trim() === t) { $('typed').value = ''; fitTyped(); }  // 待つ間に打ち直した文は消さない
+  decorate(bubble('me', shown, 'pending'), { role: 'me', reply_to: about }); localPush('me', shown);
   ws.send(JSON.stringify({ type: 'text', text: t, pane, key, speaker: $('speaker').value, ...rf, ...(files.length ? { attachments: files } : {}) }));
-  setReplyTarget(null); attachFiles = []; renderAttach();
+  if (rf.reply_at !== undefined && replyTarget && replyTarget.at === rf.reply_at) setReplyTarget(null);
+  dropSent(list);
   setStatus('エージェントに送りました。考え中…');
 };
 

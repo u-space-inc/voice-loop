@@ -32,15 +32,21 @@ MARK = "vl-attach-put"  # コンテナの中の台本の目印
 CONTAINER_DIR = "/opt/data/voice-loop/attachments"
 
 
-def shown_name(name) -> str:
-    """画面と発言に出す名前: フォルダの部分を外し、制御文字・向きを変える文字を空白にして 1 行・80 字。空なら「添付」。"""
+def _clean(name) -> str:
+    """フォルダの部分を外し、制御文字・向きを変える文字を空白にして 1 行にした名前（長さはそのまま）。"""
     base = re.split(r"[/\\]", str(name or ""))[-1]
-    v = " ".join(_DROP.sub(" ", base).split())
+    return " ".join(_DROP.sub(" ", base).split())
+
+
+def shown_name(name) -> str:
+    """画面と発言に出す名前: _clean を 80 字までにしたもの。空なら「添付」。"""
+    v = _clean(name)
     return (v if len(v) <= 80 else v[:79] + "…") or "添付"
 
 
 def ext_of(name) -> str:
-    return os.path.splitext(shown_name(name))[1].lower()
+    """拡張子は、80 字に切る前の名前から取る（長い名前で拡張子が欠けて、正しいファイルを断らないように）。"""
+    return os.path.splitext(_clean(name))[1].lower()
 
 
 def content_problem(ext: str, data: bytes) -> str:

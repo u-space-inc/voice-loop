@@ -3,7 +3,7 @@
 （コンテナの中の台本は、この試験の中で、置き場を一時のフォルダにして直に動かす）。
 確かめること:
   - 受け取る: 種類（画像・PDF・テキストだけ。SVG・HTML・実行ファイル・拡張子の無いものは断る）・中身の頭と拡張子の照らし・テキストの UTF-8 と NUL・
-    大きさの上限・空・置く名前は本体が付ける（送られた名前の「..」やフォルダは使わない。表示の名前は 1 行）・0600・別のサイトとコンテナからは使えない
+    大きさの上限・空・置く名前は本体が付ける（送られた名前の「..」やフォルダは使わない。表示の名前は 1 行・80 字。種類は切る前の名前の拡張子）・0600・別のサイトとコンテナからは使えない
   - 渡す: セッションには状態フォルダの場所を、ハブ（Hermes）にはコンテナの中に置いた場所を、発言の末尾に書く・知らない id・多すぎる・形の違う添付は
     送らずに断る・コンテナに置けなければ送らない・声の発言にも付けられる
   - 片づけ: 7 日より古い添付を消す（名前の形が合うふつうのファイルだけ）
@@ -92,6 +92,11 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     newest = max((p for p in (Path(TMP) / "state" / "attachments").rglob("*") if p.is_file()), key=lambda p: p.stat().st_mtime_ns)
     check("受け取る: 送られた名前の「..」・フォルダ・改行・向きを変える文字は、置く場所に使わず、表示は 1 行に",
           (ev["ok"], ev["name"], newest.parent.parent == Path(TMP) / "state" / "attachments", ".." in str(newest)), (True, "passwd .png", True, False))
+    long = "長" * 77 + "ab.png"  # 81 字。表示は 80 字に切るが、種類は切る前の名前の拡張子で決める
+    lr = up(long, PNG).json()
+    check("受け取る: 80 字を超える名前でも拡張子で種類を決めて受け取り、表示の名前だけを 80 字に切る",
+          (lr["ok"], len(lr.get("name", "")), lr.get("name", "").endswith("…"), attach.ext_of(long), up("長" * 90 + ".svg", b"<svg/>").json().get("reason")),
+          (True, 80, True, ".png", "type"))
     check("口: 別のサイトからは使えない", up("a.png", PNG, **{"Sec-Fetch-Site": "cross-site"}).status_code, 403)
     check("口: コンテナからは使えない（鍵があっても）", c.post("/api/attach", params={"name": "a.png"}, content=PNG,
                                                      headers={"Host": "host.docker.internal:8790", "X-VL-Key": "k1"}).status_code, 403)

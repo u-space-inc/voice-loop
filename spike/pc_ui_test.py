@@ -19,7 +19,8 @@ PC の見た目（Chromium）: 頼んだ件を「動いている」「終わっ�
 キー（Chromium）: PC の幅で Space が話す（押し続けの繰り返し・変換の途中・文字の欄の中では効かない。押しているボタンの既定の動きは止める）・
 Esc が停止（文字の欄の中でも効く・ほかの欄の中では効かない）・広げて読んでいる間は Esc で戻るだけ・スマホの幅では効かない。
 添付（Chromium）: 📎 で選ぶと入力の上に並ぶ（文字の欄の上・同じ幅）・扱えない種類と 6 つ目は断る・✕ で外す・送ると本体に置いて id を発言に付け、
-欄を空にする・吹き出しに名前を出す。
+欄を空にする・吹き出しに名前を出す。置いている間: 重ねて送らない・送るのは押した時点の添付・停止で取り消す・返信先を外しても押した時点の返信先で送る・
+相手が替わる・つながりが切れると送らずに文と添付を残す。
 報告への返信（Chromium）: ハブの報告に件と「↩ 返信」を出す（件は文字として）・押すと入力の上に返信先・次の発言に報告の時刻だけを付けて送る・
 送った発言に返信先を出す・送る・✕・相手を替えると外れる。
 使い方: uv run spike/pc_ui_test.py"""
@@ -722,6 +723,63 @@ def run_attach(page, who):
     check(f"{who} 添付を置いている間に相手を替えたら送らず、文と添付は残す（宛先をずらさない）",
           wait(lambda: "相手が替わったので、送っていません" in (page.text_content("#log") or "")) and (len(sent()), page.input_value("#typed"), chips()),
           (1, "途中で相手を替える", ["📎 c.png"]))
+
+    # 添付を置いている途中の発言（codex-review の指摘）: 重ねない・押した時点の添付だけ・停止で取り消す・返信先を外しても送る・切れたら送らない
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    held = lambda n: wait(lambda: page.evaluate("0") == 0 and len(hold) == n)
+    log = lambda: page.text_content("#log") or ""
+    page.select_option("#agent", "w1:p1")
+    hold.clear()
+    page.route("**/api/attach*", lambda route: hold.append(route))
+    page.fill("#typed", "一度だけ")
+    page.press("#typed", "Enter")
+    held(1)
+    page.press("#typed", "Enter")
+    page.click("#send")
+    page.set_input_files("#attachInput", files=[f("d.png")])  # 置いている間に足す（送るのは押した時点の c.png だけ。d.png は残す）
+    hold[0].continue_()
+    check(f"{who} 添付を置いている間に Enter・「送る」を重ねても 1 回だけ送る。送るのは押した時点の添付で、置いている間に足したものは残す",
+          wait(lambda: len(sent()) == 2) and (page.evaluate("0"), len(hold), len(sent()[1].get("attachments", [])), page.locator("#log .msg.me").last.inner_text(),
+                                               chips(), page.input_value("#typed"))[1:],
+          (1, 1, "一度だけ\n📎 c.png", ["📎 d.png"], ""))
+    hold.clear()
+    page.fill("#typed", "止める")
+    page.press("#typed", "Enter")
+    held(1)
+    page.click("#stop")
+    try:
+        hold[0].continue_()
+    except Exception:
+        pass  # 取り消した送りは、もう続けられない
+    check(f"{who} 添付を置いている間に停止したら、置き終えても発言を送らず、文と添付は残す",
+          wait(lambda: "途中で止めたので、送っていません（文と添付は残しています）" in log()) and (time.sleep(0.5), page.evaluate("0"), len(sent()), page.input_value("#typed"), chips())[2:],
+          (2, "止める", ["📎 d.png"]))
+    s.hermes.hermes_log("ai", "shop の件が終わりました", report=True, about="shop｜受注", at=1700000000.25)
+    page.select_option("#agent", s.hermes.HERMES_PANE)
+    page.wait_for_selector("#log .msg.ai .rep button")
+    page.locator("#log .msg.ai .rep button").last.click()
+    hold.clear()
+    page.fill("#typed", "返信して途中で外す")
+    page.press("#typed", "Enter")
+    held(1)
+    page.click("#replyClear")
+    hold[0].fulfill(status=200, content_type="application/json", body=json.dumps({"ok": True, "id": "a" * 16, "name": "d.png", "size": 40}))
+    check(f"{who} 添付を置いている間に返信先の ✕ を押しても、押した時点の返信先で送り、吹き出しにも出す（止まらない）",
+          wait(lambda: len(sent()) == 3) and (sent()[2]["text"], sent()[2].get("reply_at"), page.locator("#log .msg.me .rep").last.text_content(),
+                                               page.input_value("#typed"), errors),
+          ("返信して途中で外す", 1700000000.25, "↩ shop｜受注 の報告へ", "", []))
+    page.select_option("#agent", "w1:p1")
+    page.set_input_files("#attachInput", files=[f("e.png")])
+    hold.clear()
+    page.fill("#typed", "切れる")
+    page.press("#typed", "Enter")
+    held(1)
+    page.evaluate("ws.close()")
+    hold[0].continue_()
+    check(f"{who} 添付を置いている間に本体とのつながりが切れたら、送らず、文と添付は残す",
+          wait(lambda: "つながりが切れたので、送っていません" in log()) and (len(sent()), page.input_value("#typed"), chips()), (3, "切れる", ["📎 e.png"]))
+    page.unroute("**/api/attach*")
 
 
 def run_reply(page, who):
