@@ -830,6 +830,37 @@ finally:
     s.hermes.core.write_json = real_wj
 check("記憶: 外す項目の控えのファイルに書けなければ、画面からも記憶を書かない（断る）",
       (r7.get("ok"), r7.get("reason"), (MEM / "MEMORY.md").read_text() == before_mem, s.hermes._HMEM_MINE.get("memory", {}).get("added", [])), (False, "state", True, []))
+# 結果が分からない（時間切れ・失敗）書き込み: 外す項目は持ち続ける（書いていた・遅れて書き終えた、のどちらでも本人の書き込みを学びにしない）
+def uncertain_run(write: bool):
+    def run(container, op, req=None, wait=90, env=None):
+        if op != "limits" and write:
+            fake_mem_run(container, op, req, wait, env)
+        return {"result": "limits", "limits": {"user": 1375, "memory": 2200}} if op == "limits" else {"result": "failed", "why": "時間切れ"}
+    return run
+
+
+asyncio.run(s.hermes._learn_memory())
+n8 = count()
+s.hermes.hermes_memory.run_script = uncertain_run(True)
+r8 = json.loads(asyncio.run(s.hermes._hmem_write("add", {"target": "memory", "content": "書いたあとに時間切れ"})).body)
+s.hermes.hermes_memory.run_script = fake_mem_run
+s.hermes.HMEM_FILE.unlink(missing_ok=True)  # 終わりを確かめた（次の書き込みを止めない）
+asyncio.run(s.hermes._watch_memory())
+check("記憶: 書いたあとに結果が分からなくなった（時間切れ）書き込みも、本人の書き込みとして外す", (r8.get("reason"), count() - n8, "書いたあとに時間切れ" in (MEM / "MEMORY.md").read_text()),
+      ("unknown", 0, True))
+s.hermes.hermes_memory.run_script = uncertain_run(False)
+r9 = json.loads(asyncio.run(s.hermes._hmem_write("add", {"target": "memory", "content": "遅れて書き終える"})).body)
+s.hermes.hermes_memory.run_script = fake_mem_run
+s.hermes.HMEM_FILE.unlink(missing_ok=True)
+asyncio.run(s.hermes._watch_memory())  # まだ現れない（台本は動いている）
+kept = "遅れて書き終える" in s.hermes._HMEM_MINE.get("memory", {}).get("added", [])
+(MEM / "MEMORY.md").write_text(D.join([x for x in (MEM / "MEMORY.md").read_text().split(D) if x] + ["遅れて書き終える"]))  # 遅れて書き終えた
+asyncio.run(s.hermes._watch_memory())
+check("記憶: 時間切れのあとで遅れて書き終えた本人の書き込みも学びにしない（外す項目は、照らし合うまで持ち続ける）",
+      (r9.get("reason"), kept, count() - n8, "遅れて書き終える" in s.hermes._HMEM_MINE.get("memory", {}).get("added", [])), ("unknown", True, 0, False))
+s.hermes._HMEM_MINE["memory"] = {"added": ["ずっと現れない"], "removed": [], "at": time.time() - s.hermes.HMEM_MINE_KEEP - 1}
+asyncio.run(s.hermes._watch_memory())
+check("記憶: 期限（HMEM_MINE_KEEP）を過ぎても現れない外す項目は手放す", "memory" in s.hermes._HMEM_MINE, False)
 # 見張りの 1 回: 手順の承認待ちを読めなくても、記憶は見る
 n5 = count()
 real_pending = s.hermes.hermes_skills.pending_ids
