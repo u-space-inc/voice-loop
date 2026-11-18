@@ -77,6 +77,11 @@
   #typed { flex:1; min-width:0; font:inherit; font-size:16px; line-height:1.4; padding:9px 12px; background:var(--btn); color:var(--fg); border:1px solid #333; border-radius:10px;
     resize:none; overflow-y:auto; max-height:9.5em; box-sizing:border-box; } /* 高さは、行の数に合わせて台本が決める（fitTyped） */
   #send { width:64px; font-size:14px; border:none; border-radius:10px; background:var(--btn); color:var(--fg); }
+  #attachBtn { flex:none; width:40px; font-size:18px; border:none; border-radius:10px; background:var(--btn); color:var(--fg); }
+  #attachBar:not([hidden]) { display:flex; flex-wrap:wrap; gap:6px; }
+  #attachBar .chip { display:inline-flex; align-items:center; gap:4px; max-width:100%; font-size:12px; color:var(--mute); border:1px solid #3a3a3a; border-radius:12px; padding:3px 4px 3px 9px; }
+  #attachBar .chip span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:220px; }
+  #attachBar .chip button { border:none; background:none; color:inherit; font-size:12px; padding:0 4px; }
   [hidden] { display:none !important; }
   /* 承認で止まっているセッション（画面の上に並べる） */
   #asks { flex:none; max-height:45dvh; overflow-y:auto; display:flex; flex-direction:column; gap:8px; padding:calc(8px + env(safe-area-inset-top)) 12px 8px; background:#161616; border-bottom:1px solid #262626; }
@@ -214,10 +219,10 @@
   body.wide .lead { font-weight:700; color:#fff; }
   body.wide .sys { max-width:46em; color:var(--w-t3); }
   /* 入力。文字の欄を主に、話す・停止は小さく、相手と声と同じ行に */
-  body.wide #bar { grid-area:bar; display:grid; grid-template-columns:minmax(0,3fr) minmax(0,2fr) auto auto; grid-template-areas:"st st st st" "rp rp rp rp" "ty ty ty ty" "ag vo tk sb";
+  body.wide #bar { grid-area:bar; display:grid; grid-template-columns:minmax(0,3fr) minmax(0,2fr) auto auto; grid-template-areas:"st st st st" "rp rp rp rp" "at at at at" "ty ty ty ty" "ag vo tk sb";
     gap:8px; padding:10px 32px 16px; background:var(--w-bg); border-top:1px solid var(--w-rule); }
   body.wide #bar > .row:not(#typedForm) { display:contents; }
-  body.wide #status { grid-area:st; } body.wide #replyBar { grid-area:rp; } body.wide #typedForm { grid-area:ty; }
+  body.wide #status { grid-area:st; } body.wide #replyBar { grid-area:rp; } body.wide #attachBar { grid-area:at; } body.wide #typedForm { grid-area:ty; }
   body.wide #agent { grid-area:ag; } body.wide #speaker { grid-area:vo; } body.wide #talk { grid-area:tk; } body.wide #stop { grid-area:sb; }
   body.wide #agent, body.wide #speaker { height:36px; padding:0 10px; background:var(--w-field); border-color:var(--w-rule); color:var(--w-t2); }
   body.wide #talk, body.wide #stop { height:36px; padding:0 16px; font-size:14px; border-radius:8px; border:1px solid var(--w-line); background:var(--w-field); color:var(--w-t1); }
@@ -326,7 +331,8 @@
     <div class="row"><select id="agent" aria-label="セッション"></select><select id="speaker" aria-label="声"></select></div>
     <div id="replyBar" hidden><span id="replyTo"></span><button id="replyClear" type="button" aria-label="返信をやめる">✕</button></div>
     <div class="row"><button id="talk" title="PC では Space でも話せます（文字の欄の外で）">タップして話す</button><button id="stop" title="PC では Esc でも止められます">停止</button></div>
-    <form id="typedForm" class="row"><textarea id="typed" rows="1" placeholder="文字で送る" autocomplete="off"></textarea><button id="send" type="submit">送る</button></form>
+    <div id="attachBar" hidden></div>
+    <form id="typedForm" class="row"><button id="attachBtn" type="button" aria-label="ファイルを添付する" title="ファイルを添付する（画像・PDF・テキスト。1 つ 20MB・5 つまで）">📎</button><input id="attachInput" type="file" multiple accept="image/png,image/jpeg,image/gif,image/webp,image/heic,.heic,application/pdf,text/plain,text/markdown,text/csv,.md,.txt,.csv" hidden><textarea id="typed" rows="1" placeholder="文字で送る" autocomplete="off"></textarea><button id="send" type="submit">送る</button></form>
   </div>
   <div id="viewer" hidden role="dialog" aria-modal="true" aria-labelledby="vName"><div class="vhead"><span id="vName"></span><span id="vPos"></span><button id="vPrev" aria-label="前の成果物">←</button><button id="vNext" aria-label="次の成果物">→</button><button id="vClose">✕ 閉じる</button></div><div id="vStage"></div><div id="vPath"></div></div>
 <script src="/static/vendor/marked.min.js"></script>
@@ -506,6 +512,59 @@ function decorate(el, m) {
   } else if (m.role === 'me' && m.reply_to) el.prepend(node('div', 'rep', '↩ ' + m.reply_to + ' の報告へ'));
   return el;
 }
+// 添付（画面から話し相手に渡すファイル）。選んだファイルは送るときに 1 つずつ本体に送り（/api/attach）、返った id を発言に付ける。
+// 種類・大きさ・数は本体が確かめ直す（ここでは早めに知らせるだけ）。送る・相手を替えると外れる
+const ATTACH_MAX = 20 * 1024 * 1024, ATTACH_COUNT = 5, ATTACH_EXT = /\.(png|jpe?g|gif|webp|heic|pdf|txt|md|csv)$/i;
+let attachFiles = [];
+function renderAttach() {
+  const bar = $('attachBar'); bar.replaceChildren();
+  bar.hidden = !attachFiles.length;
+  attachFiles.forEach((f, i) => {
+    const chip = node('span', 'chip'); chip.appendChild(node('span', null, '📎 ' + f.name));
+    const x = node('button', null, '✕'); x.type = 'button'; x.setAttribute('aria-label', `添付 ${f.name} を外す`);
+    x.onclick = () => { attachFiles.splice(i, 1); renderAttach(); };
+    chip.appendChild(x); bar.appendChild(chip);
+  });
+}
+function addAttach(list) {
+  for (const f of list) {
+    if (attachFiles.length >= ATTACH_COUNT) { sys(`添付は 1 回に ${ATTACH_COUNT} つまでです`); break; }
+    if (!ATTACH_EXT.test(f.name)) { sys(`${f.name} は添付できません（画像・PDF・テキストだけ）`); continue; }
+    if (f.size > ATTACH_MAX) { sys(`${f.name} は大きすぎます（1 つ 20MB まで）`); continue; }
+    attachFiles.push(f);
+  }
+  renderAttach();
+}
+// 添付を本体に送っている途中の発言（{ cancelled, ctl }。同時に 1 つだけ）。送り終えるまで、文字・声の次の発言は受けない。停止・Esc で取り消す
+let attachJob = null;
+// 送ると決めた時点の添付（list）を本体に送り、id の並びを返す。1 つでも送れないか、取り消されたら null（発言は送らない。添付は外さずに残す）
+async function uploadAttach(pane, list, job) {
+  const ids = [];
+  for (const f of list) {
+    if (job.cancelled) return null;
+    let r; try { r = await (await fetch('/api/attach?name=' + encodeURIComponent(f.name) + '&pane=' + encodeURIComponent(pane), { method: 'POST', body: f, signal: job.ctl.signal })).json(); } catch { r = { ok: false, why: '本体に届きません' }; }
+    if (job.cancelled) return null;
+    if (!r.ok) { sys(`添付 ${f.name} を送れませんでした: ${r.why || r.reason}`); return null; }
+    ids.push(r.id);
+  }
+  return ids;
+}
+// 発言に付ける添付を送る。送ると決めた時点の添付・宛先で送り、待つ間に起きたこと（取り消し・相手の替わり・つながりの切れ）を確かめる。
+// 送ってよければ id の並び、送らないなら null（理由は sys か setStatus で出す。how は「文と添付」「話した内容」）
+async function sendAttach(pane, list, how) {
+  if (!list.length) return [];
+  const job = attachJob = { cancelled: false, ctl: new AbortController() };
+  setStatus('添付を送っています…');
+  let files;
+  try { files = await uploadAttach(pane, list, job); } finally { attachJob = null; }
+  if (job.cancelled) { sys(`添付を置いている途中で止めたので、送っていません${how === '話した内容' ? '（話した内容も送っていません）' : '（文と添付は残しています）'}`); return null; }
+  if (!files) { setStatus(how === '話した内容' ? '添付を送れなかったので、話した内容は送っていません' : ''); return null; }
+  if ($('agent').value !== pane) { sys(`添付を置いている間に相手が替わったので、送っていません${how === '話した内容' ? '' : '（文と添付は残しています）'}`); setStatus(''); return null; }
+  if (!linked()) { sys(`添付を置いている間に本体とのつながりが切れたので、送っていません${how === '話した内容' ? '' : '（文と添付は残しています）'}`); setStatus(UNREACHABLE); return null; }
+  return files;
+}
+// 送った添付だけを外す（送っている間に足したものは残す）
+function dropSent(list) { attachFiles = attachFiles.filter(f => !list.includes(f)); renderAttach(); }
 // 返信先の報告（{ at, about }）。ハブの会話のときだけ付けて送り、送ったら外す。相手を替えたら外す
 let replyTarget = null;
 function setReplyTarget(t) {
@@ -586,6 +645,8 @@ async function showSetup(seq) {
   todo.forEach((c, i) => sys(`${i + 1}. ${c.name}: ${c.todo}`));
 }
 $('replyClear').onclick = () => setReplyTarget(null);
+$('attachBtn').onclick = () => $('attachInput').click();
+$('attachInput').onchange = () => { addAttach([...$('attachInput').files]); $('attachInput').value = ''; };
 $('agent').onchange = () => { setReplyTarget(null); localStorage.setItem(WANT, curKey()); shownPane = $('agent').value; applyTarget(); setStatus(linked() ? '準備できました' : UNREACHABLE); loadThread(); };
 
 // ---------- 承認で止まっているセッションへの返答（ボタン） ----------
@@ -1481,8 +1542,14 @@ async function startRec() {
     if (blob.size < 2000) { setStatus('短すぎました'); return; }
     sendTurnStart();
     if (!$('agent').value) { setStatus('話し相手を選んでください'); return; }
-    ws.send(JSON.stringify({ type: 'turn', pane: $('agent').value, key: curKey(), speaker: $('speaker').value, filename: 'rec.' + ext, ...replyFields() }));
-    setReplyTarget(null);
+    if (attachJob) { setStatus('添付を送っている途中なので、話した内容は送っていません'); return; }  // 前の発言の添付を送っている間は重ねない
+    // 宛先・返信先・添付は話し終えた時点で固定する（添付を置いている間に相手や欄が変わっても、ずらさない）
+    const pane = $('agent').value, key = curKey(), rf = replyFields(), list = attachFiles.slice();
+    const files = await sendAttach(pane, list, '話した内容');
+    if (!files) return;
+    ws.send(JSON.stringify({ type: 'turn', pane, key, speaker: $('speaker').value, filename: 'rec.' + ext, ...rf, ...(files.length ? { attachments: files } : {}) }));
+    if (rf.reply_at !== undefined && replyTarget && replyTarget.at === rf.reply_at) setReplyTarget(null);
+    dropSent(list);
     ws.send(await blob.arrayBuffer());
     setStatus('聞き取り中…');
   };
@@ -1491,8 +1558,11 @@ async function startRec() {
 }
 function stopRec() { if (rec && rec.state !== 'inactive') rec.stop(); $('talk').classList.remove('rec'); $('talk').textContent = 'タップして話す'; }
 
-$('talk').onclick = () => { if (!$('agent').value) return; if (rec && rec.state === 'recording') stopRec(); else startRec().catch(e => { setStatus('マイクが使えません: ' + e.message); clog('mic failed: ' + e.name + ' ' + e.message); }); };
-$('stop').onclick = () => { if (linked()) ws.send(JSON.stringify({ type: 'stop' })); stopPlayback(); setStatus('止めました'); };
+$('talk').onclick = () => { if (!$('agent').value) return; if (rec && rec.state === 'recording') stopRec(); else if (attachJob) setStatus('添付を送っています。送り終えてから話してください'); else startRec().catch(e => { setStatus('マイクが使えません: ' + e.message); clog('mic failed: ' + e.name + ' ' + e.message); }); };
+$('stop').onclick = () => {
+  if (attachJob) { attachJob.cancelled = true; attachJob.ctl.abort(); }  // 添付を送っている途中の発言も取り消す（送り終えてから発言が出ないように）
+  if (linked()) ws.send(JSON.stringify({ type: 'stop' })); stopPlayback(); setStatus('止めました');
+};
 // 文字の欄は、行の数に合わせて伸びる（上限は CSS の max-height。超えたら欄の中で送る）
 const fitTyped = () => { const el = $('typed'); el.style.height = 'auto'; el.style.height = (el.scrollHeight + 2) + 'px'; };
 $('typed').addEventListener('input', fitTyped);
@@ -1502,15 +1572,24 @@ $('typed').addEventListener('keydown', e => {
   if (matchMedia('(pointer: coarse)').matches) return;
   e.preventDefault(); $('typedForm').requestSubmit();
 });
-$('typedForm').onsubmit = e => {
+$('typedForm').onsubmit = async e => {
   // 「送る」を押せない間（届かない・声がまだ決まっていない）は、Enter でも送らず、打った文をそのまま残す。
-  // Enter の requestSubmit() はボタンの無効を見ないので、ここでボタンと同じ可否（applyTarget）を確かめる
-  e.preventDefault(); const t = $('typed').value.trim(); if (!t || $('send').disabled || !$('agent').value || !linked()) return;
-  sendTurnStart(); prime();
-  const rf = replyFields();
-  $('typed').value = ''; fitTyped(); decorate(bubble('me', t, 'pending'), { role: 'me', reply_to: rf.reply_at !== undefined ? replyTarget.about : '' }); localPush('me', t);
-  ws.send(JSON.stringify({ type: 'text', text: t, pane: $('agent').value, key: curKey(), speaker: $('speaker').value, ...rf }));
-  setReplyTarget(null);
+  // Enter の requestSubmit() はボタンの無効を見ないので、ここでボタンと同じ可否（applyTarget）を確かめる。添付だけでも送れる
+  // 添付を送っている間は、重ねて送らない（Enter・「送る」を続けて押しても 1 回だけ）
+  e.preventDefault(); if (attachJob) return;
+  const t = $('typed').value.trim(); if ((!t && !attachFiles.length) || $('send').disabled || !$('agent').value || !linked()) return;
+  // 宛先・返信先（とその件の名前）・添付は押した時点で固定する。待つ間に欄が変わっても、ここで決めたものだけを送る
+  const pane = $('agent').value, key = curKey(), rf = replyFields(), about = rf.reply_at !== undefined ? replyTarget.about : '', list = attachFiles.slice();
+  prime();  // 読み上げの許可は、押したその場で取る（添付を置き終えるのを待ってからでは、iPhone の Safari が押した操作と見ない）
+  const files = await sendAttach(pane, list, '文と添付');
+  if (!files) return;  // 送らないときは、文も添付も残す
+  sendTurnStart();
+  const shown = t + (list.length ? (t ? '\n' : '') + '📎 ' + list.map(f => f.name).join('、') : '');
+  if ($('typed').value.trim() === t) { $('typed').value = ''; fitTyped(); }  // 待つ間に打ち直した文は消さない
+  decorate(bubble('me', shown, 'pending'), { role: 'me', reply_to: about }); localPush('me', shown);
+  ws.send(JSON.stringify({ type: 'text', text: t, pane, key, speaker: $('speaker').value, ...rf, ...(files.length ? { attachments: files } : {}) }));
+  if (rf.reply_at !== undefined && replyTarget && replyTarget.at === rf.reply_at) setReplyTarget(null);
+  dropSent(list);
   setStatus('エージェントに送りました。考え中…');
 };
 

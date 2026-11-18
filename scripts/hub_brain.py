@@ -88,8 +88,18 @@ class Talker:
         """送ったときの状態の文。"""
         raise NotImplementedError
 
-    async def exchange(self, text: str, reply_at: float | None = None) -> tuple[str, str, bool]:
-        """ユーザーの発言を 1 往復する。(返事, 失敗の理由, 記録に書けたか)。reply_at は、画面の「返信」が指した報告の記録の時刻（無ければ None）。"""
+    async def exchange(self, text: str, reply_at: float | None = None, extra: str = "") -> tuple[str, str, bool]:
+        """ユーザーの発言を 1 往復する。(返事, 失敗の理由, 記録に書けたか)。reply_at は、画面の「返信」が指した報告の記録の時刻（無ければ None）。
+        extra は本体が発言の末尾に足す行（添付の場所）。相手に渡す文と記録には付けるが、承認・閉じるの守りが見る発言は利用者の言葉（text）のまま。"""
+        raise NotImplementedError
+
+    async def refused(self, text: str, why: str):
+        """利用者の発言 text を、本体が送らずに断った（添付の形・宛先など。理由 why）。断った発言も台帳と記録に載せ、承認・閉じるの文脈を失効させる
+        （利用者が最後に聞いたのは本体の断り。前の問い・確認への答えに、次の発言を使わせない）。"""
+        raise NotImplementedError
+
+    def put_attachment(self, name: str, data: bytes) -> str:
+        """画面から添付したファイルを、この話し相手が開ける場所に置き、その場所を返す（置けなければ RuntimeError）。名前は本体が付けたもの。"""
         raise NotImplementedError
 
     def ask(self, text: str) -> str:
