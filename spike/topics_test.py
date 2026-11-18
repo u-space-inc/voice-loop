@@ -519,6 +519,24 @@ with sync_playwright() as p:
         check(f"画面: 件の URL で画面を新しく開いても、その件を開く（{'問いの欄' if target == ASK_T else '報告の返信先'}・URL の #t= は外す）",
               (opened, fresh.evaluate("location.hash")), (True, ""))
         fresh.close()
+    fresh = browser.new_page()  # 本体に届かない間に件の URL で開き、つながってから開き直す
+    fresh.set_viewport_size({"width": 390, "height": 844})
+    fresh.route("**/api/topic*", lambda r: r.abort())
+    fresh.goto(BASE + f"/#t={ASK_T}")
+    try:
+        fresh.wait_for_function("[...document.querySelectorAll('#log .sys')].some(e => e.textContent.includes('つながったらこの件を開きます'))", timeout=8000)
+        waited = True
+    except Exception:
+        waited = False
+    fresh.unroute("**/api/topic*")
+    fresh.evaluate("catchUp()")  # つながり直したとき（ws.onopen）と同じ取り直し
+    try:
+        fresh.wait_for_function('[...document.querySelectorAll("#asks .ask.flash")].length === 1', timeout=8000)
+        reopened = True
+    except Exception:
+        reopened = False
+    check("画面: 本体に届かない間に件の URL で開いても、件を覚えておき、つながってから開く", (waited, reopened, fresh.evaluate("location.hash")), (True, True, ""))
+    fresh.close()
     sw = page.evaluate(SW_CASES, [SW, BASE, [[f"/#t={one['topic']}", False], ["https://evil.example/", False], ["/#t=../x", False], [f"/x#t={one['topic']}", False],
                                              [f"/?a=1#t={one['topic']}", False], [f"/#t={one['topic']}", True], ["/", True], ["https://evil.example/#t=" + one["topic"], True]]])
     check("sw.js: 通知を押したとき開くのは / か /#t=<件> だけ。開いている画面があれば寄せて件を渡す（ほかのサイト・形の違う場所は / にする）", sw,

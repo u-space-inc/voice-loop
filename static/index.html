@@ -574,16 +574,20 @@ function dropSent(list) { attachFiles = attachFiles.filter(f => !list.includes(f
 // 件の形が違う・見つからないときは知らせるだけ。読み直しで繰り返さないよう、URL の #t= は外す
 function flash(el) { el.classList.add('flash'); el.scrollIntoView({ block: 'center' }); clearTimeout(el._flash); el._flash = setTimeout(() => el.classList.remove('flash'), 4000); }
 let topicSeq = 0;
+let pendingTopic = null; // 本体に届かず開けなかった件。つながりしだい catchUp が開き直す（URL の #t= はもう外してある）
 async function openTopic() {
   const m = /^#t=(.*)$/s.exec(location.hash);
-  if (!m) return;
-  history.replaceState(null, '', location.pathname + location.search);
+  if (!m && !pendingTopic) return;
+  const id = m ? m[1] : pendingTopic;
+  if (m) history.replaceState(null, '', location.pathname + location.search);
+  pendingTopic = null;
   const seq = ++topicSeq; // 前に開いていた件の処理は、待ちから戻っても何も変えない（あとで開いた件が勝つ）
   setReplyTarget(null); // 別の件を開いたら、前に選んでいた返信先は外す（開いた件の報告に付け直すときだけ付ける）
-  if (!TOPIC_RE.test(m[1])) { sys('この件のリンクの形が違うので、開けませんでした'); return; }
-  let t; try { t = await (await fetch('/api/topic?id=' + m[1])).json(); } catch { t = null; }
+  if (!TOPIC_RE.test(id)) { sys('この件のリンクの形が違うので、開けませんでした'); return; }
+  let t, reached = true; try { t = await (await fetch('/api/topic?id=' + id)).json(); } catch { t = null; reached = false; }
   if (seq !== topicSeq) return;
-  if (!t || !t.ok) { sys('この件は見つかりませんでした（古くなったか、本体に届きません）'); return; }
+  if (!reached) { pendingTopic = id; sys('本体に届かないので、つながったらこの件を開きます'); return; }
+  if (!t || !t.ok) { sys('この件は見つかりませんでした（古くなったか、消えました）'); return; }
   await loadAsks();
   if (seq !== topicSeq) return;
   const item = asks.get(t.pane);
@@ -1617,7 +1621,7 @@ async function catchUp() {
   agentsSig = ''; shownPane = null; // 一覧と履歴を描き直させる
   await loadAgents();
   loadAsks();
-  if (location.hash) openTopic(); // 件の URL で開いた（一覧が届いてから）
+  if (location.hash || pendingTopic) openTopic(); // 件の URL で開いた・本体に届かず開けなかった件（一覧が届いてから）
 }
 // 声の一覧がまだ無ければ読む。読めなければ、つながっている間は3秒ごとに読み直す（重ねて読みに行かない）
 let speakersBusy = false;
