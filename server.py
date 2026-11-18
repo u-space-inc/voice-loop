@@ -2310,7 +2310,8 @@ async def api_topic(id: str = ""):
         return JSONResponse({"ok": False, "reason": "gone"})
     rep = await asyncio.to_thread(HUB.topic_report, t["id"])  # その件の一番新しい報告（画面の履歴に出ていない古い報告も）
     # current: そのセッションの一番新しい件か。いまの問いは一番新しい件のものとする（同じセッションの古い件のリンクで、あとの件の問いを見せない）
-    current = bool(t["session"]) and topics.latest_for_session(t["session"]) == t["id"]
+    # 画面・声からそのセッションへ直接送ったあと（direct の印）は、いまの問いがこの件のものか分からないので、問いを見せず報告を開く
+    current = bool(t["session"]) and topics.latest_for_session(t["session"]) == t["id"] and not t.get("direct")
     return JSONResponse({"ok": True, **{k: t[k] for k in ("id", "pane", "session", "project", "title")}, "report": rep, "current": current})
 
 
@@ -2746,6 +2747,7 @@ async def ws(sock: WebSocket):
         SENT_GEN[pane] = SENT_GEN.get(pane, 0) + 1  # 画面・声からの直接の指示も、前の件の Slack への報告に新しい結果を載せない（送る前に進める）
         async with pane_lock(pane):  # ハブが自動通知に応答している最中なら、それが終わってから送る
             SENT_GEN[pane] = SENT_GEN.get(pane, 0) + 1  # 順番を待つ間に、ハブ経由の件が送られていることがある。実際に送る直前にも進める
+            topics.mark_direct(agent.get("session") or "")  # 直接送った話の問いを、前の件のリンクで見せない
             # 返事が来るまで（止められても、送る処理が裏で終わるまで）に送られたハブ経由の件は、重なった件として扱う
             state, reply = await asyncio.shield(track_send(pane, ask(agent, text + extra)))
             if cancel.is_set():

@@ -71,6 +71,15 @@ old = topics.new("p", "s-exp", "x", "期限の切れる件", ("D1", "9.9"))
 topics.TOPICS[old]["updated"] -= topics.TOPIC_KEEP + 1  # 保存し直す前に期限を過ぎた
 check("台帳: 期限を過ぎた件は、保存し直す前でも引かない・続きにしない（Slack のスレッド・セッションでも）",
       (topics.get(old), topics.by_slack(("D1", "9.9")), topics.latest_for_session("s-exp"), topics.touch(old, "p", "s-exp")), (None, None, None, False))
+dt = topics.new("p", "s-direct", "x", "直接送られる件")
+topics.mark_direct("s-direct")
+marked = bool(topics.get(dt).get("direct"))
+topics.TOPICS.clear()
+topics.load()
+kept = bool(topics.get(dt).get("direct"))
+topics.touch(dt, "p", "s-direct")
+check("台帳: 直接送った印は、セッションの一番新しい件に付き、起動し直しても残り、ハブがまたその件で頼んだら外れる",
+      (marked, kept, topics.get(dt).get("direct")), (True, True, None))
 _max = topics.TOPIC_MAX
 topics.TOPIC_MAX = 3
 ids = [topics.new("p", "s", "x", f"件{i}") for i in range(5)]
@@ -573,6 +582,21 @@ with sync_playwright() as p:
         check(f"画面: 件の URL で画面を新しく開いても、その件を開く（{'問いの欄' if target == ASK_T else '報告の返信先'}・URL の #t= は外す）",
               (opened, fresh.evaluate("location.hash")), (True, ""))
         fresh.close()
+    held = []
+    fresh = browser.new_page()  # 声の一覧を待つ間（起動の途中）に、利用者が相手を選ぶ
+    fresh.set_viewport_size({"width": 390, "height": 844})
+    fresh.route("**/api/speakers*", lambda r: held.append(r))
+    fresh.goto(BASE + f"/#t={one['topic']}", wait_until="domcontentloaded")
+    fresh.wait_for_function("document.querySelectorAll('#agent option[value=\"w1:p1\"]').length === 1", timeout=8000)
+    fresh.select_option("#agent", "w1:p1")
+    for r in held:
+        r.continue_()
+    fresh.unroute("**/api/speakers*")
+    fresh.wait_for_timeout(2500)
+    check("画面: 起動の途中に利用者が相手を選んだら、起動のあとで URL の件を開かない（相手・返信先を上書きしない）",
+          (fresh.eval_on_selector("#agent", "e => e.value"), fresh.eval_on_selector("#replyBar", "e => e.hidden"), fresh.evaluate("location.hash"), len(held) > 0),
+          ("w1:p1", True, "", True))
+    fresh.close()
     fresh = browser.new_page()  # 本体に届かない間に件の URL で開き、つながってから開き直す
     fresh.set_viewport_size({"width": 390, "height": 844})
     fresh.route("**/api/topic*", lambda r: r.abort())
@@ -632,6 +656,19 @@ with sync_playwright() as p:
     except Exception:
         lit = False
     check("画面: 件を引く読み込みが止まったままつながり直しても、件を覚えていて開き直す", (lit, fresh.evaluate("pendingTopic")), (True, None))
+    fresh.wait_for_function("document.getElementById('conn').classList.contains('on')", timeout=8000)  # つながり終えてから（最初の接続の取り直しと混ぜない）
+    fresh.wait_for_timeout(3500)  # 前の試験の「少し待って開き直す」が済んでから（同じ件なので混ざる）
+    fresh.evaluate("""() => { document.querySelectorAll('.flash').forEach(e => e.classList.remove('flash'));
+      const of = window.fetch; let n = 0;  // つながったまま、件を引く読み込みだけが返らない（つながり直しは起きない）
+      window.fetch = (u, ...a) => (String(u).startsWith('/api/topic') && ++n === 1) ? new Promise((_, rej) => a[0] && a[0].signal && a[0].signal.addEventListener('abort', () => rej(new DOMException('aborted', 'AbortError')))) : of(u, ...a);
+    }""")
+    fresh.evaluate(f"location.hash = '#t={ASK_T}'")
+    try:
+        fresh.wait_for_function('[...document.querySelectorAll("#asks .ask.flash")].length === 1', timeout=15000)
+        lit = True
+    except Exception:
+        lit = False
+    check("画面: つながったまま件の読み込みだけが返らなくても、見切って少し待ってから開き直す", lit, True)
     fresh.evaluate("""() => { agents = []; agentsSig = '';
       const of = window.fetch; let n = 0;  // 報告の件を開くときに、話し相手の一覧の読み込みだけが一度失敗する
       window.fetch = (u, ...a) => (String(u).startsWith('/api/agents') && ++n === 1) ? Promise.reject(new TypeError('Failed to fetch')) : of(u, ...a);
@@ -662,6 +699,20 @@ with sync_playwright() as p:
     check("sw.js: 通知を押したとき開くのは / か /#t=<件> だけ。開いている画面があれば寄せて件を渡す（ほかのサイト・形の違う場所は / にする）", sw,
           [[["open", f"{BASE}/#t={one['topic']}"]], [["open", f"{BASE}/"]], [["open", f"{BASE}/"]], [["open", f"{BASE}/"]], [["open", f"{BASE}/"]],
            [["post", f"{BASE}/#t={one['topic']}"], "focus"], ["focus"], ["focus"]])
+    page.evaluate("document.querySelectorAll('.flash').forEach(e => e.classList.remove('flash'))")
+    page.select_option("#agent", "w2:p1")  # 画面から（ハブを通さずに）問いの件のセッションへ直接送る
+    page.wait_for_timeout(300)
+    page.fill("#typed", "直接の別の話")
+    page.click("#send")
+    page.wait_for_function("[...document.querySelectorAll('#log .msg.ai')].some(e => e.textContent.includes('内訳は次のとおりです'))", timeout=8000)
+    with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+        cur = c.get("/api/topic", params={"id": ASK_T}).json().get("current")
+    page.select_option("#agent", "w1:p1")
+    page.wait_for_timeout(300)
+    page.evaluate(f"location.hash = '#t={ASK_T}'")
+    page.wait_for_function("[...document.querySelectorAll('#log .sys')].some(e => e.textContent.includes('受注の確認: この件の報告は、まだありません'))", timeout=8000)
+    check("相手の位置: 画面から同じセッションへ直接送ったあとは、その問いが件のものか分からないので、件のリンクでは問いを光らせず報告のほうを開く",
+          (cur, page.evaluate("[...document.querySelectorAll('#asks .ask.flash')].length")), (False, 0))
     check("相手の位置: 件の URL で開いても、答えも送りもしない（herdr にも Hermes にも何も送らない・答える口を呼ばない）",
           ([x for x in SENT if x[:2] in (("agent", "send-keys"), ("agent", "prompt"))], ASKED, [u for u in posts if u.startswith(("/api/answer", "/api/hub", "/api/attach"))]),
           ([], [], []))

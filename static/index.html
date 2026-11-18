@@ -576,7 +576,14 @@ function flash(el) { el.classList.add('flash'); el.scrollIntoView({ block: 'cent
 let topicSeq = 0;
 let pendingTopic = null; // 本体に届かず開けなかった件。つながりしだい catchUp が開き直す（URL の #t= はもう外してある）
 // 利用者が相手・返信先を選んだ・外した・発言を送ったら、開いている途中の件（と、つながったら開く件）はやめる（あとから相手や返信先を上書きしない）
-function cancelTopic() { topicSeq++; pendingTopic = null; }
+// 起動を待つ間でまだ取り込んでいない URL の #t= も外す（起動のあとで件を開かない）
+function cancelTopic() { topicSeq++; pendingTopic = null; if (/^#t=/.test(location.hash)) history.replaceState(null, '', location.pathname + location.search); }
+// 件を開くときの読み込み。返らないまま止まったら（つながったまま応答が無い）見切って、届かなかったものとして開き直しに回す
+const TOPIC_WAIT = 6000;
+async function topicFetch(url) {
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), TOPIC_WAIT);
+  try { return await (await fetch(url, { signal: ctl.signal })).json(); } finally { clearTimeout(timer); }
+}
 async function openTopic() {
   const m = /^#t=(.*)$/s.exec(location.hash);
   if (!m && !pendingTopic) return;
@@ -588,7 +595,7 @@ async function openTopic() {
   try {
   setReplyTarget(null); // 別の件を開いたら、前に選んでいた返信先は外す（開いた件の報告に付け直すときだけ付ける）
   if (!TOPIC_RE.test(id)) { sys('この件のリンクの形が違うので、開けませんでした'); return; }
-  let t, reached = true; try { t = await (await fetch('/api/topic?id=' + id)).json(); } catch { t = null; reached = false; }
+  let t, reached = true; try { t = await topicFetch('/api/topic?id=' + id); } catch { t = null; reached = false; }
   if (seq !== topicSeq) return;
   // 届かなかった件は覚えておき、つながったとき（catchUp）と、つながっていれば少し待ってから開き直す
   const later = () => { keep = true; pendingTopic = id; sys('本体に届かないので、つながったらこの件を開きます'); setTimeout(() => { if (pendingTopic === id && linked()) openTopic(); }, 3000); };
@@ -598,7 +605,7 @@ async function openTopic() {
   // 問いの欄を見せるのは、その件と同じセッション（空でないセッション ID が同じ）の問いで、その件がそのセッションの一番新しい件のときだけ
   // （同じペインで作り直された別のセッションの問い・同じセッションのあとの件の問いは見せない。古い件ならその件の報告を開く）。
   // 問いがあるかは、この処理が自分で本体に聞いて決める（並んで走る loadAsks の取り込みに負けて、古い一覧で報告のほうへ進まない）
-  let qs; try { qs = await (await fetch('/api/prompts')).json(); } catch { qs = null; }
+  let qs; try { qs = await topicFetch('/api/prompts'); } catch { qs = null; }
   if (seq !== topicSeq) return;
   if (!Array.isArray(qs)) { later(); return; } // 問いの一覧を読めなかったのは「問いなし」ではない（報告のほうへ進まない）
   if (t.current === true && t.session && qs.some(q => q && q.pane === t.pane && q.key === t.session)) {

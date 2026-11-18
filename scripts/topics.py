@@ -72,7 +72,8 @@ def load():
         for t in rows if isinstance(rows, list) else []:
             if not (isinstance(t, dict) and all(isinstance(t.get(k), ty) for k, ty in FIELDS.items()) and ID_RE.fullmatch(t["id"])):
                 continue
-            TOPICS[t["id"]] = {**{k: t[k] for k in FIELDS}, "slack": _slack(t.get("slack"))}
+            direct = t.get("direct") if isinstance(t.get("direct"), (int, float)) and not isinstance(t.get("direct"), bool) else None
+            TOPICS[t["id"]] = {**{k: t[k] for k in FIELDS}, "slack": _slack(t.get("slack")), **({"direct": direct} if direct else {})}
         _save()
 
 
@@ -96,6 +97,7 @@ def touch(tid: str, pane: str, session: str, slack=None) -> bool:
         if not t or not _live(t):
             return False
         t.update(updated=time.time(), pane=str(pane), session=str(session or ""))
+        t.pop("direct", None)  # ハブがまたこの件で頼んだ。いまの問いはこの件のものに戻る
         if _slack(slack):
             t["slack"] = _slack(slack)
         _save()
@@ -129,6 +131,19 @@ def latest_for_session(session: str) -> str | None:
     with _lock:
         hit = [t for t in TOPICS.values() if t["session"] == session and _live(t)]
         return max(hit, key=lambda t: t["updated"])["id"] if hit else None
+
+
+def mark_direct(session: str):
+    """画面・声から（ハブを通さずに）そのセッションへ直接送った。そのセッションの一番新しい件に印を付け、いまの問いをその件のものとしない
+    （直接送った別の話の問いを、前の件のリンクで見せない）。印は、ハブがまたその件で頼んだら外す。"""
+    if not session:
+        return
+    with _lock:
+        hit = [t for t in TOPICS.values() if t["session"] == session and _live(t)]
+        if not hit:
+            return
+        max(hit, key=lambda t: t["updated"])["direct"] = time.time()
+        _save()
 
 
 # ---------- 件の URL（Slack に載せるリンク） ----------
