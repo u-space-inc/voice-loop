@@ -5,7 +5,7 @@
   - 受け取る: 種類（画像・PDF・テキストだけ。SVG・HTML・実行ファイル・拡張子の無いものは断る）・中身の頭と拡張子の照らし・テキストの UTF-8 と NUL・
     大きさの上限・空・置く名前は本体が付ける（送られた名前の「..」やフォルダは使わない。表示の名前は 1 行・80 字。種類は切る前の名前の拡張子）・0600・別のサイトとコンテナからは使えない
   - 渡す: セッションには状態フォルダの場所を、ハブ（Hermes）にはコンテナの中に置いた場所を、発言の末尾に書く（ハブの承認の守りが見る発言には入れない）・知らない id・多すぎる・形の違う添付は
-    送らずに断る・コンテナに置けなければ送らない・声の発言にも付けられる
+    送らずに断る・コンテナに置けなければ送らない・置いている間に次の発言が来ても前の発言を捨てず順に送る・声の発言にも付けられる
   - 片づけ: 7 日より古い添付を消す（名前の形が合うふつうのファイルだけ）
   - コンテナの中の台本: 置き場の voice-loop/attachments に O_EXCL で書く・途中が symlink なら書かない・名前の形が違えば書かない・古いものを消す・
     同時に動いた別の台本がフォルダを先に作った・古いものを先に消しても置ける
@@ -17,6 +17,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -57,7 +58,12 @@ PUT: list[tuple[str, bytes]] = []
 PUT_FAIL = {"v": False}
 
 
+SLOW_PUT = {"on": False, "gate": threading.Event()}
+
+
 def fake_put(docker, container, user, python, name, data, env=None):
+    if SLOW_PUT["on"]:
+        SLOW_PUT["gate"].wait(5)  # コンテナに置くのに時間がかかっている
     if PUT_FAIL["v"]:
         raise RuntimeError("コンテナに置けませんでした（答えがありません）")
     PUT.append((name, data))
@@ -159,6 +165,24 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     row = list(s.hermes.HERMES_TURNS)[-1]
     check("守り: 名前を「はい」にしたファイルだけを付けた発言は、承認にならない（台帳の発言は空。名前は添付の行にだけ出る）",
           (mn["type"], row[1], consent.affirms(row[1], "answer", "proj"), "（はい.png）" in ASKED[-1]), ("reply", "", False, True))
+    # 添付をコンテナに置いている間に次の発言を送っても、前の発言を捨てず、追い越させない（画面からは送ったことになっている）
+    hs = up("写真.png", PNG, pane=s.hermes.HERMES_PANE).json()["id"]
+    k = len(ASKED)
+    SLOW_PUT["on"] = True
+    with c.websocket_connect("ws://127.0.0.1:8790/ws") as w:
+        w.send_json({"type": "text", "text": "一つ目", "pane": s.hermes.HERMES_PANE, "speaker": 0, "attachments": [hs]})
+        time.sleep(0.3)  # 一つ目は、添付をコンテナに置いている
+        w.send_json({"type": "text", "text": "二つ目", "pane": s.hermes.HERMES_PANE, "speaker": 0})
+        time.sleep(0.3)
+        SLOW_PUT["gate"].set()
+        while (m := w.receive_json())["type"] not in ("reply", "error"):
+            pass
+        end = time.time() + 5
+        while len(ASKED) < k + 2 and time.time() < end:
+            time.sleep(0.05)
+    SLOW_PUT["on"] = False
+    check("渡す: 添付を置いている間に次の発言を送っても、前の発言は捨てずに、受け取った順に Hermes に送る",
+          (m["type"], [a.split("\n")[0] for a in ASKED[k:]], "添付（画面から）:" in (ASKED[k] if len(ASKED) > k else "")), ("reply", ["一つ目", "二つ目"], True))
     PUT_FAIL["v"] = True
     k = len(ASKED)
     with c.websocket_connect("ws://127.0.0.1:8790/ws") as w:

@@ -680,6 +680,29 @@ async def attachment_lines(ids: list[str], talker, pane: str = "") -> tuple[str,
     return "\n\n添付（画面から）:\n" + "\n".join(lines), ""
 
 
+def attachments_shape_problem(files: list[str] | None) -> str:
+    """発言の attachments の形が違う（attachments_of が None を返した）なら、断る理由。"""
+    return f"添付の形が違うか、多すぎます（1 回に {attach.COUNT} つまで）。送っていません" if files is None else ""
+
+
+ACCEPT_LOCKS: dict[str, asyncio.Lock] = {}  # ハブ（herdr の外の話し相手）が受け取った発言の順番（添付を置く間も、前の発言を追い越させない）
+
+
+async def hub_accepted(talker, text: str, pane: str, reply_at: float | None, files: list[str] | None) -> tuple[str, str, bool]:
+    """ハブが受け取った発言を、添付を置く → 往復する（置けなければ断る）まで進める。(返事, 失敗・断りの理由, 記録に書けたか)。
+    受け取った順に 1 つずつ（ACCEPT_LOCKS）。往復と断りの記録は、さらに頭のやり取りの鍵（自動通知と共有）の順に載る。
+    断るときは、ハブに、利用者が最後に聞いたのは本体の断りだと伝える（前の問いへの答えに、次の発言を使わせない）。"""
+    async with ACCEPT_LOCKS.setdefault(pane, asyncio.Lock()):
+        why = attachments_shape_problem(files)
+        extra = ""
+        if not why:
+            extra, why = await attachment_lines(files, talker, pane)
+        if why:
+            await talker.refused(text, why)
+            return "", why, True
+        return await talker.exchange(text, reply_at, extra)
+
+
 def reply_at_of(d: dict) -> float | None:
     """画面の発言に付いた「返信」の先（報告の記録の時刻）。名前は受け取らない（頭が記録から引く）。
     付いていない（キーが無い・null）なら None（ふつうの発言）。付いているのに有限の数でない（真偽・文字・NaN・無限）なら NaN
@@ -2629,49 +2652,46 @@ async def ws(sock: WebSocket):
 
     async def turn(text: str, pane: str, cancel: asyncio.Event, key: str | None, reply_at: float | None = None, files: list[str] | None = None):
         try:
-            why = f"添付の形が違うか、多すぎます（1 回に {attach.COUNT} つまで）。送っていません" if files is None else ""
+            talker = TALKERS.get(pane)
+            if talker:  # herdr のセッションではなく、本体の外の話し相手（ハブ）
+                await talk_turn(talker, text, pane, cancel, reply_at, files)
+                return
+            why = attachments_shape_problem(files)
             extra = ""
             if not why:
-                extra, why = await attachment_lines(files, TALKERS.get(pane), pane)
-            if why:  # 送らずに断る。ハブには、利用者が最後に聞いたのは本体の断りだと伝える（前の問いへの答えに、次の発言を使わせない）
-                job = None
-                if pane in TALKERS:  # 断りの記録は、前の往復と同じ鍵の順番で載せる。画面が次の発言で止めても、載せるのは止めない
-                    job = asyncio.create_task(TALKERS[pane].refused(text, why))
-                    _tasks.add(job)
-                    job.add_done_callback(_tasks.discard)
+                extra, why = await attachment_lines(files, None, pane)
+            if why:  # 送らずに断る
                 await send(type="error", text=why)
-                if job:
-                    await asyncio.shield(job)
                 return
-            await run_turn(text, pane, cancel, key, reply_at, extra)
+            await run_turn(text, pane, cancel, key, extra)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # 語り手・音声合成・herdr の失敗を黙って止めず、画面とログに出す
             traceback.print_exc()
             await send(type="error", text=f"{type(e).__name__}: {e}"[:300])
 
-    async def run_turn(text: str, pane: str, cancel: asyncio.Event, key: str | None, reply_at: float | None = None, extra: str = ""):
-        # extra: 本体が足す添付の行。相手に渡す文には付けるが、ハブの承認・閉じるの守りが見る発言は利用者の言葉（text）のまま
-        talker = TALKERS.get(pane)
-        if talker:  # herdr のセッションではなく、本体の外の話し相手
-            if not talker.on():
-                await send(type="error", gone=True, text=talker.off_text)
-                return
-            await send(type="status", text=talker.sending_text())
-            # 画面が閉じても、止めても、返事は最後まで待って記録する（相手は答えて覚えているので、記録が欠けると画面と食い違う）。
-            # ハブが自動通知に応答している最中なら、それが終わってから送る
-            job = asyncio.create_task(talker.exchange(text, reply_at, extra))  # reply_at: 画面の「返信」が指した報告（herdr のセッションには使わない）
-            _tasks.add(job)
-            job.add_done_callback(_tasks.discard)
-            reply, why, saved = await asyncio.shield(job)
-            if why:
-                await send(type="error", text=why[:300], saved=saved)
-                return
-            if cancel.is_set():
-                return
-            await send(type="reply", pane=pane, text=reply, saved=saved)  # saved=False なら、画面は記録から描き直さずに足す
-            await speak_to([client], reply, cancel)
+    async def talk_turn(talker, text: str, pane: str, cancel: asyncio.Event, reply_at: float | None, files: list[str] | None):
+        if not talker.on():
+            await send(type="error", gone=True, text=talker.off_text)
             return
+        await send(type="status", text=talker.sending_text())
+        # 受け取った発言は、ここから止めない。添付を置く（コンテナの中に。時間がかかる）・断る・往復するまでを 1 つの仕事にし（hub_accepted）、
+        # 受け取った順に進める（置いている間に次の発言が来ても、前の発言を捨てず、追い越させない）。
+        # 画面が閉じても、止めても、返事は最後まで待って記録する（相手は答えて覚えているので、記録が欠けると画面と食い違う）
+        job = asyncio.create_task(hub_accepted(talker, text, pane, reply_at, files))
+        _tasks.add(job)
+        job.add_done_callback(_tasks.discard)
+        reply, why, saved = await asyncio.shield(job)
+        if why:
+            await send(type="error", text=why[:300], saved=saved)
+            return
+        if cancel.is_set():
+            return
+        await send(type="reply", pane=pane, text=reply, saved=saved)  # saved=False なら、画面は記録から描き直さずに足す
+        await speak_to([client], reply, cancel)
+
+    async def run_turn(text: str, pane: str, cancel: asyncio.Event, key: str | None, extra: str = ""):
+        # extra: 本体が足す添付の行（セッションに渡す文の末尾に付ける）
         agent = next((a for a in list_agents() if a["pane"] == pane), None)
         if not agent:
             await send(type="error", gone=True, text="話し相手のセッションが見つかりません。選び直してください。")
