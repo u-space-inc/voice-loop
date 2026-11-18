@@ -1037,8 +1037,12 @@ async def _learn_skills() -> int:
             if await asyncio.to_thread(_hsk_begin, pid, v, rec, raw):
                 await asyncio.to_thread(_hlearn_set, entry["id"], state="skipped", note="当てる前に止めました（ほかの処理と重なりました）")
                 continue
+            # 当てるのは、控えを取ったときの指紋と同じときだけ。Hermes の手順の鍵を持って確かめ・当て・当てたあとの指紋まで一続きに行う
+            # （控えのあとに Hermes が書いた中身を、当てた直後の中身に混ぜない。混ざると「戻す」がその書き込みまで消す）
+            expect_before = json.dumps({k: hermes_learn.digest(x) for k, x in before["skills"].items()})
             try:
-                out = await asyncio.to_thread(hermes_skills.run_script, HERMES_CONTAINER, "approve", pid, raw)
+                out = await asyncio.to_thread(hermes_skills.run_script, HERMES_CONTAINER, "approve", pid, raw,
+                                              env={"VL_LEARN_EXPECT": expect_before}, script=hermes_learn.APPLY_SCRIPT)
             except Exception as e:
                 traceback.print_exc()
                 out = {"result": "error", "why": f"本体の問題（{type(e).__name__}）"}
@@ -1053,9 +1057,10 @@ async def _learn_skills() -> int:
                 if out.get("result") not in ("changed", "unsupported"):  # 時間切れ・分からない: 終わりを確かめるまで、この回はもう当てない
                     break
                 continue
-            after = await asyncio.to_thread(hermes_learn.run_script, HERMES_CONTAINER, "snap", {"payload": payload})
-            ok_after = after.get("result") == "snap" and isinstance(after.get("skills"), dict) and set(after["skills"]) == set(before["skills"])
-            await asyncio.to_thread(_hlearn_finish, entry["id"], {k: hermes_learn.digest(x) for k, x in after["skills"].items()} if ok_after else None,
+            after = out.get("after")  # 鍵を持ったまま読んだ、当てた直後の指紋（場所ごと）
+            ok_after = (isinstance(after, dict) and set(after) == set(before["skills"])
+                        and all(isinstance(x, str) and len(x) == 64 for x in after.values()))
+            await asyncio.to_thread(_hlearn_finish, entry["id"], after if ok_after else None,
                                     state="applied", can_undo=ok_after, note="" if ok_after else "当てたあとの中身を読めなかったので、戻せません")
             applied += 1
             core.hlog(f"Hermes の書き足し {pid} を自動で当てました（今日 {await asyncio.to_thread(_hlearn_today)}/{hermes_learn.LIMIT}）", flush=True)

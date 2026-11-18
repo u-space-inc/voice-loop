@@ -45,7 +45,7 @@ CALLS = []
 OUT = {}
 
 
-def fake_run(container, mode, pid, raw, wait=90, env=None):
+def fake_run(container, mode, pid, raw, wait=90, env=None, script=None):
     CALLS.append((mode, pid))
     r = OUT.get(mode)
     if r is None:

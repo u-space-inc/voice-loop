@@ -63,7 +63,7 @@ OUT: dict = {}  # 種類 → 結果（関数なら呼ぶ）
 RUNNING = {"v": False}
 
 
-def fake_run(container, mode, pid, raw, wait=90, env=None):
+def fake_run(container, mode, pid, raw, wait=90, env=None, script=None):
     CALLS.append((mode, pid, raw))
     r = OUT.get(mode, {"result": "ok"} if mode == "check" else {"result": "diff", "diff": f"差分 {pid}"} if mode == "diff" else
                 {"result": "applied", "discarded": True} if mode == "approve" else {"result": "rejected", "discarded": True})

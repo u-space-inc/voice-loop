@@ -211,6 +211,55 @@ def restore_dir(root: str, rel: str, before: dict, expect: str) -> str:
     return "restored"
 
 
+def snap_payload(sm, payload: dict) -> dict:
+    """書き足し（payload）が触る手順のフォルダの中身を、置き場の根からの場所ごとに読む（コンテナの中で、Hermes の部品 sm を使う）。
+    置き場の外の手順・書き足し全体で大きすぎるときは ValueError。"""
+    root = str(sm._skills_dir())
+    real_root = os.path.realpath(root)
+    ops = payload.get("operations") if payload.get("action") == "batch" else [payload]
+    out, planned = {}, {}
+    for op in ops:
+        found = sm._find_skill(op["name"])
+        # まだ無い手順は、同じ書き足しの中で先に出てきた作る先にそろえる（作ったあとの操作は、作られた手順に当たるため）
+        p = found["path"] if found else planned.get(op["name"]) or sm._resolve_skill_dir(op["name"], op.get("category"))
+        if not found:
+            planned.setdefault(op["name"], p)
+        real = os.path.realpath(str(p))
+        if real == real_root or not real.startswith(real_root + os.sep):
+            raise ValueError("手順の置き場の外の手順です")
+        rel = os.path.relpath(real, real_root)
+        if rel not in out:
+            out[rel] = snap_dir(root, rel)
+            size = sum(len(v) for snap in out.values() for v in snap["files"].values())
+            if len(out) > SNAP_BATCH_SKILLS_MAX or size > SNAP_BATCH_TOTAL_MAX:  # 書き足し全体でも大きすぎる控えは作らない（自動では当てない）
+                raise ValueError("書き足しが触る手順が多すぎるか、大きすぎます")
+    return out
+
+
+def learn_hold(payload: dict):
+    """自動で当てる台本（APPLY_SCRIPT）の、当てる直前の確かめ。Hermes が手順を書き換えるときと同じ鍵（手順ごとのファイルの鍵）を取り、
+    台本が終わるまで持つ。いまの中身の指紋が、控えを取ったときの指紋（環境変数 VL_LEARN_EXPECT）と違えば、当てずに changed で終わる
+    （控えを取ったあとに Hermes が書いた中身を、戻すで消さないため）。当てたあとの指紋を返す関数を返す（読めなければ None を返す）。"""
+    from tools import skill_manager_tool as sm
+    ops = payload.get("operations") if payload.get("action") == "batch" else [payload]
+    locks = getattr(sm, "_skill_mutation_locks", None)
+    if callable(locks):
+        globals()["_LEARN_LOCKS"] = locks([op["name"] for op in ops])  # 持ち続ける（台本の終わりで離れる）
+    try:
+        now = {k: digest(v) for k, v in snap_payload(sm, payload).items()}
+    except Exception as e:
+        done(result="changed", why="当てる前に手順を読めませんでした（" + type(e).__name__ + "）")
+    if now != json.loads(os.environ.get("VL_LEARN_EXPECT") or "{}"):
+        done(result="changed", why="控えを取ったあとに手順が変わりました")
+
+    def after():
+        try:
+            return {k: digest(v) for k, v in snap_payload(sm, payload).items()}
+        except Exception:
+            return None
+    return after
+
+
 # ---------- コンテナの中の台本 ----------
 # 引数は「目印 種類」。要求の JSON を stdin で受け取り、結果を「VLRESULT {JSON}」の 1 行で返す（hermes_skills と同じ読み方）。
 #   snap    … 承認待ちの記録の payload が触る手順のフォルダの中身（置き場の根からの場所ごと）。置き場の外の手順は unsupported
@@ -232,26 +281,9 @@ from tools import skill_manager_tool as sm
 root = str(sm._skills_dir())
 real_root = os.path.realpath(root)
 if mode == "snap":
-    payload = req.get("payload") or {}
-    ops = payload.get("operations") if payload.get("action") == "batch" else [payload]
-    out, planned = {}, {}
     try:
-        for op in ops:
-            found = sm._find_skill(op["name"])
-            # まだ無い手順は、同じ書き足しの中で先に出てきた作る先にそろえる（作ったあとの操作は、作られた手順に当たるため）
-            p = Path(found["path"]) if found else planned.get(op["name"]) or sm._resolve_skill_dir(op["name"], op.get("category"))
-            if not found:
-                planned.setdefault(op["name"], p)
-            real = os.path.realpath(str(p))
-            if real == real_root or not real.startswith(real_root + os.sep):
-                done(result="unsupported", why="手順の置き場の外の手順です")
-            rel = os.path.relpath(real, real_root)
-            if rel not in out:
-                out[rel] = snap_dir(root, rel)
-                size = sum(len(v) for snap in out.values() for v in snap["files"].values())
-                if len(out) > SNAP_BATCH_SKILLS_MAX or size > SNAP_BATCH_TOTAL_MAX:  # 書き足し全体でも大きすぎる控えは作らない（自動では当てない）
-                    done(result="unsupported", why="書き足しが触る手順が多すぎるか、大きすぎます")
-    except Exception as e:  # 読めない形（symlink・大きすぎる）や、Hermes の探し方の失敗。自動では当てない
+        out = snap_payload(sm, req.get("payload") or {})
+    except Exception as e:  # 読めない形（symlink・大きすぎる）・置き場の外・Hermes の探し方の失敗。自動では当てない
         done(result="unsupported", why=(type(e).__name__ + ": " + str(e))[:200])
     done(result="snap", skills=out)
 if mode == "restore":
@@ -277,7 +309,13 @@ done(result="error", why="知らない種類です")
 SCRIPT = ("import base64, hashlib, json, os, stat\n"
           + f"SNAP_FILE_MAX = {SNAP_FILE_MAX}\nSNAP_TOTAL_MAX = {SNAP_TOTAL_MAX}\nSNAP_FILES_MAX = {SNAP_FILES_MAX}\n"
           + f"SNAP_BATCH_SKILLS_MAX = {SNAP_BATCH_SKILLS_MAX}\nSNAP_BATCH_TOTAL_MAX = {SNAP_BATCH_TOTAL_MAX}\n"
-          + "".join(inspect.getsource(f) + "\n" for f in (_parts, _open_parent, _ident, _same, snap_dir, digest, restore_dir)) + _SCRIPT_MAIN)
+          + "".join(inspect.getsource(f) + "\n" for f in (_parts, _open_parent, _ident, _same, snap_dir, digest, restore_dir, snap_payload)) + _SCRIPT_MAIN)
+# 自動で当てる台本: hermes_skills の台本（approve）の前に、控えの確かめ（learn_hold）を足したもの。目印は hermes_skills と同じ
+APPLY_SCRIPT = ("import base64, hashlib, json, os, stat\n"
+                + f"SNAP_FILE_MAX = {SNAP_FILE_MAX}\nSNAP_TOTAL_MAX = {SNAP_TOTAL_MAX}\nSNAP_FILES_MAX = {SNAP_FILES_MAX}\n"
+                + f"SNAP_BATCH_SKILLS_MAX = {SNAP_BATCH_SKILLS_MAX}\nSNAP_BATCH_TOTAL_MAX = {SNAP_BATCH_TOTAL_MAX}\n"
+                + "".join(inspect.getsource(f) + "\n" for f in (_parts, _open_parent, _ident, _same, snap_dir, digest, snap_payload, learn_hold))
+                + "LEARN_HOLD = learn_hold\n" + hermes_skills.SCRIPT)
 
 
 def command(container: str, mode: str, env: dict | None = None) -> list[str] | None:

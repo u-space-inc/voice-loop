@@ -173,12 +173,24 @@ SCALLS: list = []
 RUNNING = {"v": False}
 
 
-def fake_skills_run(container, mode, pid, raw, wait=90, env=None):
+AFTER = {"none": False, "edit_before_apply": False}  # 当てたあとの指紋を返さない／控えのあと・当てる前に Hermes が書いた（偽）
+
+
+def fake_skills_run(container, mode, pid, raw, wait=90, env=None, script=None):
     SCALLS.append((mode, pid))
-    if mode == "approve":  # 当てると、手順の中身が変わる（偽）
+    if mode == "approve":  # 当てると、手順の中身が変わる（偽）。自動で当てるときは、控えの指紋を確かめ、当てたあとの指紋を返す
         place = json.loads(raw)["payload"]["operations"][0]["name"]
+        if script is not None:
+            if AFTER["edit_before_apply"]:
+                SNAPS[place] = {"exists": True, "files": {"SKILL.md": base64.b64encode("Hermes が控えのあとに書いた".encode()).decode()}}
+            now = {place: hl.digest(SNAPS.get(place, {"exists": False, "files": {}}))}
+            if now != json.loads((env or {}).get("VL_LEARN_EXPECT") or "{}"):
+                return {"result": "changed", "why": "控えを取ったあとに手順が変わりました"}
         SNAPS[place] = {"exists": True, "files": {"SKILL.md": base64.b64encode(f"{pid} を当てた".encode()).decode()}}
-        return {"result": "applied", "discarded": True}
+        out = {"result": "applied", "discarded": True}
+        if script is not None and not AFTER["none"]:
+            out["after"] = {place: hl.digest(SNAPS[place])}
+        return out
     return {"result": "ok"} if mode == "check" else {"result": "diff", "diff": f"差分 {pid}"} if mode == "diff" else {"result": "rejected", "discarded": True}
 
 
@@ -222,7 +234,7 @@ check("自動: 跡に、今日の数と上限・手順の要約・戻せる印",
 first = [e for e in lr["entries"] if e["pid"] == "aaaa0000"][0]
 det = json.loads((s.hermes.HLEARN_DIR / f"{first['id']}.json").read_text())
 check("自動: 控えは状態フォルダに 0600 で（前の中身・当てた直後の指紋・差分）。Hermes の置き場には何も書かない",
-      (stat.S_IMODE((s.hermes.HLEARN_DIR / f"{first['id']}.json").stat().st_mode), det["before"]["hub"]["files"]["SKILL.md"], det["expect"]["hub"] == hl.digest(SNAPS["hub"]),
+      (stat.S_IMODE((s.hermes.HLEARN_DIR / f"{first['id']}.json").stat().st_mode), det["before"]["hub"]["files"]["SKILL.md"], det["expect"].get("hub") == hl.digest(SNAPS["hub"]),
        det["diff"], sorted(p.name for p in HOME.rglob("*") if p.is_file() and "pending" not in p.parts)),
       (0o600, base64.b64encode("前".encode()).decode(), True, "差分 aaaa0000", []))
 SCALLS.clear()
@@ -243,7 +255,7 @@ check("自動: 次の日（日本時間）には、残りを当てる。当て�
 record("tttttt01", "t1")
 record("tttttt02", "t2")
 real_skills_run = s.hermes.hermes_skills.run_script
-s.hermes.hermes_skills.run_script = lambda c, mode, pid, raw, wait=90, env=None: (SCALLS.append((mode, pid)), {"result": "timeout", "why": "時間切れ"})[1] if mode == "approve" else real_skills_run(c, mode, pid, raw, wait, env)
+s.hermes.hermes_skills.run_script = lambda c, mode, pid, raw, wait=90, env=None, script=None: (SCALLS.append((mode, pid)), {"result": "timeout", "why": "時間切れ"})[1] if mode == "approve" else real_skills_run(c, mode, pid, raw, wait, env, script)
 SCALLS.clear()
 asyncio.run(s.hermes._learn_skills())
 tl = [e for e in learned()["entries"] if e.get("pid") == "tttttt01"]
@@ -277,12 +289,25 @@ s.hermes.HSK_FILE.write_text(json.dumps(st))
 SCALLS.clear()
 check("自動: 前の処理の終わりを確かめられない間は当てない", (asyncio.run(s.hermes._learn_skills()), [m for m, p in SCALLS if m == "approve"]), (0, []))
 RUNNING["v"] = False
-seq = iter([{"result": "snap", "skills": {"odd": {"exists": True, "files": {}}}}, {"result": "error", "why": "読めない"}])
-LOUT["snap"] = lambda req: next(seq)
+AFTER["none"] = True
 asyncio.run(s.hermes._learn_skills())
+AFTER["none"] = False
 odd = [e for e in learned()["entries"] if e["pid"] == "cccccccc"][0]
 check("自動: 当てたあとの中身を読めなければ、当てた跡は残し、戻せない印にする", (odd["can_undo"], odd["note"]), (False, "当てたあとの中身を読めなかったので、戻せません"))
-del LOUT["snap"]
+check("自動: 当てるのは、控えの指紋を渡した自動の台本（鍵を持って確かめ・当て・当てたあとの指紋まで一続き）", [m for m, p in SCALLS if p == "cccccccc"][-1:], ["approve"])
+st = json.loads(s.hermes.HLEARN_FILE.read_text())
+st["days"] = {}
+s.hermes.HLEARN_FILE.write_text(json.dumps(st))
+SNAPS["hub2"] = {"exists": True, "files": {"SKILL.md": base64.b64encode("前".encode()).decode()}}
+record("dddddddd", "hub2")
+AFTER["edit_before_apply"] = True
+asyncio.run(s.hermes._learn_skills())
+AFTER["edit_before_apply"] = False
+dd = [e for e in learned()["entries"] if e["pid"] == "dddddddd"]
+check("自動: 控えを取ったあと・当てる前に Hermes が手順を書いたら、当てない（承認待ちに残し、Hermes の書いた中身はそのまま）",
+      ([(e["state"], e["can_undo"], "控えを取ったあとに手順が変わりました" in e["note"]) for e in dd], (PEND / "dddddddd.json").exists(),
+       base64.b64decode(SNAPS["hub2"]["files"]["SKILL.md"]).decode()),
+      ([("failed", False, True)], True, "Hermes が控えのあとに書いた"))
 
 # ---------- 2b. コンテナの中の台本の入口（Hermes の部品を偽物にして、台本そのものを動かす） ----------
 import subprocess  # noqa: E402
@@ -301,15 +326,50 @@ def _find_skill(name):
     return {"path": Path(os.environ["VL_TEST_OUTSIDE"])} if name == "outside" else None
 def _resolve_skill_dir(name, category=None):
     return ROOT / (category or "") / name
-import contextlib, fcntl
+import contextlib, fcntl, json
+_held = set()
+@contextlib.contextmanager
+def _one(p):
+    if p in _held:  # 同じ処理の中では入れ子に取れる（Hermes と同じ）
+        yield
+        return
+    p.parent.mkdir(exist_ok=True)
+    with open(p, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        _held.add(p)
+        try:
+            yield
+        finally:
+            _held.discard(p)
+            fcntl.flock(f, fcntl.LOCK_UN)
 def _skill_mutation_locks(names):
     stack = contextlib.ExitStack()
     for n in sorted(set(names)):
-        p = ROOT / ".locks" / (n + ".lock")
-        p.parent.mkdir(exist_ok=True)
-        f = stack.enter_context(open(p, "a"))
-        fcntl.flock(f, fcntl.LOCK_EX)
+        stack.enter_context(_one(ROOT / ".locks" / (n + ".lock")))
     return stack
+def apply_skill_pending(payload):
+    ops = payload["operations"] if payload.get("action") == "batch" else [payload]
+    with _skill_mutation_locks([op["name"] for op in ops]):
+        for op in ops:
+            f = _find_skill(op["name"])
+            d = f["path"] if f else _resolve_skill_dir(op["name"], op.get("category"))
+            Path(d).mkdir(parents=True, exist_ok=True)
+            (Path(d) / "SKILL.md").write_text("当てた: " + op.get("new_string", ""))
+    return json.dumps({"success": True})
+""")
+(FAKE / "tools" / "write_approval.py").write_text("""import os
+from pathlib import Path
+SKILLS = "skills"
+def _pending_path(sub, pid):
+    return Path(os.environ["VL_TEST_PENDING"]) / (pid + ".json")
+def discard_pending(sub, pid):
+    p = _pending_path(sub, pid)
+    if p.exists():
+        p.unlink()
+        return True
+    return False
+def skill_pending_diff(rec):
+    return "差分"
 """)
 SK2 = Path(TMP) / "skills2"
 (SK2 / "voice-loop" / "hub").mkdir(parents=True)
@@ -360,6 +420,55 @@ proc.stderr.close()
 lres = json.loads(next((l for l in reversed(pout.decode().splitlines()) if l.startswith("VLRESULT ")), "VLRESULT {}")[len("VLRESULT "):])
 check("戻す: Hermes が手順を書き換えている間（同じ鍵）は待ち、照らしてから書いたものは上書きしない", (lres.get("result"), (SK2 / "voice-loop" / "hub" / "SKILL.md").read_text()),
       ("changed", "Hermes が鍵を持って書いた\n"))
+PEND2 = Path(TMP) / "pending2"
+PEND2.mkdir()
+
+
+def apply_script(pid, payload, expect, hold=None):
+    """自動で当てる台本（APPLY_SCRIPT）を、偽の Hermes で動かす。hold は、台本が鍵を待っている間に Hermes として行うこと。"""
+    raw = json.dumps({"id": pid, "payload": payload}).encode()
+    (PEND2 / f"{pid}.json").write_bytes(raw)
+    env = {**os.environ, "PYTHONPATH": str(FAKE), "VL_TEST_SKILLS": str(SK2), "VL_TEST_OUTSIDE": str(OUTSIDE), "VL_TEST_PENDING": str(PEND2),
+           "VL_LEARN_EXPECT": json.dumps(expect)}
+    pr = subprocess.Popen([sys.executable, "-c", hl.APPLY_SCRIPT, s.hermes.hermes_skills.MARK, "approve", pid], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, cwd=FAKE, env=env)
+    pr.stdin.write(raw)
+    pr.stdin.close()
+    if hold:
+        hold()
+    so = pr.stdout.read()
+    pr.wait(timeout=60)
+    pr.stderr.close()
+    return json.loads(next((l for l in reversed(so.decode().splitlines()) if l.startswith("VLRESULT ")), "VLRESULT {}")[len("VLRESULT "):])
+
+
+(SK2 / "voice-loop" / "ap").mkdir(parents=True, exist_ok=True)
+(SK2 / "voice-loop" / "ap" / "SKILL.md").write_text("前\n")
+pa = {"action": "batch", "operations": [{"action": "patch", "name": "ap", "old_string": "前", "new_string": "後"}]}
+e0 = {"voice-loop/ap": hl.digest(hl.snap_dir(str(SK2), "voice-loop/ap"))}
+a1 = apply_script("apapap01", pa, e0)
+check("自動で当てる台本: 控えの指紋と同じなら当て、承認待ちから消し、鍵を持ったまま読んだ当てた直後の指紋を返す",
+      (a1.get("result"), a1.get("after") == {"voice-loop/ap": hl.digest(hl.snap_dir(str(SK2), "voice-loop/ap"))}, (SK2 / "voice-loop" / "ap" / "SKILL.md").read_text(),
+       (PEND2 / "apapap01.json").exists()), ("applied", True, "当てた: 後", False))
+(SK2 / "voice-loop" / "ap" / "SKILL.md").write_text("前\n")
+a2 = apply_script("apapap02", pa, {"voice-loop/ap": "0" * 64})
+check("自動で当てる台本: 控えの指紋と違えば当てない（承認待ちに残す）", (a2.get("result"), (SK2 / "voice-loop" / "ap" / "SKILL.md").read_text(), (PEND2 / "apapap02.json").exists()),
+      ("changed", "前\n", True))
+lk = open(SK2 / ".locks" / "ap.lock", "a")
+fcntl.flock(lk, fcntl.LOCK_EX)  # Hermes が手順 ap を書き換えている
+
+
+def hermes_edits():
+    time.sleep(1.0)  # 台本は鍵を待っている（鍵が無ければ、この間に確かめて当ててしまう）
+    (SK2 / "voice-loop" / "ap").joinpath("SKILL.md").write_text("Hermes が鍵を持って書いた\n")
+    fcntl.flock(lk, fcntl.LOCK_UN)
+    lk.close()
+
+
+a3 = apply_script("apapap03", pa, e0, hermes_edits)
+check("自動で当てる台本: Hermes が手順を書き換えている間（同じ鍵）は待ち、その間に変わっていたら当てない（控えのあとの書き込みを、当てた中身に混ぜない）",
+      (a3.get("result"), (SK2 / "voice-loop" / "ap" / "SKILL.md").read_text(), (PEND2 / "apapap03.json").exists()),
+      ("changed", "Hermes が鍵を持って書いた\n", True))
 for i in range(hl.SNAP_BATCH_SKILLS_MAX + 1):
     (SK2 / "many" / f"m{i:02d}").mkdir(parents=True, exist_ok=True)
     (SK2 / "many" / f"m{i:02d}" / "SKILL.md").write_text("小さい\n")
