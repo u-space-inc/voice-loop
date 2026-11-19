@@ -77,6 +77,9 @@ done = []
 th = threading.Thread(target=lambda: done.append(c.asked_questions("agency で、\x000\x00『受注の記録』を削除してよいですか？\x00x\x00")), daemon=True)
 th.start(); th.join(5)
 check("入力に NUL があっても、引用を元に戻す処理は終わる（codex-review）", (bool(done), done[0][0][0] if done and done[0] else None), (True, "削除"))
+check("句読点の無い問いを改行で並べた返答も、問いを 2 つと数え、操作の語では答えない（codex-review）",
+      (c.question_count("agency で\n『受注の記録』を削除してよいですか\n内容を確認しますか"), c.one_asked("agency で\n『受注の記録』を削除してよいですか\n内容を確認しますか"),
+       c.affirms("確認して", "answer", "agency", "agency で\n『受注の記録』を削除してよいですか\n内容を確認してよいですか")), (2, None, False))
 check("入力の NUL で、説明の文の引用（対象の名前）を問いの文にまぎれ込ませられない",
       c.asked_questions("agency で、『受注の記録』は残します。\x000\x00を削除してよいですか？"), [("削除", "0を削除してよいですか?")])
 check("聞いた問いの操作の語: 文が 2 つの問いなら両方、構いませんか も読む",

@@ -2161,9 +2161,11 @@ RISKY_KINDS = (
 
 def risky_named(asked: str, heard: str) -> bool:
     """画面の問い asked に出ている取り消しにくい操作の種類が、どれも、利用者が聞いた問い heard の「〇〇してよいですか」の〇〇で名指しされているか
-    （画面が rm なら「削除してよいですか」。別の種類の名指し・返答のどこかに語があるだけ・プロジェクト名や題の語は数えない）。"""
+    （画面が rm なら「削除してよいですか」。別の種類の名指し・返答のどこかに語があるだけ・プロジェクト名や題の語は数えない）。
+    名前と URL を除くと種類が 1 つも残らないときは、名指しされていないとみなす（聞き返す）。"""
     acts = consent.asked_acts(heard)
-    kinds = [act for screen, act in RISKY_KINDS if screen.search(asked)]
+    op = re.sub(r"https?://\S+", " ", QUOTED.sub(" ", asked))  # 種類は、引用符で囲まれた名前と URL を除いた操作の部分から読む（名前の release・prod などを操作と数えない。codex-review）
+    kinds = [act for screen, act in RISKY_KINDS if screen.search(op)]
     return bool(kinds) and all(any(act.search(w) for w in acts) for act in kinds)
 
 

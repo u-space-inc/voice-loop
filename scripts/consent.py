@@ -85,8 +85,9 @@ _ASKS_END = re.compile(r"(?:[?？]|か|かな|かね|っけ)$")  # 問いで終�
 
 def _sentences(heard: str) -> list[tuple[str, str]]:
     """聞いた文を、引用・括弧の外で文に分けたもの (隠した文, 引用・括弧を元に戻した文)。引用・括弧の中の「？」では切らない。
-    隠すしるしには NUL を使うので、入力の NUL は先に取り除く（入力の文字と、しるしを取り違えない。codex-review）。"""
-    flat, kept = _flat(heard).replace("\x00", ""), []
+    隠すしるしには NUL を使うので、入力の NUL は先に取り除く（入力の文字と、しるしを取り違えない。codex-review）。
+    改行は文の区切りとして残す（句読点の無い問いを改行で並べた返答を、1 つの文に読まない。codex-review）。ほかの空白は除く。"""
+    flat, kept = re.sub(r"[^\S\n]+", "", _norm(heard)).replace("\x00", ""), []
 
     def hide(m):
         kept.append(m.group(0))
