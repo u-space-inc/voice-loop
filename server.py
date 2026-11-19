@@ -759,7 +759,7 @@ def attachments_shape_problem(files: list[str] | None) -> str:
 ACCEPT_LOCKS: dict[str, asyncio.Lock] = {}  # ハブ（herdr の外の話し相手）が受け取った発言の順番（添付を置く間も、前の発言を追い越させない）
 
 
-async def hub_accepted(talker, text: str, pane: str, reply_at: float | None, files: list[str] | None) -> tuple[str, str, bool]:
+async def hub_accepted(talker, text: str, pane: str, reply_at: float | None, files: list[str] | None, item: int | None = None) -> tuple[str, str, bool]:
     """ハブが受け取った発言を、添付を置く → 往復する（置けなければ断る）まで進める。(返事, 失敗・断りの理由, 記録に書けたか)。
     受け取った順に 1 つずつ（ACCEPT_LOCKS）。往復と断りの記録は、さらに頭のやり取りの鍵（自動通知と共有）の順に載る。
     断るときは、ハブに、利用者が最後に聞いたのは本体の断りだと伝える（前の問いへの答えに、次の発言を使わせない）。"""
@@ -771,7 +771,16 @@ async def hub_accepted(talker, text: str, pane: str, reply_at: float | None, fil
         if why:
             await talker.refused(text, why)
             return "", why, True
-        return await talker.exchange(text, reply_at, extra)
+        return await talker.exchange(text, reply_at, extra, item)
+
+
+def reply_item_of(d: dict) -> int | None:
+    """画面の受け箱（💡）で押した件への返信の先（頭の記録の番号）。付いていなければ None。付いているのに正の整数でなければ -1
+    （どの記録とも一致しないので、頭は送らずに止める。ふつうの発言にすり替えない）。"""
+    v = d.get("reply_item")
+    if v is None:
+        return None
+    return v if isinstance(v, int) and not isinstance(v, bool) and 0 < v < 2**31 else -1
 
 
 def reply_at_of(d: dict) -> float | None:
@@ -1358,17 +1367,20 @@ def topic_path(tid: str | None) -> str:
     return f"/#t={tid}" if isinstance(tid, str) and topics.ID_RE.fullmatch(tid) else "/"
 
 
+PUSH_OPEN = re.compile(r"/(?:#t=t[0-9a-f]{10}|#inbox|#i=[1-9][0-9]{0,9})?")  # 通知を押したときに開く場所（sw.js と画面も同じ形だけを受ける）
+
+
 async def push_all(title: str, body: str, tag: str, urgency: str = "normal", only: list[dict] | None = None, url: str = "/") -> str:
     """どの画面も見えていなければ、購読している端末すべてに知らせる。結果は sent / visible / none / failed / error。
     only を渡すと、見えている画面の有無に関係なく、その購読だけに送る（🔔 を押したときの試しの通知）。
-    url は、通知を押したときに開く場所（topic_path が作る、この画面の中の場所だけ）。"""
+    url は、通知を押したときに開く場所（この画面の中の場所だけ。件 /#t=<件>、受け箱 /#inbox、判断待ちの 1 件 /#i=<番号>。ほかの形は /）。"""
     if only is None and any(c.visible and time.time() - c.seen < VISIBLE_TTL for c in CLIENTS):
         return "visible"
     subs = only if only is not None else await asyncio.to_thread(push_subs)
     if not subs:
         return "none"
     payload = {"title": _clip(title, 80), "body": _clip(body, 120), "tag": tag,
-               "url": url if url.startswith("/#t=") and topics.ID_RE.fullmatch(url[4:]) else "/"}
+               "url": url if PUSH_OPEN.fullmatch(url) and (not url.startswith("/#t=") or topics.ID_RE.fullmatch(url[4:])) else "/"}
     try:
         sent, gone = await asyncio.to_thread(_push_send, subs, payload, urgency)
         if gone:
@@ -2779,10 +2791,12 @@ def _read_json(path: Path, default):
 # ---------- 代理からの知らせ（hubctl notice） ----------
 # 代理（Hermes）が、見張りの回（cron）で見つけた判断待ちなどを知らせる口。本体は、題と一言を文字として画面の一覧に出し、
 # プッシュ通知には題だけを載せる。知らせには押して動くものが無い（送る・答える・立てる・閉じるの口とはつながらない）。
+# 通知を押すと受け箱（💡）が開く。判断待ちの記録の番号が 1 つ添えてあれば、その件を開く（開くだけ。中身は本体が記録から読む。scripts/hermes_inbox.py）。
 # 中身は代理が外から読んだものの要約なので、引用データとして文字で出すだけにする（HTML にしない）。
 NOTICES_FILE = STATE_DIR / "notices.json"
 NOTICE_TITLE, NOTICE_TEXT = 60, 400  # 字数の上限（超えた分は切る）
 NOTICE_KEEP, NOTICE_DAYS = 50, 7  # 残す数と日数
+NOTICE_ITEMS = 20  # 知らせに添えられる判断待ちの記録の番号の数
 NOTICE_PER_HOUR = 20  # 1 時間に受ける数（消したものも数える）。見張りが暴れても、通知が鳴り続けないように
 _notice_lock = threading.Lock()
 _NOTICE_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ud800-\udfff]")  # 制御文字・向きを変える文字・対になっていないサロゲート
@@ -2839,6 +2853,9 @@ async def hub_notice(body: dict):
     title, text = _notice_clean(body.get("title"), NOTICE_TITLE), _notice_clean(body.get("text", ""), NOTICE_TEXT)
     if not title or text is None:
         return JSONResponse({"ok": False, "reason": "bad_request"}, status_code=400)
+    items = body.get("items", [])
+    if not isinstance(items, list) or len(items) > NOTICE_ITEMS or not all(isinstance(n, int) and not isinstance(n, bool) and 0 < n < 2**31 for n in items):
+        return JSONResponse({"ok": False, "reason": "bad_items", "max": NOTICE_ITEMS}, status_code=400)
     with _notice_lock:
         d = notices()
         if len(d["sent"]) >= NOTICE_PER_HOUR or d["next"] >= NOTICE_N_MAX:
@@ -2851,7 +2868,9 @@ async def hub_notice(body: dict):
             await c.send(type="agent_notice", n=row["n"], title=title, sender=HUB.label)
         except Exception:
             pass
-    push = await push_all(f"{HUB.label} から", title, f"notice-{row['n']}")
+    # 押すと受け箱を開く。判断待ちの記録の番号が 1 つだけ添えてあれば、その件を開く（開くだけ。中身は本体が記録から読む）
+    items = list(dict.fromkeys(items))
+    push = await push_all(f"{HUB.label} から", title, f"notice-{row['n']}", url=f"/#i={items[0]}" if len(items) == 1 else "/#inbox")
     return JSONResponse({"ok": True, "n": row["n"], "push": push})
 
 
@@ -2951,7 +2970,8 @@ async def ws(sock: WebSocket):
                 await send(type="reply", pane=pane, text=reply)
                 await speak_to([client], reply, cancel)
 
-    def start_turn(text: str, pane: str, speaker: int, key: str | None, reply_at: float | None = None, files: list[str] | None = None):
+    def start_turn(text: str, pane: str, speaker: int, key: str | None, reply_at: float | None = None, files: list[str] | None = None,
+                   item: int | None = None):
         nonlocal cancel, current
         client.speaker = speaker
         cancel.set()  # 前のターンの読み上げが残っていれば止める
@@ -2964,7 +2984,7 @@ async def ws(sock: WebSocket):
             # ハブが受け取った発言は、受け取ったその場で（待つものをはさまずに）1 つの仕事にする（hub_accepted: 添付を置く・断る・往復する）。
             # 画面のターン（current）は次の発言で止めるが、この仕事は止めない。受け取った順に作るので、受け取った順に進む
             # （画面のターンの中で作ると、状態の知らせを送る間や、ターンが動き出す前に次の発言が来たとき、前の発言が消える）
-            job = asyncio.create_task(hub_accepted(talker, text, pane, reply_at, files))
+            job = asyncio.create_task(hub_accepted(talker, text, pane, reply_at, files, item))
             _tasks.add(job)
             job.add_done_callback(_tasks.discard)
         current = asyncio.create_task(turn(text, pane, cancel, key, reply_at, files, job))
@@ -2994,7 +3014,7 @@ async def ws(sock: WebSocket):
                     continue
                 pending = d  # {"type":"turn", pane, speaker, filename} → 次のバイナリが音声
                 if d["type"] == "text":
-                    start_turn(d["text"], d["pane"], int(d["speaker"]), d.get("key"), reply_at_of(d), attachments_of(d))
+                    start_turn(d["text"], d["pane"], int(d["speaker"]), d.get("key"), reply_at_of(d), attachments_of(d), reply_item_of(d))
                 continue
             if msg.get("bytes") is not None and pending.get("type") == "turn":
                 await send(type="status", text="聞き取り中…")
@@ -3003,7 +3023,8 @@ async def ws(sock: WebSocket):
                     await send(type="error", text="聞き取れませんでした")
                     continue
                 await send(type="transcript", pane=pending["pane"], text=text)
-                start_turn(text, pending["pane"], int(pending["speaker"]), pending.get("key"), reply_at_of(pending), attachments_of(pending))
+                start_turn(text, pending["pane"], int(pending["speaker"]), pending.get("key"), reply_at_of(pending), attachments_of(pending),
+                           reply_item_of(pending))
     except WebSocketDisconnect:
         pass
     finally:

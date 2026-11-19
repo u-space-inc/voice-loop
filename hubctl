@@ -17,7 +17,9 @@
   hubctl close <pane> [--confirmed]
                                   要らなくなったセッションを閉じる（1回目は閉じずに相手を返す。ユーザーが次の発言で許可したら --confirmed）
   hubctl tasks                    頼んだ件（送った指示・立てたセッション・答えた承認）と、その見張りの状態
-  hubctl notice <題> [一言]       ユーザーに知らせる（画面の 💡 の「知らせ」に出し、画面を閉じていればプッシュ通知で題だけ届く）。
+  hubctl notice <題> [一言] [--item 番号 ...]
+                                 ユーザーに知らせる（画面の 💡 の「知らせ」に出し、画面を閉じていればプッシュ通知で題だけ届く）。
+                                 --item に判断待ちの記録の番号（vl_items.py の [番号]）を添えると、通知を押したときにその件が開く（2 つ以上なら受け箱）。
                                   題は 60 字・一言は 400 字まで、1 時間に 20 件まで。見張りの回で、判断待ちを見つけたときに使う
 """
 import argparse
@@ -297,13 +299,14 @@ def cmd_tasks(_):
 
 
 def cmd_notice(a):
-    r = call("notice", body={"title": a.title, "text": " ".join(a.text)})
+    r = call("notice", body={"title": a.title, "text": " ".join(a.text), "items": a.item or []})
     if r.get("ok"):
         print(f"知らせました [{r['n']}]（" + {"sent": "プッシュ通知も送りました", "visible": "画面が開いているので、画面に出しました",
                                               "none": "通知を受ける端末がないので、画面の一覧にだけ置きました"}.get(r.get("push"), "画面の一覧に置きました") + "）")
         return
     sys.exit("知らせていません: " + {
         "bad_request": "題が空です。題（60 字まで）を入れてください。",
+        "bad_items": f"--item の番号が正しくありません。判断待ちの記録の番号（vl_items.py の [番号]）を {r.get('max')} 個までにしてください。",
         "too_many": f"1 時間に受ける数（{r.get('max')}件）を超えました。まとめて 1 件にしてください。",
     }.get(r.get("reason"), str(r.get("reason") or r)))
 
@@ -318,6 +321,7 @@ s = sub.add_parser("answer"); s.add_argument("pane"); s.add_argument("answer"); 
 s = sub.add_parser("start"); s.add_argument("project"); s.add_argument("--model", default="opus"); s.add_argument("text", nargs="*"); s.set_defaults(fn=cmd_start)
 s = sub.add_parser("close"); s.add_argument("pane"); s.add_argument("--confirmed", action="store_true"); s.set_defaults(fn=cmd_close)
 sub.add_parser("tasks").set_defaults(fn=cmd_tasks)
-s = sub.add_parser("notice"); s.add_argument("title"); s.add_argument("text", nargs="*"); s.set_defaults(fn=cmd_notice)
+s = sub.add_parser("notice"); s.add_argument("title"); s.add_argument("text", nargs="*"); s.add_argument("--item", type=int, action="append")
+s.set_defaults(fn=cmd_notice)
 args = p.parse_args()
 args.fn(args)
