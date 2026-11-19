@@ -63,11 +63,12 @@
   /* 読み上げの切り替え。読み上げの途中でもすぐ押せるよう、↻ より押せる広さを持たせる。切っている間は色をつけて、文字だけと分かるようにする */
   #mute { flex:none; border:none; border-radius:8px; background:none; font-size:17px; line-height:1; padding:6px 9px; margin:-6px 0; opacity:.45; }
   #mute[aria-pressed="true"] { opacity:1; background:#5a1f1d; }
-  /* 通知（🔔）・頼んだ件（📋）・知らせと承認（💡）。🔇 と同じ大きさ。入っている・開いている間は色をつける */
+  /* 通知（🔔）・頼んだ件（📋）・判断待ちと知らせ（💡）。🔇 と同じ大きさ。入っている・開いている間は色をつける */
   #bell, #tasksBtn, #sitBtn { flex:none; border:none; border-radius:8px; background:none; font-size:17px; line-height:1; padding:6px 9px; margin:-6px 0; opacity:.45; }
   #bell[aria-pressed="true"] { opacity:1; background:#1f4a32; }
   #tasksBtn[aria-pressed="true"] { opacity:1; background:#2a2f45; }
   #sitBtn[aria-pressed="true"] { opacity:1; background:#3a3420; }
+  #sitBtn.has { opacity:1; color:#f0d98a; font-size:15px; }
   #tap, #hubStart { display:none; margin-left:auto; border:none; border-radius:8px; background:var(--ok); color:#fff; font-size:13px; padding:4px 10px; }
   /* スマホの幅では、▶ タップして再生・ハブを起動を次の行に全幅で出す（同じ行に置くと、ボタンに幅を取られて、状態の文が 2〜3 字ずつに折れて縦に伸びる） */
   body:not(.wide) #status { flex-wrap:wrap; row-gap:8px; }
@@ -119,7 +120,7 @@
   .task .st { font-size:12px; color:#9fb0e0; }
   .task.active .st { color:#e6c36a; } .task.done .st { color:var(--ok); } .task.bad .st { color:#e07a74; }
   .task .what, .task .note { color:#bbb; font-size:12px; overflow-wrap:anywhere; }
-  /* 知らせと承認（💡 で開く）: 代理（Hermes）からの知らせと、Hermes の手順の書き足し */
+  /* 判断待ちと知らせ（💡 で開く）: 判断待ちの受け箱と、その他（代理（Hermes）からの知らせ・Hermes の手順の書き足し） */
   #situation { flex:none; max-height:55dvh; overflow-y:auto; display:flex; flex-direction:column; gap:6px; padding:calc(8px + env(safe-area-inset-top)) 12px 8px; background:#17150f; border-bottom:1px solid #3a3420; }
   #situation .top { display:flex; align-items:center; font-size:13px; color:#d8c88f; }
   #situation .top span { flex:1; }
@@ -149,6 +150,34 @@
   #sitNote.bad { color:#e07a74; }
   #situation details summary { font-size:12px; color:#c9b77a; cursor:pointer; }
   .notice { display:flex; flex-direction:column; gap:2px; padding:6px 10px; border:1px solid #2c3a4a; border-radius:10px; background:#121a24; font-size:13px; overflow-wrap:anywhere; }
+  /* 受け箱（判断待ち）。カードを押すと中身が開き、ハブとの会話はその件への「↩ 返信」になる（押しただけでは送らない） */
+  .ibBand { display:flex; flex-direction:column; gap:2px; padding:7px 10px; border-radius:8px; background:#5a2a1d; color:#ffd9c7; font-size:12px; overflow-wrap:anywhere; }
+  .ibBand b { font-size:13px; }
+  .ibHead { display:flex; align-items:baseline; gap:8px; color:#d8c88f; font-size:12px; } .ibHead b { flex:1; font-size:14px; }
+  .ibChips { display:flex; gap:6px; flex-wrap:wrap; }
+  .ibChips button { border:1px solid #3a3420; border-radius:999px; background:none; color:var(--mute); font-size:12px; padding:2px 10px; }
+  .ibChips button[aria-pressed="true"] { background:#3a3420; color:var(--fg); border-color:transparent; }
+  .ibCard { display:grid; grid-template-columns:1fr auto; gap:2px 10px; align-items:center; padding:8px 10px; border:1px solid #3a3420; border-radius:10px; background:#211d14; font-size:13px; cursor:pointer; }
+  .ibCard.fresh { box-shadow:inset 3px 0 0 #f0d98a; }
+  .ibCard .meta, .ibItem .meta, .ibFyi .meta { font-size:11px; color:var(--mute); display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  .ibCard .title { grid-column:1; overflow-wrap:anywhere; }
+  .ibCard .done { grid-row:1 / span 2; grid-column:2; border:1px solid #6b5a2a; border-radius:8px; background:none; color:var(--fg); font-size:12px; padding:7px 11px; }
+  .ibSrc { background:#2a3248; color:var(--fg); border-radius:4px; padding:0 5px; font-size:10.5px; }
+  .ibTag { color:#f0d98a; }
+  .ibFold > summary { font-size:12px; color:#c9b77a; cursor:pointer; padding:4px 0; }
+  .ibFold > div { display:flex; flex-direction:column; gap:6px; margin-top:4px; }
+  .ibFyi { padding:4px 2px; font-size:12px; overflow-wrap:anywhere; border-top:1px solid #2a2618; }
+  .ibToast { display:flex; align-items:center; gap:8px; padding:6px 10px; border:1px solid #3a3420; border-radius:8px; background:#1d1a12; font-size:12px; overflow-wrap:anywhere; }
+  .ibToast span { flex:1; } .ibToast button { border:none; background:none; color:#f0d98a; font-size:13px; text-decoration:underline; padding:2px 4px; }
+  .ibItem { display:flex; flex-direction:column; gap:6px; font-size:13px; }
+  .ibBack { align-self:flex-start; border:none; background:none; color:var(--mute); font-size:12px; padding:2px 0; }
+  .ibItem h3 { margin:0; font-size:15px; line-height:1.45; overflow-wrap:anywhere; }
+  .ibLabel { font-size:11px; color:var(--mute); }
+  .ibBox { padding:7px 10px; border:1px solid #3a3420; border-radius:8px; background:#121009; white-space:pre-wrap; overflow-wrap:anywhere; -webkit-user-select:text; user-select:text; }
+  .ibActs { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  .ibActs button, .ibActs a, .ibActs select { border:1px solid #6b5a2a; border-radius:8px; background:none; color:var(--fg); font-size:13px; padding:6px 12px; text-decoration:none; }
+  .ibActs .go { background:#2f7d58; border-color:transparent; color:#eafff3; font-weight:600; }
+  .ibNote { font-size:11px; color:var(--mute); overflow-wrap:anywhere; }
   .noteHead { display:flex; align-items:flex-start; gap:6px; } .noteHead b { flex:1; }
   .noteAll { margin-left:8px; font-size:12px; }
   /* PC（横幅 1100px 以上で body に wide）。3 列: 左にセッションの一覧と頼んだ件、真ん中に会話、右に記録（記憶・知らせ）。スマホの幅では何も変えない。
@@ -326,13 +355,13 @@
 </head>
 <body>
   <div id="side"><div class="side-h">セッション</div><div id="sessTools" role="group" aria-label="状態で絞り込む"></div><div id="sessions"></div></div>
-  <div id="rec" data-tab="mem"><div id="recHead"><div id="recTabs" role="tablist"><button id="tabMem" role="tab" aria-selected="true">記憶</button><button id="tabSit" role="tab" aria-selected="false">知らせ<span class="n" id="sitCount" hidden></span></button></div><button id="readAsks" hidden></button><button id="readBtn" aria-pressed="false" aria-label="記憶と知らせを画面いっぱいに広げて読む" title="記憶と知らせを画面いっぱいに広げて読む">⤢ 広げる</button></div><div id="memPanel"></div></div>
+  <div id="rec" data-tab="mem"><div id="recHead"><div id="recTabs" role="tablist"><button id="tabMem" role="tab" aria-selected="true">記憶</button><button id="tabSit" role="tab" aria-selected="false">判断待ち<span class="n" id="sitCount" hidden></span></button></div><button id="readAsks" hidden></button><button id="readBtn" aria-pressed="false" aria-label="記憶と知らせを画面いっぱいに広げて読む" title="記憶と知らせを画面いっぱいに広げて読む">⤢ 広げる</button></div><div id="memPanel"></div></div>
   <div id="asks"></div>
   <div id="tasks" hidden><div class="top"><span>頼んだ件（ハブ経由で送った指示と、その見張り）</span><button id="tasksClose" aria-label="閉じる">✕</button></div><div id="taskList"></div></div>
-  <div id="situation" hidden><div class="top"><span>知らせと承認（Hermes から）</span><button id="sitClose" aria-label="閉じる">✕</button></div><div id="sitBody"></div></div>
+  <div id="situation" hidden><div class="top"><span>判断待ちと知らせ（Hermes から）</span><button id="sitClose" aria-label="閉じる">✕</button></div><div id="sitBody"></div></div>
   <div id="log"></div>
   <div id="bar">
-    <div id="status"><span id="conn" class="dot"></span><span id="statusText">接続中…</span><button id="hubStart">ハブを起動</button><button id="tap">▶ タップして再生</button><button id="sitBtn" aria-pressed="false" aria-label="知らせと承認" title="知らせと承認">💡</button><button id="tasksBtn" aria-pressed="false" aria-label="頼んだ件" title="頼んだ件">📋</button><button id="bell" aria-pressed="false" hidden>🔔</button><button id="mute" aria-pressed="false">🔇</button><button id="reload" aria-label="最新の画面を読み込み直す" title="最新の画面を読み込み直す">↻</button></div>
+    <div id="status"><span id="conn" class="dot"></span><span id="statusText">接続中…</span><button id="hubStart">ハブを起動</button><button id="tap">▶ タップして再生</button><button id="sitBtn" aria-pressed="false" aria-label="判断待ちと知らせ" title="判断待ちと知らせ">💡</button><button id="tasksBtn" aria-pressed="false" aria-label="頼んだ件" title="頼んだ件">📋</button><button id="bell" aria-pressed="false" hidden>🔔</button><button id="mute" aria-pressed="false">🔇</button><button id="reload" aria-label="最新の画面を読み込み直す" title="最新の画面を読み込み直す">↻</button></div>
     <div class="row"><select id="agent" aria-label="セッション"></select><select id="speaker" aria-label="声"></select></div>
     <div id="topicMsg" hidden role="status"><span id="topicMsgText"></span><button id="topicMsgClose" type="button" aria-label="件の案内を閉じる">✕</button></div>
     <div id="replyBar" hidden><span id="replyTo"></span><button id="replyClear" type="button" aria-label="返信をやめる">✕</button></div>
@@ -518,14 +547,15 @@ function decorate(el, m) {
     }
     if (TOPIC_RE.test(m.topic || '')) el.dataset.topic = m.topic; // どの件の報告か（件の URL で開くときに探す）
     el.prepend(h);
-  } else if (m.role === 'me' && m.reply_to) el.prepend(node('div', 'rep', '↩ ' + m.reply_to + ' の報告へ'));
+  } else if (m.role === 'me' && Number.isInteger(m.reply_item)) el.prepend(node('div', 'rep', `↩ 判断待ち [${m.reply_item}] へ`));
+  else if (m.role === 'me' && m.reply_to) el.prepend(node('div', 'rep', '↩ ' + m.reply_to + ' の報告へ'));
   return el;
 }
 // 添付（画面から話し相手に渡すファイル）。選んだファイルは送るときに 1 つずつ本体に送り（/api/attach）、返った id を発言に付ける。
 // 種類・大きさ・数は本体が確かめ直す（ここでは早めに知らせるだけ）。送る・相手を替えると外れる
 const ATTACH_MAX = 20 * 1024 * 1024, ATTACH_COUNT = 5, ATTACH_EXT = /\.(png|jpe?g|gif|webp|heic|pdf|txt|md|csv)$/i;
 let attachFiles = [];
-function renderAttach() {
+function renderAttach() { paintSend();
   const bar = $('attachBar'); bar.replaceChildren();
   bar.hidden = !attachFiles.length;
   attachFiles.forEach((f, i) => {
@@ -649,23 +679,35 @@ function showTopicMsg(msg) {
 }
 $('topicMsgClose').onclick = () => showTopicMsg('');
 function topicNote(seq, msg) { if (seq === topicSeq) { sys(msg); showTopicMsg(msg); } }
-window.addEventListener('hashchange', () => openTopic());
+window.addEventListener('hashchange', () => { if (!openInboxHash()) openTopic(); });
 // 通知を押したとき、開いていた画面には sw.js が件の場所を渡す（この画面の中の #t= だけを受ける）
 navigator.serviceWorker?.addEventListener('message', e => {
   const d = e.data;
   if (!d || d.type !== 'open' || typeof d.url !== 'string') return;
   let u; try { u = new URL(d.url, location.origin); } catch { return; }
-  if (u.origin === location.origin && u.pathname === '/' && !u.search && /^#t=t[0-9a-f]{10}$/.test(u.hash)) location.hash = u.hash;
+  if (u.origin === location.origin && u.pathname === '/' && !u.search && /^#(t=t[0-9a-f]{10}|inbox|i=[1-9][0-9]{0,9})$/.test(u.hash)) location.hash = u.hash;
 });
-// 返信先の報告（{ at, about }）。ハブの会話のときだけ付けて送り、送ったら外す。相手を替えたら外す
+// 受け箱（💡）の状態: 最後に読んだ一覧・開いている件の番号・通知で開く件・案件の絞り込み・戻せる件・「その他」と畳みの開閉・案内・描いた件の印
+let ibExtra = null, ibWantTok = 0;
+let ibGen = 0;  // 手元で一覧を変えた（済んだ・戻す・あとで）世代。それより前に始まった読み直しの答えでは、一覧を戻さない
+const ibUndos = new Map();  // 戻せる件: 番号 → { n, title, until }（5 秒以内に何件押しても、件ごとに戻せる）  // ibWantTok: 通知で開く予約の世代（閉じる・別の通知で進む）  // 通知・リンクで開いた、一覧に出ていない 1 件（あとでに回した件・数の上限から外れた件）
+let inbox = null, ibSel = null, ibWant = null, ibProj = '', ibOther = false, ibOld = false, ibFyiOpen = false, ibMsg = null, ibSig = '';
+// 返信先。報告（{ at, about }）か、受け箱の判断待ち（{ item: 番号, about: 題 }）。ハブの会話のときだけ付けて送り、送ったら外す。相手を替えたら外す
 let replyTarget = null;
 function setReplyTarget(t) {
   replyTarget = t;
   $('replyBar').hidden = !t;
-  $('replyTo').textContent = t ? '↩ ' + t.about + ' の報告に返信' : '';
+  $('replyTo').textContent = !t ? '' : t.item ? `↩ 判断待ち [${t.item}]「${t.about}」に返信` : '↩ ' + t.about + ' の報告に返信';
+  paintSend();
   if (t && wide) $('typed').focus();
+  if (typeof renderSit === 'function' && ibSel != null) renderSit();  // 開いている件の「↩ この件に返信」の出し分け
 }
-const replyFields = () => { const a = curAgent(); return replyTarget && a && a.hub ? { reply_at: replyTarget.at } : {}; };
+// 判断待ちの番号が画面で正しく扱える整数でなければ -1 を送り、本体に断らせる（null になってふつうの発言にすり替わらないように）
+const itemNo = i => Number.isSafeInteger(i) && i > 0 && i < 2 ** 31 ? i : -1;
+const replyFields = () => { const a = curAgent(); return replyTarget && a && a.hub ? (replyTarget.item !== undefined ? { reply_item: itemNo(replyTarget.item) } : { reply_at: replyTarget.at }) : {}; };
+// 判断待ちへの返信で、文も添付も無いときは「このまま送る」（ことばを添えずに送り、ハブが中身と次にすることの案を答える）
+const itemOnly = () => !!(replyTarget && replyTarget.item && curAgent()?.hub);
+function paintSend() { const b = $('send'); if (b) b.textContent = itemOnly() && !$('typed').value.trim() && !attachFiles.length ? 'このまま送る' : '送る'; }
 async function loadThread() {
   const pane = $('agent').value; if (!pane) return;
   const seq = ++loadSeq;
@@ -1102,7 +1144,7 @@ function runTasks(open) {  // 見える・10 秒ごとに取り直す、を切�
 $('tasksBtn').onclick = () => { showSituation(false); showTasks($('tasks').hidden); };
 $('tasksClose').onclick = () => showTasks(false);
 
-// ---------- 知らせと承認（💡） ----------
+// ---------- 判断待ちと知らせ（💡）の「その他」 ----------
 // 代理（Hermes）からの知らせと、Hermes の手順の書き足し（採る・捨てる）。ハブの会話を新しくするボタンもここ。開いている間は 15 秒ごとに取り直す
 const stamp = ts => { const d = new Date(ts * 1000); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 const node = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -1244,61 +1286,314 @@ function hubSessionRow(a, hold = v => { sitHold = v; }, done = (msg, bad) => { s
   row.appendChild(b);
   return row;
 }
-async function loadSituation() {
-  const box = $('sitBody');
-  // 読めなかったときは、知らせが無いことと分けて出す（本体が止まった・接続が切れたときに「ありません」と見せない）
-  const get = url => fetch(url).then(r => r.ok ? r.json() : FAILED).catch(() => FAILED);
-  const [h, nt, lr] = await Promise.all([get('/api/hermes/skills'), get('/api/notices'), get('/api/hermes/learned')]);
-  if (sitHold) return;  // 読んでいるあいだに「採る」などが押された
-  if (h === FAILED && nt === FAILED) { box.textContent = '読めませんでした（接続を確かめてください）'; return; }  // 数の札はそのまま
-  const notes = nt === FAILED ? [] : nt.rows;
-  if (h !== FAILED && nt !== FAILED) {  // 両方読めたときだけ数を描き直す
-    const waiting = (h.on ? h.items.length : 0) + notes.length;
-    $('sitCount').hidden = !waiting; $('sitCount').textContent = String(waiting);  // PC の「知らせ」タブの数（知らせと手順の書き足し）
+// ---------- 受け箱（💡 の判断待ち） ----------
+// Hermes の見張りの記録から、片づいていない判断待ちを出す（本体の /api/inbox。中身は Hermes の要約で、未確認の情報として文字で出す）。
+// カードを押すと中身（要ること・準備したこと・元を開く）が開き、ハブとの会話はその件への「↩ 返信」の状態になる。押しただけでは何も送らない
+// （送るのは、利用者が「送る」「このまま送る」を押したか、話したときだけ）。「済」「済んだ」はすぐ消して 5 秒の「戻す」、「あとで」は時刻まで隠す
+const SRC = { mail: 'メール', slack: 'Slack', teams: 'Teams', plaud: '録音', cal: '予定' };
+const LINK_OK = /^https:\/\/(mail\.google\.com|teams\.microsoft\.com)\//;  // 元を開くリンク（本体が作る形だけ）
+let sitCache = null;  // 最後に読んだ「その他」の材料（[手順, 知らせ, 学び]）
+const ibCount = d => d && !d.problem ? d.items.filter(x => !x.old).length : 0;
+function paintSitBtn(n) { const b = $('sitBtn'); b.textContent = n ? `💡 ${n}` : '💡'; b.classList.toggle('has', !!n); }
+function ibNote(msg, bad) { ibMsg = msg ? [msg, !!bad] : null; }
+function ibStampOf(x) { return stamp(x.when); }
+function srcTag(x) { return node('span', 'ibSrc', SRC[x.source] || '記録'); }
+// 件を開く（中身を出し、ハブとの会話をその件への返信の状態にする。送らない）
+// 番号の件を、一覧（d）か、通知で開いた 1 件から探す
+const findItem = (d, n) => (d && d !== FAILED && Array.isArray(d.items) ? d.items.find(x => x.n === n) : null) || (ibExtra && ibExtra.n === n ? ibExtra : null);
+// seq は、開くと決めた時点の世代（通知から開くときは、通知を開いた時点）。そのあと利用者が選び直していたら、返信先は付けない
+function openItem(n, seq = topicSeq) {
+  ibWant = null; ibWantTok++;  // 利用者が選んだ（通知の件を開いた）ら、遅れて届く通知の 1 件の結果で上書きしない
+  ibSel = n; ibSig = '';
+  const it = findItem(inbox, n);
+  renderSit();
+  $('situation').scrollTop = 0;
+  if (it) itemReply(it, seq);
+}
+// 話し相手の一覧がまだ届いていなければ（通知から新しく開いたときなど）、届くのを待ってから返信先にする（一覧が無いのと、ハブが居ないのを分ける）
+// 待つ間に、利用者が相手・返信先を選んだ・外した・送った・件を開いた（どれも cancelTopic で topicSeq が進む）なら、あとから上書きしない
+async function itemReply(it, seq = topicSeq) {
+  if (!agents.length) await Promise.race([loadAgents(), new Promise(res => setTimeout(res, TOPIC_WAIT))]);
+  if (ibSel !== it.n || seq !== topicSeq) return;  // 待つ間に別の件を開いた・閉じた・利用者が選び直した
+  const hub = agents.find(a => a.hub);
+  if (!hub) { ibNote(agents.length ? 'ハブが居ないので、この件への返信はできません（中身は読めます）' : '話し相手の一覧を読めないので、まだ返信の状態にできません。「↩ この件に返信」で付け直してください', true); renderSit(); return; }
+  if ($('agent').value !== hub.pane) { $('agent').value = hub.pane; $('agent').dispatchEvent(new Event('change')); }  // ハブの会話に替える（返信先は外れる）
+  cancelTopic();
+  setReplyTarget({ item: it.n, about: it.title });
+}
+function closeItem() {
+  if (replyTarget && replyTarget.item === ibSel) setReplyTarget(null);  // 件を閉じたら、その件への返信もやめる
+  ibSel = null; ibSig = ''; ibExtra = null; renderSit();
+}
+async function doneItem(it) {
+  ibGen++;  // 押す前に始まった読み直しの答えでは、一覧を戻さない
+  const t0 = performance.now();
+  let r; try { r = await postJSON('/api/inbox/done', { n: it.n }); } catch { ibNote('済みにできませんでした（本体に届きません）', true); renderSit(); return; }
+  if (!r.ok) { ibNote({ gone: 'この判断待ちは、もう片づいているか見つかりません', unreadable: '判断待ちの記録を読めません' }[r.reason] || '済みにできませんでした', true); loadSituation(); return; }
+  if (ibSel === it.n) closeItem();
+  // 「戻す」を出すのは、本体が返した残りの秒から、送ってから受け取るまでにかかった時間を引いた分だけ
+  // （本体が残りを数えたのは、その間のどこか。応答が遅れても・押し直しても、本体より長く出さない。端末の時計には頼らない）
+  const left = Math.max(0, Number(r.left) || 0) * 1000 - (performance.now() - t0) - 100;
+  if (left > 0) {
+    const u = { n: it.n, title: it.title, until: Date.now() + left };
+    ibUndos.set(it.n, u);
+    // 期限が来たら、その件の「戻す」をその場で消す（読み直しの応答を待たない。止まっても、押せない「戻す」を残さない）
+    setTimeout(() => { if (ibUndos.get(it.n) === u) { ibUndos.delete(it.n); document.querySelectorAll(`#sitBody .ibToast[data-n="${it.n}"]`).forEach(e => e.remove()); loadSituation(); } }, left + 50);
   }
-  box.innerHTML = '';
+  // 読み直しを待たずに、カードを消して「戻す」を出す（数の札の元と、描く元の両方から外す）
+  const drop = d => d && d !== FAILED && Array.isArray(d.items) ? { ...d, items: d.items.filter(x => x.n !== it.n) } : d;
+  inbox = drop(inbox);
+  if (sitCache) sitCache[3] = drop(sitCache[3]);
+  if (ibExtra && ibExtra.n === it.n) ibExtra = null;
+  paintSitBtn(ibCount(inbox)); ibSig = ''; renderSit();
+  ibGen++;  // 応答を待つ間に始まった読み直しの答えも使わない（このあとの読み直しが描く）
+  loadSituation();
+}
+async function undoItem(n) {
+  const u = ibUndos.get(n); if (!u) return;
+  ibGen++;
+  ibUndos.delete(n);
+  document.querySelectorAll(`#sitBody .ibToast[data-n="${n}"]`).forEach(e => e.remove());  // 押したらその場で消す（読み直しが止まっても、押せない「戻す」を残さない）
+  let r; try { r = await postJSON('/api/inbox/undo', { n: u.n }); } catch { r = { ok: false, reason: 'net' }; }
+  if (!r.ok) ibNote(r.reason === 'late' ? `「${u.title}」は、もう済みの印を付け始めていたので戻せませんでした。ハブに「[${u.n}] はまだだった」と言えば戻せます` : '戻せませんでした（本体に届きません）', true);
+  ibGen++;  // 応答を待つ間に始まった読み直しの答えは使わない（このあとの読み直しが描く）
+  loadSituation();
+}
+async function laterItem(it, key) {
+  ibGen++;
+  let r; try { r = await postJSON('/api/inbox/later', { n: it.n, until: key }); } catch { ibNote('あとでに回せませんでした（本体に届きません）', true); renderSit(); return; }
+  ibGen++;  // 応答を待つ間に始まった読み直しの答えは使わない（このあとの読み直しが描く）
+  if (!r.ok) { ibNote('あとでに回せませんでした（もう片づいているか、見つかりません）', true); loadSituation(); return; }
+  if (ibSel === it.n) closeItem();
+  ibNote(`「${it.title}」を ${r.label} まで隠しました。その時刻に、一覧の上に戻ります`);
+  loadSituation();
+}
+function itemCard(x) {
+  const c = node('div', 'ibCard' + (Date.now() / 1000 - x.fresh < 6 * 3600 || x.back ? ' fresh' : ''));
+  c.setAttribute('role', 'button'); c.tabIndex = 0; c.setAttribute('aria-label', `判断待ち ${x.n}: ${x.title} を開く`);
+  const meta = node('div', 'meta'); meta.append(srcTag(x), `${x.project} ・ ${ibStampOf(x)}`);
+  if (x.prepared) meta.appendChild(node('span', 'ibTag', '準備あり'));
+  if (x.back) meta.appendChild(node('span', 'ibTag', 'あとでから戻った'));
+  c.appendChild(meta); c.appendChild(node('div', 'title', x.title));
+  const d = node('button', 'done', '済'); d.type = 'button'; d.setAttribute('aria-label', `判断待ち ${x.n} を済みにする`);
+  d.onclick = e => { e.stopPropagation(); d.disabled = true; doneItem(x); };
+  c.appendChild(d);
+  c.onclick = () => openItem(x.n);
+  c.onkeydown = e => { if ((e.key === 'Enter' || e.key === ' ') && e.target === c) { e.preventDefault(); openItem(x.n); } };
+  return c;
+}
+function itemView(it) {
+  const v = node('div', 'ibItem');
+  const back = node('button', 'ibBack', '‹ 判断待ちの一覧'); back.type = 'button'; back.onclick = closeItem; v.appendChild(back);
+  if (!it) { v.appendChild(node('div', 'sitMeta', 'この判断待ちは、片づいたか見つかりませんでした')); return v; }
+  const meta = node('div', 'meta'); meta.append(srcTag(it), `${it.project} ・ ${ibStampOf(it)} ・ 記録 [${it.n}]`); v.appendChild(meta);
+  v.appendChild(node('h3', null, it.title));
+  if (it.note) { v.appendChild(node('div', 'ibLabel', '要ること（Hermes の要約。未確認）')); v.appendChild(node('div', 'ibBox', it.note)); }
+  if (it.prepared) { v.appendChild(node('div', 'ibLabel', '準備したこと（返信案など。Hermes が書いたもの）')); v.appendChild(node('div', 'ibBox', it.prepared)); }
+  const acts = node('div', 'ibActs');
+  if (it.prepared) {
+    const cp = node('button', null, 'コピー'); cp.type = 'button';
+    cp.onclick = async () => { try { await navigator.clipboard.writeText(it.prepared); cp.textContent = 'コピーしました'; } catch { cp.textContent = 'コピーできませんでした（長押しで選んでください）'; } setTimeout(() => { cp.textContent = 'コピー'; }, 2500); };
+    acts.appendChild(cp);
+  }
+  if (it.link && LINK_OK.test(it.link.url)) { const a = node('a', null, it.link.label + ' ↗'); a.href = it.link.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; acts.appendChild(a); }
+  if (acts.childNodes.length) { v.appendChild(acts); v.appendChild(node('div', 'ibNote', '送るのはご自分です（コピーして、メール・Teams・Slack に貼って送ります）')); }
+  const acts2 = node('div', 'ibActs');
+  const done = node('button', 'go', '済んだ'); done.type = 'button'; done.onclick = () => { done.disabled = true; doneItem(it); }; acts2.appendChild(done);
+  const later = document.createElement('select'); later.setAttribute('aria-label', 'あとでに回す');
+  later.appendChild(new Option('あとで ▾', ''));
+  for (const o of inbox?.later_options || []) later.appendChild(new Option(o.label, o.key));
+  later.onchange = () => { if (later.value) laterItem(it, later.value); };
+  acts2.appendChild(later);
+  const on = replyTarget && replyTarget.item === it.n;
+  if (!on) { const rb = node('button', null, '↩ この件に返信'); rb.type = 'button'; rb.onclick = () => itemReply(it); acts2.appendChild(rb); }
+  v.appendChild(acts2);
+  v.appendChild(node('div', 'ibNote', on ? 'いまこの件への「↩ 返信」の状態です。下の欄で、ことばを添えて「送る」か、空のまま「このまま送る」を押すと、ハブが答えます（答えはハブの会話に出ます）。開いただけでは何も送りません'
+    : '「↩ この件に返信」で、この件についてハブに聞けます'));
+  return v;
+}
+// 戻せる件の「戻す」（一覧でも、件の中身を開いている間でも出す。5 秒の間に別の件を開いても戻せるように）
+function undoToasts() {
+  const out = [];
+  for (const v of ibUndos.values()) {
+    if (Date.now() >= v.until) continue;
+    const t = node('div', 'ibToast'); t.dataset.n = String(v.n); t.appendChild(node('span', null, `済みにしました「${v.title}」`));
+    const u = node('button', null, '戻す'); u.type = 'button'; u.setAttribute('aria-label', `判断待ち ${v.n} を戻す`); u.onclick = () => undoItem(v.n); t.appendChild(u); out.push(t);
+  }
+  return out;
+}
+function inboxView(d) {
+  const f = document.createDocumentFragment();
+  if (d.problem) f.appendChild(node('div', 'sitMeta bad', d.problem));
+  if (d.note) f.appendChild(node('div', 'sitMeta', d.note));
+  for (const w of d.watch || []) {
+    const b = node('div', 'ibBand'); b.appendChild(node('b', null, w.title));
+    if (w.reason) b.appendChild(node('div', null, '理由: ' + w.reason));
+    if (w.fix) b.appendChild(node('div', null, '直し方: ' + w.fix));
+    f.appendChild(b);
+  }
+  if (d.fail) f.appendChild(node('div', 'sitMeta bad', `[${d.fail.n}] に済みの印を付けられませんでした（${d.fail.why}）。一覧に戻したので、もう一度押してください`));
+  for (const t of undoToasts()) f.appendChild(t);
+  const all = d.items, projects = [...new Set(all.map(x => x.project))];
+  if (ibProj && !projects.includes(ibProj)) ibProj = '';
+  const shown = all.filter(x => !ibProj || x.project === ibProj), near = shown.filter(x => !x.old), old = shown.filter(x => x.old);
+  const head = node('div', 'ibHead'); head.appendChild(node('b', null, `判断待ち ${all.filter(x => !x.old).length}`)); head.appendChild(node('span', null, '新しい順'));
+  f.appendChild(head);
+  if (projects.length > 1) {
+    const chips = node('div', 'ibChips');
+    const chip = (label, val) => { const b = node('button', null, label); b.type = 'button'; b.setAttribute('aria-pressed', String(ibProj === val)); b.onclick = () => { ibProj = val; renderSit(); }; chips.appendChild(b); };
+    chip(`すべて ${all.length}`, '');
+    for (const p of projects) chip(`${p} ${all.filter(x => x.project === p).length}`, p);
+    f.appendChild(chips);
+  }
+  for (const x of near) f.appendChild(itemCard(x));
+  if (!near.length && !d.problem) f.appendChild(node('div', 'sitMeta', ibProj ? 'この案件の判断待ちは、3 日以内にはありません' : 'いまは判断待ちはありません'));
+  if (old.length) {
+    const det = document.createElement('details'); det.className = 'ibFold'; det.open = ibOld;
+    det.ontoggle = () => { ibOld = det.open; };
+    det.appendChild(node('summary', null, `${d.days} 日より前 ${old.length} 件（済んでいるかは確かめていません）`));
+    const box = node('div'); for (const x of old) box.appendChild(itemCard(x)); det.appendChild(box); f.appendChild(det);
+  }
+  if (d.later) f.appendChild(node('div', 'sitMeta', `あとでに回したもの ${d.later} 件（時刻になると、一覧の上に戻ります）`));
+  if (d.fyi && d.fyi.length) {
+    const det = document.createElement('details'); det.className = 'ibFold'; det.open = ibFyiOpen;
+    det.ontoggle = () => { ibFyiOpen = det.open; };
+    det.appendChild(node('summary', null, `今日届いたもの（対応不要） ${d.fyi.length} 件`));
+    const box = node('div');
+    for (const x of d.fyi) {
+      const r = node('div', 'ibFyi'); const meta = node('div', 'meta'); meta.append(srcTag(x), `${x.project} ・ ${ibStampOf(x)}`);
+      r.appendChild(meta); r.appendChild(node('div', null, x.title)); if (x.prepared) r.appendChild(node('div', 'sitMeta', x.prepared)); box.appendChild(r);
+    }
+    det.appendChild(box); f.appendChild(det);
+  }
+  return f;
+}
+// 受け箱と「その他」（Hermes の知らせ・学んだこと・手順の書き足し・会話を新しく）を描く。読み直しは loadSituation
+function renderSit() {
+  const box = $('sitBody');
+  if (!sitCache) return;
+  const [h, nt, lr, ib] = sitCache;
+  const top = [];
+  if (sitNote) { const n = node('div', sitNote[1] ? 'bad' : null, sitNote[0]); n.id = 'sitNote'; top.push(n); }
+  if (ibMsg) { const n = node('div', 'sitMeta' + (ibMsg[1] ? ' bad' : ''), ibMsg[0]); top.push(n); }
+  if (ibSel != null) {  // 件の中身
+    const it = findItem(ib, ibSel);
+    const sig = JSON.stringify([it, replyTarget && replyTarget.item, ibMsg, [...ibUndos.keys()]]);
+    if (sig === ibSig && box.querySelector('.ibItem')) return;  // 変わっていなければ描き直さない（選んで写している途中を崩さない）
+    ibSig = sig;
+    box.replaceChildren(...top, ...undoToasts(), itemView(it));
+    return;
+  }
+  box.replaceChildren(...top);
+  if (ib === FAILED) box.appendChild(node('div', 'sitMeta bad', '判断待ちを読めませんでした（接続を確かめてください）'));
+  else if (!ib.on) box.appendChild(node('div', 'sitMeta', '判断待ちの受け箱は、Hermes がハブのときに出ます'));
+  else box.appendChild(inboxView(ib));
+  const other = node('div');
+  const notes = nt === FAILED ? [] : nt.rows;
   const hermesHub = agents.find(a => a.hermes && a.hub);
-  if (hermesHub) box.appendChild(hubSessionRow(hermesHub));
-  if (sitNote) { const n = node('div', sitNote[1] ? 'bad' : null, sitNote[0]); n.id = 'sitNote'; box.appendChild(n); }
-  if (nt === FAILED) box.appendChild(node('div', 'sitMeta bad', '知らせを読めませんでした（接続を確かめてください）'));
-  if (h === FAILED) box.appendChild(node('div', 'sitMeta bad', 'Hermes の手順の書き足しを読めませんでした（接続を確かめてください）'));
-  if (notes.length) {  // 代理（Hermes）からの知らせ。文字として出すだけで、押して動くものは無い
+  if (hermesHub) other.appendChild(hubSessionRow(hermesHub));
+  if (nt === FAILED) other.appendChild(node('div', 'sitMeta bad', '知らせを読めませんでした（接続を確かめてください）'));
+  if (h === FAILED) other.appendChild(node('div', 'sitMeta bad', 'Hermes の手順の書き足しを読めませんでした（接続を確かめてください）'));
+  if (notes.length) {  // 代理（Hermes）からの知らせ（これまでの記録）。文字として出すだけで、押して動くものは無い
     const hd = node('h4', null, `${nt.sender} からの知らせ（${notes.length}）— ${nt.sender} が書いた未確認の情報です。動く前に、ハブとの会話で中身を確かめてください`);
     const all = node('button', 'noteAll', 'すべて消す');
     all.onclick = async () => { all.disabled = true; try { await postJSON('/api/notices/dismiss', { all: true }); } catch { sys('消せませんでした（本体に届きません）'); } loadSituation(); };
-    hd.appendChild(all); box.appendChild(hd);
+    hd.appendChild(all); other.appendChild(hd);
     for (const r of notes) {
       const c = node('div', 'notice');
-      const top = node('div', 'noteHead'); top.appendChild(node('span', 'sitMeta', stamp(r.at) + ' ')); top.appendChild(node('b', null, r.title));
+      const tp = node('div', 'noteHead'); tp.appendChild(node('span', 'sitMeta', stamp(r.at) + ' ')); tp.appendChild(node('b', null, r.title));
       const x = node('button', null, '×'); x.setAttribute('aria-label', `知らせ ${r.n} を消す`);
       x.onclick = async () => { x.disabled = true; try { await postJSON('/api/notices/dismiss', { n: r.n }); } catch { sys('消せませんでした（本体に届きません）'); } loadSituation(); };
-      top.appendChild(x); c.appendChild(top);
+      tp.appendChild(x); c.appendChild(tp);
       if (r.text) c.appendChild(node('div', null, r.text));
-      box.appendChild(c);
+      other.appendChild(c);
     }
   }
-  if (lr === FAILED) box.appendChild(node('div', 'sitMeta bad', '学んだことを読めませんでした（接続を確かめてください）'));
+  if (lr === FAILED) other.appendChild(node('div', 'sitMeta bad', '学んだことを読めませんでした（接続を確かめてください）'));
   else if (lr.on && (lr.entries.length || lr.problem)) {
-    box.appendChild(node('h4', null, `学んだこと（Hermes。今日自動で当てた手順 ${lr.today ?? '?'}/${lr.limit ?? '?'}）— 手順の書き足しは本体が自動で当て、記憶は Hermes が書きます。違えば「戻す」で戻せます`));
-    if (lr.problem) box.appendChild(node('div', 'sitMeta bad', lr.problem));
-    for (const e of lr.entries.slice(0, learnShown)) box.appendChild(learnCard(e));
+    other.appendChild(node('h4', null, `学んだこと（Hermes。今日自動で当てた手順 ${lr.today ?? '?'}/${lr.limit ?? '?'}）— 手順の書き足しは本体が自動で当て、記憶は Hermes が書きます。違えば「戻す」で戻せます`));
+    if (lr.problem) other.appendChild(node('div', 'sitMeta bad', lr.problem));
+    for (const e of lr.entries.slice(0, learnShown)) other.appendChild(learnCard(e));
     if (lr.entries.length > learnShown) {  // 古い跡も、画面から中身を見て戻せるように（跡は消さないので、上を戻しても下は押し出されない）
       const more = node('button', 'learnMore', `さらに ${Math.min(LEARN_PAGE, lr.entries.length - learnShown)} 件を見る（残り ${lr.entries.length - learnShown} 件）`);
       more.onclick = () => { learnShown += LEARN_PAGE; loadSituation(); };
-      box.appendChild(more);
+      other.appendChild(more);
     }
   }
-  if (h !== FAILED && h.on && (h.items.length || h.unreadable || h.problem)) {
-    box.appendChild(node('h4', null, `自動で当てていない手順の書き足し（Hermes・${h.items.length}）— 今日の上限を超えた分は次の日に自動で当てます。採ると、いま当てます`));
-    if (h.problem) box.appendChild(node('div', 'sitMeta bad', h.problem));
-    if (h.verify) box.appendChild(node('div', 'sitMeta bad', '前の処理が終わったか確かめています。確かめられるまで、採る・捨てるは断ります'));
-    if (h.unreadable) box.appendChild(node('div', 'sitMeta bad', `読めない記録 ${h.unreadable} 件（symlink・大きすぎるもの・形の違うものは読みません。Hermes の対話画面の /skills で見てください）`));
-    for (const it of h.items) box.appendChild(hskCard(it));
-    if (h.items.length) box.appendChild(node('div', 'sitMeta', '似た書き足しがもう手順にあれば、捨ててかまいません'));
+  const asking = h !== FAILED && h.on && (h.items.length || h.unreadable || h.problem);
+  if (asking) {
+    other.appendChild(node('h4', null, `自動で当てていない手順の書き足し（Hermes・${h.items.length}）— 今日の上限を超えた分は次の日に自動で当てます。採ると、いま当てます`));
+    if (h.problem) other.appendChild(node('div', 'sitMeta bad', h.problem));
+    if (h.verify) other.appendChild(node('div', 'sitMeta bad', '前の処理が終わったか確かめています。確かめられるまで、採る・捨てるは断ります'));
+    if (h.unreadable) other.appendChild(node('div', 'sitMeta bad', `読めない記録 ${h.unreadable} 件（symlink・大きすぎるもの・形の違うものは読みません。Hermes の対話画面の /skills で見てください）`));
+    for (const it of h.items) other.appendChild(hskCard(it));
+    if (h.items.length) other.appendChild(node('div', 'sitMeta', '似た書き足しがもう手順にあれば、捨ててかまいません'));
   }
-  if (h !== FAILED && nt !== FAILED && !notes.length && !(h.on && (h.items.length || h.unreadable || h.problem))) box.appendChild(node('div', 'sitMeta', 'いまは知らせも承認待ちもありません'));
+  if (h !== FAILED && nt !== FAILED && !notes.length && !asking) other.appendChild(node('div', 'sitMeta', 'いまは知らせも手順の承認待ちもありません'));
+  const det = document.createElement('details'); det.className = 'ibFold'; det.id = 'sitOther';
+  det.open = ibOther === true || (ibOther !== 'closed' && h !== FAILED && h.on && h.items.length > 0);  // 承認待ちがあれば開いておく（閉じたら閉じたまま）
+  det.ontoggle = () => { ibOther = det.open ? true : 'closed'; };
+  const waiting = h !== FAILED && h.on ? h.items.length : 0;
+  det.appendChild(node('summary', null, `その他（Hermes の知らせ ${notes.length} 件・学んだこと・手順の書き足し${waiting ? `（承認待ち ${waiting}）` : ''}・ハブの会話を新しく）`));
+  det.appendChild(other);
+  box.appendChild(det);
 }
-function showSituation(open) { phone.sit = open; if (!wide) runSituation(open); }
+async function loadSituation() {
+  // 読めなかったときは、知らせが無いことと分けて出す（本体が止まった・接続が切れたときに「ありません」と見せない）
+  const get = url => fetch(url).then(r => r.ok ? r.json() : FAILED).catch(() => FAILED);
+  const gen = ibGen;
+  const [h, nt, lr, ib] = await Promise.all([get('/api/hermes/skills'), get('/api/notices'), get('/api/hermes/learned'), get('/api/inbox')]);
+  if (sitHold) return;  // 読んでいるあいだに「採る」などが押された
+  if (gen !== ibGen) return;  // 読んでいる間に済んだ・戻す・あとでを押した（その操作のあとの読み直しが描く。古い答えで消したカードを戻さない）
+  if (h === FAILED && nt === FAILED && ib === FAILED) { $('sitBody').textContent = '読めませんでした（接続を確かめてください）'; return; }  // 数の札はそのまま
+  if (ib !== FAILED) { inbox = ib; paintSitBtn(ibCount(ib)); }
+  if (h !== FAILED && ib !== FAILED) {  // 両方読めたときだけ数を描き直す
+    const waiting = (h.on ? h.items.length : 0) + ibCount(ib);
+    $('sitCount').hidden = !waiting; $('sitCount').textContent = String(waiting);  // PC の「知らせ」タブの数（判断待ちと手順の承認待ち）
+  }
+  sitCache = [h, nt, lr, ib];
+  if (ibExtra && ib !== FAILED) {  // 通知で開いた一覧に出ていない件も、読み直すたびに本体に確かめる（ほかで片づいていたら、古い中身を出さない）
+    const n = ibExtra.n;
+    if (ib.items.some(x => x.n === n)) ibExtra = null;
+    else {
+      let got = null; try { const r = await fetch('/api/inbox/item?n=' + n); if (r.ok) got = await r.json(); } catch {}
+      if (gen !== ibGen) return;  // 待つ間に済んだ・戻す・あとでを押した（古い答えで、開き直した件を消さない）
+      if (ibExtra && ibExtra.n === n && got) { ibExtra = got.ok && got.item && got.item.n === n ? got.item : null; ibSig = ''; }
+    }
+  }
+  if (ibWant != null && ib !== FAILED) {  // 通知・リンク（/#i=<番号>）で開いた件（読み込みを待つ間に利用者が選び直していたら、中身だけ出して返信先は付けない）
+    const w = ibWant; ibWant = null;
+    if (ib.items.some(x => x.n === w.n)) { openItem(w.n, w.seq); return; }
+    // 一覧に出ていない（あとでに回した・数の上限から外れた）件は、1 件だけ本体に聞く。待つ間に閉じた・別の通知を開いたら何もしない
+    let got = null; try { const r = await fetch('/api/inbox/item?n=' + w.n); if (r.ok) got = await r.json(); } catch {}
+    if (w.tok !== ibWantTok || gen !== ibGen) return;
+    if (got && got.ok && got.item && got.item.n === w.n) { ibExtra = got.item; openItem(w.n, w.seq); return; }
+    ibNote(`判断待ち [${w.n}] は、片づいたか見つかりませんでした`, false);
+  }
+  renderSit();
+}
+// 通知・リンクの /#inbox（受け箱を開く）と /#i=<番号>（その判断待ちを開く）。開くだけで、何も送らない
+function openInboxHash() {
+  const m = /^#(inbox|i=([1-9][0-9]{0,9}))$/.exec(location.hash);
+  if (!m) return false;
+  history.replaceState(null, '', location.pathname + location.search);
+  cancelTopic();  // 読み込み中の件（/#t=）とその開き直しもやめる（遅れて届いた件の報告を返信先にしない）
+  if (replyTarget) setReplyTarget(null);  // 前の返信先は外す（開く件が見つかったときだけ、その件に付け直す）
+  ibWantTok++;
+  ibWant = m[2] ? { n: Number(m[2]), seq: topicSeq, tok: ibWantTok } : null; ibSel = null; ibSig = ''; ibExtra = null;
+  if (typeof closeViewer === 'function') closeViewer();
+  if (reading) setReading(false);
+  if (wide) setRecTab('sit'); else { showTasks(false); showSituation(true); }
+  loadSituation();
+  return true;
+}
+// 💡 の数は、閉じていても 1 分ごとに取り直す（見えている間だけ）
+async function refreshSitCount() { try { const gen = ibGen; const r = await fetch('/api/inbox'); if (r.ok) { const d = await r.json(); if (gen !== ibGen) return; inbox = d; if (sitCache) sitCache[3] = inbox; paintSitBtn(ibCount(inbox)); } } catch {} }  // 描く元もそろえる
+setInterval(() => { if (!document.hidden && $('situation').hidden) refreshSitCount(); }, 60000);
+// 起動の読み込み（一覧・会話・声）と重ねないよう、少し待ってから数を取る。PC の形と、開いている受け箱は自分で読む
+setTimeout(() => { if (!wide && $('situation').hidden) refreshSitCount(); }, 3000);
+// 閉じたら（✕・💡・📋 のどれでも）、読み込み中の開く予約と、開いている件（待っている返信先の設定も）をやめる
+function showSituation(open) { phone.sit = open; if (!open) { ibWant = null; ibWantTok++; if (ibSel != null) closeItem(); } if (!wide) runSituation(open); }
 function runSituation(open) {  // 見える・15 秒ごとに取り直す、を切り替える（PC では常に開く）
   $('situation').hidden = !open; $('sitBtn').setAttribute('aria-pressed', String(open));
   clearInterval(sitTimer); sitTimer = null;
@@ -1658,7 +1953,7 @@ function connect() {
     else if (m.type === 'done') { serverDone = true; if (!playing && !queue.length) finishSpeaking(); loadAgents(); }
     else if (m.type === 'stopped') { stopPlayback(); setStatus('止めました'); }
     else if (m.type === 'blocked') loadAsks(); // 話している相手が承認で止まった → すぐ並べる
-    else if (m.type === 'agent_notice') { sys(`📨 ${m.sender} からの知らせ（未確認）: ${m.title}`); loadSituation(); } // 代理からの知らせ（題だけ。中身は 💡。閉じていても、知らせの数を取り直す）
+    else if (m.type === 'agent_notice') loadSituation(); // 代理からの知らせ。会話の欄には出さず、💡 の数と受け箱を取り直す（閉じていても）
   };
 }
 function linked() { return !!ws && ws.readyState === 1; }
@@ -1708,7 +2003,7 @@ async function startRec() {
     const files = await sendAttach(pane, list, '話した内容');
     if (!files) return;
     ws.send(JSON.stringify({ type: 'turn', pane, key, speaker: $('speaker').value, filename: 'rec.' + ext, ...rf, ...(files.length ? { attachments: files } : {}) }));
-    if (rf.reply_at !== undefined && replyTarget && replyTarget.at === rf.reply_at) setReplyTarget(null);
+    if (sameTarget(rf)) setReplyTarget(null);
     dropSent(list);
     ws.send(await blob.arrayBuffer());
     setStatus('聞き取り中…');
@@ -1726,6 +2021,9 @@ $('stop').onclick = () => {
 // 文字の欄は、行の数に合わせて伸びる（上限は CSS の max-height。超えたら欄の中で送る）
 const fitTyped = () => { const el = $('typed'); el.style.height = 'auto'; el.style.height = (el.scrollHeight + 2) + 'px'; };
 $('typed').addEventListener('input', fitTyped);
+$('typed').addEventListener('input', () => paintSend());
+// 送った返信先が、いまも同じ返信先なら外す（送る間に別の返信先を選んでいたら残す）
+const sameTarget = rf => !!replyTarget && ((rf.reply_at !== undefined && replyTarget.at === rf.reply_at) || (rf.reply_item !== undefined && replyTarget.item === rf.reply_item));
 // Enter で送る。Shift+Enter は改行。日本語の変換を決める Enter では送らない。指で使う端末（画面のキーボード）では Enter は改行で、送るのはボタン
 $('typed').addEventListener('keydown', e => {
   if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.keyCode === 229) return;
@@ -1737,19 +2035,21 @@ $('typedForm').onsubmit = async e => {
   // Enter の requestSubmit() はボタンの無効を見ないので、ここでボタンと同じ可否（applyTarget）を確かめる。添付だけでも送れる
   // 添付を送っている間は、重ねて送らない（Enter・「送る」を続けて押しても 1 回だけ）
   e.preventDefault(); if (attachJob) return;
-  const t = $('typed').value.trim(); if ((!t && !attachFiles.length) || $('send').disabled || !$('agent').value || !linked()) return;
+  const t = $('typed').value.trim(); if ((!t && !attachFiles.length && !itemOnly()) || $('send').disabled || !$('agent').value || !linked()) return;
   // 宛先・返信先（とその件の名前）・添付は押した時点で固定する。待つ間に欄が変わっても、ここで決めたものだけを送る
   cancelTopic();
   const pane = $('agent').value, key = curKey(), rf = replyFields(), about = rf.reply_at !== undefined ? replyTarget.about : '', list = attachFiles.slice();
+  const item = rf.reply_item;
   prime();  // 読み上げの許可は、押したその場で取る（添付を置き終えるのを待ってからでは、iPhone の Safari が押した操作と見ない）
   const files = await sendAttach(pane, list, '文と添付');
   if (!files) return;  // 送らないときは、文も添付も残す
   sendTurnStart();
-  const shown = t + (list.length ? (t ? '\n' : '') + '📎 ' + list.map(f => f.name).join('、') : '');
+  const shown = (t || (list.length ? '' : '（ことばなし）')) + (list.length ? (t ? '\n' : '') + '📎 ' + list.map(f => f.name).join('、') : '');
   if ($('typed').value.trim() === t) { $('typed').value = ''; fitTyped(); }  // 待つ間に打ち直した文は消さない
-  decorate(bubble('me', shown, 'pending'), { role: 'me', reply_to: about }); localPush('me', shown);
+  decorate(bubble('me', shown, 'pending'), { role: 'me', reply_to: about, reply_item: item }); localPush('me', shown);
   ws.send(JSON.stringify({ type: 'text', text: t, pane, key, speaker: $('speaker').value, ...rf, ...(files.length ? { attachments: files } : {}) }));
-  if (rf.reply_at !== undefined && replyTarget && replyTarget.at === rf.reply_at) setReplyTarget(null);
+  if (sameTarget(rf)) setReplyTarget(null);
+  paintSend();
   dropSent(list);
   setStatus('エージェントに送りました。考え中…');
 };
@@ -1784,7 +2084,7 @@ loadAsks();
 // 一覧と声を読んでからつなぐ。届かないときは5秒で見切って案内を出し、つなぎに行く（つながりしだい catchUp で取り直す）
 // 件の URL（通知・Slack のリンク）で新しく開いたときは、起動の読み込み（一覧・会話・声）を待たずに件を開く（初めの表示では hashchange が起きない。
 // 届かなければ、件を覚えておき catchUp と少し待ってから開き直す）
-if (location.hash) openTopic();
+if (location.hash && !openInboxHash()) openTopic();
 Promise.race([Promise.allSettled([loadAgents(), ensureSpeakers()]).then(() => true), new Promise(r => setTimeout(() => r(false), 5000))])
   .then(replied => { if (!replied) setStatus(UNREACHABLE); connect(); });
 </script>

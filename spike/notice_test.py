@@ -34,10 +34,12 @@ def check(name, got, want):
 
 
 pushes = []
+urls = []  # 通知を押したときに開く場所
 
 
-async def fake_push(title, body, tag, urgency="normal", only=None):
+async def fake_push(title, body, tag, urgency="normal", only=None, url="/"):
     pushes.append((title, body, tag))
+    urls.append(url)
     return "sent"
 
 
@@ -82,6 +84,17 @@ bad = [post(b) for b in ({}, {"title": ""}, {"title": " \n\t "}, {"title": 1}, {
 check("題が無い・空・文字でない、一言が文字でないときは断る（400）", [x.status_code for x in bad], [400] * 7)
 check("…そして断ったものは残さない", len(c.get("/api/notices").json()["rows"]), 2)
 check("本文が JSON の物でなければ断る", c.post("/api/hub/notice", content=b'"text"', headers={"Content-Type": "application/json"}).status_code in (400, 422), True)
+
+# ---------- 通知を押したときに開く場所（0.31.0。受け箱 /#inbox、判断待ちが 1 つなら /#i=<番号>） ----------
+reset(); urls.clear()
+post({"title": "番号なし"}); post({"title": "1 件", "items": [273]}); post({"title": "2 件", "items": [12, 13]}); post({"title": "同じ番号", "items": [7, 7]})
+check("通知を押すと受け箱、判断待ちが 1 つならその件（同じ番号は 1 つに数える）", urls, ["/#inbox", "/#i=273", "/#inbox", "/#i=7"])
+bad = [post({"title": "x", "items": v}) for v in ("273", [0], [-1], [True], [1.5], ["12"], [2**31], list(range(1, s.NOTICE_ITEMS + 2)))]
+many = post({"title": "21 件", "items": list(range(1, 22))}).json()
+check("判断待ちの番号の形が違えば受けず、理由を言う（文字・0・負・真偽・小数・大きすぎ・多すぎ）",
+      [(r.status_code, r.json().get("reason")) for r in bad], [(400, "bad_items")] * 8)
+check("見張りの 1 回で 21 件以上の判断待ちを添えても受け、受け箱を開く（20 件を超えても知らせが断られない）", (many.get("ok"), urls[-1]), (True, "/#inbox"))
+check("…断った知らせは一覧に足さない", [r["title"] for r in c.get("/api/notices").json()["rows"]], ["21 件", "同じ番号", "2 件", "1 件", "番号なし"])
 
 # ---------- 数の上限 ----------
 reset()
@@ -200,6 +213,11 @@ else:
     check("…一言は残りの語をつないだもの", c.get("/api/notices").json()["rows"][0]["text"], "下書きを作りました。 判断が要ります")
     r = hub("notice", "")
     check("hubctl notice: 題が空なら断り、理由を言う", (r.returncode != 0, "題が空です" in r.stderr), (True, True))
+    urls.clear()
+    r = hub("notice", "判断待ち 1 件: 見積もり", "案件｜見積もり", "--item", "41")
+    check("hubctl notice --item: 判断待ちの番号を添え、押すとその件が開く", (r.returncode, urls), (0, ["/#i=41"]))
+    r = hub("notice", "判断待ち", "--item", "0")
+    check("hubctl notice --item: 番号が違えば断り、理由を言う", (r.returncode != 0, "--item の番号が正しくありません" in r.stderr), (True, True))
     check("hubctl の説明に notice がある", "hubctl notice <題>" in hub("--help").stdout, True)
     srv.should_exit = True
     th.join(5)

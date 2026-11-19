@@ -102,8 +102,10 @@ class Talker:
         """送ったときの状態の文。"""
         raise NotImplementedError
 
-    async def exchange(self, text: str, reply_at: float | None = None, extra: str = "") -> tuple[str, str, bool]:
+    async def exchange(self, text: str, reply_at: float | None = None, extra: str = "", item: int | None = None) -> tuple[str, str, bool]:
         """ユーザーの発言を 1 往復する。(返事, 失敗の理由, 記録に書けたか)。reply_at は、画面の「返信」が指した報告の記録の時刻（無ければ None）。
+        item は、画面の受け箱（💡）で押した判断待ちの記録の番号（無ければ None。形が違えば -1）。その件への返信として渡し、text は空でもよい。
+        返信と同じく、承認に答える・閉じるには使わせない。
         extra は本体が発言の末尾に足す行（添付の場所）。相手に渡す文と記録には付けるが、承認・閉じるの守りが見る発言は利用者の言葉（text）のまま。"""
         raise NotImplementedError
 

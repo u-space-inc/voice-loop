@@ -15,7 +15,7 @@ PC の見た目（Chromium）: 頼んだ件を「動いている」「終わっ�
 時刻だけ動いて並びが同じなら作り直さない・PC の左の一覧の更新順も同じ並び。
 広げて読む（Chromium）: ⤢ で右の列を画面いっぱいに・ほかの列は inert・長い記憶を切らずに出す・直す途中の文が残る・Esc（文の欄・一行の欄・
 変換の途中では効かない）・✕・狭めると戻る・広げている間だけ承認・入力待ちの数を出し、押すと戻ってカードのボタンへ。
-代理からの知らせ（Chromium）: 💡 の一覧に文字として出す（タグを解釈しない）・知らせの数に入る・× とすべて消す・開いている画面に一行で出す。
+代理からの知らせ（Chromium）: 💡 の「その他」に文字として出す（タグを解釈しない）・× とすべて消す・タブの数は判断待ちの数・会話の欄に「📨」の行は出さない（0.31.0）。
 キー（Chromium）: PC の幅で Space が話す（押し続けの繰り返し・変換の途中・文字の欄の中では効かない。押しているボタンの既定の動きは止める）・
 Esc が停止（文字の欄の中でも効く・ほかの欄の中では効かない）・広げて読んでいる間は Esc で戻るだけ・スマホの幅では効かない。
 添付（Chromium）: 📎 で選ぶと入力の上に並ぶ（文字の欄の上・同じ幅）・扱えない種類と 6 つ目は断る・✕ で外す・送ると本体に置いて id を発言に付け、
@@ -128,7 +128,16 @@ def seed():
     OUT.clear()
     STILL["v"] = False
     now = time.time()
-    s.write_json(s.NOTICES_FILE, {"next": 2, "rows": [{"n": 1, "title": "ひな形を作ってください", "text": "", "at": now - 600}], "sent": []})  # 💡 に 1 件
+    s.write_json(s.NOTICES_FILE, {"next": 2, "rows": [{"n": 1, "title": "ひな形を作ってください", "text": "", "at": now - 600}], "sent": []})  # 💡 の「その他」に 1 件
+    judge(1)
+
+
+def judge(k):
+    """Hermes の見張りの記録に、判断待ちを k 件置く（💡 の受け箱とタブの数に出る。0.31.0）。"""
+    (HOME / "voice-loop").mkdir(parents=True, exist_ok=True)
+    rows = [{"op": "add", "at": time.time() - 60 * (i + 1), "source": "mail", "id": f"{i + 1:016x}", "project": "lp", "kind": "judge",
+             "title": f"判断待ち{i + 1}", "note": "", "prepared": "", "n": i + 1} for i in range(k)]
+    (HOME / "voice-loop" / "items.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
 
 
 srv = uvicorn.Server(uvicorn.Config(s.app, host="127.0.0.1", port=PORT, log_level="warning"))
@@ -162,6 +171,36 @@ def mem_text(page):
     return page.text_content("#memPanel") or ""
 
 
+def settle_history(page, quiet=0.8, limit=8.0):
+    """会話の読み込み（/api/history）が落ち着くまで待つ。相手を替えたときと、つながった直後の取り直し（catchUp）の両方が、
+    会話の欄を描き直す。描き直しの前に足した吹き出し・案内の行は消えるので、確かめる前に読み込みが止んでいることを見る
+    （読み込みの最中・終わってから quiet 秒たつまで待つ）。"""
+    st = {"n": 0, "t": time.time()}
+
+    def start(r):
+        if "/api/history" in r.url:
+            st["n"] += 1
+            st["t"] = time.time()
+
+    def end(r):
+        if "/api/history" in r.url:
+            st["n"] = max(0, st["n"] - 1)
+            st["t"] = time.time()
+    page.on("request", start)
+    page.on("requestfinished", end)
+    page.on("requestfailed", end)
+    try:
+        stop = time.time() + limit
+        while time.time() < stop:
+            page.wait_for_timeout(100)
+            if st["n"] == 0 and time.time() - st["t"] > quiet:
+                break
+    finally:
+        page.remove_listener("request", start)
+        page.remove_listener("requestfinished", end)
+        page.remove_listener("requestfailed", end)
+
+
 def open_page(page, width):
     page.set_viewport_size({"width": width, "height": 900 if width >= 1100 else 844})
     page.goto(BASE + "/")
@@ -183,10 +222,10 @@ def run_wide(page, who):
     check(f"{who} PC でも 話す・停止・文字の欄・送る・声・🔇・↻ が出ている", [visible(page, x) for x in ("#talk", "#stop", "#typed", "#send", "#speaker", "#mute", "#reload")], [True] * 7)
 
     # タブ
-    check(f"{who} 右は「記憶」が先に開く（知らせのタブに、知らせの数が出る）", (visible(page, "#memPanel"), visible(page, "#situation"), wait(lambda: page.text_content("#sitCount") == "1")),
+    check(f"{who} 右は「記憶」が先に開く（判断待ちのタブに、判断待ちの数が出る）", (visible(page, "#memPanel"), visible(page, "#situation"), wait(lambda: page.text_content("#sitCount") == "1")),
           (True, False, True))
     page.click("#tabSit")
-    check(f"{who} 「知らせ」を押すと、💡 の中身（知らせ）が出る", (visible(page, "#situation"), visible(page, "#memPanel"), wait(lambda: "ひな形を作ってください" in (page.text_content("#sitBody") or ""))),
+    check(f"{who} 「判断待ち」を押すと、💡 の中身（判断待ちと、その他の知らせ）が出る", (visible(page, "#situation"), visible(page, "#memPanel"), wait(lambda: "ひな形を作ってください" in (page.text_content("#sitBody") or ""))),
           (True, False, True))
     page.click("#tabMem")
 
@@ -198,7 +237,9 @@ def run_wide(page, who):
     check(f"{who} 一覧で押すと話し相手が替わる（select も同じ相手）", (page.evaluate("document.getElementById('agent').value"), wait(lambda: names()[2][2])), ("w1:p1", True))
     wait(lambda: not page.locator("#send").is_disabled())
     # 相手を替えると会話の記録を取り直して描き直す。描き終わる前に送ると、送った吹き出しが描き直しで消えるので、描き終わるのを待つ
+    # （つながった直後の取り直しも描き直すので、読み込みが止むまで待つ）
     wait(lambda: "このセッションにはまだ会話がありません" in (page.text_content("#log") or ""))
+    settle_history(page)
     page.evaluate("(() => { window.__sent = []; const o = ws.send.bind(ws); ws.send = m => { window.__sent.push(m); if (typeof m !== 'string' || JSON.parse(m).type !== 'text') o(m); }; })()")
     texts = lambda: page.evaluate("window.__sent.map(m => JSON.parse(m)).filter(m => m.type === 'text').map(m => [m.pane, m.text])")
     typed_h = lambda: round(page.locator("#typed").bounding_box()["height"])
@@ -718,6 +759,7 @@ def run_attach(page, who):
     page.press("#typed", "Enter")
     wait(lambda: len(hold) == 1)
     page.select_option("#agent", s.hermes.HERMES_PANE)
+    settle_history(page)  # 相手を替えた描き直しが終わってから、添付の答えを返す（描き直しが案内の行を消さないように）
     hold[0].continue_()
     page.unroute("**/api/attach*")
     check(f"{who} 添付を置いている間に相手を替えたら送らず、文と添付は残す（宛先をずらさない）",
@@ -831,9 +873,12 @@ def run_notice(page, who):
     now = time.time()
     s.write_json(s.NOTICES_FILE, {"next": 3, "rows": [{"n": 1, "title": "古い知らせ", "text": "", "at": now - 3600},
                                                      {"n": 2, "title": XSS, "text": "一言も" + XSS, "at": now - 60}], "sent": []})
+    judge(2)
     open_page(page, 1400)
-    check(f"{who} 知らせのタブの数に、知らせの数が出る（2）", wait(lambda: page.text_content("#sitCount") == "2"), True)
+    check(f"{who} タブの数は判断待ちの数（知らせの数は数えない。0.31.0）", wait(lambda: page.text_content("#sitCount") == "2"), True)
     page.click("#tabSit")
+    page.wait_for_selector("#sitOther > summary")
+    page.click("#sitOther > summary")  # 知らせ（これまでの記録）は「その他」に畳んである
     # 読めなかったとき（本体が止まった・接続が切れた）は、知らせが無いことと分けて出し、数の札も消さない
     page.route("**/api/notices", lambda r: r.abort())
     page.evaluate("loadSituation()")
@@ -841,11 +886,13 @@ def run_notice(page, who):
           (wait(lambda: "知らせを読めませんでした" in (page.text_content("#sitBody") or "")), "いまは知らせも承認待ちもありません" in (page.text_content("#sitBody") or ""),
            page.text_content("#sitCount")), (True, False, "2"))
     page.route("**/api/hermes/skills", lambda r: r.abort())
+    page.route("**/api/inbox", lambda r: r.abort())
     page.evaluate("loadSituation()")
-    check(f"{who} どちらも読めなければ、読めなかったとだけ出す・数の札は消さない",
+    check(f"{who} どれも読めなければ、読めなかったとだけ出す・数の札は消さない",
           (wait(lambda: (page.text_content("#sitBody") or "") == "読めませんでした（接続を確かめてください）"), page.text_content("#sitCount")), (True, "2"))
     page.unroute("**/api/notices")
     page.unroute("**/api/hermes/skills")
+    page.unroute("**/api/inbox")
     page.evaluate("loadSituation()")
     check(f"{who} 知らせは新しい順に、題と一言を文字として出す（タグを解釈しない）",
           wait(lambda: page.locator("#sitBody .notice").count() == 2 and XSS in (page.locator("#sitBody .notice").first.text_content() or "")), True)
@@ -858,12 +905,12 @@ def run_notice(page, who):
     req = urllib.request.Request(BASE + "/api/hub/notice", data=json.dumps({"title": "新しい知らせ", "text": "下書きを作りました"}).encode(),
                                  headers={"Content-Type": "application/json"}, method="POST")
     r = json.loads(urllib.request.urlopen(req, timeout=10).read())
-    check(f"{who} 開いている画面には、届いた知らせを一行で出す（プッシュは送らない）",
-          (r.get("push"), wait(lambda: "📨 Hermes からの知らせ（未確認）: 新しい知らせ" in (page.text_content("#log") or ""))), ("visible", True))
+    check(f"{who} 開いている画面には、プッシュは送らない。会話の欄に「📨」の行は出さない（0.31.0）",
+          (r.get("push"), wait(lambda: page.locator("#sitBody .notice").count() == 2), "📨" in (page.text_content("#log") or "")), ("visible", True, False))
     check(f"{who} …そして一覧も取り直す", wait(lambda: page.locator("#sitBody .notice").count() == 2), True)
     page.click("#sitBody .noteAll")
-    check(f"{who} 「すべて消す」で一覧が空になり、数の札は隠れ、無いことを一言で出す",
-          wait(lambda: page.locator("#sitBody .notice").count() == 0 and page.is_hidden("#sitCount") and "いまは知らせも承認待ちもありません" in (page.text_content("#sitBody") or "")), True)
+    check(f"{who} 「すべて消す」で知らせが空になり、無いことを一言で出す（数の札は判断待ちの数のまま）",
+          wait(lambda: page.locator("#sitBody .notice").count() == 0 and page.text_content("#sitCount") == "2" and "いまは知らせも手順の承認待ちもありません" in (page.text_content("#sitBody") or "")), True)
     page.close()
 
 

@@ -71,12 +71,12 @@ self.addEventListener('push', e => {
   }));
 });
 
-// 通知を押したとき。開く場所は、この画面のはじめ（/）か件（/#t=<件>）だけ（ほかの形は / にする）。
+// 通知を押したとき。開く場所は、この画面のはじめ（/）・件（/#t=<件>）・受け箱（/#inbox）・判断待ちの 1 件（/#i=<番号>）だけ（ほかの形は / にする）。
 // 開いている画面があれば、そこへ寄せて件の場所を渡す（画面が #t= を受けて、その件を開く）。無ければ件の場所で開く
 self.addEventListener('notificationclick', e => {
   e.notification.close();
   let url = new URL((e.notification.data && e.notification.data.url) || '/', self.location.origin);
-  if (url.origin !== self.location.origin || url.pathname !== '/' || url.search || !(url.hash === '' || /^#t=t[0-9a-f]{10}$/.test(url.hash))) url = new URL('/', self.location.origin);
+  if (url.origin !== self.location.origin || url.pathname !== '/' || url.search || !(url.hash === '' || /^#(t=t[0-9a-f]{10}|inbox|i=[1-9][0-9]{0,9})$/.test(url.hash))) url = new URL('/', self.location.origin);
   e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
     const open = list.find(c => new URL(c.url).origin === self.location.origin);
     if (!open) return self.clients.openWindow(url.href);
