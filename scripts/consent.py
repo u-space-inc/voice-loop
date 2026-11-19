@@ -74,17 +74,11 @@ _SENTENCE = re.compile(r"[^。．.!！?？\n]*[?？]?")
 _QUOTE = re.compile(r"「[^「」]*」|『[^『』]*』|“[^“”]*”|\"[^\"]*\"|（[^（）]*）|\([^()]*\)")
 
 
-def mentions(heard: str, name: str) -> bool:
-    """聞いた文 heard に、名前 name がそのまま入っているか（大文字小文字・全角半角・空白の違いは数えない）。空の名前は入っていないとみなす。"""
-    n = _flat(name)
-    return bool(n) and n in _flat(heard)
-
-
 _ASKS_END = re.compile(r"(?:[?？]|か|かな|かね|っけ)$")  # 問いで終わる文（引用・括弧を隠したあとの文の終わり）
 
 
-def _sentences(heard: str) -> list[tuple[str, str]]:
-    """聞いた文を、引用・括弧の外で文に分けたもの (隠した文, 引用・括弧を元に戻した文)。引用・括弧の中の「？」では切らない。
+def _hide(heard: str):
+    """聞いた文の引用・括弧を隠したもの (隠した文, 元に戻す関数 show)。引用・括弧は内側から順に「NUL 番号 NUL」のしるしに替える。
     隠すしるしには NUL を使うので、入力の NUL は先に取り除く（入力の文字と、しるしを取り違えない。codex-review）。
     改行は文の区切りとして残す（句読点の無い問いを改行で並べた返答を、1 つの文に読まない。codex-review）。ほかの空白は除く。"""
     flat, kept = re.sub(r"[^\S\n]+", "", _norm(heard)).replace("\x00", ""), []
@@ -107,6 +101,12 @@ def _sentences(heard: str) -> list[tuple[str, str]]:
             s = nxt
         return s
 
+    return flat, show
+
+
+def _sentences(heard: str) -> list[tuple[str, str]]:
+    """聞いた文を、引用・括弧の外で文に分けたもの (隠した文, 引用・括弧を元に戻した文)。引用・括弧の中の「？」では切らない。"""
+    flat, show = _hide(heard)
     return [(s, show(s)) for s in _SENTENCE.findall(flat) if s.strip()]
 
 
@@ -131,6 +131,34 @@ def one_asked(heard: str) -> tuple[str, str] | None:
     問いが 2 つ以上なら None（利用者の「はい」・操作の語が、どの問いへの答えか分からない。codex-review）。"""
     qs = asked_questions(heard)
     return qs[0] if len(qs) == 1 and question_count(heard) == 1 else None
+
+
+# 対象を名指しした問いの形そのもの（隠した文に対して、文の全体で当てる）: （〇〇で、）『名前』（のページ など）を（完全に）△△して（も）よいですか？
+# 名前の前後に、ほかの語（以外・ではなく・のバックアップ・別の・旧 など）があれば当たらない（security-review・codex-review）
+_CONTAINER = "ページ|ファイル|フォルダ|ディレクトリ|下書き|投稿|メッセージ|データ|項目|記事|資料|シート|ドキュメント|予定|ブランチ"
+TARGET_Q = re.compile(r"(?:[^\x00]{0,40}?で、?)?\x00(?P<n>\d+)\x00(?:の(?:" + _CONTAINER + r"))?を(?:完全に|すべて|全部|本当に)?"
+                      r"(?P<act>[一-龥々ァ-ヶー]{1,12})しても?(?:よい|いい|良い|大丈夫|構わない|かまわない|構いません|かまいません)(?:です|でしょう)?か[?？]?")
+_QUOTED_NAME = re.compile(r"[「『“\"](.*)[」』”\"]", re.S)
+
+
+def asked_target(heard: str) -> tuple[str, str] | None:
+    """聞いた文の問いがちょうど 1 つで（one_asked）、その文が「（〇〇で、）『名前』（のページ）を（完全に）△△してよいですか？」の形そのもの
+    なら (△△, 名前)。引用符は「」『』“”" のどれか（括弧（）の中は名前としない）。この形でなければ None（聞き返しに倒す）。"""
+    if not one_asked(heard):
+        return None
+    flat, show = _hide(heard)
+    for hidden in _SENTENCE.findall(flat):
+        m = TARGET_Q.fullmatch(hidden)
+        if m:
+            q = _QUOTED_NAME.fullmatch(show(f"\x00{m['n']}\x00"))
+            return (m["act"], q.group(1)) if q else None
+    return None
+
+
+def same_name(a: str, b: str) -> bool:
+    """2 つの名前が同じか（大文字小文字・全角半角・空白の違いは数えない。部分一致では同じとしない）。2 字に満たない名前は同じとみなさない。"""
+    fa, fb = _flat(a), _flat(b)
+    return len(fa) >= 2 and fa == fb
 
 
 def asked_acts(heard: str) -> list[str]:

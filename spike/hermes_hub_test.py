@@ -351,7 +351,13 @@ for q, why in (("proj で、古いログのページを削除してよいです�
                ("proj で、『受注の記録』のページを完全に削除する確認で止まっています。削除してよいですか？", "名前が問いの文の外（前の文）にある"),
                ("proj で、「『受注の記録』を削除してよいですか？」と聞かれています。中身を確認しますか？", "問いは引用の中にあるだけ"),
                ("proj で、『受注の記録』のページを削除してよいですか？ 内容を確認してよいですか？", "問いが 2 つあり、どれへの答えか分からない"),
-               ("proj で、『受注の記録』のページを削除してよいですか？ それとも先に一覧を見ますか？", "ほかの形の問いが並び、どれへの答えか分からない")):
+               ("proj で、『受注の記録』のページを削除してよいですか？ それとも先に一覧を見ますか？", "ほかの形の問いが並び、どれへの答えか分からない"),
+               ("proj で、『受注の記録（旧）』を削除してよいですか？", "画面の名前を含む別の名前（security-review）"),
+               ("proj で、『受注の記録のバックアップ』を削除してよいですか？", "画面の名前の後ろに字を足した名前"),
+               ("proj で、『受注の記録』以外を削除してよいですか？", "名前を除く言い方（codex-review）"),
+               ("proj で、『受注の記録』のバックアップを削除してよいですか？", "名前のあとに、別の物を指す語が続く"),
+               ("proj で、別の『受注の記録』のページを削除してよいですか？", "名前の前に、別の物を指す語がある"),
+               ("proj で、『受注の記録』ではなく『別の記録』を削除してよいですか？", "名前を打ち消して、別の名前を聞いた")):
     asked_then(q, "はい")
     check(f"確認: {why}問いへの「はい」は聞き返す（security-review）", answer(), ("confirm", []))
     s.CONFIRMING.clear()
@@ -368,6 +374,26 @@ begin("見て")
 screen()
 asked_then("proj で、削除の確認で止まっています。『Product release notes』のページを完全に削除してよいですか？", "削除して")
 check("確認: 対象の名前の中の語（release・prod）を操作の種類と数えない（名指しどおりなら最初の答えで通す。codex-review P2）", answer(), ("ok", ["down", "enter"]))
+s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+state.update(screen=CONFIRM_NO, on_key=cursor_moves)
+begin("見て")
+screen()
+asked_then("proj で、『受注の記録』を削除してよいですか？", "はい")
+check("確認: 「（〇〇で、）『名前』を△△してよいですか？」（入れ物の語なし）の形でも、名前が完全に一致すれば最初の答えで通す", answer(), ("ok", ["down", "enter"]))
+A_NO = CONFIRM_NO.replace("受注の記録", "a")
+state.update(screen=A_NO, on_key=lambda k: state.update(screen=A_NO.replace(" ❯ No\n   Yes", "   No\n ❯ Yes")) if k == "down" else None)
+begin("見て")
+screen()
+asked_then("proj で、『a』を削除してよいですか？", "はい")
+check("確認: 2 字に満たない対象の名前は、名指ししていても聞き返す", answer(), ("confirm", []))
+s.CONFIRMING.clear()
+TWO_NO = CONFIRM_NO.replace('"受注の記録"', '"受注の記録" and "請求の記録"')
+state.update(screen=TWO_NO, on_key=lambda k: state.update(screen=TWO_NO.replace(" ❯ No\n   Yes", "   No\n ❯ Yes")) if k == "down" else None)
+begin("見て")
+screen()
+asked_then("proj で、『受注の記録』を削除してよいですか？", "はい")
+check("確認: 画面の確認に対象の名前が 2 つ以上あれば、1 つを名指ししても聞き返す", (s.confirm_targets(TWO_NO), answer()), (["受注の記録", "請求の記録"], ("confirm", [])))
+s.CONFIRMING.clear()
 s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
 check("操作の種類は、引用符の名前と URL を除いた部分から読む（除くと種類が残らなければ名指しとみなさない）",
       (s.risky_named('⏺ Artifact(delete · https://claude.ai/artifact/prodmail)\n Permanently delete "release notes"?', "proj で、『release notes』を削除してよいですか？"),

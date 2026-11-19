@@ -2307,8 +2307,10 @@ async def _hub_answer(body: dict):
             # 分からない、では省かない。codex-review）
             asked = asked_part(text)
             target = confirm_targets(text) if conf else []
-            q1 = consent.one_asked(heard)  # 返答の問いがちょうど 1 つで、それが「〇〇してよいですか？」のときだけ（ほかの形の問いが並べば省かない）
-            if RISKY.search(asked) and not (target and q1 and all(consent.mentions(q1[1], t) for t in target) and risky_named(asked, heard)):
+            # 返答の問いがちょうど 1 つで、その文が「（〇〇で、）『名前』（のページ）を（完全に）△△してよいですか？」の形そのもので、名前が画面の
+            # 対象の名前（1 つだけ）と完全に一致するときだけ（部分一致・名前を含む別の名前・除く言い方では省かない。security-review・codex-review）
+            q1 = consent.asked_target(heard)
+            if RISKY.search(asked) and not (len(target) == 1 and q1 and consent.same_name(q1[1], target[0]) and risky_named(asked, heard)):
                 held = CONFIRMING.get(pane)
                 if not (confirmed and held and held[0] == fp and held[1] != turn):
                     CONFIRMING[pane] = (fp, turn) if not (held and held[0] == fp) else held

@@ -80,6 +80,13 @@ check("入力に NUL があっても、引用を元に戻す処理は終わる�
 check("句読点の無い問いを改行で並べた返答も、問いを 2 つと数え、操作の語では答えない（codex-review）",
       (c.question_count("agency で\n『受注の記録』を削除してよいですか\n内容を確認しますか"), c.one_asked("agency で\n『受注の記録』を削除してよいですか\n内容を確認しますか"),
        c.affirms("確認して", "answer", "agency", "agency で\n『受注の記録』を削除してよいですか\n内容を確認してよいですか")), (2, None, False))
+check("対象を名指しした問いの形そのものだけを読み、名前を取り出す（形が外れれば None）",
+      (c.asked_target("shop で、『受注の記録』のページを完全に削除してよいですか？"), c.asked_target("『orders』を削除してよいですか？"),
+       c.asked_target("shop で、『受注の記録』以外を削除してよいですか？"), c.asked_target("shop で、（受注の記録）を削除してよいですか？"),
+       c.asked_target("shop で、『受注の記録』を削除してよいですか？ ほかに何かありますか？")),
+      (("削除", "受注の記録"), ("削除", "orders"), None, None, None))
+check("名前は完全一致だけ（部分一致・2 字未満は同じとしない。全角半角・大文字小文字・空白は数えない）",
+      (c.same_name("orders", "orders-archive"), c.same_name("Ｏｒｄｅｒｓ ", "orders"), c.same_name("a", "a")), (False, True, False))
 check("入力の NUL で、説明の文の引用（対象の名前）を問いの文にまぎれ込ませられない",
       c.asked_questions("agency で、『受注の記録』は残します。\x000\x00を削除してよいですか？"), [("削除", "0を削除してよいですか?")])
 check("聞いた問いの操作の語: 文が 2 つの問いなら両方、構いませんか も読む",
