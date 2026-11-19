@@ -265,6 +265,21 @@ def run(page, who):
     time.sleep(2.0)
     check(f"{who} 一覧を待つ間に利用者が相手を選んだら、待ち終わってもハブに戻さず、件への返信にもしない",
           (page.input_value("#agent"), page.is_visible("#replyBar")), ("w1:p1", False))
+    # 通知から開いて、受け箱の読み込みを待つ間に利用者が相手を選んだら、件の中身は出すが、ハブに戻さず返信先も付けない
+    page.goto("about:blank")
+    held3 = []
+    page.route("**/api/inbox", lambda r: held3.append(r))
+    page.goto(BASE + "/#i=1")
+    page.wait_for_function("[...document.getElementById('agent').options].some(o => o.value === 'w1:p1')")
+    wait(lambda: held3, 5)
+    page.select_option("#agent", "w1:p1")
+    for r in held3:
+        r.continue_()
+    page.unroute("**/api/inbox")
+    page.wait_for_selector(".ibItem h3")
+    time.sleep(1.0)
+    check(f"{who} 受け箱の読み込みを待つ間に相手を選んだら、件は開くがハブに戻さず返信先も付けない",
+          (page.text_content(".ibItem h3"), page.input_value("#agent"), page.is_visible("#replyBar")), (TITLE1, "w1:p1", False))
     page.goto(BASE + "/#i=999")
     page.wait_for_selector("#sitBody .ibCard")
     check(f"{who} 無い番号は案内だけ出し、一覧を開く", "判断待ち [999] は、片づいたか見つかりませんでした" in page.text_content("#sitBody"), True)

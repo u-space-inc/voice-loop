@@ -107,6 +107,28 @@ d = ib.inbox(NOW)
 check("追加の行に書かれた戻した印（moved）の値は使わない（壊れた値 1 つで一覧全体を読めなくしない）", (ns(d), d["problem"]), ([12, 13, 14], ""))
 ITEMS.write_text("")
 
+ITEMS.write_text("[" * 50000 + "\n" + json.dumps(add(15, at=NOW - 60)) + "\n")
+d = ib.inbox(NOW)
+check("入れ子が深すぎる行（RecursionError）も、形の違う行として飛ばす（一覧全体を落とさない）", (ns(d), d["problem"]), ([15], ""))
+STATUS.write_text("[" * 50000)
+check("…見張りの状態のファイルが入れ子が深すぎても、帯を出さずに落ちない", ib.inbox(NOW)["watch"], [])
+STATUS.unlink()
+
+
+class Gone(dict):  # 「ある」と答えたあとで、別の処理が外した（一覧は別のスレッドで作るので、戻す・付けると重なる）
+    def __contains__(self, k):
+        return True
+
+
+keep_p, ib.PENDING = ib.PENDING, Gone()
+try:
+    d = ib.inbox(NOW)
+    check("一覧を作る間に、戻す・付けるが予約を外しても落ちない（予約は 1 回だけ取って見る）", ns(d), [15])
+except KeyError:
+    check("一覧を作る間に、戻す・付けるが予約を外しても落ちない（予約は 1 回だけ取って見る）", "KeyError", [15])
+ib.PENDING = keep_p
+ITEMS.write_text("")
+
 # ---------- 置き場を安全に読む ----------
 write([add(1, at=NOW - 3600)])
 real = ITEMS.read_bytes()

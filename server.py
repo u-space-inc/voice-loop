@@ -2796,7 +2796,7 @@ def _read_json(path: Path, default):
 NOTICES_FILE = STATE_DIR / "notices.json"
 NOTICE_TITLE, NOTICE_TEXT = 60, 400  # 字数の上限（超えた分は切る）
 NOTICE_KEEP, NOTICE_DAYS = 50, 7  # 残す数と日数
-NOTICE_ITEMS = 20  # 知らせに添えられる判断待ちの記録の番号の数
+NOTICE_ITEMS = 200  # 知らせに添えられる判断待ちの記録の番号の数（2 つ以上なら受け箱を開くので、数は開き先を変えない。見張りの 1 回で扱う数より多く）
 NOTICE_PER_HOUR = 20  # 1 時間に受ける数（消したものも数える）。見張りが暴れても、通知が鳴り続けないように
 _notice_lock = threading.Lock()
 _NOTICE_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ud800-\udfff]")  # 制御文字・向きを変える文字・対になっていないサロゲート

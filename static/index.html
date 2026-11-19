@@ -1294,17 +1294,17 @@ function ibNote(msg, bad) { ibMsg = msg ? [msg, !!bad] : null; }
 function ibStampOf(x) { return stamp(x.when); }
 function srcTag(x) { return node('span', 'ibSrc', SRC[x.source] || '記録'); }
 // 件を開く（中身を出し、ハブとの会話をその件への返信の状態にする。送らない）
-function openItem(n) {
+// seq は、開くと決めた時点の世代（通知から開くときは、通知を開いた時点）。そのあと利用者が選び直していたら、返信先は付けない
+function openItem(n, seq = topicSeq) {
   ibSel = n; ibSig = '';
   const it = inbox && inbox.items.find(x => x.n === n);
   renderSit();
   $('situation').scrollTop = 0;
-  if (it) itemReply(it);
+  if (it) itemReply(it, seq);
 }
 // 話し相手の一覧がまだ届いていなければ（通知から新しく開いたときなど）、届くのを待ってから返信先にする（一覧が無いのと、ハブが居ないのを分ける）
 // 待つ間に、利用者が相手・返信先を選んだ・外した・送った・件を開いた（どれも cancelTopic で topicSeq が進む）なら、あとから上書きしない
-async function itemReply(it) {
-  const seq = topicSeq;
+async function itemReply(it, seq = topicSeq) {
   if (!agents.length) await Promise.race([loadAgents(), new Promise(res => setTimeout(res, TOPIC_WAIT))]);
   if (ibSel !== it.n || seq !== topicSeq) return;  // 待つ間に別の件を開いた・閉じた・利用者が選び直した
   const hub = agents.find(a => a.hub);
@@ -1525,10 +1525,10 @@ async function loadSituation() {
     $('sitCount').hidden = !waiting; $('sitCount').textContent = String(waiting);  // PC の「知らせ」タブの数（判断待ちと手順の承認待ち）
   }
   sitCache = [h, nt, lr, ib];
-  if (ibWant != null && ib !== FAILED) {  // 通知・リンク（/#i=<番号>）で開いた件
+  if (ibWant != null && ib !== FAILED) {  // 通知・リンク（/#i=<番号>）で開いた件（読み込みを待つ間に利用者が選び直していたら、中身だけ出して返信先は付けない）
     const w = ibWant; ibWant = null;
-    if (ib.items.some(x => x.n === w)) { openItem(w); return; }
-    ibNote(`判断待ち [${w}] は、片づいたか見つかりませんでした`, false);
+    if (ib.items.some(x => x.n === w.n)) { openItem(w.n, w.seq); return; }
+    ibNote(`判断待ち [${w.n}] は、片づいたか見つかりませんでした`, false);
   }
   renderSit();
 }
@@ -1537,7 +1537,7 @@ function openInboxHash() {
   const m = /^#(inbox|i=([1-9][0-9]{0,9}))$/.exec(location.hash);
   if (!m) return false;
   history.replaceState(null, '', location.pathname + location.search);
-  ibWant = m[2] ? Number(m[2]) : null; ibSel = null; ibSig = '';
+  ibWant = m[2] ? { n: Number(m[2]), seq: topicSeq } : null; ibSel = null; ibSig = '';
   if (typeof closeViewer === 'function') closeViewer();
   if (reading) setReading(false);
   if (wide) setRecTab('sit'); else { showTasks(false); showSituation(true); }

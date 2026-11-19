@@ -90,9 +90,11 @@ reset(); urls.clear()
 post({"title": "番号なし"}); post({"title": "1 件", "items": [273]}); post({"title": "2 件", "items": [12, 13]}); post({"title": "同じ番号", "items": [7, 7]})
 check("通知を押すと受け箱、判断待ちが 1 つならその件（同じ番号は 1 つに数える）", urls, ["/#inbox", "/#i=273", "/#inbox", "/#i=7"])
 bad = [post({"title": "x", "items": v}) for v in ("273", [0], [-1], [True], [1.5], ["12"], [2**31], list(range(1, s.NOTICE_ITEMS + 2)))]
+many = post({"title": "21 件", "items": list(range(1, 22))}).json()
 check("判断待ちの番号の形が違えば受けず、理由を言う（文字・0・負・真偽・小数・大きすぎ・多すぎ）",
       [(r.status_code, r.json().get("reason")) for r in bad], [(400, "bad_items")] * 8)
-check("…断った知らせは一覧に足さない", [r["title"] for r in c.get("/api/notices").json()["rows"]], ["同じ番号", "2 件", "1 件", "番号なし"])
+check("見張りの 1 回で 21 件以上の判断待ちを添えても受け、受け箱を開く（20 件を超えても知らせが断られない）", (many.get("ok"), urls[-1]), (True, "/#inbox"))
+check("…断った知らせは一覧に足さない", [r["title"] for r in c.get("/api/notices").json()["rows"]], ["21 件", "同じ番号", "2 件", "1 件", "番号なし"])
 
 # ---------- 数の上限 ----------
 reset()

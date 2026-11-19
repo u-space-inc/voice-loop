@@ -87,7 +87,7 @@ def records() -> tuple[dict, dict] | None:
     for line in data.decode("utf-8", "replace").splitlines():
         try:
             r = json.loads(line)
-        except ValueError:
+        except (ValueError, RecursionError):  # 入れ子が深すぎる行も、形の違う行として飛ばす
             continue
         if isinstance(r, dict):
             rows.append(r)
@@ -169,7 +169,7 @@ def _watch() -> list[dict]:
     data, _ = _read("teams-status.json", STATUS_MAX)
     try:
         d = json.loads(data) if data else {}
-    except ValueError:
+    except (ValueError, RecursionError):
         return []
     orgs = d.get("orgs") if isinstance(d, dict) and isinstance(d.get("orgs"), dict) else {}
     bad = [o for o in orgs.values() if isinstance(o, dict) and o.get("ok") is False]
@@ -204,8 +204,9 @@ def inbox(now: float | None = None) -> dict:
             continue
         if r.get("kind") != "judge":
             continue
-        if n in PENDING:
-            out["pending"].append({"n": n, "left": _left(PENDING[n]), "state": PENDING[n]["state"]})
+        p = PENDING.get(n)  # 一覧は別のスレッドで作るので、1 回だけ取って同じものを見る（その間に戻す・付けるが外しても落ちない）
+        if p:
+            out["pending"].append({"n": n, "left": _left(p), "state": p["state"]})
             continue
         back = later.get(n)
         if back and back > now:
