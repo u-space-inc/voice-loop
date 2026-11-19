@@ -269,6 +269,11 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     st.write_text(json.dumps(m))
     d = get()
     check("…時刻が来たら一覧の上に戻し、戻った印を付ける", (ns(d)[0], d["items"][0]["back"]), (23, True))
+    one = c.get("/api/inbox/item?n=23").json()
+    check("通知で開く 1 件は、あとでに回していても返す（一覧の隠す条件に関係なく）", (one["ok"], one["item"]["n"]), (True, 23))
+    check("…済み・宛ての知らせ・無い番号・形の違う番号は返さない",
+          [c.get(f"/api/inbox/item?n={v}").json().get("reason") for v in ("21", "24", "999")] + [c.get(f"/api/inbox/item?n={v}").status_code for v in ("0", "-1", "x", "1" * 11)],
+          ["gone", "gone", "gone", 400, 400, 400, 400])
     check("あとで: 決めた選び方でなければ・済みの件なら断る",
           [post("/api/inbox/later", b).json().get("reason") for b in ({"n": 25, "until": "next-year"}, {"n": 25, "until": 3}, {"n": 21, "until": "morning"})],
           ["bad_request", "bad_request", "gone"])
@@ -302,8 +307,8 @@ for f in ("static/sw.js", "static/index.html"):
 # ---------- コンテナからは使えない ----------
 H = {"host": "127.0.0.1:8790", "x-vl-key": "k1"}
 check("受け箱の口は、コンテナ（鍵あり）からは使えない",
-      [problem(H, m, p, container=True) is not None for m, p in (("GET", "/api/inbox"), ("POST", "/api/inbox/done"), ("POST", "/api/inbox/undo"), ("POST", "/api/inbox/later"))],
-      [True] * 4)
+      [problem(H, m, p, container=True) is not None for m, p in (("GET", "/api/inbox"), ("GET", "/api/inbox/item"), ("POST", "/api/inbox/done"), ("POST", "/api/inbox/undo"), ("POST", "/api/inbox/later"))],
+      [True] * 5)
 
 # ---------- 件への返信 ----------
 SENT = []

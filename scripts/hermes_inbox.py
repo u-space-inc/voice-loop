@@ -219,6 +219,22 @@ def inbox(now: float | None = None) -> dict:
     return out
 
 
+def one(n, now: float | None = None) -> dict | None:
+    """通知・リンクの /#i=<番号> で開く 1 件。一覧の隠す条件（あとで・数の上限）に関係なく、片づいていない判断待ちなら返す。"""
+    now = time.time() if now is None else now
+    got = records()
+    if not got or n in PENDING:
+        return None
+    items, done = got
+    r = items.get(n)
+    if not r or r.get("kind") != "judge" or n in done:
+        return None
+    with _lock:
+        back = _later().get(n)
+    fresh = max(vl_items._fresh(r), back if back and back <= now else 0)
+    return {**shape(r), "fresh": fresh, "old": now - fresh >= vl_items.OPEN_DAYS * 86400, "back": bool(back and back <= now)}
+
+
 # ---------- 済んだ ----------
 def done_command(n: int) -> list[str] | None:
     exe = hermes_skills.docker_bin()
@@ -289,6 +305,16 @@ def _ops() -> asyncio.Lock:
 def _left(p: dict) -> float:
     """戻せる残りの秒（画面は、この秒で「戻す」を消す。端末の時計には頼らない）。"""
     return max(0.0, round(p["until"] - time.time(), 2)) if p["state"] == "wait" else 0.0
+
+
+@router.get("/api/inbox/item")
+async def api_inbox_item(n: str = ""):
+    """通知・リンクで開く 1 件（あとでに回した件・一覧の上限から外れた件も開ける）。コンテナからは使えない口。"""
+    k = int(n) if n.isdigit() and len(n) <= 10 else 0
+    if not 0 < k < 2**31:
+        return JSONResponse({"ok": False, "reason": "bad_request"}, status_code=400)
+    it = await asyncio.to_thread(one, k)
+    return JSONResponse({"ok": True, "item": it} if it else {"ok": False, "reason": "gone"})
 
 
 @router.post("/api/inbox/done")

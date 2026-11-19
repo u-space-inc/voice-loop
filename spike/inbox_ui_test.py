@@ -288,6 +288,30 @@ def run(page, who):
     page.evaluate("location.hash = '#inbox'")
     opened = wait(lambda: page.is_visible("#situation") and page.locator("#sitBody > .ibCard").count() == 2)
     check(f"{who} /#inbox で受け箱が開く", opened or (page.is_visible("#situation"), page.text_content("#sitBody")[:200]), True)
+    # 通知で別の番号を開いて見つからなければ、前の返信先は外れたまま（無関係な件への返信にしない）
+    page.locator("#sitBody > .ibCard").first.click()
+    wait(lambda: page.is_visible("#replyBar"), 5)
+    page.evaluate("location.hash = '#i=999'")
+    check(f"{who} 通知の件が見つからなければ、前の返信先を外したままにする",
+          (wait(lambda: "判断待ち [999] は" in (page.text_content("#sitBody") or ""), 5), page.is_visible("#replyBar")), (True, False))
+    # 読み込み中に受け箱を閉じたら、遅れて届いても件を開かず、返信先も付けない
+    hold4 = []
+    page.route("**/api/inbox", lambda r: hold4.append(r))
+    page.evaluate("location.hash = '#i=1'")
+    wait(lambda: hold4, 5)
+    page.click("#sitClose")
+    for r in hold4:
+        r.continue_()
+    page.unroute("**/api/inbox")
+    time.sleep(1.5)
+    check(f"{who} 読み込み中に閉じたら、遅れて届いても件を開かず返信先も付けない", (page.locator(".ibItem").count(), page.is_visible("#replyBar")), (0, False))
+    # あとでに回した件も、通知から開ける（一覧の隠す条件に関係なく、1 件だけ本体に聞く）
+    req = urllib.request.Request(BASE + "/api/inbox/later", data=json.dumps({"n": 1, "until": "morning"}).encode(), headers={"Content-Type": "application/json"}, method="POST")
+    later_ok = json.loads(urllib.request.urlopen(req, timeout=10).read()).get("ok")
+    page.evaluate("location.hash = '#i=1'")
+    check(f"{who} あとでに回した件も、通知から開ける", (later_ok, wait(lambda: page.locator(".ibItem h3").count() == 1 and page.text_content(".ibItem h3") == TITLE1, 6)), (True, True))
+    check(f"{who} …開いた件への返信の状態になる", wait(lambda: page.is_visible("#replyBar") and "判断待ち [1]" in (page.text_content("#replyTo") or ""), 6), True)
+    ib.STATE_FILE.unlink(missing_ok=True)
     # 知らせが届いても、会話の欄に 📨 を出さない
     page.click("#sitClose")
     r = notice("判断待ち 1 件: 新しい件")

@@ -688,6 +688,7 @@ navigator.serviceWorker?.addEventListener('message', e => {
   if (u.origin === location.origin && u.pathname === '/' && !u.search && /^#(t=t[0-9a-f]{10}|inbox|i=[1-9][0-9]{0,9})$/.test(u.hash)) location.hash = u.hash;
 });
 // 受け箱（💡）の状態: 最後に読んだ一覧・開いている件の番号・通知で開く件・案件の絞り込み・戻せる件・「その他」と畳みの開閉・案内・描いた件の印
+let ibExtra = null, ibWantTok = 0;  // ibWantTok: 通知で開く予約の世代（閉じる・別の通知で進む）  // 通知・リンクで開いた、一覧に出ていない 1 件（あとでに回した件・数の上限から外れた件）
 let inbox = null, ibSel = null, ibWant = null, ibProj = '', ibUndo = null, ibOther = false, ibOld = false, ibFyiOpen = false, ibMsg = null, ibSig = '';
 // 返信先。報告（{ at, about }）か、受け箱の判断待ち（{ item: 番号, about: 題 }）。ハブの会話のときだけ付けて送り、送ったら外す。相手を替えたら外す
 let replyTarget = null;
@@ -1294,10 +1295,12 @@ function ibNote(msg, bad) { ibMsg = msg ? [msg, !!bad] : null; }
 function ibStampOf(x) { return stamp(x.when); }
 function srcTag(x) { return node('span', 'ibSrc', SRC[x.source] || '記録'); }
 // 件を開く（中身を出し、ハブとの会話をその件への返信の状態にする。送らない）
+// 番号の件を、一覧（d）か、通知で開いた 1 件から探す
+const findItem = (d, n) => (d && d !== FAILED && Array.isArray(d.items) ? d.items.find(x => x.n === n) : null) || (ibExtra && ibExtra.n === n ? ibExtra : null);
 // seq は、開くと決めた時点の世代（通知から開くときは、通知を開いた時点）。そのあと利用者が選び直していたら、返信先は付けない
 function openItem(n, seq = topicSeq) {
   ibSel = n; ibSig = '';
-  const it = inbox && inbox.items.find(x => x.n === n);
+  const it = findItem(inbox, n);
   renderSit();
   $('situation').scrollTop = 0;
   if (it) itemReply(it, seq);
@@ -1315,7 +1318,7 @@ async function itemReply(it, seq = topicSeq) {
 }
 function closeItem() {
   if (replyTarget && replyTarget.item === ibSel) setReplyTarget(null);  // 件を閉じたら、その件への返信もやめる
-  ibSel = null; ibSig = ''; renderSit();
+  ibSel = null; ibSig = ''; ibExtra = null; renderSit();
 }
 async function doneItem(it) {
   const t0 = performance.now();
@@ -1334,6 +1337,7 @@ async function doneItem(it) {
   const drop = d => d && d !== FAILED && Array.isArray(d.items) ? { ...d, items: d.items.filter(x => x.n !== it.n) } : d;
   inbox = drop(inbox);
   if (sitCache) sitCache[3] = drop(sitCache[3]);
+  if (ibExtra && ibExtra.n === it.n) ibExtra = null;
   paintSitBtn(ibCount(inbox)); ibSig = ''; renderSit();
   loadSituation();
 }
@@ -1452,7 +1456,7 @@ function renderSit() {
   if (sitNote) { const n = node('div', sitNote[1] ? 'bad' : null, sitNote[0]); n.id = 'sitNote'; top.push(n); }
   if (ibMsg) { const n = node('div', 'sitMeta' + (ibMsg[1] ? ' bad' : ''), ibMsg[0]); top.push(n); }
   if (ibSel != null) {  // 件の中身
-    const it = ib !== FAILED ? ib.items.find(x => x.n === ibSel) : null;
+    const it = findItem(ib, ibSel);
     const sig = JSON.stringify([it, replyTarget && replyTarget.item, ibMsg]);
     if (sig === ibSig && box.querySelector('.ibItem')) return;  // 変わっていなければ描き直さない（選んで写している途中を崩さない）
     ibSig = sig;
@@ -1528,6 +1532,10 @@ async function loadSituation() {
   if (ibWant != null && ib !== FAILED) {  // 通知・リンク（/#i=<番号>）で開いた件（読み込みを待つ間に利用者が選び直していたら、中身だけ出して返信先は付けない）
     const w = ibWant; ibWant = null;
     if (ib.items.some(x => x.n === w.n)) { openItem(w.n, w.seq); return; }
+    // 一覧に出ていない（あとでに回した・数の上限から外れた）件は、1 件だけ本体に聞く。待つ間に閉じた・別の通知を開いたら何もしない
+    let got = null; try { const r = await fetch('/api/inbox/item?n=' + w.n); if (r.ok) got = await r.json(); } catch {}
+    if (w.tok !== ibWantTok) return;
+    if (got && got.ok && got.item && got.item.n === w.n) { ibExtra = got.item; openItem(w.n, w.seq); return; }
     ibNote(`判断待ち [${w.n}] は、片づいたか見つかりませんでした`, false);
   }
   renderSit();
@@ -1537,7 +1545,9 @@ function openInboxHash() {
   const m = /^#(inbox|i=([1-9][0-9]{0,9}))$/.exec(location.hash);
   if (!m) return false;
   history.replaceState(null, '', location.pathname + location.search);
-  ibWant = m[2] ? { n: Number(m[2]), seq: topicSeq } : null; ibSel = null; ibSig = '';
+  if (replyTarget) setReplyTarget(null);  // 前の返信先は外す（開く件が見つかったときだけ、その件に付け直す）
+  ibWantTok++;
+  ibWant = m[2] ? { n: Number(m[2]), seq: topicSeq, tok: ibWantTok } : null; ibSel = null; ibSig = ''; ibExtra = null;
   if (typeof closeViewer === 'function') closeViewer();
   if (reading) setReading(false);
   if (wide) setRecTab('sit'); else { showTasks(false); showSituation(true); }
@@ -1548,7 +1558,7 @@ function openInboxHash() {
 async function refreshSitCount() { try { const r = await fetch('/api/inbox'); if (r.ok) { inbox = await r.json(); if (sitCache) sitCache[3] = inbox; paintSitBtn(ibCount(inbox)); } } catch {} }  // 描く元もそろえる
 setInterval(() => { if (!document.hidden && $('situation').hidden) refreshSitCount(); }, 60000);
 refreshSitCount();
-function showSituation(open) { phone.sit = open; if (!wide) runSituation(open); }
+function showSituation(open) { phone.sit = open; if (!wide) runSituation(open); if (!open) { ibWant = null; ibWantTok++; } }  // 閉じたら、読み込み中の開く予約もやめる
 function runSituation(open) {  // 見える・15 秒ごとに取り直す、を切り替える（PC では常に開く）
   $('situation').hidden = !open; $('sitBtn').setAttribute('aria-pressed', String(open));
   clearInterval(sitTimer); sitTimer = null;
