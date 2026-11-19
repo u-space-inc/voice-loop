@@ -65,13 +65,27 @@ def _yes_clause(action: str | None, project: str):
     return re.compile(f"{_pre(project)}(?:(?:{yes})(?:{_alt(TAIL)})*)+")
 
 
-# 聞いた問いの「〇〇して（も）よいですか」の〇〇（漢字・カタカナの語）。利用者がその語で答えたら（「削除して」「送信してください」）、許す句として読む
-ASKED_ACT = re.compile(r"([一-龥々ァ-ヶー]{1,12})しても?(?:よい|いい|良い|大丈夫|構わない|かまわない|構いません|かまいません)")
+# 聞いた問いの「〇〇して（も）よいですか？」の〇〇（漢字・カタカナの語）。利用者がその語で答えたら（「削除して」「送信してください」）、許す句として読む。
+# 読むのは、文の終わりがこの問いの形そのもの（「…削除してよいですか？」）の文だけ。説明の中（「削除してよいか確認中です」）・引用（「『削除してよいですか』と
+# 聞かれています」）・打ち消し（「削除しなくてよいですか」）・ほかの問いと並んだ説明は読まない（codex-review）
+ASKED_ACT = re.compile(r"([一-龥々ァ-ヶー]{1,12})しても?(?:よい|いい|良い|大丈夫|構わない|かまわない|構いません|かまいません)(?:です|でしょう)?か[?？]?$")
+_SENTENCE = re.compile(r"[^。．.!！?？\n]*[?？]?")
+
+
+def mentions(heard: str, name: str) -> bool:
+    """聞いた文 heard に、名前 name がそのまま入っているか（大文字小文字・全角半角・空白の違いは数えない）。空の名前は入っていないとみなす。"""
+    n = _flat(name)
+    return bool(n) and n in _flat(heard)
 
 
 def asked_acts(heard: str) -> list[str]:
-    """聞いた問いが「〇〇して（も）よいですか」の形で名指しした操作の語（「削除してよいですか」の「削除」）。"""
-    return [w for w in dict.fromkeys(ASKED_ACT.findall(_flat(heard)))]
+    """聞いた問いが、文の終わりの「〇〇して（も）よいですか？」の形で名指しした操作の語（「削除してよいですか」の「削除」）。"""
+    out = []
+    for sentence in _SENTENCE.findall(_flat(heard)):
+        m = ASKED_ACT.search(sentence)
+        if m:
+            out.append(m.group(1))
+    return list(dict.fromkeys(out))
 
 
 def affirms(text: str, action: str, project: str = "", heard: str = "") -> bool:

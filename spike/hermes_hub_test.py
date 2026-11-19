@@ -155,7 +155,7 @@ check("聞き返しのあとの発言が断りなら、--confirmed でも通ら�
 asked_then("proj で、本当に build のフォルダを消していいですか？", "はい、許可していい")
 check("次の発言の --confirmed で通る", answer(confirmed=True), ("ok", ["1"]))
 s.hermes.hermes_turn_end(s.hub_human_turn(), "許可しました")
-# 聞いた問いが取り消しにくい操作を名指ししていれば、その最初の答えで通す（聞き返さない。2026-11-19 本人）
+# 番号つきの承認（Bash のコマンドなど。対象の名前を画面から読み取れない）は、問いが操作を名指ししていても聞き返す（2026-11-19 本人「対象も照らす」）
 DEPLOY = PERMISSION.replace("ls -la", "npm run deploy").replace("ls commands", "npm commands")
 for scr, q, utter in ((RISKY, "proj で、build のフォルダを削除してよいですか？", "はい"),
                       (RISKY, "proj で、build のフォルダを削除してよいですか？", "削除して"),
@@ -165,9 +165,10 @@ for scr, q, utter in ((RISKY, "proj で、build のフォルダを削除して�
     begin("見て")
     screen()
     asked_then(q, utter)
-    check(f"取り消しにくい操作でも、聞いた問いが画面と同じ種類の操作を「〇〇してよいですか」で名指ししていれば最初の答えで通す: 「{q[-16:]}」に「{utter}」",
-          answer(), ("ok", ["1"]))
-    s.hermes.hermes_turn_end(s.hub_human_turn(), "許可しました")
+    check(f"番号つきの承認の取り消しにくい操作は、問いが名指ししていても聞き返す（対象を画面から読めない）: 「{q[-16:]}」に「{utter}」",
+          answer(), ("confirm", []))
+    s.hermes.hermes_turn_end(s.hub_human_turn(), "確かめ直します")
+    s.CONFIRMING.clear()
 state.update(screen=RISKY)
 for q in ("proj の「テスト」が、build のフォルダを消す（rm -rf build）許可を求めています。許可しますか？",  # 操作は前の文にあるだけ（問いは「許可しますか」）
           "proj の「本番の構築」が、ある操作の許可を求めています。許可しますか？",  # 題に「本番」があるだけ
@@ -194,13 +195,25 @@ for q, utter in (("proj で、build のフォルダを削除してよいです�
     asked_then(q, utter)
     check(f"聞いていない操作の語・断りでは答えない: 「{q[-14:]}」に「{utter}」", answer(), ("not_said", []))
     s.hermes.hermes_turn_end(s.hub_human_turn(), "わかりました")
+state.update(screen=PERMISSION)
 begin("見て")
 screen()
-s.hermes.hermes_turn_end(s.hub_human_turn(), "proj で、build のフォルダを削除してよいですか？")
+s.hermes.hermes_turn_end(s.hub_human_turn(), Q)
 begin("はい")
 screen()  # 答えを聞いたあとに、ハブが念のため画面を見直した
 check("同じ問いを見直しても、最初に見たときの発言が起点のまま（見直した発言の中でも答えられる）", answer(), ("ok", ["1"]))
 s.hermes.hermes_turn_end(s.hub_human_turn(), "許可しました")
+state.update(screen=RISKY)
+begin("見て")
+screen()  # セッション sess-1 の問いを見た
+s.hermes.hermes_turn_end(s.hub_human_turn(), "proj で、build のフォルダを削除してよいですか？")
+s.list_agents = lambda: [{**TARGET, "status": state["status"], "session": "sess-2"}]  # 同じ pane でセッションを作り直し、見た目の同じ問いが出た
+begin("はい")
+screen()  # ハブはこの発言の中で、新しいセッションの問いを初めて見た
+check("同じ pane でセッションを作り直した見た目の同じ問いは、見直しでも起点を置き直す（見た発言の中では答えない。codex-review P1）", answer(), ("same_turn", []))
+s.list_agents = lambda: [{**TARGET, "status": state["status"]}]
+s.hermes.hermes_turn_end(s.hub_human_turn(), "確かめ直します")
+s.SEEN_PROMPT.clear()
 begin("見て")
 screen()
 begin("だめ")
@@ -228,6 +241,11 @@ check("確認の形でないもの（3 つ・カーソルが無い/2 つ・同�
 LEFTOVER = "⏺ 次の 2 つを片づけます。\n  1. 下書きを確かめる\n  2. 報告ページを消す\n" + CONFIRM_NO  # 確認の上に、前の会話の番号つきの並びが残っている
 check("確認の上に前の会話の番号つきの並びが残っていても、確認として読む（codex-review P2）",
       (s.parse_prompt(LEFTOVER)["kind"], s.read_ask(LEFTOVER)["kind"], s.read_ask(PERMISSION)["kind"]), ("question", "confirm", "permission"))
+PERM_LEFT = (" Do you want to proceed?\n ❯ 1. Yes\n   2. No\n"  # 上の会話に、前の承認の番号つき Yes/No が残っている
+             + CONFIRM_NO.replace('Permanently delete "受注の記録"?', 'Do you want to permanently delete "受注の記録"?'))
+check("上に番号つきの Yes/No が残り、確認が「Do you want to」で始まっても、指紋はカーソルの位置で変わらない（承認の判定より確認を先に見る。codex-review）",
+      (s.is_permission(PERM_LEFT), s.read_ask(PERM_LEFT)["kind"], s.prompt_fp(PERM_LEFT) == s.prompt_fp(PERM_LEFT.replace(" ❯ No\n   Yes", "   No\n ❯ Yes"))),
+      (True, "confirm", True))
 BLINK = CONFIRM_NO.replace("⏺ Artifact", "  Artifact")
 check("確認の指紋は、⏺ の点滅とカーソルの位置では変わらず、問い・道具の見出しが違えば変わる（codex-review P2）",
       (s.prompt_fp(CONFIRM_NO) == s.prompt_fp(CONFIRM_YES) == s.prompt_fp(BLINK), s.prompt_fp(CONFIRM_NO) == s.prompt_fp(CONFIRM_NO.replace("受注", "別")),
@@ -316,6 +334,23 @@ asked_then(DQ, "2番で")
 check("確認: 番号では答えない（はい・いいえだけ）", answer(answer="2"), ("bad_choice", []))
 asked_then("proj で、確認の画面で止まっています。進めてよいですか？", "はい")
 check("確認: 取り消しにくい操作（delete）を名指ししていない問いへの「はい」は聞き返す", answer(), ("confirm", []))
+s.CONFIRMING.clear()
+for q, why in (("proj で、古いログのページを削除してよいですか？", "対象の名前を言い換えた（画面は「受注の記録」）"),
+               ("proj で、『受注の記録』のページを送信してよいですか？", "名前は同じでも、別の種類の操作を名指しした")):
+    asked_then(q, "はい")
+    check(f"確認: {why}問いへの「はい」は聞き返す（security-review）", answer(), ("confirm", []))
+    s.CONFIRMING.clear()
+state.update(screen=CONFIRM_NO.replace('Permanently delete "受注の記録"?', "Permanently delete this page?"),
+             on_key=lambda k: state.update(screen=CONFIRM_YES.replace('Permanently delete "受注の記録"?', "Permanently delete this page?")) if k == "down" else None)
+begin("見て")
+screen()
+asked_then("proj で、このページを削除してよいですか？", "はい")
+check("確認: 問いの文に引用符で囲まれた対象の名前が無ければ、名指ししていても聞き返す", answer(), ("confirm", []))
+s.CONFIRMING.clear()
+check("確認の対象の名前（引用符の種類・空白だけの名前・確認でない画面）",
+      (s.confirm_targets(CONFIRM_NO), s.confirm_targets(CONFIRM_NO.replace('"受注の記録"', "「受注の記録」")), s.confirm_targets(CONFIRM_NO.replace('"受注の記録"', '" "')),
+       s.confirm_targets(PERMISSION)), (["受注の記録"], ["受注の記録"], [], []))
+state.update(screen=CONFIRM_NO, on_key=cursor_moves)
 begin("やめて")
 check("確認: 断るは esc（Esc to cancel）", answer(answer="no"), ("ok", ["esc"]))
 state.update(screen="⏺ 何かの画面\n 続けますか\n Esc to cancel", on_key=None)
@@ -568,6 +603,21 @@ s.hermes.ask_hermes = lambda text: Q  # 報告の間には画面を見ずに書�
 asyncio.run(s.report(dict(JOB), "blocked"))
 rec2 = [d for d in s.hermes.hermes_records() if d.get("report")][-1]
 check("ハブがその報告の間に画面を見ずに書いた止まった報告には、前に見た問いがあっても結ばない", (rec2["at"] != rec["at"], rec2.get("ask")), (True, None))
+
+
+def recreated_then_looks(text):
+    s.list_agents = lambda: [{**TARGET, "status": state["status"], "session": "sess-2"}]  # 報告の途中で、同じ pane のセッションが作り直された
+    json.loads(s.hub_screen("w9:p1").body)
+    return Q
+
+
+asyncio.run(s.hermes.hermes_exchange("状況は？"))
+s.hermes.ask_hermes = recreated_then_looks
+asyncio.run(s.report(dict(JOB), "blocked"))
+s.list_agents = lambda: [{**TARGET, "status": state["status"]}]
+rec3 = [d for d in s.hermes.hermes_records() if d.get("report")][-1]
+check("報告の途中でセッションが作り直されたら（報告を頼んだときと、ハブが見たときでセッションが違う）、問いを結ばない", (rec3["at"] != rec2["at"], rec3.get("ask")), (True, None))
+s.SEEN_PROMPT.clear()
 s.hermes.ask_hermes = lambda text: "わかりました"
 for at, pane, ask in ((1700000009.5, "w9:p1", {"fp": FP, "session": "sess-1"}), (1700000010.5, "w9:p1", {"fp": "0" * 40, "session": "sess-1"}),
                       (1700000011.5, "w9:p1", {"fp": FP, "session": "sess-0"}), (1700000012.5, "w8:p1", {"fp": FP, "session": "sess-1"}),

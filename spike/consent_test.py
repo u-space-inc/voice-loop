@@ -56,6 +56,14 @@ check("答える: 聞いた問いが操作を名指ししていなければ、�
       (c.affirms("削除して", "answer", "agency", "agency で、続けますか？"), c.affirms("削除して", "answer", "agency"), c.affirms("許可して", "answer", "agency", "")),
       (False, False, True))
 check("閉じる: 聞いた問いの操作の語は、閉じる許可には使わない", c.affirms("削除して", "close", "agency", DEL_Q), False)
+NOT_ASKED = {"説明の中": "agency で、ページを削除してよいか確認中です。ところで天気はどうですか？",
+             "引用": "agency で、「削除してよいですか」と聞かれています。どうしますか？",
+             "打ち消し": "agency で、ページを削除しなくてよいですか？",
+             "別の問いと並んだ説明": "agency で、削除してよいかは後で決めます。先に名前を変えますか？"}
+check("聞いた問いの操作の語は、文の終わりの「〇〇してよいですか？」だけから読む（説明・引用・打ち消し・別の問いと並んだ説明は読まない。codex-review）",
+      {k: (c.asked_acts(v), c.affirms("削除して", "answer", "agency", v)) for k, v in NOT_ASKED.items()}, {k: ([], False) for k in NOT_ASKED})
+check("聞いた問いの操作の語: 文が 2 つの問いなら両方、構いませんか も読む",
+      (c.asked_acts("agency で、削除してよいですか？ プッシュしてよいですか？"), c.asked_acts("agency で、本番に反映しても構いませんか？")), (["削除", "プッシュ"], ["反映"]))
 ASKS = {"proj の「テスト」が、ls の実行の許可を求めています。許可しますか？": True, "proj で、本当に消していいですか": True,
         "**PROJ** の「テスト」を閉じていいですか**": True, "proj の資料です。": False, "許可しますか？": False, "": False}
 check("聞いた文: プロジェクト名（大文字小文字を問わない）と問いの形", {t: c.asks(t, "proj") for t in ASKS}, ASKS)

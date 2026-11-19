@@ -228,6 +228,16 @@ def confirm_text(text: str, at: int | None) -> str:
     return "\n".join(lines)
 
 
+QUOTED = re.compile(r'"([^"\n]{1,200})"|“([^”\n]{1,200})”|「([^」\n]{1,200})」|『([^』\n]{1,200})』')
+
+
+def confirm_targets(text: str) -> list[str]:
+    """番号の無い確認の問いの文（parse_confirm の question）の、引用符で囲まれた対象の名前（Permanently delete "受注の記録"? の「受注の記録」）。
+    空白だけの名前は数えない。確認でない・名前が無ければ空。"""
+    c = parse_confirm(text)
+    return [n for m in QUOTED.finditer(c["question"]) if (n := next(g for g in m.groups() if g is not None)).strip()] if c else []
+
+
 def read_ask(text: str) -> dict:
     """止まっている画面の問い（ハブの経路）。番号の無い「Yes / No」の確認を先に見る（その上に前の会話の番号つきの並びが残っていても、
     確認として読む）。確認なら {"kind": "confirm", "options": {}, "question": 問いの文}、ほかは parse_prompt と同じ。"""
@@ -975,10 +985,11 @@ def hub_screen(pane: str, lines: int = 30):
     if a["status"] != "blocked":
         return JSONResponse({"pane": pane, "status": a["status"], "screen": read_screen(pane, lines)})
     text = read_prompt(pane)
-    fp, seen = prompt_fp(text), SEEN_PROMPT.get(pane)
-    if not seen or seen[0] != fp:  # ハブがこの問いを見た。答えられるのは、ユーザーの次の発言から
-        SEEN_PROMPT[pane] = (fp, hub_human_turn())
-    # 同じ問いを見直しただけなら、最初に見たときの発言を起点のままにする（答える前に見直すと「同じ発言の中」になって断られていた。2026-11-19）
+    fp, seen, session = prompt_fp(text), SEEN_PROMPT.get(pane), a.get("session") or ""
+    if not seen_same(seen, fp, session):  # ハブがこの問いを見た。答えられるのは、ユーザーの次の発言から
+        SEEN_PROMPT[pane] = (fp, hub_human_turn(), session)
+    # 同じセッションの同じ問いを見直しただけなら、最初に見たときの発言を起点のままにする（答える前に見直すと「同じ発言の中」になって断られていた。
+    # 2026-11-19）。同じ pane でセッションを作り直して見た目の同じ問いが出たときは、新しい問いとして起点を置き直す（codex-review）
     SEEN_AT[pane] = time.time()  # 最後に見た時刻（報告が、どの問いを見て書かれたかを結ぶ）
     return JSONResponse({"pane": pane, "status": "blocked", "screen": text, "prompt": read_ask(text)})
 
@@ -1816,8 +1827,8 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
         # 止まった報告は、ハブがこの報告の間に見た問い（画面の指紋）と、そのときのセッションを記録に残す。報告への「↩ 返信」は、
         # その問いがいまも同じセッションに出ているときだけ、その問いへの答えに使える（_hub_answer）。ハブが画面を見ずに書いた報告は結ばない
         seen = SEEN_PROMPT.get(d["pane"]) if kind == "blocked" else None
-        ask_link = ({"fp": seen[0], "session": now.get("session") or ""}
-                    if seen and SEEN_AT.get(d["pane"], 0) >= asked_from and now.get("session") else None)
+        ask_link = ({"fp": seen[0], "session": seen[2]}
+                    if seen and len(seen) > 2 and seen[2] and seen[2] == now.get("session") and SEEN_AT.get(d["pane"], 0) >= asked_from else None)
         saved = await HUB.report_end(state, reply, label, saved, str(d.get("pane", "")), str(d.get("topic") or ""), ask=ask_link)
         if state != "done" or not reply.strip():
             relay_slack(d, label, headline, "", ask=kind == "blocked")
@@ -2156,7 +2167,12 @@ def risky_named(asked: str, heard: str) -> bool:
     return bool(kinds) and all(any(act.search(w) for w in acts) for act in kinds)
 
 
-SEEN_PROMPT: dict[str, tuple[str, str | None]] = {}  # ハブが見た、止まっている画面: pane → (画面の指紋, 最初に見たときのユーザーの最後の発言)
+SEEN_PROMPT: dict[str, tuple] = {}  # ハブが見た、止まっている画面: pane → (画面の指紋, 最初に見たときのユーザーの最後の発言, そのときのセッション)
+
+
+def seen_same(seen: tuple | None, fp: str, session: str) -> bool:
+    """ハブが見た問い seen が、いまの問い（指紋 fp・セッション session）と同じか。セッションの分からない記録（古い形）は同じとみなさない。"""
+    return bool(seen) and seen[0] == fp and len(seen) > 2 and seen[2] == session
 SEEN_AT: dict[str, float] = {}  # ハブが止まっている画面を最後に見た時刻: pane → 時刻（止まった報告が、どの問いを見て書かれたかを結ぶ）
 CONFIRMING: dict[str, tuple[str, str | None]] = {}  # 取り消しにくい操作の聞き返し中: pane → (画面の指紋, そのときのユーザーの最後の発言)
 CONFIRM_WAIT = 3.0  # 番号の無い確認で、カーソルが Yes に来たのを確かめるまで待つ秒数
@@ -2208,10 +2224,11 @@ def prompt_fp(text: str) -> str:
     印のあるなしで指紋が変わらないよう、承認の画面に限って、字下げなしの行の頭の印だけは数えない（承認の枠の中の行は、必ず字下げされる）。
     字下げされた行（コマンドの本文など）の印と、印より後ろの文字は、1 字でも違えば別の指紋になる。
     選択式の質問などの画面は、問いの文が字下げなしで出るので、印も文字として数える。"""
-    if is_permission(text):
-        text = TOOL_MARK.sub("", text)
-    elif parse_confirm(text):  # 番号の無い確認も、道具の見出しの ⏺ の点滅と、カーソルの位置（答える直前に別に確かめる）では変わらない
+    if parse_confirm(text):  # 番号の無い確認は、道具の見出しの ⏺ の点滅と、カーソルの位置（答える直前に別に確かめる）では変わらない。
+        # 承認の判定より先に見る（上の会話に番号つきの Yes/No が残っていると、承認の画面とも読めてしまう。read_ask と同じ順。codex-review）
         text = TOOL_MARK.sub("", confirm_text(text, None))
+    elif is_permission(text):
+        text = TOOL_MARK.sub("", text)
     return hashlib.sha1(" ".join(text.split()).encode()).hexdigest()
 
 
@@ -2255,8 +2272,8 @@ async def _hub_answer(body: dict):
         key, said = "esc", "いいえ（取り消し）"
     else:
         seen = SEEN_PROMPT.get(pane)
-        if not seen or seen[0] != fp:  # 見ていない、または見たあとで問いが変わった
-            SEEN_PROMPT[pane] = (fp, turn)
+        if not seen_same(seen, fp, a.get("session") or ""):  # 見ていない、または見たあとで問いが変わった（同じ pane でセッションを作り直した、も含む）
+            SEEN_PROMPT[pane] = (fp, turn, a.get("session") or "")
             return JSONResponse({"ok": False, "reason": "unseen", "screen": text})
         if seen[1] == turn:  # 見たのと同じ発言の中で答えようとしている = ユーザーはまだ中身を聞いていない
             return JSONResponse({"ok": False, "reason": "same_turn", "screen": text})
@@ -2280,12 +2297,13 @@ async def _hub_answer(body: dict):
         if not (consent.affirms(utter, "answer", project, heard) if answer in ("yes", "y") else consent.chooses(utter, int(answer), prompt["options"], project)):
             return JSONResponse({"ok": False, "reason": "not_said", "said": _clip(utter, 80), "project": project})
         if answer in ("yes", "y"):
-            # 取り消しにくい操作は、聞き返してからにする。ただし、利用者が答えた問い（直前に聞いた文）が「〇〇してよいですか」の〇〇で、取り消しにくい操作
-            # （削除・送信・反映など）を名指ししていたら、その答えを確かめとする（「〇〇を削除してよいですか？」への「削除して」「はい」は聞き返さない。
-            # 2026-11-19 本人）。返答のどこかに語があるだけ（プロジェクト名・セッションの題の「本番」「prod」など）や、画面と別の種類の操作の名指し
-            # （画面は rm なのに「送信してよいですか」）では省かない（risky_named）
+            # 取り消しにくい操作は、聞き返してからにする。ただし、番号の無い確認の問いの文に引用符で囲まれた対象の名前があり（Permanently delete "〇〇"?）、
+            # 利用者が答えた問い（直前に聞いた文）が、その名前をそのまま入れて、画面と同じ種類の操作を「〇〇してよいですか」で名指ししていたら
+            # （「『〇〇』を削除してよいですか？」）、その答えを確かめとする（2026-11-19 本人。security-review を受けて、対象も照らす形にした）。
+            # 対象を読み取れない画面（Bash のコマンドなど）・名前を言い換えた問い・別の種類の名指しでは省かない
             asked = asked_part(text)
-            if RISKY.search(asked) and not risky_named(asked, heard):
+            target = confirm_targets(text) if conf else []
+            if RISKY.search(asked) and not (target and all(consent.mentions(heard, t) for t in target) and risky_named(asked, heard)):
                 held = CONFIRMING.get(pane)
                 if not (confirmed and held and held[0] == fp and held[1] != turn):
                     CONFIRMING[pane] = (fp, turn) if not (held and held[0] == fp) else held

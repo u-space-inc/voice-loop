@@ -258,11 +258,11 @@ for order in ("ハブ → ボタン", "ボタン → ハブ"):
     case(order, screen=PERMISSION)
     fp = prompt()["fp"]
     s.ANSWERED.clear(); s._answer_lock = asyncio.Lock(); state["sent"].clear()
-    s.SEEN_PROMPT["w9:p1"] = (fp, "t1")  # ハブは前の発言で問いを見て、利用者に伝えた
+    s.SEEN_PROMPT["w9:p1"] = (fp, "t1", "sess-1")  # ハブは前の発言で問いを見て、利用者に伝えた
     page = lambda: json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "sess-1", "fp": fp, "choice": "allow"})).body)
     first, second = (hub("yes"), page()) if order == "ハブ → ボタン" else (page(), hub("yes"))
     check(f"{order}: 画面が古い問いのままでも、送るのは 1 回だけ", (first.get("ok"), second.get("reason"), state["sent"]), (True, "answered", ["1"]))
-    s.SEEN_PROMPT["w9:p1"] = (fp, "t1")
+    s.SEEN_PROMPT["w9:p1"] = (fp, "t1", "sess-1")
     check(f"{order}: そのあとハブが断る（いいえ）も、同じ問いには送らない", (hub("no").get("reason"), state["sent"]), ("answered", ["1"]))
 s.ANSWERED.clear()
 
