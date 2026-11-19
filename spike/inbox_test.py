@@ -185,7 +185,14 @@ STATUS.write_text(json.dumps({"orgs": {"o": {"ok": True}}, "at": NOW - 600}))
 check("…読めていて新しければ、帯は出さない", ib.inbox(NOW)["watch"], [])
 STATUS.write_text("{壊れた")
 check("状態のファイルが壊れていれば、読めないと帯で出す", [w["reason"] for w in ib.inbox(NOW)["watch"]], ["見張りの状態を読めません"])
+STATUS.write_bytes(b" " * (ib.STATUS_MAX + 1))
+big = [w["reason"] for w in ib.inbox(NOW)["watch"]]
 STATUS.unlink()
+STATUS.symlink_to(Path(TMP) / "other.jsonl")
+link = [w["reason"] for w in ib.inbox(NOW)["watch"]]
+STATUS.unlink()
+check("状態のファイルが有るのに読めない（大きすぎる・symlink）ときも、読めないと帯で出す（無いときとは分ける）", (big, link, ib.inbox(NOW)["watch"]),
+      (["見張りの状態を読めません"], ["見張りの状態を読めません"], []))
 
 
 class Vanish(dict):  # 一覧を作る間に、付け直しが成功して失敗の知らせを消す

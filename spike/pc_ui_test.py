@@ -171,6 +171,36 @@ def mem_text(page):
     return page.text_content("#memPanel") or ""
 
 
+def settle_history(page, quiet=0.8, limit=8.0):
+    """会話の読み込み（/api/history）が落ち着くまで待つ。相手を替えたときと、つながった直後の取り直し（catchUp）の両方が、
+    会話の欄を描き直す。描き直しの前に足した吹き出し・案内の行は消えるので、確かめる前に読み込みが止んでいることを見る
+    （読み込みの最中・終わってから quiet 秒たつまで待つ）。"""
+    st = {"n": 0, "t": time.time()}
+
+    def start(r):
+        if "/api/history" in r.url:
+            st["n"] += 1
+            st["t"] = time.time()
+
+    def end(r):
+        if "/api/history" in r.url:
+            st["n"] = max(0, st["n"] - 1)
+            st["t"] = time.time()
+    page.on("request", start)
+    page.on("requestfinished", end)
+    page.on("requestfailed", end)
+    try:
+        stop = time.time() + limit
+        while time.time() < stop:
+            page.wait_for_timeout(100)
+            if st["n"] == 0 and time.time() - st["t"] > quiet:
+                break
+    finally:
+        page.remove_listener("request", start)
+        page.remove_listener("requestfinished", end)
+        page.remove_listener("requestfailed", end)
+
+
 def open_page(page, width):
     page.set_viewport_size({"width": width, "height": 900 if width >= 1100 else 844})
     page.goto(BASE + "/")
@@ -207,7 +237,9 @@ def run_wide(page, who):
     check(f"{who} 一覧で押すと話し相手が替わる（select も同じ相手）", (page.evaluate("document.getElementById('agent').value"), wait(lambda: names()[2][2])), ("w1:p1", True))
     wait(lambda: not page.locator("#send").is_disabled())
     # 相手を替えると会話の記録を取り直して描き直す。描き終わる前に送ると、送った吹き出しが描き直しで消えるので、描き終わるのを待つ
+    # （つながった直後の取り直しも描き直すので、読み込みが止むまで待つ）
     wait(lambda: "このセッションにはまだ会話がありません" in (page.text_content("#log") or ""))
+    settle_history(page)
     page.evaluate("(() => { window.__sent = []; const o = ws.send.bind(ws); ws.send = m => { window.__sent.push(m); if (typeof m !== 'string' || JSON.parse(m).type !== 'text') o(m); }; })()")
     texts = lambda: page.evaluate("window.__sent.map(m => JSON.parse(m)).filter(m => m.type === 'text').map(m => [m.pane, m.text])")
     typed_h = lambda: round(page.locator("#typed").bounding_box()["height"])
@@ -727,6 +759,7 @@ def run_attach(page, who):
     page.press("#typed", "Enter")
     wait(lambda: len(hold) == 1)
     page.select_option("#agent", s.hermes.HERMES_PANE)
+    settle_history(page)  # 相手を替えた描き直しが終わってから、添付の答えを返す（描き直しが案内の行を消さないように）
     hold[0].continue_()
     page.unroute("**/api/attach*")
     check(f"{who} 添付を置いている間に相手を替えたら送らず、文と添付は残す（宛先をずらさない）",

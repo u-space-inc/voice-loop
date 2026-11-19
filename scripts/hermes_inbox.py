@@ -176,13 +176,15 @@ def _watch(now: float | None = None) -> list[dict]:
     組織が読めなければその理由（決まった言葉に直す。ファイルの文は出さない）。状態のファイルが無ければ、Teams の見張りを使っていない。"""
     now = time.time() if now is None else now
     data, _ = _read("teams-status.json", STATUS_MAX)
+    title = "Teams の見張りが止まっています"
+    if data is None:  # 有るのに読めない（symlink・大きすぎる・権限など）。無い（Teams の見張りを使っていない）とは分ける
+        return [{"source": "teams", "title": title, "reason": "見張りの状態を読めません", "fix": ""}]
     if not data:
         return []
     try:
         d = json.loads(data)
     except (ValueError, RecursionError):
         d = None
-    title = "Teams の見張りが止まっています"
     if not isinstance(d, dict) or not vl_items._num(d.get("at")) or not isinstance(d.get("orgs"), dict):
         return [{"source": "teams", "title": title, "reason": "見張りの状態を読めません", "fix": ""}]
     reasons = []
