@@ -777,9 +777,9 @@ async def hub_accepted(talker, text: str, pane: str, reply_at: float | None, fil
 def reply_item_of(d: dict) -> int | None:
     """画面の受け箱（💡）で押した件への返信の先（頭の記録の番号）。付いていなければ None。付いているのに正の整数でなければ -1
     （どの記録とも一致しないので、頭は送らずに止める。ふつうの発言にすり替えない）。"""
-    v = d.get("reply_item")
-    if v is None:
+    if "reply_item" not in d:
         return None
+    v = d["reply_item"]  # 付いているのに空（null）なら -1（画面で扱えない番号が null になっても、ふつうの発言にすり替えない）
     return v if isinstance(v, int) and not isinstance(v, bool) and 0 < v < 2**31 else -1
 
 

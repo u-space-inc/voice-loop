@@ -160,6 +160,9 @@ def run(page, who):
     check(f"{who} …ハブの会話に替わり、その件への「↩ 返信」の状態になる。送るボタンは「このまま送る」。まだ何も送らない",
           (page.input_value("#agent"), page.is_visible("#replyBar"), page.text_content("#replyTo"), page.text_content("#send"), ASKED),
           ("hermes", True, f"↩ 判断待ち [1]「{TITLE1}」に返信", "このまま送る", []))
+    bad = page.evaluate("""() => { const keep = replyTarget; const out = [Infinity, 1e400, 2 ** 53, 0.5, -3, null].map(i => { replyTarget = { item: i, about: 'x' }; return JSON.stringify(replyFields()); });
+        replyTarget = keep; return out; }""")
+    check(f"{who} 返信先の番号が扱えない数なら -1 を送って本体に断らせる（null にしてふつうの発言にしない）", bad, ['{"reply_item":-1}'] * 6)
     page.fill("#typed", "期間は")
     check(f"{who} 文を打つと「送る」に替わる", page.text_content("#send"), "送る")
     page.fill("#typed", "")

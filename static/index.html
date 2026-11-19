@@ -702,7 +702,9 @@ function setReplyTarget(t) {
   if (t && wide) $('typed').focus();
   if (typeof renderSit === 'function' && ibSel != null) renderSit();  // 開いている件の「↩ この件に返信」の出し分け
 }
-const replyFields = () => { const a = curAgent(); return replyTarget && a && a.hub ? (replyTarget.item ? { reply_item: replyTarget.item } : { reply_at: replyTarget.at }) : {}; };
+// 判断待ちの番号が画面で正しく扱える整数でなければ -1 を送り、本体に断らせる（null になってふつうの発言にすり替わらないように）
+const itemNo = i => Number.isSafeInteger(i) && i > 0 && i < 2 ** 31 ? i : -1;
+const replyFields = () => { const a = curAgent(); return replyTarget && a && a.hub ? (replyTarget.item !== undefined ? { reply_item: itemNo(replyTarget.item) } : { reply_at: replyTarget.at }) : {}; };
 // 判断待ちへの返信で、文も添付も無いときは「このまま送る」（ことばを添えずに送り、ハブが中身と次にすることの案を答える）
 const itemOnly = () => !!(replyTarget && replyTarget.item && curAgent()?.hub);
 function paintSend() { const b = $('send'); if (b) b.textContent = itemOnly() && !$('typed').value.trim() && !attachFiles.length ? 'このまま送る' : '送る'; }

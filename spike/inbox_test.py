@@ -411,8 +411,10 @@ check("記録に無い・情報の件・形の違う番号・報告と件の両�
       (len(SENT) - n0, [o[1].startswith("返信先の判断待ちが見つかりませんでした") for o in outs]), (0, [True] * 4))
 check("…断った発言は台帳に空で載る（前の問い・確認を失効させる）", h.HERMES_TURNS[-1][1], "")
 check("本体は、画面の発言の件の番号を、正の整数だけ受け取る（違う形は -1 にして、頭に断らせる）",
-      [s.reply_item_of(d) for d in ({}, {"reply_item": None}, {"reply_item": 31}, {"reply_item": "31"}, {"reply_item": True}, {"reply_item": 0}, {"reply_item": 1.0})],
-      [None, None, 31, -1, -1, -1, -1])
+      [s.reply_item_of(d) for d in ({}, {"reply_item": None}, {"reply_item": 31}, {"reply_item": "31"}, {"reply_item": True}, {"reply_item": 0}, {"reply_item": 1.0}, {"reply_item": 10**30})],
+      [None, -1, 31, -1, -1, -1, -1, -1])
+write([add(71, title="ふつうの番号"), {**add(72), "n": 10**30}, {**add(73), "n": 2**31}])
+check("番号が口の範囲（1〜2^31）の外の記録は、画面に出さず、返信先にもしない", (ns(ib.inbox(NOW)), ib.item(10**30), ib.item(2**31)), ([71], None, None))
 
 ok = sum(r[1] for r in results)
 for name, passed, got, want in results:

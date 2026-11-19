@@ -129,9 +129,13 @@ def records(info: dict | None = None) -> tuple[dict, dict] | None:
             r = json.loads(line)
         except (ValueError, RecursionError):  # 入れ子が深すぎる行も、形の違う行として飛ばす
             continue
-        if isinstance(r, dict):
+        if isinstance(r, dict) and _num_ok(r.get("n")):  # 番号は口と同じ範囲だけ（画面の数で扱えない番号で、返信の印が消えないように）
             rows.append(r)
     return vl_items._state(rows)
+
+
+def _num_ok(n) -> bool:
+    return isinstance(n, int) and not isinstance(n, bool) and 0 < n < 2**31
 
 
 def records_problem() -> str:
