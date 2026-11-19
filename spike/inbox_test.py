@@ -158,6 +158,23 @@ check("記録が上限より大きければ、断らずに新しい側だけを�
 ITEMS.write_bytes(b"x" * (ib.ITEMS_MAX + 1))
 d = ib.inbox(NOW)
 check("…大きいだけの壊れた中身でも落ちず、0 件", (ns(d), d["problem"]), ([], ""))
+# 新しい側だけを読んだ印は読み込みごと: 大きい記録を読んだ直後に、別の読み込みが小さい記録を読んでも、先の一覧の一言は消えない
+write([add(61, at=NOW - 10 * 86400, title="古い判断待ち")] + filler + [add(62, at=NOW - 60, title="新しい判断待ち")])
+big_rows = ITEMS.read_bytes()
+real_records = ib.records
+
+
+def interleave(info=None):
+    got = real_records(info)
+    ITEMS.write_text(json.dumps(add(63, at=NOW - 30)) + "\n")  # その間に Hermes が記録を小さくし、別の読み込みが読む
+    real_records({})
+    return got
+
+
+ib.records = interleave
+d = ib.inbox(NOW)
+ib.records = real_records
+check("…新しい側だけを読んだ印は読み込みごとに持つ（同時の別の読み込みが小さい記録を読んでも、一言は消えない）", (ns(d), bool(d.get("note"))), ([62], True))
 ib.ITEMS_MAX = keep_max
 write([add(1, at=NOW - 3600)])
 check("…上限より小さければ、一言は出さない", "note" in ib.inbox(NOW), False)

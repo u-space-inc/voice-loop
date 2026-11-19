@@ -66,9 +66,6 @@ _op_lock: asyncio.Lock | None = None  # 済んだ・戻すを 1 つずつ受け�
 
 
 # ---------- 記録を読む ----------
-TRUNC = {"v": False}  # 最後に読んだ記録が大きく、新しい側だけを読んだか（画面に一言出す）
-
-
 def _read_tail(dfd: int, name: str, cap: int) -> tuple[bytes, bool]:
     """name を symlink をたどらずに開き、通常のファイルでほかの名前から指されていないときだけ、末尾の cap バイトを読む（行の途中から始まる頭の 1 行は捨てる）。
     (中身, 頭を捨てたか)。置き場の安全な読み方（hermes_skills._read_at）と同じ確かめをして、大きさだけは断らずに新しい側を読む。"""
@@ -119,12 +116,13 @@ def _read(name: str, cap: int, tail: bool = False) -> tuple[bytes | None, str]:
         os.close(dfd)
 
 
-def records() -> tuple[dict, dict] | None:
+def records(info: dict | None = None) -> tuple[dict, dict] | None:
     """(番号→出来事, 番号→片づけた印)。読めなければ None。形の合わない行は飛ばす（vl_items と同じ読み方）。"""
     data, why = _read("items.jsonl", ITEMS_MAX, tail=True)
     if data is None:
         return None
-    TRUNC["v"] = why == "tail"
+    if info is not None:  # 新しい側だけを読んだか。読み込みごとに返す（同時に来た別の読み込みと混ぜない）
+        info["trunc"] = why == "tail"
     rows = []
     for line in data.decode("utf-8", "replace").splitlines():
         try:
@@ -247,7 +245,8 @@ def inbox(now: float | None = None) -> dict:
     now = time.time() if now is None else now
     with _lock:
         later = _later()
-    got = records()
+    read: dict = {}
+    got = records(read)
     try:  # 見張りの状態のどんな形でも、判断待ちの一覧は止めない
         watch = _watch(now)
     except Exception:
@@ -261,7 +260,7 @@ def inbox(now: float | None = None) -> dict:
         out["problem"] = records_problem() or "判断待ちの記録を読めませんでした"
         return out
     items, done = got
-    if TRUNC["v"]:
+    if read.get("trunc"):
         out["note"] = "判断待ちの記録が大きいので、新しい側だけを読んでいます（それより前に記録した判断待ちは、ここには出ていません。ハブに聞けば全部を確かめます）"
     today = dt.datetime.fromtimestamp(now, JST).date()
     rows = []
