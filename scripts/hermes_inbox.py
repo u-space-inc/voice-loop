@@ -31,9 +31,16 @@ from fastapi.responses import JSONResponse
 import hermes_skills  # 置き場を安全に読む部品と、コンテナで動かすときの決まり（docker の場所・利用者・python）
 from places import STATE_DIR
 
-_spec = importlib.util.spec_from_file_location("vl_items_tpl", Path(__file__).resolve().parent.parent / "templates/hermes/watch/vl_items.py")
-vl_items = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(vl_items)
+def _template(name: str):
+    """見張りの台本（templates/hermes/watch/<name>.py）を、そのまま読み込む（読み方の決まりを 1 か所にする）。"""
+    spec = importlib.util.spec_from_file_location(f"{name}_tpl", Path(__file__).resolve().parent.parent / f"templates/hermes/watch/{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+vl_items = _template("vl_items")
+vl_watch = _template("vl_watch")  # Teams の止まり方の決まり（TEAMS_STALE・TEAMS_REASON）
 
 HOME = Path(os.environ.get("VL_HERMES_HOME") or Path.home() / ".hermes").expanduser()  # hub_hermes が同じ値を入れ直す
 CONTAINER = os.environ.get("VL_HERMES_CONTAINER", "hermes")
@@ -164,20 +171,28 @@ def later_options(now: float | None = None) -> list[dict]:
 
 
 # ---------- 一覧 ----------
-def _watch() -> list[dict]:
-    """見張りが止まっている口（いまは Teams）。状態のファイルは Hermes も書けるので、理由は文字として切って出すだけ。"""
+def _watch(now: float | None = None) -> list[dict]:
+    """見張りが止まっている口（いまは Teams）。見張りの台本（vl_watch.teams）と同じ決まりで読む: 状態の時刻が 2 時間より古ければ止まっている、
+    組織が読めなければその理由（決まった言葉に直す。ファイルの文は出さない）。状態のファイルが無ければ、Teams の見張りを使っていない。"""
+    now = time.time() if now is None else now
     data, _ = _read("teams-status.json", STATUS_MAX)
+    if not data:
+        return []
     try:
-        d = json.loads(data) if data else {}
+        d = json.loads(data)
     except (ValueError, RecursionError):
-        return []
-    orgs = d.get("orgs") if isinstance(d, dict) and isinstance(d.get("orgs"), dict) else {}
-    bad = [o for o in orgs.values() if isinstance(o, dict) and o.get("ok") is False]
-    if not bad:
-        return []
-    why = next((vl_items.clip(o.get("reason"), "note") for o in bad if isinstance(o.get("reason"), str) and o.get("reason").strip()), "")
-    return [{"source": "teams", "title": "Teams の見張りが止まっています", "reason": why[:160],
-             "fix": "Mac の Chrome で Teams を開き、左の「メンション」を選んだままにしてください（直れば次の回で消えます）"}]
+        d = None
+    title = "Teams の見張りが止まっています"
+    if not isinstance(d, dict) or not vl_items._num(d.get("at")) or not isinstance(d.get("orgs"), dict):
+        return [{"source": "teams", "title": title, "reason": "見張りの状態を読めません", "fix": ""}]
+    reasons = []
+    if now - d["at"] > vl_watch.TEAMS_STALE:
+        reasons.append("Mac の見張りが 2 時間以上動いていない（Mac が止まっている・眠っている）")
+    for o in d["orgs"].values():
+        if isinstance(o, dict) and not o.get("ok"):
+            reasons.append(vl_watch.TEAMS_REASON.get(o.get("reason"), vl_watch.TEAMS_REASON["run"]))
+    reasons = list(dict.fromkeys(reasons))
+    return [{"source": "teams", "title": title, "reason": "／".join(reasons), "fix": ""}] if reasons else []
 
 
 def inbox(now: float | None = None) -> dict:
@@ -185,10 +200,11 @@ def inbox(now: float | None = None) -> dict:
     with _lock:
         later = _later()
     got = records()
-    out = {"on": True, "problem": "", "items": [], "fyi": [], "later": 0, "pending": [], "watch": _watch(),
+    out = {"on": True, "problem": "", "items": [], "fyi": [], "later": 0, "pending": [], "watch": _watch(now),
            "days": vl_items.OPEN_DAYS, "later_options": later_options(now), "undo": UNDO}
-    if FAIL and now - FAIL.get("at", 0) < 600:
-        out["fail"] = {"n": FAIL["n"], "why": FAIL["why"]}
+    f = dict(FAIL)  # 一覧は別のスレッドで作るので、写してから見る（その間に付け直しが成功して消しても落ちない）
+    if f.get("n") and now - f.get("at", 0) < 600:
+        out["fail"] = {"n": f["n"], "why": f.get("why", "")}
     if got is None:
         out["problem"] = records_problem() or "判断待ちの記録を読めませんでした"
         return out

@@ -688,8 +688,9 @@ navigator.serviceWorker?.addEventListener('message', e => {
   if (u.origin === location.origin && u.pathname === '/' && !u.search && /^#(t=t[0-9a-f]{10}|inbox|i=[1-9][0-9]{0,9})$/.test(u.hash)) location.hash = u.hash;
 });
 // 受け箱（💡）の状態: 最後に読んだ一覧・開いている件の番号・通知で開く件・案件の絞り込み・戻せる件・「その他」と畳みの開閉・案内・描いた件の印
-let ibExtra = null, ibWantTok = 0;  // ibWantTok: 通知で開く予約の世代（閉じる・別の通知で進む）  // 通知・リンクで開いた、一覧に出ていない 1 件（あとでに回した件・数の上限から外れた件）
-let inbox = null, ibSel = null, ibWant = null, ibProj = '', ibUndo = null, ibOther = false, ibOld = false, ibFyiOpen = false, ibMsg = null, ibSig = '';
+let ibExtra = null, ibWantTok = 0;
+const ibUndos = new Map();  // 戻せる件: 番号 → { n, title, until }（5 秒以内に何件押しても、件ごとに戻せる）  // ibWantTok: 通知で開く予約の世代（閉じる・別の通知で進む）  // 通知・リンクで開いた、一覧に出ていない 1 件（あとでに回した件・数の上限から外れた件）
+let inbox = null, ibSel = null, ibWant = null, ibProj = '', ibOther = false, ibOld = false, ibFyiOpen = false, ibMsg = null, ibSig = '';
 // 返信先。報告（{ at, about }）か、受け箱の判断待ち（{ item: 番号, about: 題 }）。ハブの会話のときだけ付けて送り、送ったら外す。相手を替えたら外す
 let replyTarget = null;
 function setReplyTarget(t) {
@@ -1330,9 +1331,10 @@ async function doneItem(it) {
   // （本体が残りを数えたのは、その間のどこか。応答が遅れても・押し直しても、本体より長く出さない。端末の時計には頼らない）
   const left = Math.max(0, Number(r.left) || 0) * 1000 - (performance.now() - t0) - 100;
   if (left > 0) {
-    ibUndo = { n: it.n, title: it.title, until: Date.now() + left };
-    // 期限が来たら、その場で「戻す」を消す（読み直しの応答を待たない。止まっても、押せない「戻す」を残さない）
-    setTimeout(() => { if (ibUndo && ibUndo.n === it.n && Date.now() >= ibUndo.until) { ibUndo = null; document.querySelectorAll('#sitBody .ibToast').forEach(e => e.remove()); loadSituation(); } }, left + 50);
+    const u = { n: it.n, title: it.title, until: Date.now() + left };
+    ibUndos.set(it.n, u);
+    // 期限が来たら、その件の「戻す」をその場で消す（読み直しの応答を待たない。止まっても、押せない「戻す」を残さない）
+    setTimeout(() => { if (ibUndos.get(it.n) === u) { ibUndos.delete(it.n); document.querySelectorAll(`#sitBody .ibToast[data-n="${it.n}"]`).forEach(e => e.remove()); loadSituation(); } }, left + 50);
   }
   // 読み直しを待たずに、カードを消して「戻す」を出す（数の札の元と、描く元の両方から外す）
   const drop = d => d && d !== FAILED && Array.isArray(d.items) ? { ...d, items: d.items.filter(x => x.n !== it.n) } : d;
@@ -1342,10 +1344,10 @@ async function doneItem(it) {
   paintSitBtn(ibCount(inbox)); ibSig = ''; renderSit();
   loadSituation();
 }
-async function undoItem() {
-  const u = ibUndo; if (!u) return;
-  ibUndo = null;
-  document.querySelectorAll('#sitBody .ibToast').forEach(e => e.remove());  // 押したらその場で消す（読み直しが止まっても、押せない「戻す」を残さない）
+async function undoItem(n) {
+  const u = ibUndos.get(n); if (!u) return;
+  ibUndos.delete(n);
+  document.querySelectorAll(`#sitBody .ibToast[data-n="${n}"]`).forEach(e => e.remove());  // 押したらその場で消す（読み直しが止まっても、押せない「戻す」を残さない）
   let r; try { r = await postJSON('/api/inbox/undo', { n: u.n }); } catch { r = { ok: false, reason: 'net' }; }
   if (!r.ok) ibNote(r.reason === 'late' ? `「${u.title}」は、もう済みの印を付け始めていたので戻せませんでした。ハブに「[${u.n}] はまだだった」と言えば戻せます` : '戻せませんでした（本体に届きません）', true);
   loadSituation();
@@ -1407,12 +1409,14 @@ function inboxView(d) {
   for (const w of d.watch || []) {
     const b = node('div', 'ibBand'); b.appendChild(node('b', null, w.title));
     if (w.reason) b.appendChild(node('div', null, '理由: ' + w.reason));
-    b.appendChild(node('div', null, '直し方: ' + w.fix)); f.appendChild(b);
+    if (w.fix) b.appendChild(node('div', null, '直し方: ' + w.fix));
+    f.appendChild(b);
   }
   if (d.fail) f.appendChild(node('div', 'sitMeta bad', `[${d.fail.n}] に済みの印を付けられませんでした（${d.fail.why}）。一覧に戻したので、もう一度押してください`));
-  if (ibUndo && Date.now() < ibUndo.until) {
-    const t = node('div', 'ibToast'); t.appendChild(node('span', null, `済みにしました「${ibUndo.title}」`));
-    const u = node('button', null, '戻す'); u.type = 'button'; u.onclick = undoItem; t.appendChild(u); f.appendChild(t);
+  for (const v of ibUndos.values()) {
+    if (Date.now() >= v.until) continue;
+    const t = node('div', 'ibToast'); t.dataset.n = String(v.n); t.appendChild(node('span', null, `済みにしました「${v.title}」`));
+    const u = node('button', null, '戻す'); u.type = 'button'; u.setAttribute('aria-label', `判断待ち ${v.n} を戻す`); u.onclick = () => undoItem(v.n); t.appendChild(u); f.appendChild(t);
   }
   const all = d.items, projects = [...new Set(all.map(x => x.project))];
   if (ibProj && !projects.includes(ibProj)) ibProj = '';

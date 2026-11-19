@@ -98,7 +98,7 @@ def seed():
         {"op": "add", "at": NOW - 60, "source": "mail", "id": "aaaaaaaaaaaaaaaa", "project": "shop", "kind": "fyi", "title": "先方の了承の返事", "note": "", "prepared": "対応不要", "n": 4},
     ]
     ITEMS.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
-    (HOME / "voice-loop" / "teams-status.json").write_text(json.dumps({"orgs": {"o": {"ok": False, "reason": "一覧の形が読めない"}}, "at": NOW}))
+    (HOME / "voice-loop" / "teams-status.json").write_text(json.dumps({"orgs": {"o": {"ok": False, "reason": "parse"}}, "at": time.time()}))
     ib.STATE_FILE.unlink(missing_ok=True)
     ib.PENDING.clear()
     ib.FAIL.clear()
@@ -183,6 +183,16 @@ def run(page, who):
     page.click("#sitBody .ibToast button")
     page.wait_for_function("document.querySelectorAll('#sitBody > .ibCard').length === 2")
     check(f"{who} 戻すと一覧に戻り、道具は動かさない", (cards(page), CMDS), ([TITLE1, "処理時間のアラーム"], []))
+    # 5 秒以内に 2 枚続けて「済」を押しても、件ごとに戻せる（先に押した件の「戻す」が消えない）
+    page.locator("#sitBody > .ibCard").nth(0).locator("button.done").click()
+    page.wait_for_function("ibUndos.size === 1")
+    page.locator("#sitBody > .ibCard").nth(0).locator("button.done").click()
+    page.wait_for_function("ibUndos.size === 2")
+    toasts = page.eval_on_selector_all("#sitBody .ibToast", "els => els.map(e => e.dataset.n)")
+    page.click('#sitBody .ibToast[data-n="1"] button')
+    page.click('#sitBody .ibToast[data-n="2"] button')
+    page.wait_for_function("document.querySelectorAll('#sitBody > .ibCard').length === 2")
+    check(f"{who} 2 枚続けて済にしても、件ごとに「戻す」が出て、先に押した件も戻せる", (sorted(toasts), cards(page), CMDS), (["1", "2"], [TITLE1, "処理時間のアラーム"], []))
     # 「戻す」は本体が返した残りの秒から、届くまでにかかった時間を引いた分だけ出し、期限が来たらその場で消す。
     # 一覧の読み直し（/api/inbox）を止めたままにしても、押した直後にカードが消えて「戻す」が出て、期限で消えることを見る
     def slow(route):
@@ -194,8 +204,8 @@ def run(page, who):
     page.route("**/api/inbox/done", slow)
     t_click = time.time()
     page.locator("#sitBody > .ibCard").nth(1).locator("button.done").click()
-    page.wait_for_function("ibUndo !== null")
-    rest, t_set = page.evaluate("ibUndo.until - Date.now()"), time.time()
+    page.wait_for_function("ibUndos.size > 0")
+    rest, t_set = page.evaluate("Math.max(...[...ibUndos.values()].map(u => u.until)) - Date.now()"), time.time()
     shown = (page.locator("#sitBody .ibToast").count(), cards(page))
     gone = wait(lambda: page.locator("#sitBody .ibToast").count() == 0, ib.UNDO + 1.0)
     for r in hold:
@@ -215,7 +225,7 @@ def run(page, who):
     page.route("**/api/inbox", lambda r: hold2.append(r))
     page.click("#sitBtn")
     page.locator("#sitBody > .ibCard").first.locator("button.done").click()
-    page.wait_for_function("ibUndo !== null")
+    page.wait_for_function("ibUndos.size > 0")
     after = (cards(page), page.locator("#sitBody .ibToast").count())
     page.click("#sitBody .ibToast button")  # 戻す
     undone = wait(lambda: page.locator("#sitBody .ibToast").count() == 0, 2)  # 読み直しは止まったまま

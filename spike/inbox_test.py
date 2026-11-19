@@ -111,7 +111,7 @@ ITEMS.write_text("[" * 50000 + "\n" + json.dumps(add(15, at=NOW - 60)) + "\n")
 d = ib.inbox(NOW)
 check("入れ子が深すぎる行（RecursionError）も、形の違う行として飛ばす（一覧全体を落とさない）", (ns(d), d["problem"]), ([15], ""))
 STATUS.write_text("[" * 50000)
-check("…見張りの状態のファイルが入れ子が深すぎても、帯を出さずに落ちない", ib.inbox(NOW)["watch"], [])
+check("…見張りの状態のファイルが入れ子が深すぎても落ちず、読めないと帯で出す", [w["reason"] for w in ib.inbox(NOW)["watch"]], ["見張りの状態を読めません"])
 STATUS.unlink()
 
 
@@ -168,11 +168,34 @@ check("Teams は Teams の入口だけ、Slack・録音・予定は作らない�
 # ---------- 見張りの帯 ----------
 STATUS.write_text(json.dumps({"orgs": {"org-a": {"ok": True}, "org-b": {"ok": False, "reason": "一覧の形が読めない\x1b[2J" + "長" * 300}}, "at": NOW}))
 w = ib.inbox(NOW)["watch"]
-check("Teams の見張りが止まっていれば帯を出す（理由は文字として切る。組織の id は出さない）",
-      (len(w), w[0]["title"], "\x1b" in w[0]["reason"], len(w[0]["reason"]) <= 160, "org-b" in json.dumps(w, ensure_ascii=False)), (1, "Teams の見張りが止まっています", False, True, False))
+check("Teams の見張りが止まっていれば帯を出す（理由はファイルの文を出さず、決まった言葉にする。組織の id は出さない）",
+      (len(w), w[0]["title"], w[0]["reason"], "org-b" in json.dumps(w, ensure_ascii=False)), (1, "Teams の見張りが止まっています", "取得に失敗", False))
+STATUS.write_text(json.dumps({"orgs": {"o": {"ok": False, "reason": "parse"}, "p": {"ok": False, "reason": "signin"}}, "at": NOW}))
+check("…理由の符号は、見張りの台本（vl_watch）と同じ言葉に直す", ib.inbox(NOW)["watch"][0]["reason"],
+      ib.vl_watch.TEAMS_REASON["parse"] + "／" + ib.vl_watch.TEAMS_REASON["signin"])
+STATUS.write_text(json.dumps({"orgs": {"o": {"ok": True}}, "at": NOW - 3 * 3600}))
+check("最後に読めてから 2 時間より古ければ、見張りそのものが止まっていると帯で出す", "2 時間以上動いていない" in ib.inbox(NOW)["watch"][0]["reason"], True)
+STATUS.write_text(json.dumps({"orgs": {"o": {"ok": True}}, "at": NOW - 600}))
+check("…読めていて新しければ、帯は出さない", ib.inbox(NOW)["watch"], [])
 STATUS.write_text("{壊れた")
-check("状態のファイルが壊れていれば帯は出さない", ib.inbox(NOW)["watch"], [])
+check("状態のファイルが壊れていれば、読めないと帯で出す", [w["reason"] for w in ib.inbox(NOW)["watch"]], ["見張りの状態を読めません"])
 STATUS.unlink()
+
+
+class Vanish(dict):  # 一覧を作る間に、付け直しが成功して失敗の知らせを消す
+    def get(self, k, d=None):
+        v = super().get(k, d)
+        self.clear()
+        return v
+
+
+keep_f, ib.FAIL = ib.FAIL, Vanish(n=7, why="x", at=NOW)
+try:
+    got_fail = ib.inbox(NOW).get("fail")
+except KeyError:
+    got_fail = "KeyError"
+ib.FAIL = keep_f
+check("付けられなかった知らせは写してから見る（一覧を作る間に消えても落ちない）", got_fail, {"n": 7, "why": "x"})
 
 # ---------- 口（済んだ・戻す・あとで） ----------
 CMDS = []
