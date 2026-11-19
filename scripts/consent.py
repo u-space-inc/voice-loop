@@ -70,6 +70,8 @@ def _yes_clause(action: str | None, project: str):
 # 聞かれています」）・打ち消し（「削除しなくてよいですか」）・ほかの問いと並んだ説明は読まない（codex-review）
 ASKED_ACT = re.compile(r"([一-龥々ァ-ヶー]{1,12})しても?(?:よい|いい|良い|大丈夫|構わない|かまわない|構いません|かまいません)(?:です|でしょう)?か[?？]?$")
 _SENTENCE = re.compile(r"[^。．.!！?？\n]*[?？]?")
+# 引用・括弧のひとまとまり（中の文は、ハブが利用者に聞いた問いとして読まない。中の「？」で文を切らない）
+_QUOTE = re.compile(r"「[^「」]*」|『[^『』]*』|“[^“”]*”|\"[^\"]*\"|（[^（）]*）|\([^()]*\)")
 
 
 def mentions(heard: str, name: str) -> bool:
@@ -78,22 +80,47 @@ def mentions(heard: str, name: str) -> bool:
     return bool(n) and n in _flat(heard)
 
 
-def asked_acts(heard: str) -> list[str]:
-    """聞いた問いが、文の終わりの「〇〇して（も）よいですか？」の形で名指しした操作の語（「削除してよいですか」の「削除」）。"""
+def asked_questions(heard: str) -> list[tuple[str, str]]:
+    """聞いた文 heard のうち、文の終わりが「〇〇して（も）よいですか？」の形の問いの文ごとに (〇〇, その文)。文は引用・括弧を元に戻した形
+    （『受注の記録』を削除してよいですか？ → ("削除", "『受注の記録』を削除してよいですか?")）。引用・括弧の中の問いは読まない（codex-review）。"""
+    flat, kept = _flat(heard), []
+
+    def hide(m):
+        kept.append(m.group(0))
+        return f"\x00{len(kept) - 1}\x00"
+
+    while True:  # 入れ子の引用は内側から順に隠す
+        hidden = _QUOTE.sub(hide, flat)
+        if hidden == flat:
+            break
+        flat = hidden
+
+    def show(s):
+        while "\x00" in s:
+            s = re.sub(r"\x00(\d+)\x00", lambda m: kept[int(m.group(1))], s)
+        return s
+
     out = []
-    for sentence in _SENTENCE.findall(_flat(heard)):
+    for sentence in _SENTENCE.findall(flat):
         m = ASKED_ACT.search(sentence)
         if m:
-            out.append(m.group(1))
-    return list(dict.fromkeys(out))
+            out.append((m.group(1), show(sentence)))
+    return out
+
+
+def asked_acts(heard: str) -> list[str]:
+    """聞いた問いが、文の終わりの「〇〇して（も）よいですか？」の形で名指しした操作の語（「削除してよいですか」の「削除」）。"""
+    return list(dict.fromkeys(act for act, _ in asked_questions(heard)))
 
 
 def affirms(text: str, action: str, project: str = "", heard: str = "") -> bool:
-    """発言全体が「許す」か（action は close か answer）。answer では、聞いた問い heard が「〇〇してよいですか」と名指しした〇〇で答える
-    （「削除して」「削除する」「削除してください」）のも許す句として読む（聞いていない操作の語は読まない）。"""
+    """発言全体が「許す」か（action は close か answer）。answer では、聞いた問い heard の「〇〇してよいですか？」の問いが 1 つだけなら、
+    その〇〇で答える（「削除して」「削除する」「削除してください」）のも許す句として読む（聞いていない操作の語、問いが 2 つ以上でどれへの答えか
+    分からないときの操作の語は読まない。codex-review）。"""
     if refuses(text):
         return False
     acts = asked_acts(heard) if action == "answer" else []
+    acts = acts if len(asked_questions(heard)) == 1 else []
     yes = _alt(YES + YES_FOR[action] + [w for a in acts for w in (a + "する", a)])
     clause = re.compile(f"{_pre(project)}(?:(?:{yes})(?:{_alt(TAIL)})*)+")
     cs = clauses(text)

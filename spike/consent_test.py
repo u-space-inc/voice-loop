@@ -62,6 +62,12 @@ NOT_ASKED = {"説明の中": "agency で、ページを削除してよいか確�
              "別の問いと並んだ説明": "agency で、削除してよいかは後で決めます。先に名前を変えますか？"}
 check("聞いた問いの操作の語は、文の終わりの「〇〇してよいですか？」だけから読む（説明・引用・打ち消し・別の問いと並んだ説明は読まない。codex-review）",
       {k: (c.asked_acts(v), c.affirms("削除して", "answer", "agency", v)) for k, v in NOT_ASKED.items()}, {k: ([], False) for k in NOT_ASKED})
+check("聞いた問いの操作の語: 引用の中の問いは、中に「？」があっても読まない。問いの文は引用を元に戻して返す（codex-review）",
+      (c.asked_acts("agency で、「『受注の記録』を削除してよいですか？」と聞かれています。中身を確認しますか？"),
+       c.asked_questions("agency で、『受注の記録』を削除してよいですか？")), ([], [("削除", "agencyで、『受注の記録』を削除してよいですか?")]))
+check("答える: 問いが 2 つあるときは、操作の語では答えない（どれへの答えか分からない。はい は今までどおり）",
+      (c.affirms("削除して", "answer", "agency", "agency で、削除してよいですか？ 確認してよいですか？"),
+       c.affirms("はい", "answer", "agency", "agency で、削除してよいですか？ 確認してよいですか？")), (False, True))
 check("聞いた問いの操作の語: 文が 2 つの問いなら両方、構いませんか も読む",
       (c.asked_acts("agency で、削除してよいですか？ プッシュしてよいですか？"), c.asked_acts("agency で、本番に反映しても構いませんか？")), (["削除", "プッシュ"], ["反映"]))
 ASKS = {"proj の「テスト」が、ls の実行の許可を求めています。許可しますか？": True, "proj で、本当に消していいですか": True,

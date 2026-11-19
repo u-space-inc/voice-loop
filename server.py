@@ -986,7 +986,7 @@ def hub_screen(pane: str, lines: int = 30):
         return JSONResponse({"pane": pane, "status": a["status"], "screen": read_screen(pane, lines)})
     text = read_prompt(pane)
     fp, seen, session = prompt_fp(text), SEEN_PROMPT.get(pane), a.get("session") or ""
-    if not seen_same(seen, fp, session):  # ハブがこの問いを見た。答えられるのは、ユーザーの次の発言から
+    if not (session and seen_same(seen, fp, session)):  # ハブがこの問いを見た。答えられるのは、ユーザーの次の発言から（セッションが分からなければ、見直しでも起点を置き直す。codex-review）
         SEEN_PROMPT[pane] = (fp, hub_human_turn(), session)
     # 同じセッションの同じ問いを見直しただけなら、最初に見たときの発言を起点のままにする（答える前に見直すと「同じ発言の中」になって断られていた。
     # 2026-11-19）。同じ pane でセッションを作り直して見た目の同じ問いが出たときは、新しい問いとして起点を置き直す（codex-review）
@@ -2301,9 +2301,12 @@ async def _hub_answer(body: dict):
             # 利用者が答えた問い（直前に聞いた文）が、その名前をそのまま入れて、画面と同じ種類の操作を「〇〇してよいですか」で名指ししていたら
             # （「『〇〇』を削除してよいですか？」）、その答えを確かめとする（2026-11-19 本人。security-review を受けて、対象も照らす形にした）。
             # 対象を読み取れない画面（Bash のコマンドなど）・名前を言い換えた問い・別の種類の名指しでは省かない
+            # 名前と操作は、同じ 1 つの問いの文に入っていること（説明の文で名前に触れ、問いでは別の対象を聞いた・問いが 2 つ以上でどれへの答えか
+            # 分からない、では省かない。codex-review）
             asked = asked_part(text)
             target = confirm_targets(text) if conf else []
-            if RISKY.search(asked) and not (target and all(consent.mentions(heard, t) for t in target) and risky_named(asked, heard)):
+            qs = consent.asked_questions(heard)
+            if RISKY.search(asked) and not (target and len(qs) == 1 and all(consent.mentions(qs[0][1], t) for t in target) and risky_named(asked, heard)):
                 held = CONFIRMING.get(pane)
                 if not (confirmed and held and held[0] == fp and held[1] != turn):
                     CONFIRMING[pane] = (fp, turn) if not (held and held[0] == fp) else held

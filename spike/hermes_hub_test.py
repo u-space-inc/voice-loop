@@ -214,6 +214,16 @@ check("同じ pane でセッションを作り直した見た目の同じ問い�
 s.list_agents = lambda: [{**TARGET, "status": state["status"]}]
 s.hermes.hermes_turn_end(s.hub_human_turn(), "確かめ直します")
 s.SEEN_PROMPT.clear()
+s.list_agents = lambda: [{**TARGET, "status": state["status"], "session": None}]  # セッション ID を取れない pane
+begin("見て")
+screen()
+s.hermes.hermes_turn_end(s.hub_human_turn(), "proj で、build のフォルダを削除してよいですか？")
+begin("はい")
+screen()  # 作り直された pane かもしれない（セッションで見分けられない）
+check("セッションが分からない pane では、見直しで起点を置き直す（空どうしを同じセッションとみなさない。codex-review P2）", answer(), ("same_turn", []))
+s.list_agents = lambda: [{**TARGET, "status": state["status"]}]
+s.hermes.hermes_turn_end(s.hub_human_turn(), "確かめ直します")
+s.SEEN_PROMPT.clear()
 begin("見て")
 screen()
 begin("だめ")
@@ -250,7 +260,7 @@ BLINK = CONFIRM_NO.replace("⏺ Artifact", "  Artifact")
 check("確認の指紋は、⏺ の点滅とカーソルの位置では変わらず、問い・道具の見出しが違えば変わる（codex-review P2）",
       (s.prompt_fp(CONFIRM_NO) == s.prompt_fp(CONFIRM_YES) == s.prompt_fp(BLINK), s.prompt_fp(CONFIRM_NO) == s.prompt_fp(CONFIRM_NO.replace("受注", "別")),
        s.prompt_fp(CONFIRM_NO) == s.prompt_fp(CONFIRM_NO.replace("artifact/abc", "artifact/xyz"))), (True, False, False))
-DQ = "proj で、『受注の記録』のページを完全に削除する確認で止まっています。削除してよいですか？"
+DQ = "proj で、削除の確認で止まっています。『受注の記録』のページを完全に削除してよいですか？"  # 名前と操作が、同じ 1 つの問いの文に入る
 
 
 def cursor_moves(k):
@@ -336,7 +346,11 @@ asked_then("proj で、確認の画面で止まっています。進めてよい
 check("確認: 取り消しにくい操作（delete）を名指ししていない問いへの「はい」は聞き返す", answer(), ("confirm", []))
 s.CONFIRMING.clear()
 for q, why in (("proj で、古いログのページを削除してよいですか？", "対象の名前を言い換えた（画面は「受注の記録」）"),
-               ("proj で、『受注の記録』のページを送信してよいですか？", "名前は同じでも、別の種類の操作を名指しした")):
+               ("proj で、『受注の記録』のページを送信してよいですか？", "名前は同じでも、別の種類の操作を名指しした"),
+               ("proj で、『受注の記録』は残します。『別の記録』を削除してよいですか？", "名前は説明の文にあるだけで、問いは別の対象を聞いた"),
+               ("proj で、『受注の記録』のページを完全に削除する確認で止まっています。削除してよいですか？", "名前が問いの文の外（前の文）にある"),
+               ("proj で、「『受注の記録』を削除してよいですか？」と聞かれています。中身を確認しますか？", "問いは引用の中にあるだけ"),
+               ("proj で、『受注の記録』のページを削除してよいですか？ 内容を確認してよいですか？", "問いが 2 つあり、どれへの答えか分からない")):
     asked_then(q, "はい")
     check(f"確認: {why}問いへの「はい」は聞き返す（security-review）", answer(), ("confirm", []))
     s.CONFIRMING.clear()
@@ -346,6 +360,12 @@ begin("見て")
 screen()
 asked_then("proj で、このページを削除してよいですか？", "はい")
 check("確認: 問いの文に引用符で囲まれた対象の名前が無ければ、名指ししていても聞き返す", answer(), ("confirm", []))
+s.CONFIRMING.clear()
+state.update(screen=CONFIRM_NO, on_key=cursor_moves)
+begin("見て")
+screen()
+asked_then("proj で、『受注の記録』のページを削除してよいですか？ 内容を確認してよいですか？", "確認して")
+check("確認: 問いが 2 つのとき、もう 1 つの問いの操作の語（確認して）を、この問いの許可には使わない（codex-review P1）", answer(), ("not_said", []))
 s.CONFIRMING.clear()
 check("確認の対象の名前（引用符の種類・空白だけの名前・確認でない画面）",
       (s.confirm_targets(CONFIRM_NO), s.confirm_targets(CONFIRM_NO.replace('"受注の記録"', "「受注の記録」")), s.confirm_targets(CONFIRM_NO.replace('"受注の記録"', '" "')),
