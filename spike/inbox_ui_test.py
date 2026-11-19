@@ -265,6 +265,19 @@ def run(page, who):
     time.sleep(2.0)
     check(f"{who} 一覧を待つ間に利用者が相手を選んだら、待ち終わってもハブに戻さず、件への返信にもしない",
           (page.input_value("#agent"), page.is_visible("#replyBar")), ("w1:p1", False))
+    # 通知から開いて話し相手の一覧を待っている間に、💡 で閉じたら、待ち終わっても返信先を付けない
+    page.goto("about:blank")
+    held5 = []
+    page.route("**/api/agents", lambda r: held5.append(r))
+    page.goto(BASE + "/#i=1")
+    page.wait_for_selector(".ibItem h3")
+    wait(lambda: held5, 5)
+    page.click("#sitBtn")  # 💡 で閉じる
+    for r in held5:
+        r.continue_()
+    page.unroute("**/api/agents")
+    time.sleep(1.5)
+    check(f"{who} 一覧を待つ間に 💡 で閉じたら、待ち終わっても件への返信にしない", (page.is_visible("#situation"), page.is_visible("#replyBar")), (False, False))
     # 通知から開いて、受け箱の読み込みを待つ間に利用者が相手を選んだら、件の中身は出すが、ハブに戻さず返信先も付けない
     page.goto("about:blank")
     held3 = []

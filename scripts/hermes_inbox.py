@@ -310,7 +310,7 @@ def _left(p: dict) -> float:
 @router.get("/api/inbox/item")
 async def api_inbox_item(n: str = ""):
     """通知・リンクで開く 1 件（あとでに回した件・一覧の上限から外れた件も開ける）。コンテナからは使えない口。"""
-    k = int(n) if n.isdigit() and len(n) <= 10 else 0
+    k = int(n) if re.fullmatch(r"[0-9]{1,10}", n) else 0  # ASCII の数字だけ（isdigit は「²」なども真にする）
     if not 0 < k < 2**31:
         return JSONResponse({"ok": False, "reason": "bad_request"}, status_code=400)
     it = await asyncio.to_thread(one, k)

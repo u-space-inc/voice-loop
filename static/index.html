@@ -1558,7 +1558,8 @@ function openInboxHash() {
 async function refreshSitCount() { try { const r = await fetch('/api/inbox'); if (r.ok) { inbox = await r.json(); if (sitCache) sitCache[3] = inbox; paintSitBtn(ibCount(inbox)); } } catch {} }  // 描く元もそろえる
 setInterval(() => { if (!document.hidden && $('situation').hidden) refreshSitCount(); }, 60000);
 refreshSitCount();
-function showSituation(open) { phone.sit = open; if (!wide) runSituation(open); if (!open) { ibWant = null; ibWantTok++; } }  // 閉じたら、読み込み中の開く予約もやめる
+// 閉じたら（✕・💡・📋 のどれでも）、読み込み中の開く予約と、開いている件（待っている返信先の設定も）をやめる
+function showSituation(open) { phone.sit = open; if (!open) { ibWant = null; ibWantTok++; if (ibSel != null) closeItem(); } if (!wide) runSituation(open); }
 function runSituation(open) {  // 見える・15 秒ごとに取り直す、を切り替える（PC では常に開く）
   $('situation').hidden = !open; $('sitBtn').setAttribute('aria-pressed', String(open));
   clearInterval(sitTimer); sitTimer = null;
@@ -1566,7 +1567,7 @@ function runSituation(open) {  // 見える・15 秒ごとに取り直す、を�
   if (open) { loadSituation(); sitTimer = setInterval(() => { if (!document.hidden && !sitHold) loadSituation(); }, 15000); }
 }
 $('sitBtn').onclick = () => { showTasks(false); showSituation($('situation').hidden); };
-$('sitClose').onclick = () => { if (ibSel != null) closeItem(); showSituation(false); };
+$('sitClose').onclick = () => showSituation(false);
 
 // ---------- PC の形（横幅 1100px 以上）: 3 列。スマホの幅では今のまま ----------
 // 頼んだ件（#tasks）と知らせ（#situation）は、同じ箱を左右の列へ移して常に開く（中の部品と入力の途中はそのまま）。戻すと元の場所とスマホでの開閉に戻る

@@ -272,8 +272,9 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     one = c.get("/api/inbox/item?n=23").json()
     check("通知で開く 1 件は、あとでに回していても返す（一覧の隠す条件に関係なく）", (one["ok"], one["item"]["n"]), (True, 23))
     check("…済み・宛ての知らせ・無い番号・形の違う番号は返さない",
-          [c.get(f"/api/inbox/item?n={v}").json().get("reason") for v in ("21", "24", "999")] + [c.get(f"/api/inbox/item?n={v}").status_code for v in ("0", "-1", "x", "1" * 11)],
-          ["gone", "gone", "gone", 400, 400, 400, 400])
+          [c.get(f"/api/inbox/item?n={v}").json().get("reason") for v in ("21", "24", "999")] +
+          [c.get("/api/inbox/item", params={"n": v}).status_code for v in ("0", "-1", "x", "1" * 11, "²", "١٢", "２３")],
+          ["gone", "gone", "gone", 400, 400, 400, 400, 400, 400, 400])
     check("あとで: 決めた選び方でなければ・済みの件なら断る",
           [post("/api/inbox/later", b).json().get("reason") for b in ({"n": 25, "until": "next-year"}, {"n": 25, "until": 3}, {"n": 21, "until": "morning"})],
           ["bad_request", "bad_request", "gone"])
