@@ -1548,6 +1548,7 @@ async function loadSituation() {
     if (ib.items.some(x => x.n === n)) ibExtra = null;
     else {
       let got = null; try { const r = await fetch('/api/inbox/item?n=' + n); if (r.ok) got = await r.json(); } catch {}
+      if (gen !== ibGen) return;  // 待つ間に済んだ・戻す・あとでを押した（古い答えで、開き直した件を消さない）
       if (ibExtra && ibExtra.n === n && got) { ibExtra = got.ok && got.item && got.item.n === n ? got.item : null; ibSig = ''; }
     }
   }
@@ -1556,7 +1557,7 @@ async function loadSituation() {
     if (ib.items.some(x => x.n === w.n)) { openItem(w.n, w.seq); return; }
     // 一覧に出ていない（あとでに回した・数の上限から外れた）件は、1 件だけ本体に聞く。待つ間に閉じた・別の通知を開いたら何もしない
     let got = null; try { const r = await fetch('/api/inbox/item?n=' + w.n); if (r.ok) got = await r.json(); } catch {}
-    if (w.tok !== ibWantTok) return;
+    if (w.tok !== ibWantTok || gen !== ibGen) return;
     if (got && got.ok && got.item && got.item.n === w.n) { ibExtra = got.item; openItem(w.n, w.seq); return; }
     ibNote(`判断待ち [${w.n}] は、片づいたか見つかりませんでした`, false);
   }

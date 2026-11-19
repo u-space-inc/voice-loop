@@ -427,6 +427,44 @@ def run(page, who):
     check(f"{who} 通知の 1 件を待つ間に別のカードを選んだら、遅れた結果で表示も返信先も替えない",
           (page.text_content(".ibItem h3"), "判断待ち [2]" in (page.text_content("#replyTo") or "")), ("処理時間のアラーム", True))
     ib.STATE_FILE.unlink(missing_ok=True)
+    # 通知で開いた一覧外の件を確かめ直す答えが遅れて届いても、その間に済んだ・戻すをして開き直した件を消さない
+    seed()
+    req = urllib.request.Request(BASE + "/api/inbox/later", data=json.dumps({"n": 1, "until": "morning"}).encode(), headers={"Content-Type": "application/json"}, method="POST")
+    urllib.request.urlopen(req, timeout=10).read()
+    page.evaluate("location.hash = '#i=1'")
+    wait(lambda: page.locator(".ibItem h3").count() == 1 and page.text_content(".ibItem h3") == TITLE1, 6)
+    held_d, stash_i = [], []
+
+    def item_old(route):
+        if not stash_i:
+            stash_i.append(route)  # 済の前に始まった確かめ直し。本体に届けるのも、答えを返すのも止めておく
+        else:
+            route.continue_()
+    keep_undo2, ib.UNDO = ib.UNDO, 8.0  # 応答を止める間に「戻す」の残り（本体の残り − 待った時間）が尽きないように
+    page.route("**/api/inbox/done", lambda r: held_d.append(r))
+    page.click(".ibItem button.go")
+    wait(lambda: held_d, 5)
+    page.route("**/api/inbox/item*", item_old)
+    page.evaluate("void loadSituation()")
+    page.wait_for_function("true")  # 止めた要求の処理（item_old）を動かす
+    wait(lambda: stash_i or page.evaluate("0"), 5)
+    held_d[0].continue_()
+    page.unroute("**/api/inbox/done")
+    page.wait_for_function("ibUndos.size === 1")
+    old_resp = stash_i[0].fetch()  # 本体は「済」の予約中なので、ここで作る答えは ok:false（古い答え）
+    stale_ok = old_resp.json().get("ok")
+    page.click('#sitBody .ibToast[data-n="1"] button')
+    page.wait_for_function("ibUndos.size === 0")
+    page.evaluate("location.hash = '#i=1'")
+    reopened = wait(lambda: page.locator(".ibItem h3").count() == 1 and page.text_content(".ibItem h3") == TITLE1, 6)
+    stash_i[0].fulfill(response=old_resp)
+    page.unroute("**/api/inbox/item*")
+    time.sleep(0.8)
+    ib.UNDO = keep_undo2
+    check(f"{who} 確かめ直しの古い答えが遅れて届いても、済んだ・戻すのあとで開き直した件を消さない",
+          (stale_ok, reopened, page.locator(".ibItem h3").count() == 1 and page.text_content(".ibItem h3") == TITLE1, CMDS), (False, True, True, []))
+    ib.STATE_FILE.unlink(missing_ok=True)
+    page.click(".ibItem .ibBack")
     # 知らせが届いても、会話の欄に 📨 を出さない
     page.click("#sitClose")
     r = notice("判断待ち 1 件: 新しい件")
