@@ -245,7 +245,8 @@ CONFIRM_NO = """⏺ Artifact(delete · https://claude.ai/artifact/abc)
 CONFIRM_YES = CONFIRM_NO.replace(" ❯ No\n   Yes", "   No\n ❯ Yes")
 check("確認の形を読む（問い・並び・カーソル）", (s.parse_confirm(CONFIRM_NO), s.parse_confirm(CONFIRM_YES)["cursor"], s.parse_prompt(CONFIRM_NO)["kind"]),
       ({"question": 'Permanently delete "受注の記録"?', "order": ["No", "Yes"], "cursor": 0}, 1, "unknown"))
-odd = {"選択肢が 3 つ": CONFIRM_NO.replace("   Yes", "   Yes\n   Maybe"), "カーソルが無い": CONFIRM_NO.replace(" ❯ No", "   No"),
+odd = {"選択肢が 3 つ": CONFIRM_NO.replace("   Yes", "   Yes\n   Maybe"), "3 つ（Maybe が No の前）": CONFIRM_NO.replace(" ❯ No", "   Maybe\n ❯ No"),
+       "3 つ（カーソルが Maybe）": CONFIRM_NO.replace(" ❯ No", " ❯ Maybe\n   No"), "カーソルが無い": CONFIRM_NO.replace(" ❯ No", "   No"),
        "カーソルが 2 つ": CONFIRM_NO.replace("   Yes", " ❯ Yes"), "Yes が 2 つ": CONFIRM_NO.replace(" ❯ No", " ❯ Yes"),
        "選択肢に別の文が続く": CONFIRM_NO.replace("   Yes", "   Yes, delete everything"), "問いの文が無い": "\n".join(CONFIRM_NO.splitlines()[3:]),
        "番号つき": CONFIRM_NO.replace(" ❯ No", " ❯ 1. No").replace("   Yes", "   2. Yes"), "案内が無い": CONFIRM_NO.replace(" Esc to cancel · Tab to amend", "")}
@@ -426,6 +427,11 @@ check("確認の対象の名前（引用符の種類・空白だけの名前・�
 state.update(screen=CONFIRM_NO, on_key=cursor_moves)
 begin("やめて")
 check("確認: 断るは esc（Esc to cancel）", answer(answer="no"), ("ok", ["esc"]))
+state.update(screen=CONFIRM_NO.replace(" ❯ No", "   Maybe\n ❯ No"), on_key=lambda k: state.update(screen=CONFIRM_NO.replace(" ❯ No\n   Yes", "   Maybe\n   No\n ❯ Yes")) if k == "down" else None)
+begin("見て")
+screen()
+asked_then(DQ, "はい")
+check("確認: Maybe / No / Yes の 3 択（Maybe が No の前）は確認と読まず、キーを送らない（a2a）", answer(), ("unknown_prompt", []))
 state.update(screen="⏺ 何かの画面\n 続けますか\n Esc to cancel", on_key=None)
 begin("見て")
 screen()

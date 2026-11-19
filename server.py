@@ -198,6 +198,7 @@ def parse_prompt(text: str) -> dict:
 
 
 CONFIRM_OPT = re.compile(r"^ {1,3}(❯ |  )(Yes|No)$")  # 番号の無い確認の選択肢の行（「 ❯ No」「   Yes」）。行の全体がこの形のときだけ
+CONFIRM_Q = re.compile(r"^ ?[^\s❯]")  # 確認の問いの文の行（字下げは 1 字まで、カーソルの印なし）。選択肢と同じ字下げの行（「   Maybe」）は問いとしない
 
 
 def parse_confirm(text: str) -> dict | None:
@@ -213,7 +214,9 @@ def parse_confirm(text: str) -> dict | None:
         return None
     order, marks = [m.group(2) for m in ms], [m.group(1) == "❯ " for m in ms]
     question = lines[foot - 3].strip()
-    if sorted(order) != ["No", "Yes"] or marks.count(True) != 1 or not question or CONFIRM_OPT.match(lines[foot - 3]) or OPTION.match(lines[foot - 3]):
+    # 問いの文の行は、選択肢の行と字下げで分ける（Maybe / No / Yes の 3 択の Maybe を問いと読んで、No / Yes の 2 択と取り違えない。a2a）
+    if (sorted(order) != ["No", "Yes"] or marks.count(True) != 1 or not question or not CONFIRM_Q.match(lines[foot - 3])
+            or CONFIRM_OPT.match(lines[foot - 3]) or OPTION.match(lines[foot - 3])):
         return None
     return {"question": question, "order": order, "cursor": marks.index(True)}
 
