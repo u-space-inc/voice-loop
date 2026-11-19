@@ -123,7 +123,7 @@ check("同じ画面に重ねて送らない", (r1.get("ok"), r2.get("reason"), s
 setup()
 s.read_prompt = lambda pane: "（画面の下の一部。問いが変わっても同じ）\nEnter to select · Esc to cancel"  # prompt_fp が次の問いでも変わらない形
 q = prompt()
-s.SEEN_PROMPT["w9:p1"] = (q["fp"], "t1")  # ハブはこの問いを見て、利用者に伝えていた
+s.SEEN_PROMPT["w9:p1"] = (q["fp"], "t1", "sess-1")  # ハブはこの問いを見て、利用者に伝えていた
 r = press(q, act="pick", n=1)
 q2 = prompt()
 check("1 問ずつ答えたら、ハブが前に見た問いの記録を消し、次の問いでも prompt_fp が同じならハブ・承認のボタンを止める（codex-review）",

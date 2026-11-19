@@ -65,11 +65,126 @@ def _yes_clause(action: str | None, project: str):
     return re.compile(f"{_pre(project)}(?:(?:{yes})(?:{_alt(TAIL)})*)+")
 
 
-def affirms(text: str, action: str, project: str = "") -> bool:
-    """発言全体が「許す」か（action は close か answer）。"""
+# 聞いた問いの「〇〇して（も）よいですか？」の〇〇（漢字・カタカナの語）。利用者がその語で答えたら（「削除して」「送信してください」）、許す句として読む。
+# 読むのは、文の終わりがこの問いの形そのもの（「…削除してよいですか？」）の文だけ。説明の中（「削除してよいか確認中です」）・引用（「『削除してよいですか』と
+# 聞かれています」）・打ち消し（「削除しなくてよいですか」）・ほかの問いと並んだ説明は読まない（codex-review）
+ASKED_ACT = re.compile(r"([一-龥々ァ-ヶー]{1,12})しても?(?:よい|いい|良い|大丈夫|構わない|かまわない|構いません|かまいません)(?:です|でしょう)?か[?？]?$")
+_SENTENCE = re.compile(r"[^。．.!！?？\n]*[?？]?")
+# 引用・括弧のひとまとまり（中の文は、ハブが利用者に聞いた問いとして読まない。中の「？」で文を切らない）
+_QUOTE = re.compile(r"「[^「」]*」|『[^『』]*』|“[^“”]*”|\"[^\"]*\"|（[^（）]*）|\([^()]*\)")
+
+
+_ASKS_END = re.compile(r"(?:[?？]|か|かな|かね|っけ)$")  # 問いで終わる文（引用・括弧を隠したあとの文の終わり）
+
+
+def _hide(heard: str):
+    """聞いた文の引用・括弧を隠したもの (隠した文, 元に戻す関数 show)。引用・括弧は内側から順に「NUL 番号 NUL」のしるしに替える。
+    隠すしるしには NUL を使うので、入力の NUL は先に取り除く（入力の文字と、しるしを取り違えない。codex-review）。
+    改行は文の区切りとして残す（句読点の無い問いを改行で並べた返答を、1 つの文に読まない。codex-review）。ほかの空白は除き、小文字にする。
+    引用・括弧の中は、空白も大文字小文字もそのまま残す（対象の名前を原文のまま照らす。codex-review）。"""
+    flat, kept = unicodedata.normalize("NFKC", heard or "").replace("\x00", ""), []
+
+    def hide(m):
+        kept.append(m.group(0))
+        return f"\x00{len(kept) - 1}\x00"
+
+    while True:  # 入れ子の引用は内側から順に隠す（隠すたびに字が減るので、必ず終わる）
+        hidden = _QUOTE.sub(hide, flat)
+        if hidden == flat:
+            break
+        flat = hidden
+    flat = re.sub(r"[^\S\n]+", "", flat).lower()  # 引用の外だけ（隠したしるしは数字と NUL なので変わらない）
+
+    def show(s):
+        for _ in range(len(kept) + 1):  # 入れ子の深さぶん戻せば足りる。戻せない形が残っても、回数で必ず終わる
+            nxt = re.sub(r"\x00(\d+)\x00", lambda m: kept[int(m.group(1))] if int(m.group(1)) < len(kept) else "", s)
+            if nxt == s:
+                break
+            s = nxt
+        return s
+
+    return flat, show
+
+
+def _sentences(heard: str) -> list[tuple[str, str]]:
+    """聞いた文を、引用・括弧の外で文に分けたもの (隠した文, 引用・括弧を元に戻した文)。引用・括弧の中の「？」では切らない。"""
+    flat, show = _hide(heard)
+    return [(s, show(s)) for s in _SENTENCE.findall(flat) if s.strip()]
+
+
+_ASKS_MID = re.compile(r"か、|か,|それとも")  # 文の途中の問い（「残しますか、それとも…」）
+
+
+def question_count(heard: str) -> int:
+    """聞いた文のうち、問いの数（形を問わない。引用・括弧の中は数えない）。問いで終わる文を 1 つ、文の途中の「か、」「それとも」も 1 つずつ数える
+    （句読点を省いて問いを 1 文につないだ返答を、1 つの問いと数えない。codex-review）。多めに数えるのは、聞き返しに倒れる側。"""
+    return sum((1 if _ASKS_END.search(s.rstrip("。．.!！ ")) else 0) + len(_ASKS_MID.findall(s)) for s, _ in _sentences(heard))
+
+
+def asked_questions(heard: str) -> list[tuple[str, str]]:
+    """聞いた文 heard のうち、文の終わりが「〇〇して（も）よいですか？」の形の問いの文ごとに (〇〇, その文)。文は引用・括弧を元に戻した形
+    （『受注の記録』を削除してよいですか？ → ("削除", "『受注の記録』を削除してよいですか?")）。引用・括弧の中の問いは読まない（codex-review）。"""
+    out = []
+    for hidden, shown in _sentences(heard):
+        m = ASKED_ACT.search(hidden)
+        if m:
+            out.append((m.group(1), shown))
+    return out
+
+
+def one_asked(heard: str) -> tuple[str, str] | None:
+    """聞いた文の問いが、ちょうど 1 つで、それが「〇〇して（も）よいですか？」の形のときだけ (〇〇, その文)。ほかの形の問いが並ぶ・
+    問いが 2 つ以上なら None（利用者の「はい」・操作の語が、どの問いへの答えか分からない。codex-review）。"""
+    qs = asked_questions(heard)
+    return qs[0] if len(qs) == 1 and question_count(heard) == 1 else None
+
+
+# 対象を名指しした問いの形そのもの（隠した文に対して、文の全体で当てる）: （プロジェクト名で、）『名前』（のページ など）を（完全に）△△して（も）よいですか？
+# 前置きはプロジェクト名（フォルダ名の英数字）だけ（前置きに別の問いを入れられない。codex-review）
+# 名前の前後に、ほかの語（以外・ではなく・のバックアップ・別の・旧 など）があれば当たらない（security-review・codex-review）
+_CONTAINER = "ページ|ファイル|フォルダ|ディレクトリ|下書き|投稿|メッセージ|データ|項目|記事|資料|シート|ドキュメント|予定|ブランチ"
+TARGET_Q = re.compile(r"(?:[0-9a-z][0-9a-z_.\-]{0,39}で、?)?\x00(?P<n>\d+)\x00(?:の(?:" + _CONTAINER + r"))?を(?:完全に|すべて|全部|本当に)?"
+                      r"(?P<act>[一-龥々ァ-ヶー]{1,12})しても?(?:よい|いい|良い|大丈夫|構わない|かまわない|構いません|かまいません)(?:です|でしょう)?か[?？]?")
+_QUOTED_NAME = re.compile(r"[「『“\"](.*)[」』”\"]", re.S)
+
+
+def asked_target(heard: str) -> tuple[str, str] | None:
+    """聞いた文の問いがちょうど 1 つで（one_asked）、その文が「（〇〇で、）『名前』（のページ）を（完全に）△△してよいですか？」の形そのもの
+    なら (△△, 名前)。引用符は「」『』“”" のどれか（括弧（）の中は名前としない）。この形でなければ None（聞き返しに倒す）。"""
+    if not one_asked(heard):
+        return None
+    flat, show = _hide(heard)
+    for hidden in _SENTENCE.findall(flat):
+        m = TARGET_Q.fullmatch(hidden)
+        if m:
+            q = _QUOTED_NAME.fullmatch(show(f"\x00{m['n']}\x00"))
+            return (m["act"], q.group(1)) if q else None
+    return None
+
+
+def same_name(a: str, b: str) -> bool:
+    """2 つの名前が同じか。全角半角（NFKC）と前後の空白だけはそろえ、中の空白・大文字小文字は原文のまま比べる（部分一致・空白や大文字小文字の
+    違う名前は同じとしない。codex-review）。2 字に満たない名前は同じとみなさない。"""
+    fa, fb = (unicodedata.normalize("NFKC", x or "").strip() for x in (a, b))
+    return len(fa) >= 2 and fa == fb
+
+
+def asked_acts(heard: str) -> list[str]:
+    """聞いた問いが、文の終わりの「〇〇して（も）よいですか？」の形で名指しした操作の語（「削除してよいですか」の「削除」）。"""
+    return list(dict.fromkeys(act for act, _ in asked_questions(heard)))
+
+
+def affirms(text: str, action: str, project: str = "", heard: str = "") -> bool:
+    """発言全体が「許す」か（action は close か answer）。answer では、聞いた問い heard の「〇〇してよいですか？」の問いが 1 つだけなら、
+    その〇〇で答える（「削除して」「削除する」「削除してください」）のも許す句として読む（聞いていない操作の語、問いが 2 つ以上でどれへの答えか
+    分からないときの操作の語は読まない。codex-review）。"""
     if refuses(text):
         return False
-    cs, clause = clauses(text), _yes_clause(action, project)
+    acts = asked_acts(heard) if action == "answer" else []
+    acts = acts if one_asked(heard) else []
+    yes = _alt(YES + YES_FOR[action] + [w for a in acts for w in (a + "する", a)])
+    clause = re.compile(f"{_pre(project)}(?:(?:{yes})(?:{_alt(TAIL)})*)+")
+    cs = clauses(text)
     return bool(cs) and all(clause.fullmatch(c) for c in cs)
 
 

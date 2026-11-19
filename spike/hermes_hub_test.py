@@ -39,6 +39,8 @@ s.jsonl_path = lambda a: None
 def fake_herdr(*a, **k):
     if a[:2] == ("agent", "send-keys"):
         state["keys"].append(a[-1])
+        if state.get("on_key"):  # 画面がキーで変わる作り物（番号の無い確認でカーソルが動く）
+            state["on_key"](a[-1])
     elif a[:2] == ("pane", "close"):
         state["closed"].append(a[2])
     return {"result": {}}
@@ -142,9 +144,9 @@ s.hermes.hermes_turn_end(s.hub_human_turn(), "許可しました")
 state.update(screen=RISKY)
 begin("承認見て")
 screen()
-RQ = "proj の「テスト」が、build のフォルダを消す（rm -rf build）許可を求めています。許可しますか？"
+RQ = "proj の「テスト」が、ある操作の許可を求めています。許可しますか？"  # 取り消しにくい操作（rm・削除など）を名指ししていない問い
 asked_then(RQ, "許可")
-check("取り消しにくい操作は聞き返す", answer(), ("confirm", []))
+check("取り消しにくい操作で、聞いた問いがその操作を名指ししていなければ聞き返す", answer(), ("confirm", []))
 check("同じ発言の中の --confirmed は通らない", answer(confirmed=True), ("confirm", []))
 asked_then("本当に、build のフォルダを消していいですか？", "はい、許可していい")
 check("聞き返しの文にプロジェクト名が無ければ、--confirmed でも通らない", answer(confirmed=True), ("not_asked", []))
@@ -153,6 +155,78 @@ check("聞き返しのあとの発言が断りなら、--confirmed でも通ら�
 asked_then("proj で、本当に build のフォルダを消していいですか？", "はい、許可していい")
 check("次の発言の --confirmed で通る", answer(confirmed=True), ("ok", ["1"]))
 s.hermes.hermes_turn_end(s.hub_human_turn(), "許可しました")
+# 番号つきの承認（Bash のコマンドなど。対象の名前を画面から読み取れない）は、問いが操作を名指ししていても聞き返す（2026-11-19 本人「対象も照らす」）
+DEPLOY = PERMISSION.replace("ls -la", "npm run deploy").replace("ls commands", "npm commands")
+for scr, q, utter in ((RISKY, "proj で、build のフォルダを削除してよいですか？", "はい"),
+                      (RISKY, "proj で、build のフォルダを削除してよいですか？", "削除して"),
+                      (RISKY, "proj で、build のフォルダを完全に削除しても大丈夫ですか？", "削除してください"),
+                      (DEPLOY, "proj で、いまの変更を本番に反映してよいですか？", "許可")):
+    state.update(screen=scr)
+    begin("見て")
+    screen()
+    asked_then(q, utter)
+    check(f"番号つきの承認の取り消しにくい操作は、問いが名指ししていても聞き返す（対象を画面から読めない）: 「{q[-16:]}」に「{utter}」",
+          answer(), ("confirm", []))
+    s.hermes.hermes_turn_end(s.hub_human_turn(), "確かめ直します")
+    s.CONFIRMING.clear()
+state.update(screen=RISKY)
+for q in ("proj の「テスト」が、build のフォルダを消す（rm -rf build）許可を求めています。許可しますか？",  # 操作は前の文にあるだけ（問いは「許可しますか」）
+          "proj の「本番の構築」が、ある操作の許可を求めています。許可しますか？",  # 題に「本番」があるだけ
+          "proj で、build のフォルダを確認してよいですか？",  # 名指しした操作が取り消しにくい操作ではない
+          "proj で、ログを送信してよいですか？",  # 画面（rm）と別の種類の操作の名指し（security-review の指摘の形）
+          "proj で、いまの変更を本番に反映してよいですか？",  # 同じ
+          "proj から、ログの削除は不要という報告です。続けてよいですか？"):  # 語は返答の中にあるが、問いは「続けてよいですか」
+    begin("見て")
+    screen()
+    asked_then(q, "はい")
+    check(f"問いが画面の取り消しにくい操作を「〇〇してよいですか」で名指ししていなければ聞き返す: 「{q[:30]}…」", answer(), ("confirm", []))
+    s.hermes.hermes_turn_end(s.hub_human_turn(), "確かめ直します")
+    s.CONFIRMING.clear()
+check("取り消しにくい操作の種類分けは、RISKY のどの語にも当たる（種類に入らない語があると、名指しを確かめられない）",
+      [w for w in ("rm -f", "trash x", "delete", "drop table", "truncate", "git push", "deploy", "publish", "release", "send", "mail", "merge", "reset --hard",
+                   "force", "terraform", "aws s3", "gcloud", "kubectl", "migrate", "prod", "本番", "削除", "送信", "公開", "配信", "反映", "支払", "振込", "請求")
+       if s.RISKY.search(w) and not any(scr.search(w) for scr, _ in s.RISKY_KINDS)], [])
+check("名指しの語は決めた語そのものだけ（「非公開化」の中の「公開」を、公開の名指しと数えない。codex-review）",
+      (s.risky_named('Publish "受注の記録"?', "proj で、『受注の記録』のページを非公開化してよいですか？"), s.risky_named('Publish "受注の記録"?', "proj で、『受注の記録』のページを公開してよいですか？")),
+      (False, True))
+check("画面に 2 種類の取り消しにくい操作があれば、両方を名指ししたときだけ", (s.risky_named("git push && rm -rf x", "proj で、削除してよいですか？"),
+      s.risky_named("git push && rm -rf x", "proj で、削除してよいですか？ プッシュしてよいですか？")), (False, True))
+for q, utter in (("proj で、build のフォルダを削除してよいですか？", "送信して"), ("proj で、build のフォルダを削除してよいですか？", "削除しないで"),
+                 ("proj の「テスト」が、ある操作の許可を求めています。許可しますか？", "削除して")):
+    begin("見て")
+    screen()
+    asked_then(q, utter)
+    check(f"聞いていない操作の語・断りでは答えない: 「{q[-14:]}」に「{utter}」", answer(), ("not_said", []))
+    s.hermes.hermes_turn_end(s.hub_human_turn(), "わかりました")
+state.update(screen=PERMISSION)
+begin("見て")
+screen()
+s.hermes.hermes_turn_end(s.hub_human_turn(), Q)
+begin("はい")
+screen()  # 答えを聞いたあとに、ハブが念のため画面を見直した
+check("同じ問いを見直しても、最初に見たときの発言が起点のまま（見直した発言の中でも答えられる）", answer(), ("ok", ["1"]))
+s.hermes.hermes_turn_end(s.hub_human_turn(), "許可しました")
+state.update(screen=RISKY)
+begin("見て")
+screen()  # セッション sess-1 の問いを見た
+s.hermes.hermes_turn_end(s.hub_human_turn(), "proj で、build のフォルダを削除してよいですか？")
+s.list_agents = lambda: [{**TARGET, "status": state["status"], "session": "sess-2"}]  # 同じ pane でセッションを作り直し、見た目の同じ問いが出た
+begin("はい")
+screen()  # ハブはこの発言の中で、新しいセッションの問いを初めて見た
+check("同じ pane でセッションを作り直した見た目の同じ問いは、見直しでも起点を置き直す（見た発言の中では答えない。codex-review P1）", answer(), ("same_turn", []))
+s.list_agents = lambda: [{**TARGET, "status": state["status"]}]
+s.hermes.hermes_turn_end(s.hub_human_turn(), "確かめ直します")
+s.SEEN_PROMPT.clear()
+s.list_agents = lambda: [{**TARGET, "status": state["status"], "session": None}]  # セッション ID を取れない pane
+begin("見て")
+screen()
+s.hermes.hermes_turn_end(s.hub_human_turn(), "proj で、build のフォルダを削除してよいですか？")
+begin("はい")
+screen()  # 作り直された pane かもしれない（セッションで見分けられない）
+check("セッションが分からない pane では、見直しで起点を置き直す（空どうしを同じセッションとみなさない。codex-review P2）", answer(), ("same_turn", []))
+s.list_agents = lambda: [{**TARGET, "status": state["status"]}]
+s.hermes.hermes_turn_end(s.hub_human_turn(), "確かめ直します")
+s.SEEN_PROMPT.clear()
 begin("見て")
 screen()
 begin("だめ")
@@ -160,6 +234,221 @@ check("断るは esc", answer(answer="no"), ("ok", ["esc"]))
 state.update(screen=PERMISSION)
 begin("ほかの話")  # 新しい問いを、ハブはまだ見ていない
 check("断る（いいえ）は、問いを見る前でも送れる（決めた範囲。「はい」は見たあとの発言のあとだけ）", (answer(answer="no"), answer()), (("ok", ["esc"]), ("unseen", [])))
+
+# ---- 番号の無い「Yes / No」の確認（Claude Code の道具の「Permanently delete …?」。初めは No を指す）: カーソルが Yes に来たのを確かめてから Enter
+CONFIRM_NO = """⏺ Artifact(delete · https://claude.ai/artifact/abc)
+  ⎿  Waiting…
+ Permanently delete "受注の記録"?
+ ❯ No
+   Yes
+ Esc to cancel · Tab to amend"""
+CONFIRM_YES = CONFIRM_NO.replace(" ❯ No\n   Yes", "   No\n ❯ Yes")
+check("確認の形を読む（問い・並び・カーソル）", (s.parse_confirm(CONFIRM_NO), s.parse_confirm(CONFIRM_YES)["cursor"], s.parse_prompt(CONFIRM_NO)["kind"]),
+      ({"question": 'Permanently delete "受注の記録"?', "order": ["No", "Yes"], "cursor": 0}, 1, "unknown"))
+odd = {"選択肢が 3 つ": CONFIRM_NO.replace("   Yes", "   Yes\n   Maybe"), "3 つ（Maybe が No の前）": CONFIRM_NO.replace(" ❯ No", "   Maybe\n ❯ No"),
+       "3 つ（カーソルが Maybe）": CONFIRM_NO.replace(" ❯ No", " ❯ Maybe\n   No"), "カーソルが無い": CONFIRM_NO.replace(" ❯ No", "   No"),
+       "カーソルが 2 つ": CONFIRM_NO.replace("   Yes", " ❯ Yes"), "Yes が 2 つ": CONFIRM_NO.replace(" ❯ No", " ❯ Yes"),
+       "選択肢に別の文が続く": CONFIRM_NO.replace("   Yes", "   Yes, delete everything"), "問いの文が無い": "\n".join(CONFIRM_NO.splitlines()[3:]),
+       "番号つき": CONFIRM_NO.replace(" ❯ No", " ❯ 1. No").replace("   Yes", "   2. Yes"), "案内が無い": CONFIRM_NO.replace(" Esc to cancel · Tab to amend", "")}
+check("確認の形でないもの（3 つ・カーソルが無い/2 つ・同じ語が 2 つ・別の文・問いが無い・番号つき・案内が無い）は読まない",
+      {k: s.parse_confirm(v) for k, v in odd.items()}, {k: None for k in odd})
+check("案内（Esc to cancel）の下に別の入力・選択肢が続く画面は、確認と読まない（古い確認の表示を、いまの確認と取り違えない。a2a）",
+      (s.parse_confirm(CONFIRM_YES + "\n ❯ 1. 次へ\n   2. やめる"), s.read_ask(CONFIRM_YES + "\n ❯ 1. 次へ\n   2. やめる")["kind"]), (None, "unknown"))
+SPACED = CONFIRM_NO.replace("  ⎿  Waiting…", "  ⎿ Waiting…")
+check("確認の指紋は、空白の連なり・行の区切りの違いも別の画面とみなす（a2a）",
+      (s.prompt_fp(CONFIRM_NO) == s.prompt_fp(SPACED), s.prompt_fp(CONFIRM_NO) == s.prompt_fp(CONFIRM_NO.replace("Waiting…\n", "Waiting… "))), (False, False))
+LEFTOVER = "⏺ 次の 2 つを片づけます。\n  1. 下書きを確かめる\n  2. 報告ページを消す\n" + CONFIRM_NO  # 確認の上に、前の会話の番号つきの並びが残っている
+check("確認の上に前の会話の番号つきの並びが残っていても、確認として読む（codex-review P2）",
+      (s.parse_prompt(LEFTOVER)["kind"], s.read_ask(LEFTOVER)["kind"], s.read_ask(PERMISSION)["kind"]), ("question", "confirm", "permission"))
+PERM_LEFT = (" Do you want to proceed?\n ❯ 1. Yes\n   2. No\n"  # 上の会話に、前の承認の番号つき Yes/No が残っている
+             + CONFIRM_NO.replace('Permanently delete "受注の記録"?', 'Do you want to permanently delete "受注の記録"?'))
+check("上に番号つきの Yes/No が残り、確認が「Do you want to」で始まっても、指紋はカーソルの位置で変わらない（承認の判定より確認を先に見る。codex-review）",
+      (s.is_permission(PERM_LEFT), s.read_ask(PERM_LEFT)["kind"], s.prompt_fp(PERM_LEFT) == s.prompt_fp(PERM_LEFT.replace(" ❯ No\n   Yes", "   No\n ❯ Yes"))),
+      (True, "confirm", True))
+BLINK = CONFIRM_NO.replace("⏺ Artifact", "  Artifact")
+check("確認の指紋は、⏺ の点滅とカーソルの位置では変わらず、問い・道具の見出しが違えば変わる（codex-review P2）",
+      (s.prompt_fp(CONFIRM_NO) == s.prompt_fp(CONFIRM_YES) == s.prompt_fp(BLINK), s.prompt_fp(CONFIRM_NO) == s.prompt_fp(CONFIRM_NO.replace("受注", "別")),
+       s.prompt_fp(CONFIRM_NO) == s.prompt_fp(CONFIRM_NO.replace("artifact/abc", "artifact/xyz"))), (True, False, False))
+DQ = "proj で、削除の確認で止まっています。『受注の記録』のページを完全に削除してよいですか？"  # 名前と操作が、同じ 1 つの問いの文に入る
+
+
+def cursor_moves(k):
+    if k == "down" and state["screen"] == CONFIRM_NO:
+        state["screen"] = CONFIRM_YES
+
+
+state.update(screen=CONFIRM_NO, on_key=cursor_moves)
+s.SEEN_PROMPT.clear()
+begin("止まってるのは？")
+sc = screen()
+check("画面を見ると、はい・いいえだけの確認と分かる", (sc["prompt"]["kind"], sc["prompt"].get("question")), ("confirm", 'Permanently delete "受注の記録"?'))
+asked_then(DQ, "削除して")
+check("確認: 名指しした問いへの「削除して」で、↓ でカーソルを Yes に動かし、来たのを確かめてから Enter", answer(), ("ok", ["down", "enter"]))
+s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+state.update(screen=CONFIRM_YES)
+begin("見て")
+screen()
+asked_then(DQ, "はい")
+check("確認: カーソルがもう Yes なら Enter だけ", answer(), ("ok", ["enter"]))
+s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+state.update(screen=LEFTOVER, on_key=lambda k: state.update(screen=LEFTOVER.replace(" ❯ No\n   Yes", "   No\n ❯ Yes")) if k == "down" else None)
+begin("見て")
+sc = screen()
+asked_then(DQ, "削除して")
+check("確認: 上に番号つきの並びが残る確認でも、ハブの画面は確認と読み、「削除して」で Yes を選ぶ", (sc["prompt"]["kind"], answer()), ("confirm", ("ok", ["down", "enter"])))
+s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+state.update(screen=CONFIRM_NO, on_key=lambda k: state.update(screen=CONFIRM_YES) if k == "down" else None)
+begin("見て")
+screen()  # ⏺ が見えているときに見た
+asked_then(DQ, "はい")
+state.update(screen=BLINK)  # 答えるときは ⏺ が点滅で消えていた
+check("確認: 見たときと答えるときで ⏺ の点滅が違っても、同じ問いとして答える", answer(), ("ok", ["down", "enter"]))
+s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+state.update(screen=CONFIRM_NO, on_key=lambda k: state.update(screen=CONFIRM_YES) if k == "down" else None)
+begin("見て")
+screen()
+asked_then(DQ, "はい")
+s.ANSWERED.clear()
+state["keys"].clear()
+r1 = json.loads(asyncio.run(s.hub_answer({"pane": "w9:p1", "answer": "yes"})).body)
+r2 = json.loads(asyncio.run(s.hub_answer({"pane": "w9:p1", "answer": "no"})).body)  # Yes へ動かしたあと（画面はカーソルだけ違う）に、すぐ「いいえ」を送ろうとした
+check("確認: Yes へ動かしたあとの画面も同じ問いとして「答えた問い」に入り、15 秒の間はもう送らない（codex-review P2）",
+      (r1.get("ok"), r2.get("reason"), state["keys"]), (True, "answered", ["down", "enter"]))
+s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+state.update(on_key=cursor_moves)
+state.update(screen=CONFIRM_NO, on_key=None)  # カーソルが動かない（キーが届かない・画面が固まった）
+begin("見て")
+screen()
+asked_then(DQ, "はい")
+s.CONFIRM_WAIT = 0.3
+check("確認: カーソルが Yes に来たのを確かめられなければ、Enter を送らずに止める", answer(), ("stuck", ["down"]))
+s.CONFIRM_WAIT = 3.0
+s.hermes.hermes_turn_end(s.hub_human_turn(), "止めました")
+state.update(screen=CONFIRM_NO, on_key=lambda k: state.update(screen=CONFIRM_NO.replace("受注の記録", "別の記録").replace(" ❯ No\n   Yes", "   No\n ❯ Yes")) if k == "down" else None)
+begin("見て")
+screen()
+asked_then(DQ, "はい")
+s.CONFIRM_WAIT = 0.3
+check("確認: カーソルを動かしたら別の問いの画面になったら、Enter を送らずに止める", answer(), ("stuck", ["down"]))
+s.CONFIRM_WAIT = 3.0
+s.hermes.hermes_turn_end(s.hub_human_turn(), "止めました")
+state.update(screen=CONFIRM_NO, on_key=lambda k: state.update(screen=CONFIRM_YES.replace("artifact/abc", "artifact/xyz")) if k == "down" else None)
+begin("見て")
+screen()
+asked_then(DQ, "はい")
+s.CONFIRM_WAIT = 0.3
+check("確認: 問いの文と選択肢が同じでも、ほかの行（道具の見出し）が変わった画面なら、Enter を送らずに止める", answer(), ("stuck", ["down"]))
+s.CONFIRM_WAIT = 3.0
+s.hermes.hermes_turn_end(s.hub_human_turn(), "止めました")
+state.update(screen=CONFIRM_NO, on_key=lambda k: state.update(screen=CONFIRM_YES.replace("  ⎿  Waiting…", "  ⎿ Waiting…")) if k == "down" else None)
+begin("見て")
+screen()
+asked_then(DQ, "はい")
+s.CONFIRM_WAIT = 0.3
+check("確認: カーソルを動かしたあと、ほかの行の空白だけが変わった画面でも、Enter を送らずに止める（a2a）", answer(), ("stuck", ["down"]))
+s.CONFIRM_WAIT = 3.0
+s.hermes.hermes_turn_end(s.hub_human_turn(), "止めました")
+state.update(screen=CONFIRM_NO, on_key=lambda k: state.update(screen=CONFIRM_YES.replace("⏺ Artifact", "  Artifact")) if k == "down" else None)
+begin("見て")
+screen()
+asked_then(DQ, "はい")
+check("確認: 道具の見出しの ⏺ が点滅で消えているだけなら、カーソルが Yes に来たとして Enter を送る", answer(), ("ok", ["down", "enter"]))
+s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+state.update(screen=CONFIRM_NO, on_key=cursor_moves)
+begin("見て")
+screen()
+asked_then(DQ, "2番で")
+check("確認: 番号では答えない（はい・いいえだけ）", answer(answer="2"), ("bad_choice", []))
+asked_then("proj で、確認の画面で止まっています。進めてよいですか？", "はい")
+check("確認: 取り消しにくい操作（delete）を名指ししていない問いへの「はい」は聞き返す", answer(), ("confirm", []))
+s.CONFIRMING.clear()
+for q, why in (("proj で、古いログのページを削除してよいですか？", "対象の名前を言い換えた（画面は「受注の記録」）"),
+               ("proj で、『受注の記録』のページを送信してよいですか？", "名前は同じでも、別の種類の操作を名指しした"),
+               ("proj で、『受注の記録』は残します。『別の記録』を削除してよいですか？", "名前は説明の文にあるだけで、問いは別の対象を聞いた"),
+               ("proj で、『受注の記録』のページを完全に削除する確認で止まっています。削除してよいですか？", "名前が問いの文の外（前の文）にある"),
+               ("proj で、「『受注の記録』を削除してよいですか？」と聞かれています。中身を確認しますか？", "問いは引用の中にあるだけ"),
+               ("proj で、『受注の記録』のページを削除してよいですか？ 内容を確認してよいですか？", "問いが 2 つあり、どれへの答えか分からない"),
+               ("proj で、『受注の記録』のページを削除してよいですか？ それとも先に一覧を見ますか？", "ほかの形の問いが並び、どれへの答えか分からない"),
+               ("proj で、『受注の記録（旧）』を削除してよいですか？", "画面の名前を含む別の名前（security-review）"),
+               ("proj で、『受注の記録のバックアップ』を削除してよいですか？", "画面の名前の後ろに字を足した名前"),
+               ("proj で、『受注の記録』以外を削除してよいですか？", "名前を除く言い方（codex-review）"),
+               ("proj で、『受注の記録』のバックアップを削除してよいですか？", "名前のあとに、別の物を指す語が続く"),
+               ("proj で、別の『受注の記録』のページを削除してよいですか？", "名前の前に、別の物を指す語がある"),
+               ("proj で、『受注の記録』ではなく『別の記録』を削除してよいですか？", "名前を打ち消して、別の名前を聞いた")):
+    asked_then(q, "はい")
+    check(f"確認: {why}問いへの「はい」は聞き返す（security-review）", answer(), ("confirm", []))
+    s.CONFIRMING.clear()
+state.update(screen=CONFIRM_NO.replace('Permanently delete "受注の記録"?', "Permanently delete this page?"),
+             on_key=lambda k: state.update(screen=CONFIRM_YES.replace('Permanently delete "受注の記録"?', "Permanently delete this page?")) if k == "down" else None)
+begin("見て")
+screen()
+asked_then("proj で、このページを削除してよいですか？", "はい")
+check("確認: 問いの文に引用符で囲まれた対象の名前が無ければ、名指ししていても聞き返す", answer(), ("confirm", []))
+s.CONFIRMING.clear()
+REL_NO, REL_YES = (x.replace("受注の記録", "Product release notes") for x in (CONFIRM_NO, CONFIRM_YES))
+state.update(screen=REL_NO, on_key=lambda k: state.update(screen=REL_YES) if k == "down" else None)
+begin("見て")
+screen()
+asked_then("proj で、削除の確認で止まっています。『Product release notes』のページを完全に削除してよいですか？", "削除して")
+check("確認: 対象の名前の中の語（release・prod）を操作の種類と数えない（名指しどおりなら最初の答えで通す。codex-review P2）", answer(), ("ok", ["down", "enter"]))
+s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+state.update(screen=CONFIRM_NO, on_key=cursor_moves)
+begin("見て")
+screen()
+asked_then("proj で、『受注の記録』を削除してよいですか？", "はい")
+check("確認: 「（〇〇で、）『名前』を△△してよいですか？」（入れ物の語なし）の形でも、名前が完全に一致すれば最初の答えで通す", answer(), ("ok", ["down", "enter"]))
+A_NO = CONFIRM_NO.replace("受注の記録", "a")
+state.update(screen=A_NO, on_key=lambda k: state.update(screen=A_NO.replace(" ❯ No\n   Yes", "   No\n ❯ Yes")) if k == "down" else None)
+begin("見て")
+screen()
+asked_then("proj で、『a』を削除してよいですか？", "はい")
+check("確認: 2 字に満たない対象の名前は、名指ししていても聞き返す", answer(), ("confirm", []))
+s.CONFIRMING.clear()
+TWO_NO = CONFIRM_NO.replace('"受注の記録"', '"受注の記録" and "請求の記録"')
+state.update(screen=TWO_NO, on_key=lambda k: state.update(screen=TWO_NO.replace(" ❯ No\n   Yes", "   No\n ❯ Yes")) if k == "down" else None)
+begin("見て")
+screen()
+asked_then("proj で、『受注の記録』を削除してよいですか？", "はい")
+check("確認: 画面の確認に対象の名前が 2 つ以上あれば、1 つを名指ししても聞き返す", (s.confirm_targets(TWO_NO), answer()), (["受注の記録", "請求の記録"], ("confirm", [])))
+s.CONFIRMING.clear()
+s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+check("操作の種類は、引用符の名前と URL を除いた部分から読む（除くと種類が残らなければ名指しとみなさない）",
+      (s.risky_named('⏺ Artifact(delete · https://claude.ai/artifact/prodmail)\n Permanently delete "release notes"?', "proj で、『release notes』を削除してよいですか？"),
+       s.risky_named('Permanently "release" the page?', "proj で、release を公開してよいですか？")), (True, False))
+state.update(screen=CONFIRM_NO, on_key=cursor_moves)
+begin("見て")
+screen()
+asked_then("proj で、『受注の記録』のページを削除してよいですか？ 内容を確認してよいですか？", "確認して")
+check("確認: 問いが 2 つのとき、もう 1 つの問いの操作の語（確認して）を、この問いの許可には使わない（codex-review P1）", answer(), ("not_said", []))
+s.CONFIRMING.clear()
+check("確認の対象の名前に同じ引用符が入る・閉じていない引用符があるときは、名前を読み取れないとして空（codex-review）",
+      [s.confirm_targets(CONFIRM_NO.replace('"受注の記録"', x)) for x in ('"My "draft" page"', '"Bob"s file"', '"say "hi""', '"受注の記録')], [[], [], [], []])
+QUOTE_NO = CONFIRM_NO.replace('"受注の記録"', '"My "draft" page"')
+state.update(screen=QUOTE_NO, on_key=lambda k: state.update(screen=QUOTE_NO.replace(" ❯ No\n   Yes", "   No\n ❯ Yes")) if k == "down" else None)
+begin("見て")
+screen()
+asked_then("proj で、『My 』を削除してよいですか？", "はい")
+check("確認: 名前の一部だけを名指しした問いでは、聞き返しを省かない（codex-review P1）", answer(), ("confirm", []))
+s.CONFIRMING.clear()
+state.update(screen=CONFIRM_NO, on_key=cursor_moves)
+check("確認の対象の名前（引用符の種類・空白だけの名前・確認でない画面）",
+      (s.confirm_targets(CONFIRM_NO), s.confirm_targets(CONFIRM_NO.replace('"受注の記録"', "「受注の記録」")), s.confirm_targets(CONFIRM_NO.replace('"受注の記録"', '" "')),
+       s.confirm_targets(PERMISSION)), (["受注の記録"], ["受注の記録"], [], []))
+state.update(screen=CONFIRM_NO, on_key=cursor_moves)
+begin("やめて")
+check("確認: 断るは esc（Esc to cancel）", answer(answer="no"), ("ok", ["esc"]))
+state.update(screen=CONFIRM_NO.replace(" ❯ No", "   Maybe\n ❯ No"), on_key=lambda k: state.update(screen=CONFIRM_NO.replace(" ❯ No\n   Yes", "   Maybe\n   No\n ❯ Yes")) if k == "down" else None)
+begin("見て")
+screen()
+asked_then(DQ, "はい")
+check("確認: Maybe / No / Yes の 3 択（Maybe が No の前）は確認と読まず、キーを送らない（a2a）", answer(), ("unknown_prompt", []))
+state.update(screen="⏺ 何かの画面\n 続けますか\n Esc to cancel", on_key=None)
+begin("見て")
+screen()
+asked_then("proj で、続けますか？", "はい")
+check("問いの形を読めない（番号も、はい・いいえだけの確認も無い）ときは、はい・番号を送らない", (answer(), answer(answer="1")), (("unknown_prompt", []), ("unknown_prompt", [])))
+s.hermes.hermes_turn_end(s.hub_human_turn(), "わかりました")
+state.update(screen=PERMISSION)
 
 # ---- 選択肢のある質問: 番号は、発言がその番号を選ぶ答えのときだけ
 QUESTION = """⏺ AskUserQuestion
@@ -366,26 +655,92 @@ asyncio.run(s.hermes.hermes_exchange("テストの承認どうなってる？"))
 screen()  # ハブはこの発言の間に画面を見て、問い Q を返した（最後に聞いた文は Q）
 s.hermes.ask_hermes = lambda text: "わかりました"
 asyncio.run(s.hermes.hermes_exchange("はい", 1700000000.25))  # 問いの無い古い報告に「↩ 返信」して「はい」
-check("返信: 返信の発言の「直前に聞いた文」は返信先の報告。返信の「はい」では答えない",
+check("返信: 返信の発言の「直前に聞いた文」は返信先の報告。問いを見て書かれていない報告への返信の「はい」では答えない",
       (s.hermes.HERMES_TURNS[-1][3], answer()), ("shop の件が終わりました。続けますか？", ("reply", [])))
 s.hermes.hermes_log("ai", Q, report=True, about="proj｜テスト", at=1700000003.5, pane="w9:p1")
 s.hermes.HERMES_HEARD["text"] = "blog の件が終わりました"  # 最後に聞いたのは問いの無い報告
 screen()
 asyncio.run(s.hermes.hermes_exchange("はい", 1700000003.5))
-check("返信: 問いのある報告に返信した「はい」でも、答えには使わない（ハブがふつうの発言で聞き直す）", answer(), ("reply", []))
+check("返信: 問いのある報告でも、どの問いを見て書いたかの記録（ask）が無ければ答えない（ハブがふつうの発言で聞き直す）", answer(), ("reply", []))
 s.hermes.hermes_log("ai", Q, report=True, about="proj｜別のセッション", at=1700000005.5, pane="w8:p1")  # 同じプロジェクトの別のセッションの報告
 s.hermes.hermes_log("ai", Q, report=True, about="proj｜テスト", at=1700000006.5)  # セッションの無い（前の版の）報告
 for at, why in ((1700000005.5, "同じプロジェクトの別のセッションの報告"), (1700000006.5, "どのセッションの報告か分からない（前の版の）報告")):
     screen()
     asyncio.run(s.hermes.hermes_exchange("はい", at))
     check(f"返信: {why}への返信の「はい」では、このセッションの問いに答えない", answer()[0], "reply")
+# 止まった報告が見ていた問い（ask: 画面の指紋とセッション）が、いまこのセッションに出ている問いと同じときだけ、返信をその問いへの答えに使う（2026-11-19 本人）
+FP = s.prompt_fp(PERMISSION)
+JOB = {"pane": "w9:p1", "cwd": "/x/proj", "project": "proj", "title": "テスト", "text": "テストして", "offset": 0, "was_working": False, "gen": 1}
+
+
+def looks_then_reports(text):
+    json.loads(s.hub_screen("w9:p1").body)  # ハブは、止まった報告の間に hubctl screen で問いを見た
+    return Q
+
+
+s.hermes.ask_hermes = looks_then_reports
+asyncio.run(s.report(dict(JOB), "blocked"))
+rec = [d for d in s.hermes.hermes_records() if d.get("report")][-1]
+check("止まった報告は、ハブがその間に見た問いの指紋とセッションを記録に残す", rec.get("ask"), {"fp": FP, "session": "sess-1"})
+s.hermes.ask_hermes = lambda text: "わかりました"
+asyncio.run(s.hermes.hermes_exchange("はい", rec["at"]))
+check("返信: その止まった報告への「はい」は、聞き直さずに最初の答えで通す（GINON の削除確認の再現の形）", answer(), ("ok", ["1"]))
+asyncio.run(s.hermes.hermes_exchange("状況は？"))
+screen()  # ハブは報告の前（ふつうの発言の中）に、この問いを見ていた
+time.sleep(0.01)
+s.hermes.ask_hermes = lambda text: Q  # 報告の間には画面を見ずに書いた
+asyncio.run(s.report(dict(JOB), "blocked"))
+rec2 = [d for d in s.hermes.hermes_records() if d.get("report")][-1]
+check("ハブがその報告の間に画面を見ずに書いた止まった報告には、前に見た問いがあっても結ばない", (rec2["at"] != rec["at"], rec2.get("ask")), (True, None))
+
+
+def recreated_then_looks(text):
+    s.list_agents = lambda: [{**TARGET, "status": state["status"], "session": "sess-2"}]  # 報告の途中で、同じ pane のセッションが作り直された
+    json.loads(s.hub_screen("w9:p1").body)
+    return Q
+
+
+asyncio.run(s.hermes.hermes_exchange("状況は？"))
+s.hermes.ask_hermes = recreated_then_looks
+asyncio.run(s.report(dict(JOB), "blocked"))
+s.list_agents = lambda: [{**TARGET, "status": state["status"]}]
+rec3 = [d for d in s.hermes.hermes_records() if d.get("report")][-1]
+check("報告の途中でセッションが作り直されたら（報告を頼んだときと、ハブが見たときでセッションが違う）、問いを結ばない", (rec3["at"] != rec2["at"], rec3.get("ask")), (True, None))
+s.SEEN_PROMPT.clear()
+s.hermes.ask_hermes = lambda text: "わかりました"
+for at, pane, ask in ((1700000009.5, "w9:p1", {"fp": FP, "session": "sess-1"}), (1700000010.5, "w9:p1", {"fp": "0" * 40, "session": "sess-1"}),
+                      (1700000011.5, "w9:p1", {"fp": FP, "session": "sess-0"}), (1700000012.5, "w8:p1", {"fp": FP, "session": "sess-1"}),
+                      (1700000013.5, "w9:p1", {"fp": FP, "session": ""}), (1700000014.5, "w9:p1", {"fp": "x", "session": "sess-1"})):
+    s.hermes.hermes_log("ai", Q, report=True, about="proj｜テスト", at=at, pane=pane, ask=ask)
+cases = ((1700000009.5, ("ok", ["1"]), "同じ pane・同じセッション・同じ問いを見た報告への返信の「はい」は、その最初の答えで通す"),
+         (1700000010.5, ("reply", []), "別の問い（そのあと先へ進んだ）を見た報告への返信では答えない"),
+         (1700000011.5, ("reply", []), "別のセッション（同じ pane で作り直した）の報告への返信では答えない"),
+         (1700000012.5, ("reply", []), "別の pane の報告（同じ問い・同じセッションの名を書いても）への返信では答えない"),
+         (1700000013.5, ("reply", []), "セッションの記録の無い報告への返信では答えない"),
+         (1700000014.5, ("reply", []), "指紋の形が違う報告への返信では答えない"))
+for at, want, why in cases:
+    s.hermes.ask_hermes = lambda text: "わかりました"
+    asyncio.run(s.hermes.hermes_exchange("状況は？"))
+    screen()  # ハブはこの発言の間に画面を見た（返信はその次の発言）
+    asyncio.run(s.hermes.hermes_exchange("はい", at))
+    check(f"返信: {why}", answer(), want)
+s.hermes.ask_hermes = lambda text: "わかりました"
+asyncio.run(s.hermes.hermes_exchange("状況は？"))
+screen()
+s.hermes.hermes_log("ai", "proj の「テスト」が許可を求めています。許可しますか？", report=True, about="proj｜テスト", at=1700000015.5, pane="w9:p1",
+                    ask={"fp": FP, "session": "sess-1"})
+asyncio.run(s.hermes.hermes_exchange("いい天気だね", 1700000015.5))
+check("返信: 結ばれた報告への返信でも、発言が答えの文法に収まらなければ答えない", answer(), ("not_said", []))
 state.update(status="blocked", screen=QUESTION)
 s.SEEN_PROMPT.clear()
 asyncio.run(s.hermes.hermes_exchange("質問なんだっけ"))
 screen()  # ハブはこの発言の間に、選択式の質問の画面を見た
 s.hermes.hermes_log("ai", CQ, report=True, about="proj｜テスト", at=1700000008.5, pane="w9:p1")
 asyncio.run(s.hermes.hermes_exchange("じゃあ2番で", 1700000008.5))
-check("返信: 選択式の質問への番号の答えも、返信の発言なら送らない（キーも送らない）", answer(answer="2"), ("reply", []))
+check("返信: 選択式の質問への番号の答えも、どの問いを見て書いたか分からない報告への返信なら送らない（キーも送らない）", answer(answer="2"), ("reply", []))
+s.hermes.hermes_log("ai", CQ, report=True, about="proj｜テスト", at=1700000016.5, pane="w9:p1", ask={"fp": s.prompt_fp(QUESTION), "session": "sess-1"})
+asyncio.run(s.hermes.hermes_exchange("じゃあ2番で", 1700000016.5))
+check("返信: 選択式の質問を見て書いた報告への返信の番号は、その最初の答えで送る", answer(answer="2"), ("ok", ["2"]))
 asyncio.run(s.hermes.hermes_exchange("やっぱりやめる", 1700000008.5))
 check("返信: いいえ（取り消し）は、返信の発言でも今までどおり送れる", answer(answer="no")[0], "ok")
 state.update(status="idle", screen=PERMISSION)

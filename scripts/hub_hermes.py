@@ -204,6 +204,23 @@ def report_ref(at) -> tuple[str, str, str]:
     return "", "", ""
 
 
+_FP = re.compile(r"[0-9a-f]{40}")  # 画面の指紋（server.prompt_fp の sha1）
+
+
+def report_ask(at) -> dict:
+    """画面の「返信」が指した報告が見ていた問い {"pane", "fp", "session"}（止まった報告で、ハブがその間に画面を見たときだけ記録にある）。
+    無い・形が違う欄は空（本体は、どれかが空なら返信を答えに使わない）。"""
+    if isinstance(at, bool) or not isinstance(at, (int, float)):
+        return {"pane": "", "fp": "", "session": ""}
+    for d in reversed(hermes_records() or []):
+        if d.get("role") == "ai" and d.get("report") and d.get("at") == at:
+            ask = d.get("ask") if isinstance(d.get("ask"), dict) else {}
+            fp, session = ask.get("fp"), ask.get("session")
+            return {"pane": str(d.get("pane") or ""), "fp": fp if isinstance(fp, str) and _FP.fullmatch(fp) else "",
+                    "session": session if isinstance(session, str) and 0 < len(session) <= 200 else ""}
+    return {"pane": "", "fp": "", "session": ""}
+
+
 def report_topic(at) -> str:
     """画面の「返信」が指した報告の件（記録にあれば）。無い（0.29.0 より前の報告など）ときは空。"""
     if isinstance(at, bool) or not isinstance(at, (int, float)):
@@ -240,21 +257,23 @@ def reply_topic() -> str:
 # 承認に答える・閉じるの守り（「見たあとにユーザーが発言したか」「聞いたときの返答に問いがあるか」）はこの台帳で確かめる。自動通知は載せない。
 # 中身は上の記録にも書き、起動のときに記録から戻す（再起動で消えない。発言の ID は再起動をまたいでも重ならない）。
 # 記録を読めなければ空から始める（守りは「まだ発言が無い」として、新しい発言を待つ側に倒れる）
-HERMES_TURNS: deque = deque(maxlen=50)  # (発言の ID, ユーザーの文, Hermes の返答, 発言の直前に聞いた Hermes の返答, 返信先の報告の名前（返信でなければ空）, 返信先の報告のセッション)
+HERMES_TURNS: deque = deque(maxlen=50)  # (発言の ID, ユーザーの文, Hermes の返答, 発言の直前に聞いた Hermes の返答, 返信先の報告の名前（返信でなければ空）, 返信先の報告のセッション, 返信先の報告が見ていた問い（report_ask）)
 # ハブ（Hermes）の最後の出力（発言への返答か、自動通知への報告）。利用者の発言が始まるときに台帳の行へ写す（承認に答えるの守りの heard）。
 # 記録（hermes-log.jsonl）からは取らない（書けなかった報告で、古い問いを拾わないため）。Hermes とのやり取りの鍵（pane_lock）の中で置き換え・写す
 HERMES_HEARD = {"text": ""}
 _unsaved: set[str] = set()  # 記録に書けなかった発言の ID（画面に「記録に残っていない」と知らせるため）
 
 
-def hermes_turn_begin(text: str, reply_to: str = "", heard: str | None = None, reply_pane: str = "", extra: str = "", refused: bool = False) -> str:
+def hermes_turn_begin(text: str, reply_to: str = "", heard: str | None = None, reply_pane: str = "", extra: str = "", refused: bool = False,
+                      reply_ask: dict | None = None) -> str:
     """発言を台帳と記録に載せる。返信のときは heard に返信先の報告の文を渡す: 承認に答える・閉じるの守りが「発言の直前に聞いた文」として見るのは、
     最後に届いた返事ではなく、利用者が返信を押した報告になる（古い報告への「はい」が、そのあとに届いた別件の問いへの答えにならない）。
     extra（本体が足す添付の行）は記録にだけ付ける（画面の履歴に残す）。守りの台帳は利用者の言葉のまま。
     refused は、本体が送らずに断った発言（添付・返信先が無い）。台帳には空の発言として載せる: 「すぐ次の発言」を進めて前の問い・確認を失効させ、
     断った発言そのものは承認にも閉じる許可にもならない（閉じるの守りは、聞いたときの返答と「次の発言」の文を見るので、聞いた文を空にするだけでは足りない）。"""
     turn = f"h{os.urandom(6).hex()}"
-    HERMES_TURNS.append([turn, "" if refused else text, "", HERMES_HEARD["text"] if heard is None else heard, reply_to, reply_pane])  # 守りの台帳は、利用者の言葉のまま（返信の前置き・添付の行は入れない）
+    HERMES_TURNS.append([turn, "" if refused else text, "", HERMES_HEARD["text"] if heard is None else heard, reply_to, reply_pane,
+                         dict(reply_ask or {}) if reply_to else {}])  # 守りの台帳は、利用者の言葉のまま（返信の前置き・添付の行は入れない）
     if not hermes_log("me", text + extra, turn=turn, **({"reply_to": reply_to, "reply_pane": reply_pane} if reply_to else {})):
         _unsaved.add(turn)
     return turn
@@ -280,7 +299,7 @@ def _load_hermes_turns():
         if not isinstance(turn, str):
             continue
         if d["role"] == "me":
-            rows[turn] = [turn, d["text"], "", None, str(d.get("reply_to") or ""), str(d.get("reply_pane") or "")]  # 直前に聞いた返答の写しは記録から作らない（承認に答えるときは聞き直してもらう）
+            rows[turn] = [turn, d["text"], "", None, str(d.get("reply_to") or ""), str(d.get("reply_pane") or ""), {}]  # 直前に聞いた返答の写しと、返信先が見ていた問いは記録から作らない（承認に答えるときは聞き直してもらう）
         elif d["role"] == "ai" and turn in rows:
             rows[turn][2] = d["text"]
     HERMES_TURNS.extend(rows.values())
@@ -307,7 +326,8 @@ async def hermes_exchange(text: str, reply_at: float | None = None, extra: str =
             saved = turn not in _unsaved
             _unsaved.discard(turn)
             return "", why, saved
-        turn = hermes_turn_begin(text, ref, ref_text if ref else None, ref_pane, extra)  # 発言の台帳。承認に答える・閉じるの守りが「見たあとの発言か」を見る
+        ask = await asyncio.to_thread(report_ask, reply_at) if ref else {}  # 返信先の報告が見ていた問い（承認に答えるの守りが、いまの問いと照らす）
+        turn = hermes_turn_begin(text, ref, ref_text if ref else None, ref_pane, extra, reply_ask=ask)  # 発言の台帳。承認に答える・閉じるの守りが「見たあとの発言か」を見る
         REPLY_TOPIC["topic"] = await asyncio.to_thread(report_topic, reply_at) if ref else ""
         try:
             reply = await asyncio.to_thread(ask_hermes, (f"〔返信: {ref} の報告〕\n{text}" if ref else text) + extra)
@@ -1524,6 +1544,13 @@ class Hermes(Brain, Talker):
     def replying(self, turn: str) -> str | None:
         return next((row[5] if len(row) > 5 else "" for row in HERMES_TURNS if row[0] == turn and len(row) > 4 and row[4]), None)
 
+    def reply_ask(self, turn: str) -> dict | None:
+        for row in HERMES_TURNS:
+            if row[0] == turn and len(row) > 4 and row[4]:
+                ask = row[6] if len(row) > 6 and isinstance(row[6], dict) else {}
+                return {"pane": str(ask.get("pane") or ""), "fp": str(ask.get("fp") or ""), "session": str(ask.get("session") or "")}
+        return None
+
     async def report_target(self) -> dict | None:
         return hermes_agent() if HERMES_KEY else None
 
@@ -1537,12 +1564,15 @@ class Hermes(Brain, Talker):
         """Hermes の会話は本体が記録する（画面が無くても、あとで履歴に出る）。"""
         return hermes_log("note", headline, about=about)
 
-    async def report_end(self, state: str, reply: str, about: str, saved: bool, pane: str = "", topic: str = "") -> bool:
+    async def report_end(self, state: str, reply: str, about: str, saved: bool, pane: str = "", topic: str = "", ask: dict | None = None) -> bool:
         # 利用者が次に聞くのはこの報告（受け取れなければ本体の失敗の知らせ）。記録に書けたかに関係なく、ここで置き換える
         HERMES_HEARD["text"] = reply if state == "done" and reply.strip() else ""
         if state == "done" and reply.strip():
-            # pane: どのセッションの報告か（返信の守りが照らす）。topic: どの件の報告か（件の URL で開くとき・返信の続きを同じ件にするとき）
-            return hermes_log("ai", reply, report=True, about=about, pane=pane, **({"topic": topic} if topics.ID_RE.fullmatch(topic or "") else {})) and saved
+            # pane: どのセッションの報告か（返信の守りが照らす）。topic: どの件の報告か（件の URL で開くとき・返信の続きを同じ件にするとき）。
+            # ask: 止まった報告でハブが見た問い（返信をその問いへの答えに使えるかを、本体が照らす）
+            link = ({"ask": {"fp": ask["fp"], "session": ask["session"]}}
+                    if isinstance(ask, dict) and isinstance(ask.get("fp"), str) and _FP.fullmatch(ask["fp"]) and isinstance(ask.get("session"), str) and ask["session"] else {})
+            return hermes_log("ai", reply, report=True, about=about, pane=pane, **({"topic": topic} if topics.ID_RE.fullmatch(topic or "") else {}), **link) and saved
         failed = f"ハブから報告を受け取れませんでした: {core._clip(reply, 200) or '返事が空でした'}"
         saved = hermes_log("error", failed, about=about) and saved
         for c in list(core.CLIENTS):  # 開いている画面には、いま知らせる（記録に書けなければ、ここでしか伝わらない）

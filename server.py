@@ -197,6 +197,71 @@ def parse_prompt(text: str) -> dict:
     return {"kind": "question" if 1 in choices else "unknown", "options": choices}
 
 
+CONFIRM_OPT = re.compile(r"^ {1,3}(❯ |  )(Yes|No)$")  # 番号の無い確認の選択肢の行（「 ❯ No」「   Yes」）。行の全体がこの形のときだけ
+CONFIRM_Q = re.compile(r"^ ?[^\s❯]")  # 確認の問いの文の行（字下げは 1 字まで、カーソルの印なし）。選択肢と同じ字下げの行（「   Maybe」）は問いとしない
+
+
+def parse_confirm(text: str) -> dict | None:
+    """番号の無い「Yes / No」の確認（Claude Code の道具が出す「Permanently delete "…"?  ❯ No / Yes」など。初めは No を指している）。
+    末尾の操作案内（Esc to cancel）のすぐ上が Yes と No の 2 行だけで、カーソル（❯）がちょうど 1 つ、その上に問いの文が 1 行あるときだけ読む。
+    返すのは {"question": 問いの文, "order": 画面の上からの並び, "cursor": ❯ の位置（0 か 1）}。この形でなければ None（答えない）。"""
+    lines = text.splitlines()
+    foot = next((i for i in range(len(lines) - 1, -1, -1) if "Esc to cancel" in lines[i]), None)
+    if foot is None or foot < 3 or foot != len(lines) - 1:  # 案内が画面の最後の行でなければ（下に別の入力・選択肢が続く）、確認と読まない（a2a）
+        return None
+    ms = [CONFIRM_OPT.match(l) for l in lines[foot - 2:foot]]
+    if not all(ms):
+        return None
+    order, marks = [m.group(2) for m in ms], [m.group(1) == "❯ " for m in ms]
+    question = lines[foot - 3].strip()
+    # 問いの文の行は、選択肢の行と字下げで分ける（Maybe / No / Yes の 3 択の Maybe を問いと読んで、No / Yes の 2 択と取り違えない。a2a）
+    if (sorted(order) != ["No", "Yes"] or marks.count(True) != 1 or not question or not CONFIRM_Q.match(lines[foot - 3])
+            or CONFIRM_OPT.match(lines[foot - 3]) or OPTION.match(lines[foot - 3])):
+        return None
+    return {"question": question, "order": order, "cursor": marks.index(True)}
+
+
+def confirm_norm(text: str) -> str:
+    """確認の画面の照らし合わせ用。行の頭の ⏺（実行を待つ道具の見出しの印。点滅して空白になる）だけを空白にそろえ、ほかの字・空白・
+    行の区切りはそのまま残す（空白の連なりや行の区切りの違いも、別の画面とみなす。a2a）。"""
+    return "\n".join(" " + l[1:] if l.startswith("⏺") else l for l in text.splitlines())
+
+
+def confirm_text(text: str, at: int | None) -> str:
+    """番号の無い確認の画面（parse_confirm が読めるもの）で、カーソル（❯）を選択肢の at 番目（0 か 1）に置いた画面。at が None なら、どちらにも置かない。"""
+    lines = text.splitlines()
+    foot = next(i for i in range(len(lines) - 1, -1, -1) if "Esc to cancel" in lines[i])
+    for k, i in enumerate((foot - 2, foot - 1)):
+        m = CONFIRM_OPT.match(lines[i])
+        lines[i] = lines[i][:m.start(1)] + ("❯ " if k == at else "  ") + m.group(2)
+    return "\n".join(lines)
+
+
+QUOTED = re.compile(r'"([^"\n]{1,200})"|“([^”\n]{1,200})”|「([^」\n]{1,200})」|『([^』\n]{1,200})』')
+
+
+def confirm_targets(text: str) -> list[str]:
+    """番号の無い確認の問いの文（parse_confirm の question）の、引用符で囲まれた対象の名前（Permanently delete "受注の記録"? の「受注の記録」）。
+    空白だけの名前は数えない。確認でない・名前が無ければ空。問いの文の引用符の数が、取り出した名前の数のちょうど 2 倍でなければ
+    （名前の中に同じ引用符がある・閉じていない引用符がある）、名前を確かに読み取れないとして空（聞き返しに倒す。codex-review）。"""
+    c = parse_confirm(text)
+    if not c:
+        return []
+    spans = list(QUOTED.finditer(c["question"]))
+    names = [next(g for g in m.groups() if g is not None) for m in spans]
+    # 前後に空白のある名前は、名前の中の引用符で切れた一部とみなす（"My "draft" page" の "My " と " page"）
+    if sum(c["question"].count(ch) for ch in '"“”「」『』') != 2 * len(spans) or any(n != n.strip() for n in names):
+        return []
+    return [n for n in names if n.strip()]
+
+
+def read_ask(text: str) -> dict:
+    """止まっている画面の問い（ハブの経路）。番号の無い「Yes / No」の確認を先に見る（その上に前の会話の番号つきの並びが残っていても、
+    確認として読む）。確認なら {"kind": "confirm", "options": {}, "question": 問いの文}、ほかは parse_prompt と同じ。"""
+    c = parse_confirm(text)
+    return {"kind": "confirm", "options": {}, "question": c["question"]} if c else parse_prompt(text)
+
+
 TRUST_PROMPT = re.compile(r"trust (this|the files in this) folder|Do you trust", re.I)
 
 
@@ -593,6 +658,11 @@ def hub_replying(turn: str | None) -> str | None:
     return HUB.replying(turn) if turn else None
 
 
+def hub_reply_ask(turn: str | None) -> dict | None:
+    """発言 turn が、画面の「返信」で報告を指したものなら、その報告が見ていた問い {"pane", "fp", "session"}（分からない欄は空）。返信でなければ None。"""
+    return HUB.reply_ask(turn) if turn else None
+
+
 def agent_updated(a: dict) -> float | None:
     """そのセッションが最後に動いた時刻（会話の記録が最後に書き込まれた時刻、UNIX 秒）。記録の無いセッションは None。画面の「更新順」に使う。"""
     path = jsonl_path(a)
@@ -932,8 +1002,13 @@ def hub_screen(pane: str, lines: int = 30):
     if a["status"] != "blocked":
         return JSONResponse({"pane": pane, "status": a["status"], "screen": read_screen(pane, lines)})
     text = read_prompt(pane)
-    SEEN_PROMPT[pane] = (prompt_fp(text), hub_human_turn())  # ハブがこの問いを見た。答えられるのは、ユーザーの次の発言から
-    return JSONResponse({"pane": pane, "status": "blocked", "screen": text, "prompt": parse_prompt(text)})
+    fp, seen, session = prompt_fp(text), SEEN_PROMPT.get(pane), a.get("session") or ""
+    if not (session and seen_same(seen, fp, session)):  # ハブがこの問いを見た。答えられるのは、ユーザーの次の発言から（セッションが分からなければ、見直しでも起点を置き直す。codex-review）
+        SEEN_PROMPT[pane] = (fp, hub_human_turn(), session)
+    # 同じセッションの同じ問いを見直しただけなら、最初に見たときの発言を起点のままにする（答える前に見直すと「同じ発言の中」になって断られていた。
+    # 2026-11-19）。同じ pane でセッションを作り直して見た目の同じ問いが出たときは、新しい問いとして起点を置き直す（codex-review）
+    SEEN_AT[pane] = time.time()  # 最後に見た時刻（報告が、どの問いを見て書かれたかを結ぶ）
+    return JSONResponse({"pane": pane, "status": "blocked", "screen": text, "prompt": read_ask(text)})
 
 
 _probes: dict[str, tuple[float, str]] = {}  # 点検で実際に試した結果: 名前 → (時刻, 不具合の説明。空なら使える)
@@ -1756,6 +1831,7 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
         seq, state, reply = REPORT_SEQ, "error", ""
         REPORTING = True
         report_idle().clear()
+        asked_from = time.time()
         try:
             state, reply = await ask(hub, note)
         finally:
@@ -1765,7 +1841,12 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
             REPORTING = False
             report_idle().set()
         hlog(f"報告 {kind}: {label} → {state}（画面 {len(CLIENTS)}）", flush=True)
-        saved = await HUB.report_end(state, reply, label, saved, str(d.get("pane", "")), str(d.get("topic") or ""))
+        # 止まった報告は、ハブがこの報告の間に見た問い（画面の指紋）と、そのときのセッションを記録に残す。報告への「↩ 返信」は、
+        # その問いがいまも同じセッションに出ているときだけ、その問いへの答えに使える（_hub_answer）。ハブが画面を見ずに書いた報告は結ばない
+        seen = SEEN_PROMPT.get(d["pane"]) if kind == "blocked" else None
+        ask_link = ({"fp": seen[0], "session": seen[2]}
+                    if seen and len(seen) > 2 and seen[2] and seen[2] == now.get("session") and SEEN_AT.get(d["pane"], 0) >= asked_from else None)
+        saved = await HUB.report_end(state, reply, label, saved, str(d.get("pane", "")), str(d.get("topic") or ""), ask=ask_link)
         if state != "done" or not reply.strip():
             relay_slack(d, label, headline, "", ask=kind == "blocked")
             if kind in ("done", "more", "gone"):
@@ -2084,8 +2165,65 @@ async def hub_send(body: dict):
 # ---------- 承認・質問への回答（ハブは決めない。ユーザーの答えを相手に伝えるだけ） ----------
 # 取り消しにくい操作に見える語。当たったら、ユーザーにもう一度確かめてからでないと「はい」を通さない
 RISKY = re.compile(r"(\brm\b|\btrash\b|delete|\bdrop\b|truncate|\bpush\b|deploy|publish|release|\bsend|mail|merge|reset --hard|force|terraform|\baws\b|gcloud|kubectl|migrat|prod|本番|削除|送信|公開|配信|反映|支払|振込|請求)", re.I)
-SEEN_PROMPT: dict[str, tuple[str, str | None]] = {}  # ハブが見た、止まっている画面: pane → (画面の指紋, そのときのユーザーの最後の発言)
+# 取り消しにくい操作の種類ごとに、画面の語（RISKY の語を分けたもの）と、ハブが問いの「〇〇してよいですか」の〇〇で名指しする語
+# 名指しの語は、この語そのもの（完全一致）だけ（「非公開化」の中の「公開」のような、打ち消し・逆の操作を含む語は数えない。codex-review）
+RISKY_KINDS = (
+    (re.compile(r"\brm\b|\btrash\b|delete|\bdrop\b|truncate|削除", re.I), re.compile(r"削除|消去")),
+    (re.compile(r"\bsend|mail|送信|配信", re.I), re.compile(r"送信|配信|送付|返信|投稿")),
+    (re.compile(r"\bpush\b|deploy|publish|release|merge|prod|本番|公開|反映|terraform|\baws\b|gcloud|kubectl|migrat", re.I),
+     re.compile(r"反映|公開|デプロイ|リリース|プッシュ|マージ|適用|移行")),
+    (re.compile(r"reset --hard|force", re.I), re.compile(r"上書き|強制|リセット")),
+    (re.compile(r"支払|振込|請求"), re.compile(r"支払|振込|請求")),
+)
+
+
+def risky_named(asked: str, heard: str) -> bool:
+    """画面の問い asked に出ている取り消しにくい操作の種類が、どれも、利用者が聞いた問い heard の「〇〇してよいですか」の〇〇で名指しされているか
+    （画面が rm なら「削除してよいですか」。別の種類の名指し・返答のどこかに語があるだけ・プロジェクト名や題の語は数えない）。
+    名前と URL を除くと種類が 1 つも残らないときは、名指しされていないとみなす（聞き返す）。"""
+    acts = consent.asked_acts(heard)
+    op = re.sub(r"https?://\S+", " ", QUOTED.sub(" ", asked))  # 種類は、引用符で囲まれた名前と URL を除いた操作の部分から読む（名前の release・prod などを操作と数えない。codex-review）
+    kinds = [act for screen, act in RISKY_KINDS if screen.search(op)]
+    return bool(kinds) and all(any(act.fullmatch(w) for w in acts) for act in kinds)
+
+
+SEEN_PROMPT: dict[str, tuple] = {}  # ハブが見た、止まっている画面: pane → (画面の指紋, 最初に見たときのユーザーの最後の発言, そのときのセッション)
+
+
+def seen_same(seen: tuple | None, fp: str, session: str) -> bool:
+    """ハブが見た問い seen が、いまの問い（指紋 fp・セッション session）と同じか。セッションの分からない記録（古い形）は同じとみなさない。"""
+    return bool(seen) and seen[0] == fp and len(seen) > 2 and seen[2] == session
+SEEN_AT: dict[str, float] = {}  # ハブが止まっている画面を最後に見た時刻: pane → 時刻（止まった報告が、どの問いを見て書かれたかを結ぶ）
 CONFIRMING: dict[str, tuple[str, str | None]] = {}  # 取り消しにくい操作の聞き返し中: pane → (画面の指紋, そのときのユーザーの最後の発言)
+CONFIRM_WAIT = 3.0  # 番号の無い確認で、カーソルが Yes に来たのを確かめるまで待つ秒数
+
+
+async def confirm_yes(pane: str, fp0: str) -> tuple[bool, str]:
+    """番号の無い確認（parse_confirm）で Yes を選ぶ。初めに読んだ画面が答えを決めた画面（指紋 fp0）と同じで、カーソルが Yes に無ければ
+    ↓か↑を 1 回送り、画面を読み直して、同じ問いでカーソルが Yes に来たのを確かめてから Enter を送る。
+    思った画面でなければ、そこで止める（Enter は送らない）。返すのは (Enter まで送れたか, 止めた理由)。"""
+    text = await asyncio.to_thread(read_prompt, pane)
+    c = parse_confirm(text)
+    if prompt_fp(text) != fp0 or not c:
+        return False, "答える前に画面が変わった（何も送っていない）"
+    yes = c["order"].index("Yes")
+    if c["cursor"] != yes:
+        # カーソルを動かしたあとの画面は、選択肢の 2 行のカーソルだけが入れ替わり、ほかは 1 字も変わらないはず（道具の見出しの ⏺ の点滅だけは数えない）
+        want = confirm_norm(confirm_text(text, yes))
+        r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, "down" if yes > c["cursor"] else "up")
+        if "result" not in r:
+            return False, "herdr が応答しない（Enter は送っていない）"
+        end = time.monotonic() + CONFIRM_WAIT
+        while True:
+            t2 = await asyncio.to_thread(read_prompt, pane)
+            c2 = parse_confirm(t2)
+            if c2 and c2["question"] == c["question"] and c2["order"] == c["order"] and c2["cursor"] == yes and confirm_norm(t2) == want:
+                break
+            if time.monotonic() >= end:
+                return False, "カーソルが Yes に来たのを確かめられない（Enter は送っていない）"
+            await asyncio.sleep(0.2)
+    r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, "enter")
+    return ("result" in r), ("" if "result" in r else "herdr が応答しない（Enter が届いたか分からない）")
 
 
 def asked_part(text: str) -> str:
@@ -2106,6 +2244,10 @@ def prompt_fp(text: str) -> str:
     印のあるなしで指紋が変わらないよう、承認の画面に限って、字下げなしの行の頭の印だけは数えない（承認の枠の中の行は、必ず字下げされる）。
     字下げされた行（コマンドの本文など）の印と、印より後ろの文字は、1 字でも違えば別の指紋になる。
     選択式の質問などの画面は、問いの文が字下げなしで出るので、印も文字として数える。"""
+    if parse_confirm(text):  # 番号の無い確認は、道具の見出しの ⏺ の点滅と、カーソルの位置（答える直前に別に確かめる）では変わらない。
+        # 承認の判定より先に見る（上の会話に番号つきの Yes/No が残っていると、承認の画面とも読めてしまう。read_ask と同じ順。codex-review）。
+        # ほかの字・空白・行の区切りは潰さずに数える（a2a）
+        return hashlib.sha1(("confirm\n" + confirm_norm(confirm_text(text, None))).encode()).hexdigest()
     if is_permission(text):
         text = TOOL_MARK.sub("", text)
     return hashlib.sha1(" ".join(text.split()).encode()).hexdigest()
@@ -2145,46 +2287,71 @@ async def _hub_answer(body: dict):
         return JSONResponse({"ok": False, "reason": "trust"})
     text = await asyncio.to_thread(read_prompt, pane)
     (turn, utter), = (await asyncio.to_thread(hub_turns, 1) or [(None, "")])[:1]
-    fp, prompt, project = prompt_fp(text), parse_prompt(text), a["cwd"].rsplit("/", 1)[-1]
+    fp, prompt, project = prompt_fp(text), read_ask(text), a["cwd"].rsplit("/", 1)[-1]
+    conf = prompt["kind"] == "confirm"  # 番号の無い「Yes / No」の確認（はい・いいえだけで答える）
     if answer in ("no", "n"):
         key, said = "esc", "いいえ（取り消し）"
     else:
         seen = SEEN_PROMPT.get(pane)
-        if not seen or seen[0] != fp:  # 見ていない、または見たあとで問いが変わった
-            SEEN_PROMPT[pane] = (fp, turn)
+        if not seen_same(seen, fp, a.get("session") or ""):  # 見ていない、または見たあとで問いが変わった（同じ pane でセッションを作り直した、も含む）
+            SEEN_PROMPT[pane] = (fp, turn, a.get("session") or "")
             return JSONResponse({"ok": False, "reason": "unseen", "screen": text})
         if seen[1] == turn:  # 見たのと同じ発言の中で答えようとしている = ユーザーはまだ中身を聞いていない
             return JSONResponse({"ok": False, "reason": "same_turn", "screen": text})
         if answer not in ("yes", "y") and not answer.isdigit():
             return JSONResponse({"ok": False, "reason": "bad_answer"})
-        if answer in ("yes", "y") and prompt["kind"] != "permission":
+        if prompt["kind"] == "unknown" and not conf:  # 問いの形を読めない（番号の選択肢も、番号の無い Yes / No も無い）。何を選ぶことになるか分からないので送らない
+            return JSONResponse({"ok": False, "reason": "unknown_prompt", "screen": text})
+        if answer in ("yes", "y") and prompt["kind"] != "permission" and not conf:
             return JSONResponse({"ok": False, "reason": "not_permission", "options": prompt["options"]})
         if answer.isdigit() and (prompt["kind"] != "question" or int(answer) not in prompt["options"]):
-            return JSONResponse({"ok": False, "reason": "bad_choice", "kind": prompt["kind"], "options": prompt["options"]})
+            return JSONResponse({"ok": False, "reason": "bad_choice", "kind": "confirm" if conf else prompt["kind"], "options": prompt["options"]})
         heard = await asyncio.to_thread(hub_heard, turn)
-        if await asyncio.to_thread(hub_replying, turn) is not None:  # 返信の発言は、承認・質問への答えに使わない（ハブはふつうの発言で聞き直す）
+        rp = await asyncio.to_thread(hub_reply_ask, turn)
+        if rp is not None and not (rp.get("pane") == pane and rp.get("fp") == fp and rp.get("session") and rp.get("session") == (a.get("session") or "")):
+            # 返信の発言は、返信先の報告が「いまこのセッションに出ているこの問い」を見て書かれたものなら、その問いへの答えに使う（2026-11-19 本人）。
+            # 別の問い（同じセッションが先へ進んだ）・別のセッション（同じ pane で作り直した・同じプロジェクトの別のセッション）・
+            # どの問いを見て書いたか分からない報告（止まった報告でない・ハブが画面を見ずに書いた・前の版の報告）への返信は使わない
             return JSONResponse({"ok": False, "reason": "reply", "project": project, "screen": text})
         if not consent.asks(heard, project):  # ユーザーは、この相手の問いだと分かる文を聞いていない
             return JSONResponse({"ok": False, "reason": "not_asked", "project": project, "screen": text})
-        if not (consent.affirms(utter, "answer", project) if answer in ("yes", "y") else consent.chooses(utter, int(answer), prompt["options"], project)):
+        if not (consent.affirms(utter, "answer", project, heard) if answer in ("yes", "y") else consent.chooses(utter, int(answer), prompt["options"], project)):
             return JSONResponse({"ok": False, "reason": "not_said", "said": _clip(utter, 80), "project": project})
         if answer in ("yes", "y"):
-            if RISKY.search(asked_part(text)):
+            # 取り消しにくい操作は、聞き返してからにする。ただし、番号の無い確認の問いの文に引用符で囲まれた対象の名前があり（Permanently delete "〇〇"?）、
+            # 利用者が答えた問い（直前に聞いた文）が、その名前をそのまま入れて、画面と同じ種類の操作を「〇〇してよいですか」で名指ししていたら
+            # （「『〇〇』を削除してよいですか？」）、その答えを確かめとする（2026-11-19 本人。security-review を受けて、対象も照らす形にした）。
+            # 対象を読み取れない画面（Bash のコマンドなど）・名前を言い換えた問い・別の種類の名指しでは省かない
+            # 名前と操作は、同じ 1 つの問いの文に入っていること（説明の文で名前に触れ、問いでは別の対象を聞いた・問いが 2 つ以上でどれへの答えか
+            # 分からない、では省かない。codex-review）
+            asked = asked_part(text)
+            target = confirm_targets(text) if conf else []
+            # 返答の問いがちょうど 1 つで、その文が「（〇〇で、）『名前』（のページ）を（完全に）△△してよいですか？」の形そのもので、名前が画面の
+            # 対象の名前（1 つだけ）と完全に一致するときだけ（部分一致・名前を含む別の名前・除く言い方では省かない。security-review・codex-review）
+            q1 = consent.asked_target(heard)
+            if RISKY.search(asked) and not (len(target) == 1 and q1 and consent.same_name(q1[1], target[0]) and risky_named(asked, heard)):
                 held = CONFIRMING.get(pane)
                 if not (confirmed and held and held[0] == fp and held[1] != turn):
                     CONFIRMING[pane] = (fp, turn) if not (held and held[0] == fp) else held
                     return JSONResponse({"ok": False, "reason": "confirm", "screen": text})
-            key, said = "1", "はい（今回だけ許可）"
+            key, said = ("confirm", "はい（Yes を選んだ）") if conf else ("1", "はい（今回だけ許可）")
         else:
             n = int(answer)
             key, said = str(n), f"{n}番「{prompt['options'][n]}」"
     if answered(pane, fp):  # 画面のボタンと共有する「答えた問い」。答えたあと画面が書き換わるまでに、同じ問いへもう一度送らない
         return JSONResponse({"ok": False, "reason": "answered"})
-    r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, key)
-    hlog(f"answer → {pane} ({project}): {said} {'ok' if 'result' in r else 'ERR'}", flush=True)
-    if "result" not in r:
-        return JSONResponse({"ok": False, "reason": "herdr が応答しません"})
-    mark_answered(pane, fp)
+    if key == "confirm":
+        mark_answered(pane, fp)  # カーソルを動かし始めたら、同じ画面に重ねて送らない（途中で止めても）
+        ok, why = await confirm_yes(pane, fp)
+        hlog(f"answer → {pane} ({project}): {said} {'ok' if ok else '止めました: ' + why}", flush=True)
+        if not ok:
+            return JSONResponse({"ok": False, "reason": "stuck", "why": why})
+    else:
+        r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, key)
+        hlog(f"answer → {pane} ({project}): {said} {'ok' if 'result' in r else 'ERR'}", flush=True)
+        if "result" not in r:
+            return JSONResponse({"ok": False, "reason": "herdr が応答しません"})
+        mark_answered(pane, fp)
     SEEN_PROMPT.pop(pane, None)
     CONFIRMING.pop(pane, None)
     if not WATCHING.get(pane):  # ハブ経由で頼んだ件でなければ見張りが無いので、答えたあとの結果を知らせるために付ける

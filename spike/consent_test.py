@@ -44,6 +44,60 @@ check("選ぶ: 数字のプロジェクト名でも、番号を取り違えな�
       (c.chooses("22番", 2, {2: "低速", 22: "高速"}, "2"), c.chooses("22番", 22, {2: "低速", 22: "高速"}, "2"), c.chooses("22番", 2, {1: "a1", 2: "b2"}, "2")), (False, True, False))
 check("選ぶ: 選択肢に無い番号を言ったら、どの番号も選ばない", [k for k in (1, 2, 3) if c.chooses("5番で", k, OPTS, "proj")], [])
 check("選ぶ: 一字の文言では選ばない（取り違えやすい）", c.chooses("Aで", 1, {1: "A", 2: "B"}), False)
+DEL_Q = "agency で、『受注の記録』のページを完全に削除する確認で止まっています。削除してよいですか？"
+check("聞いた問いが名指しした操作の語（「〇〇して（も）よいですか」の〇〇）",
+      (c.asked_acts(DEL_Q), c.asked_acts("proj で、本番に反映しても大丈夫ですか？"), c.asked_acts("proj で、続けますか？"), c.asked_acts("")),
+      (["削除"], ["反映"], [], []))
+ACT_YES = ["削除して", "削除してください", "削除する", "削除します", "はい、削除して", "じゃあ削除して", "はい"]
+ACT_NO = ["削除しないで", "削除はまだ", "送信して", "削除して、それと送信して", "削除していいのかな", "削除してから考える", "ファイルを削除して"]
+check("答える: 聞いた問いが名指しした操作の語で答えたら許す", [t for t in ACT_YES if not c.affirms(t, "answer", "agency", DEL_Q)], [])
+check("答える: 断り・聞いていない操作の語・ほかのことも言っている発言は許さない", [t for t in ACT_NO if c.affirms(t, "answer", "agency", DEL_Q)], [])
+check("答える: 聞いた問いが操作を名指ししていなければ、操作の語だけでは許さない（「許可して」などは今までどおり）",
+      (c.affirms("削除して", "answer", "agency", "agency で、続けますか？"), c.affirms("削除して", "answer", "agency"), c.affirms("許可して", "answer", "agency", "")),
+      (False, False, True))
+check("閉じる: 聞いた問いの操作の語は、閉じる許可には使わない", c.affirms("削除して", "close", "agency", DEL_Q), False)
+NOT_ASKED = {"説明の中": "agency で、ページを削除してよいか確認中です。ところで天気はどうですか？",
+             "引用": "agency で、「削除してよいですか」と聞かれています。どうしますか？",
+             "打ち消し": "agency で、ページを削除しなくてよいですか？",
+             "別の問いと並んだ説明": "agency で、削除してよいかは後で決めます。先に名前を変えますか？"}
+check("聞いた問いの操作の語は、文の終わりの「〇〇してよいですか？」だけから読む（説明・引用・打ち消し・別の問いと並んだ説明は読まない。codex-review）",
+      {k: (c.asked_acts(v), c.affirms("削除して", "answer", "agency", v)) for k, v in NOT_ASKED.items()}, {k: ([], False) for k in NOT_ASKED})
+check("聞いた問いの操作の語: 引用の中の問いは、中に「？」があっても読まない。問いの文は引用を元に戻して返す（codex-review）",
+      (c.asked_acts("agency で、「『受注の記録』を削除してよいですか？」と聞かれています。中身を確認しますか？"),
+       c.asked_questions("agency で、『受注の記録』を削除してよいですか？")), ([], [("削除", "agencyで、『受注の記録』を削除してよいですか?")]))
+check("答える: 問いが 2 つあるときは、操作の語では答えない（どれへの答えか分からない。はい は今までどおり）",
+      (c.affirms("削除して", "answer", "agency", "agency で、削除してよいですか？ 確認してよいですか？"),
+       c.affirms("はい", "answer", "agency", "agency で、削除してよいですか？ 確認してよいですか？")), (False, True))
+check("問いの数は形を問わず数え（引用の中は数えない）、ほかの形の問いが並ぶと操作の語では答えない（codex-review）",
+      (c.question_count("agency で、削除してよいですか？ それとも先に一覧を見ますか？"), c.question_count("agency で、「削除してよいですか？」と聞かれています。削除してよいですか？"),
+       c.one_asked("agency で、削除してよいですか？ それとも先に一覧を見ますか？"), c.affirms("削除して", "answer", "agency", "agency で、削除してよいですか？ どちらにしますか？")),
+      (3, 1, None, False))
+import threading
+done = []
+th = threading.Thread(target=lambda: done.append(c.asked_questions("agency で、\x000\x00『受注の記録』を削除してよいですか？\x00x\x00")), daemon=True)
+th.start(); th.join(5)
+check("入力に NUL があっても、引用を元に戻す処理は終わる（codex-review）", (bool(done), done[0][0][0] if done and done[0] else None), (True, "削除"))
+check("句読点の無い問いを改行で並べた返答も、問いを 2 つと数え、操作の語では答えない（codex-review）",
+      (c.question_count("agency で\n『受注の記録』を削除してよいですか\n内容を確認しますか"), c.one_asked("agency で\n『受注の記録』を削除してよいですか\n内容を確認しますか"),
+       c.affirms("確認して", "answer", "agency", "agency で\n『受注の記録』を削除してよいですか\n内容を確認してよいですか")), (2, None, False))
+check("対象を名指しした問いの形そのものだけを読み、名前を取り出す（形が外れれば None）",
+      (c.asked_target("shop で、『受注の記録』のページを完全に削除してよいですか？"), c.asked_target("『orders』を削除してよいですか？"),
+       c.asked_target("shop で、『受注の記録』以外を削除してよいですか？"), c.asked_target("shop で、（受注の記録）を削除してよいですか？"),
+       c.asked_target("shop で、『受注の記録』を削除してよいですか？ ほかに何かありますか？")),
+      (("削除", "受注の記録"), ("削除", "orders"), None, None, None))
+check("名前は完全一致だけ（部分一致・2 字未満は同じとしない。全角半角と前後の空白はそろえる）",
+      (c.same_name("orders", "orders-archive"), c.same_name("Ｏｒｄｅｒｓ ", "Orders"), c.same_name("a", "a")), (False, True, False))
+check("名前は原文のまま比べる（中の空白・大文字小文字が違えば別の名前。全角半角と前後の空白だけはそろえる。codex-review）",
+      (c.same_name("Order List", "orderlist"), c.same_name("Order List", "order list"), c.same_name(" Order List ", "Order List"), c.same_name("Ｏｒｄｅｒ List", "Order List"),
+       c.asked_target("shop で、『Order List』を削除してよいですか？")), (False, False, True, True, ("削除", "Order List")))
+check("1 文につないだ問い（か、・それとも）も数え、前置きはプロジェクト名だけ（codex-review）",
+      (c.question_count("proj で、残しますか、それとも『受注の記録』を削除してよいですか"), c.asked_target("proj で、残しますか、それとも『受注の記録』を削除してよいですか"),
+       c.asked_target("残すかどうかで、『受注の記録』を削除してよいですか？"), c.asked_target("agency-lp で、『受注の記録』を削除してよいですか？")),
+      (3, None, None, ("削除", "受注の記録")))
+check("入力の NUL で、説明の文の引用（対象の名前）を問いの文にまぎれ込ませられない",
+      c.asked_questions("agency で、『受注の記録』は残します。\x000\x00を削除してよいですか？"), [("削除", "0を削除してよいですか?")])
+check("聞いた問いの操作の語: 文が 2 つの問いなら両方、構いませんか も読む",
+      (c.asked_acts("agency で、削除してよいですか？ プッシュしてよいですか？"), c.asked_acts("agency で、本番に反映しても構いませんか？")), (["削除", "プッシュ"], ["反映"]))
 ASKS = {"proj の「テスト」が、ls の実行の許可を求めています。許可しますか？": True, "proj で、本当に消していいですか": True,
         "**PROJ** の「テスト」を閉じていいですか**": True, "proj の資料です。": False, "許可しますか？": False, "": False}
 check("聞いた文: プロジェクト名（大文字小文字を問わない）と問いの形", {t: c.asks(t, "proj") for t in ASKS}, ASKS)
