@@ -1559,7 +1559,8 @@ function openInboxHash() {
 // 💡 の数は、閉じていても 1 分ごとに取り直す（見えている間だけ）
 async function refreshSitCount() { try { const r = await fetch('/api/inbox'); if (r.ok) { inbox = await r.json(); if (sitCache) sitCache[3] = inbox; paintSitBtn(ibCount(inbox)); } } catch {} }  // 描く元もそろえる
 setInterval(() => { if (!document.hidden && $('situation').hidden) refreshSitCount(); }, 60000);
-refreshSitCount();
+// 起動の読み込み（一覧・会話・声）と重ねないよう、少し待ってから数を取る。PC の形と、開いている受け箱は自分で読む
+setTimeout(() => { if (!wide && $('situation').hidden) refreshSitCount(); }, 3000);
 // 閉じたら（✕・💡・📋 のどれでも）、読み込み中の開く予約と、開いている件（待っている返信先の設定も）をやめる
 function showSituation(open) { phone.sit = open; if (!open) { ibWant = null; ibWantTok++; if (ibSel != null) closeItem(); } if (!wide) runSituation(open); }
 function runSituation(open) {  // 見える・15 秒ごとに取り直す、を切り替える（PC では常に開く）
