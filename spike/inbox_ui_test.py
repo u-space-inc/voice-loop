@@ -318,12 +318,36 @@ def run(page, who):
     page.unroute("**/api/inbox")
     time.sleep(1.5)
     check(f"{who} 読み込み中に閉じたら、遅れて届いても件を開かず返信先も付けない", (page.locator(".ibItem").count(), page.is_visible("#replyBar")), (0, False))
+    # 件（/#t=）を読み込んでいる途中に受け箱を開いたら、件の読み込みと開き直しをやめる（遅れて届いた件の報告を返信先にしない）
+    held_t = []
+    page.route("**/api/topic*", lambda r: held_t.append(r))
+    page.evaluate("location.hash = '#t=t0123456789'")
+    wait(lambda: held_t, 5)
+    page.evaluate("location.hash = '#inbox'")
+    stopped = page.evaluate("pendingTopic === null")
+    for r in held_t:
+        r.continue_()
+    page.unroute("**/api/topic*")
+    check(f"{who} 件の読み込み中に受け箱を開いたら、件の読み込みをやめる", stopped, True)
     # あとでに回した件も、通知から開ける（一覧の隠す条件に関係なく、1 件だけ本体に聞く）
     req = urllib.request.Request(BASE + "/api/inbox/later", data=json.dumps({"n": 1, "until": "morning"}).encode(), headers={"Content-Type": "application/json"}, method="POST")
     later_ok = json.loads(urllib.request.urlopen(req, timeout=10).read()).get("ok")
     page.evaluate("location.hash = '#i=1'")
     check(f"{who} あとでに回した件も、通知から開ける", (later_ok, wait(lambda: page.locator(".ibItem h3").count() == 1 and page.text_content(".ibItem h3") == TITLE1, 6)), (True, True))
     check(f"{who} …開いた件への返信の状態になる", wait(lambda: page.is_visible("#replyBar") and "判断待ち [1]" in (page.text_content("#replyTo") or ""), 6), True)
+    # 通知の 1 件を本体に聞いている間に、利用者が別のカードを選んだら、遅れて届いた結果で上書きしない
+    page.click(".ibItem .ibBack")
+    held_i = []
+    page.route("**/api/inbox/item*", lambda r: held_i.append(r))
+    page.evaluate("location.hash = '#i=1'")
+    wait(lambda: held_i, 5)
+    page.locator("#sitBody > .ibCard").first.click()  # 一覧に出ている別の件（[2]）
+    for r in held_i:
+        r.continue_()
+    page.unroute("**/api/inbox/item*")
+    time.sleep(1.0)
+    check(f"{who} 通知の 1 件を待つ間に別のカードを選んだら、遅れた結果で表示も返信先も替えない",
+          (page.text_content(".ibItem h3"), "判断待ち [2]" in (page.text_content("#replyTo") or "")), ("処理時間のアラーム", True))
     ib.STATE_FILE.unlink(missing_ok=True)
     # 知らせが届いても、会話の欄に 📨 を出さない
     page.click("#sitClose")

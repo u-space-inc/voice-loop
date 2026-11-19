@@ -1299,6 +1299,7 @@ function srcTag(x) { return node('span', 'ibSrc', SRC[x.source] || '記録'); }
 const findItem = (d, n) => (d && d !== FAILED && Array.isArray(d.items) ? d.items.find(x => x.n === n) : null) || (ibExtra && ibExtra.n === n ? ibExtra : null);
 // seq は、開くと決めた時点の世代（通知から開くときは、通知を開いた時点）。そのあと利用者が選び直していたら、返信先は付けない
 function openItem(n, seq = topicSeq) {
+  ibWant = null; ibWantTok++;  // 利用者が選んだ（通知の件を開いた）ら、遅れて届く通知の 1 件の結果で上書きしない
   ibSel = n; ibSig = '';
   const it = findItem(inbox, n);
   renderSit();
@@ -1545,6 +1546,7 @@ function openInboxHash() {
   const m = /^#(inbox|i=([1-9][0-9]{0,9}))$/.exec(location.hash);
   if (!m) return false;
   history.replaceState(null, '', location.pathname + location.search);
+  cancelTopic();  // 読み込み中の件（/#t=）とその開き直しもやめる（遅れて届いた件の報告を返信先にしない）
   if (replyTarget) setReplyTarget(null);  // 前の返信先は外す（開く件が見つかったときだけ、その件に付け直す）
   ibWantTok++;
   ibWant = m[2] ? { n: Number(m[2]), seq: topicSeq, tok: ibWantTok } : null; ibSel = null; ibSig = ''; ibExtra = null;
