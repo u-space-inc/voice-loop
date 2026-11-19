@@ -183,6 +183,17 @@ def run(page, who):
     page.click("#sitBody .ibToast button")
     page.wait_for_function("document.querySelectorAll('#sitBody > .ibCard').length === 2")
     check(f"{who} 戻すと一覧に戻り、道具は動かさない", (cards(page), CMDS), ([TITLE1, "処理時間のアラーム"], []))
+    # 「済」を押した直後に別の件を開いても、その件の中身の上に「戻す」を出し、戻せる
+    page.locator("#sitBody > .ibCard").nth(0).locator("button.done").click()
+    page.wait_for_function("ibUndos.size === 1")
+    page.locator("#sitBody > .ibCard").first.click()  # 残っている別の件（[2]）を開く
+    page.wait_for_selector(".ibItem h3")
+    in_item = (page.locator('#sitBody .ibToast[data-n="1"]').count(), page.text_content(".ibItem h3"))
+    page.click('#sitBody .ibToast[data-n="1"] button')
+    page.wait_for_function("ibUndos.size === 0")
+    page.click(".ibItem .ibBack")
+    page.wait_for_function("document.querySelectorAll('#sitBody > .ibCard').length === 2")
+    check(f"{who} 済の直後に別の件を開いても「戻す」が出て、戻せる", (in_item, cards(page), CMDS), ((1, "処理時間のアラーム"), [TITLE1, "処理時間のアラーム"], []))
     # 5 秒以内に 2 枚続けて「済」を押しても、件ごとに戻せる（先に押した件の「戻す」が消えない）
     page.locator("#sitBody > .ibCard").nth(0).locator("button.done").click()
     page.wait_for_function("ibUndos.size === 1")
@@ -242,9 +253,10 @@ def run(page, who):
     got = race("/api/inbox/later", lambda: page.select_option(".ibItem select", "morning"),
                lambda: wait(lambda: cards(page) == ["処理時間のアラーム"], 5))
     check(f"{who} あとでの応答を待つ間に始まった読み直しが最後に届いても、隠した件を戻さない", got, ["処理時間のアラーム"])
-    ib.STATE_FILE.unlink(missing_ok=True)
-    page.evaluate("loadSituation()")
-    page.wait_for_function("document.querySelectorAll('#sitBody > .ibCard').length === 2")
+    ib.STATE_FILE.unlink(missing_ok=True)  # 次の確かめのために元へ戻す（読み直しを繰り返して、2 枚に戻るまで待つ）
+    restored = wait(lambda: page.evaluate("loadSituation().then(() => document.querySelectorAll('#sitBody > .ibCard').length)") == 2, 10)
+    if not restored:
+        print("DBG restore:", page.evaluate("({gen: ibGen, sel: ibSel, extra: ibExtra && ibExtra.n, undos: [...ibUndos.keys()], body: $('sitBody').textContent.slice(0, 300)})"), flush=True)
     # 戻す: 応答を待つ間に始まった読み直し（まだ済の予約がある一覧）が最後に届いても、戻した件を消さない
     keep_undo, ib.UNDO = ib.UNDO, 8.0
     page.locator("#sitBody > .ibCard").first.locator("button.done").click()

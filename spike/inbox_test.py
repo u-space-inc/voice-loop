@@ -149,8 +149,18 @@ vl.symlink_to(HOME / "vl-real")
 check("記録のフォルダが symlink なら読まない", bool(ib.inbox(NOW)["problem"]), True)
 vl.unlink()
 (HOME / "vl-real").rename(vl)
+keep_max, ib.ITEMS_MAX = ib.ITEMS_MAX, 3000
+filler = [add(100 + i, kind="info", at=NOW - 86400) for i in range(30)]
+write([add(61, at=NOW - 10 * 86400, title="古い判断待ち")] + filler + [add(62, at=NOW - 60, title="新しい判断待ち")])
+big = ib.inbox(NOW)
+check("記録が上限より大きければ、断らずに新しい側だけを読み、そのことを一言出す（済んだ分も足していく記録で、受け箱を止めない）",
+      (ITEMS.stat().st_size > ib.ITEMS_MAX, ns(big), big["problem"], bool(big.get("note"))), (True, [62], "", True))
 ITEMS.write_bytes(b"x" * (ib.ITEMS_MAX + 1))
-check("大きすぎる記録は読まない", bool(ib.inbox(NOW)["problem"]), True)
+d = ib.inbox(NOW)
+check("…大きいだけの壊れた中身でも落ちず、0 件", (ns(d), d["problem"]), ([], ""))
+ib.ITEMS_MAX = keep_max
+write([add(1, at=NOW - 3600)])
+check("…上限より小さければ、一言は出さない", "note" in ib.inbox(NOW), False)
 ITEMS.unlink()
 check("記録がまだ無ければ、理由なしで空", (ib.inbox(NOW)["items"], ib.inbox(NOW)["problem"]), ([], ""))
 ITEMS.write_bytes(real)

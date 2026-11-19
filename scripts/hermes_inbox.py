@@ -20,6 +20,7 @@ import importlib.util
 import json
 import os
 import re
+import stat
 import subprocess
 import threading
 import time
@@ -44,7 +45,7 @@ vl_watch = _template("vl_watch")  # Teams の止まり方の決まり（TEAMS_ST
 
 HOME = Path(os.environ.get("VL_HERMES_HOME") or Path.home() / ".hermes").expanduser()  # hub_hermes が同じ値を入れ直す
 CONTAINER = os.environ.get("VL_HERMES_CONTAINER", "hermes")
-ITEMS_MAX = 4_000_000  # 記録のファイルの上限（これより大きければ読まない）
+ITEMS_MAX = 4_000_000  # 記録を読む上限。これより大きい記録は、新しい側（末尾）のこの大きさだけを読む（記録は済んだ分も足していくので、いつか超える）
 STATUS_MAX = 64 * 1024  # 見張りの状態のファイルの上限
 UNDO = 5.0  # 「済んだ」を押してから、付けるまでの秒（その間は「戻す」で取り消せる）
 DONE_WAIT = 40  # コンテナの中の道具を待つ上限（秒）
@@ -65,8 +66,38 @@ _op_lock: asyncio.Lock | None = None  # 済んだ・戻すを 1 つずつ受け�
 
 
 # ---------- 記録を読む ----------
-def _read(name: str, cap: int) -> tuple[bytes | None, str]:
-    """置き場の voice-loop/<name> を読む。(中身, 読めない理由)。ファイルが無ければ (b"", "missing")（空のファイルは (b"", "")）。"""
+TRUNC = {"v": False}  # 最後に読んだ記録が大きく、新しい側だけを読んだか（画面に一言出す）
+
+
+def _read_tail(dfd: int, name: str, cap: int) -> tuple[bytes, bool]:
+    """name を symlink をたどらずに開き、通常のファイルでほかの名前から指されていないときだけ、末尾の cap バイトを読む（行の途中から始まる頭の 1 行は捨てる）。
+    (中身, 頭を捨てたか)。置き場の安全な読み方（hermes_skills._read_at）と同じ確かめをして、大きさだけは断らずに新しい側を読む。"""
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError("通常のファイルではありません")
+        if st.st_nlink != 1:
+            raise ValueError("ほかの名前からも指されています")
+        start = max(0, st.st_size - cap)
+        os.lseek(fd, start, os.SEEK_SET)
+        data = b""
+        while len(data) < cap:
+            chunk = os.read(fd, cap - len(data))
+            if not chunk:
+                break
+            data += chunk
+        if start > 0:
+            nl = data.find(b"\n")
+            data = data[nl + 1:] if nl >= 0 else b""
+        return data, start > 0
+    finally:
+        os.close(fd)
+
+
+def _read(name: str, cap: int, tail: bool = False) -> tuple[bytes | None, str]:
+    """置き場の voice-loop/<name> を読む。(中身, 読めない理由)。ファイルが無ければ (b"", "missing")（空のファイルは (b"", "")）。
+    tail なら、大きすぎても断らずに末尾の cap バイトだけを読み、理由に "tail" を返す。"""
     try:
         dfd = hermes_skills._open_dir(HOME, ("voice-loop",))
     except FileNotFoundError:
@@ -74,6 +105,9 @@ def _read(name: str, cap: int) -> tuple[bytes | None, str]:
     except (OSError, ValueError) as e:
         return None, f"記録のフォルダを開けません（{type(e).__name__}）"
     try:
+        if tail:
+            data, cut = _read_tail(dfd, name, cap)
+            return data, "tail" if cut else ""
         return hermes_skills._read_at(dfd, name, cap), ""
     except FileNotFoundError:
         return b"", "missing"
@@ -87,9 +121,10 @@ def _read(name: str, cap: int) -> tuple[bytes | None, str]:
 
 def records() -> tuple[dict, dict] | None:
     """(番号→出来事, 番号→片づけた印)。読めなければ None。形の合わない行は飛ばす（vl_items と同じ読み方）。"""
-    data, why = _read("items.jsonl", ITEMS_MAX)
+    data, why = _read("items.jsonl", ITEMS_MAX, tail=True)
     if data is None:
         return None
+    TRUNC["v"] = why == "tail"
     rows = []
     for line in data.decode("utf-8", "replace").splitlines():
         try:
@@ -102,7 +137,7 @@ def records() -> tuple[dict, dict] | None:
 
 
 def records_problem() -> str:
-    data, why = _read("items.jsonl", ITEMS_MAX)  # 無い（missing）・空は問題にしない
+    data, why = _read("items.jsonl", ITEMS_MAX, tail=True)  # 無い（missing）・空・大きい（tail）は問題にしない
     return "" if data is not None else f"判断待ちの記録を読めませんでした（{why}）"
 
 
@@ -226,6 +261,8 @@ def inbox(now: float | None = None) -> dict:
         out["problem"] = records_problem() or "判断待ちの記録を読めませんでした"
         return out
     items, done = got
+    if TRUNC["v"]:
+        out["note"] = "判断待ちの記録が大きいので、新しい側だけを読んでいます（それより前に記録した判断待ちは、ここには出ていません。ハブに聞けば全部を確かめます）"
     today = dt.datetime.fromtimestamp(now, JST).date()
     rows = []
     for r in items.values():
