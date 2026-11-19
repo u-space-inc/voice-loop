@@ -183,30 +183,29 @@ def run(page, who):
     page.click("#sitBody .ibToast button")
     page.wait_for_function("document.querySelectorAll('#sitBody > .ibCard').length === 2")
     check(f"{who} 戻すと一覧に戻り、道具は動かさない", (cards(page), CMDS), ([TITLE1, "処理時間のアラーム"], []))
-    # 「戻す」は本体が返した残りの秒から、届くまでにかかった時間を引いた分だけ出す（応答の配送が遅れても、本体より長く出さない）
+    # 「戻す」は本体が返した残りの秒から、届くまでにかかった時間を引いた分だけ出し、期限が来たらその場で消す。
+    # 一覧の読み直し（/api/inbox）を止めたままにしても、押した直後にカードが消えて「戻す」が出て、期限で消えることを見る
     def slow(route):
         r = route.fetch()  # 本体は応答を作り終えている（残りの秒を数えた）
         time.sleep(1.2)  # 配送を遅らせる
         route.fulfill(response=r)
-    if who.startswith("Chromium"):  # 応答を持って遅らせる差し替え（route.fetch → fulfill）は WebKit では効かないので、WebKit は本体の残り以内を見る
-        page.route("**/api/inbox/done", slow)
+    hold = []
+    page.route("**/api/inbox", lambda r: hold.append(r))
+    page.route("**/api/inbox/done", slow)
     t_click = time.time()
     page.locator("#sitBody > .ibCard").nth(1).locator("button.done").click()
     page.wait_for_function("ibUndo !== null")
     rest, t_set = page.evaluate("ibUndo.until - Date.now()"), time.time()
-    hold = []
-    page.route("**/api/inbox", lambda r: hold.append(r))  # 期限が来たあとの読み直しを止めても
+    shown = (page.locator("#sitBody .ibToast").count(), cards(page))
     gone = wait(lambda: page.locator("#sitBody .ibToast").count() == 0, ib.UNDO + 1.0)
     for r in hold:
         r.continue_()
     page.unroute("**/api/inbox")
-    check(f"{who} 期限が来たら、読み直しの応答を待たずに「戻す」を消す", gone, True)
-    if who.startswith("Chromium"):
-        check(f"{who} 「戻す」は、届くまでの遅れを引いた残りで消える（本体の期限を超えない）",
-              (0 < rest <= (ib.UNDO - (t_set - t_click) + 0.3) * 1000 and rest <= (ib.UNDO - 1.2) * 1000) or (rest, round(t_set - t_click, 2)), True)
-    else:
-        check(f"{who} 「戻す」は本体が返した残りの秒（{ib.UNDO} 秒）以内で消える", (0 < rest <= ib.UNDO * 1000) or rest, True)
     page.unroute("**/api/inbox/done")
+    check(f"{who} 済: 読み直しを待たずに、カードを消して「戻す」を出す", shown, (1, [TITLE1]))
+    check(f"{who} 「戻す」は、届くまでの遅れを引いた残りで消える（本体の期限を超えない）",
+          (0 < rest <= (ib.UNDO - (t_set - t_click) + 0.3) * 1000 and rest <= (ib.UNDO - 1.2) * 1000) or (rest, round(t_set - t_click, 2)), True)
+    check(f"{who} 期限が来たら、読み直しの応答を待たずに「戻す」を消す", gone, True)
     check(f"{who} カードの「済」: 時間がたつとコンテナの中の道具に付けさせ、一覧から消える",
           (wait(lambda: len(CMDS) == 1, 6), wait(lambda: cards(page) == [TITLE1], 8), CMDS[0][-6:-4] if CMDS else None), (True, True, ["done", "2"]))
     # あとで
@@ -279,11 +278,12 @@ def run_wide(page, who):
 
 with sync_playwright() as pw:
     b = pw.chromium.launch()
-    run(b.new_page(viewport={"width": 390, "height": 844}), "Chromium:")
-    run_wide(b.new_page(viewport={"width": 1400, "height": 900}), "Chromium（PC）:")
+    # 画面の写しの service worker は止める（止めないと、ブラウザによっては page.route が要求を捕まえない）
+    run(b.new_context(viewport={"width": 390, "height": 844}, service_workers="block").new_page(), "Chromium:")
+    run_wide(b.new_context(viewport={"width": 1400, "height": 900}, service_workers="block").new_page(), "Chromium（PC）:")
     b.close()
     b = pw.webkit.launch()
-    ctx = b.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True,
+    ctx = b.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True, service_workers="block",
                         user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1")
     run(ctx.new_page(), "WebKit:")
     b.close()

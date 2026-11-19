@@ -1330,6 +1330,7 @@ async function doneItem(it) {
     // 期限が来たら、その場で「戻す」を消す（読み直しの応答を待たない。止まっても、押せない「戻す」を残さない）
     setTimeout(() => { if (ibUndo && ibUndo.n === it.n && Date.now() >= ibUndo.until) { ibUndo = null; document.querySelectorAll('#sitBody .ibToast').forEach(e => e.remove()); loadSituation(); } }, left + 50);
   }
+  if (inbox && Array.isArray(inbox.items)) { inbox.items = inbox.items.filter(x => x.n !== it.n); ibSig = ''; renderSit(); }  // 読み直しを待たずに、カードを消して「戻す」を出す
   loadSituation();
 }
 async function undoItem() {
