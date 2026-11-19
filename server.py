@@ -2305,8 +2305,8 @@ async def _hub_answer(body: dict):
             # 分からない、では省かない。codex-review）
             asked = asked_part(text)
             target = confirm_targets(text) if conf else []
-            qs = consent.asked_questions(heard)
-            if RISKY.search(asked) and not (target and len(qs) == 1 and all(consent.mentions(qs[0][1], t) for t in target) and risky_named(asked, heard)):
+            q1 = consent.one_asked(heard)  # 返答の問いがちょうど 1 つで、それが「〇〇してよいですか？」のときだけ（ほかの形の問いが並べば省かない）
+            if RISKY.search(asked) and not (target and q1 and all(consent.mentions(q1[1], t) for t in target) and risky_named(asked, heard)):
                 held = CONFIRMING.get(pane)
                 if not (confirmed and held and held[0] == fp and held[1] != turn):
                     CONFIRMING[pane] = (fp, turn) if not (held and held[0] == fp) else held

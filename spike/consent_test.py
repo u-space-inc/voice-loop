@@ -68,6 +68,17 @@ check("聞いた問いの操作の語: 引用の中の問いは、中に「？�
 check("答える: 問いが 2 つあるときは、操作の語では答えない（どれへの答えか分からない。はい は今までどおり）",
       (c.affirms("削除して", "answer", "agency", "agency で、削除してよいですか？ 確認してよいですか？"),
        c.affirms("はい", "answer", "agency", "agency で、削除してよいですか？ 確認してよいですか？")), (False, True))
+check("問いの数は形を問わず数え（引用の中は数えない）、ほかの形の問いが並ぶと操作の語では答えない（codex-review）",
+      (c.question_count("agency で、削除してよいですか？ それとも先に一覧を見ますか？"), c.question_count("agency で、「削除してよいですか？」と聞かれています。削除してよいですか？"),
+       c.one_asked("agency で、削除してよいですか？ それとも先に一覧を見ますか？"), c.affirms("削除して", "answer", "agency", "agency で、削除してよいですか？ どちらにしますか？")),
+      (2, 1, None, False))
+import threading
+done = []
+th = threading.Thread(target=lambda: done.append(c.asked_questions("agency で、\x000\x00『受注の記録』を削除してよいですか？\x00x\x00")), daemon=True)
+th.start(); th.join(5)
+check("入力に NUL があっても、引用を元に戻す処理は終わる（codex-review）", (bool(done), done[0][0][0] if done and done[0] else None), (True, "削除"))
+check("入力の NUL で、説明の文の引用（対象の名前）を問いの文にまぎれ込ませられない",
+      c.asked_questions("agency で、『受注の記録』は残します。\x000\x00を削除してよいですか？"), [("削除", "0を削除してよいですか?")])
 check("聞いた問いの操作の語: 文が 2 つの問いなら両方、構いませんか も読む",
       (c.asked_acts("agency で、削除してよいですか？ プッシュしてよいですか？"), c.asked_acts("agency で、本番に反映しても構いませんか？")), (["削除", "プッシュ"], ["反映"]))
 ASKS = {"proj の「テスト」が、ls の実行の許可を求めています。許可しますか？": True, "proj で、本当に消していいですか": True,

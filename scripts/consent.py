@@ -80,32 +80,56 @@ def mentions(heard: str, name: str) -> bool:
     return bool(n) and n in _flat(heard)
 
 
-def asked_questions(heard: str) -> list[tuple[str, str]]:
-    """聞いた文 heard のうち、文の終わりが「〇〇して（も）よいですか？」の形の問いの文ごとに (〇〇, その文)。文は引用・括弧を元に戻した形
-    （『受注の記録』を削除してよいですか？ → ("削除", "『受注の記録』を削除してよいですか?")）。引用・括弧の中の問いは読まない（codex-review）。"""
-    flat, kept = _flat(heard), []
+_ASKS_END = re.compile(r"(?:[?？]|か|かな|かね|っけ)$")  # 問いで終わる文（引用・括弧を隠したあとの文の終わり）
+
+
+def _sentences(heard: str) -> list[tuple[str, str]]:
+    """聞いた文を、引用・括弧の外で文に分けたもの (隠した文, 引用・括弧を元に戻した文)。引用・括弧の中の「？」では切らない。
+    隠すしるしには NUL を使うので、入力の NUL は先に取り除く（入力の文字と、しるしを取り違えない。codex-review）。"""
+    flat, kept = _flat(heard).replace("\x00", ""), []
 
     def hide(m):
         kept.append(m.group(0))
         return f"\x00{len(kept) - 1}\x00"
 
-    while True:  # 入れ子の引用は内側から順に隠す
+    while True:  # 入れ子の引用は内側から順に隠す（隠すたびに字が減るので、必ず終わる）
         hidden = _QUOTE.sub(hide, flat)
         if hidden == flat:
             break
         flat = hidden
 
     def show(s):
-        while "\x00" in s:
-            s = re.sub(r"\x00(\d+)\x00", lambda m: kept[int(m.group(1))], s)
+        for _ in range(len(kept) + 1):  # 入れ子の深さぶん戻せば足りる。戻せない形が残っても、回数で必ず終わる
+            nxt = re.sub(r"\x00(\d+)\x00", lambda m: kept[int(m.group(1))] if int(m.group(1)) < len(kept) else "", s)
+            if nxt == s:
+                break
+            s = nxt
         return s
 
+    return [(s, show(s)) for s in _SENTENCE.findall(flat) if s.strip()]
+
+
+def question_count(heard: str) -> int:
+    """聞いた文のうち、問いで終わる文（形を問わない。引用・括弧の中は数えない）の数。"""
+    return sum(1 for s, _ in _sentences(heard) if _ASKS_END.search(s.rstrip("。．.!！ ")))
+
+
+def asked_questions(heard: str) -> list[tuple[str, str]]:
+    """聞いた文 heard のうち、文の終わりが「〇〇して（も）よいですか？」の形の問いの文ごとに (〇〇, その文)。文は引用・括弧を元に戻した形
+    （『受注の記録』を削除してよいですか？ → ("削除", "『受注の記録』を削除してよいですか?")）。引用・括弧の中の問いは読まない（codex-review）。"""
     out = []
-    for sentence in _SENTENCE.findall(flat):
-        m = ASKED_ACT.search(sentence)
+    for hidden, shown in _sentences(heard):
+        m = ASKED_ACT.search(hidden)
         if m:
-            out.append((m.group(1), show(sentence)))
+            out.append((m.group(1), shown))
     return out
+
+
+def one_asked(heard: str) -> tuple[str, str] | None:
+    """聞いた文の問いが、ちょうど 1 つで、それが「〇〇して（も）よいですか？」の形のときだけ (〇〇, その文)。ほかの形の問いが並ぶ・
+    問いが 2 つ以上なら None（利用者の「はい」・操作の語が、どの問いへの答えか分からない。codex-review）。"""
+    qs = asked_questions(heard)
+    return qs[0] if len(qs) == 1 and question_count(heard) == 1 else None
 
 
 def asked_acts(heard: str) -> list[str]:
@@ -120,7 +144,7 @@ def affirms(text: str, action: str, project: str = "", heard: str = "") -> bool:
     if refuses(text):
         return False
     acts = asked_acts(heard) if action == "answer" else []
-    acts = acts if len(asked_questions(heard)) == 1 else []
+    acts = acts if one_asked(heard) else []
     yes = _alt(YES + YES_FOR[action] + [w for a in acts for w in (a + "する", a)])
     clause = re.compile(f"{_pre(project)}(?:(?:{yes})(?:{_alt(TAIL)})*)+")
     cs = clauses(text)
