@@ -2149,6 +2149,7 @@ async def hub_send(body: dict):
 # 取り消しにくい操作に見える語。当たったら、ユーザーにもう一度確かめてからでないと「はい」を通さない
 RISKY = re.compile(r"(\brm\b|\btrash\b|delete|\bdrop\b|truncate|\bpush\b|deploy|publish|release|\bsend|mail|merge|reset --hard|force|terraform|\baws\b|gcloud|kubectl|migrat|prod|本番|削除|送信|公開|配信|反映|支払|振込|請求)", re.I)
 # 取り消しにくい操作の種類ごとに、画面の語（RISKY の語を分けたもの）と、ハブが問いの「〇〇してよいですか」の〇〇で名指しする語
+# 名指しの語は、この語そのもの（完全一致）だけ（「非公開化」の中の「公開」のような、打ち消し・逆の操作を含む語は数えない。codex-review）
 RISKY_KINDS = (
     (re.compile(r"\brm\b|\btrash\b|delete|\bdrop\b|truncate|削除", re.I), re.compile(r"削除|消去")),
     (re.compile(r"\bsend|mail|送信|配信", re.I), re.compile(r"送信|配信|送付|返信|投稿")),
@@ -2166,7 +2167,7 @@ def risky_named(asked: str, heard: str) -> bool:
     acts = consent.asked_acts(heard)
     op = re.sub(r"https?://\S+", " ", QUOTED.sub(" ", asked))  # 種類は、引用符で囲まれた名前と URL を除いた操作の部分から読む（名前の release・prod などを操作と数えない。codex-review）
     kinds = [act for screen, act in RISKY_KINDS if screen.search(op)]
-    return bool(kinds) and all(any(act.search(w) for w in acts) for act in kinds)
+    return bool(kinds) and all(any(act.fullmatch(w) for w in acts) for act in kinds)
 
 
 SEEN_PROMPT: dict[str, tuple] = {}  # ハブが見た、止まっている画面: pane → (画面の指紋, 最初に見たときのユーザーの最後の発言, そのときのセッション)

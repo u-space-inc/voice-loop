@@ -186,6 +186,9 @@ check("取り消しにくい操作の種類分けは、RISKY のどの語にも�
       [w for w in ("rm -f", "trash x", "delete", "drop table", "truncate", "git push", "deploy", "publish", "release", "send", "mail", "merge", "reset --hard",
                    "force", "terraform", "aws s3", "gcloud", "kubectl", "migrate", "prod", "本番", "削除", "送信", "公開", "配信", "反映", "支払", "振込", "請求")
        if s.RISKY.search(w) and not any(scr.search(w) for scr, _ in s.RISKY_KINDS)], [])
+check("名指しの語は決めた語そのものだけ（「非公開化」の中の「公開」を、公開の名指しと数えない。codex-review）",
+      (s.risky_named('Publish "受注の記録"?', "proj で、『受注の記録』のページを非公開化してよいですか？"), s.risky_named('Publish "受注の記録"?', "proj で、『受注の記録』のページを公開してよいですか？")),
+      (False, True))
 check("画面に 2 種類の取り消しにくい操作があれば、両方を名指ししたときだけ", (s.risky_named("git push && rm -rf x", "proj で、削除してよいですか？"),
       s.risky_named("git push && rm -rf x", "proj で、削除してよいですか？ プッシュしてよいですか？")), (False, True))
 for q, utter in (("proj で、build のフォルダを削除してよいですか？", "送信して"), ("proj で、build のフォルダを削除してよいですか？", "削除しないで"),

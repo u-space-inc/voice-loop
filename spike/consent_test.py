@@ -71,7 +71,7 @@ check("答える: 問いが 2 つあるときは、操作の語では答えな�
 check("問いの数は形を問わず数え（引用の中は数えない）、ほかの形の問いが並ぶと操作の語では答えない（codex-review）",
       (c.question_count("agency で、削除してよいですか？ それとも先に一覧を見ますか？"), c.question_count("agency で、「削除してよいですか？」と聞かれています。削除してよいですか？"),
        c.one_asked("agency で、削除してよいですか？ それとも先に一覧を見ますか？"), c.affirms("削除して", "answer", "agency", "agency で、削除してよいですか？ どちらにしますか？")),
-      (2, 1, None, False))
+      (3, 1, None, False))
 import threading
 done = []
 th = threading.Thread(target=lambda: done.append(c.asked_questions("agency で、\x000\x00『受注の記録』を削除してよいですか？\x00x\x00")), daemon=True)
@@ -85,8 +85,15 @@ check("対象を名指しした問いの形そのものだけを読み、名前�
        c.asked_target("shop で、『受注の記録』以外を削除してよいですか？"), c.asked_target("shop で、（受注の記録）を削除してよいですか？"),
        c.asked_target("shop で、『受注の記録』を削除してよいですか？ ほかに何かありますか？")),
       (("削除", "受注の記録"), ("削除", "orders"), None, None, None))
-check("名前は完全一致だけ（部分一致・2 字未満は同じとしない。全角半角・大文字小文字・空白は数えない）",
-      (c.same_name("orders", "orders-archive"), c.same_name("Ｏｒｄｅｒｓ ", "orders"), c.same_name("a", "a")), (False, True, False))
+check("名前は完全一致だけ（部分一致・2 字未満は同じとしない。全角半角と前後の空白はそろえる）",
+      (c.same_name("orders", "orders-archive"), c.same_name("Ｏｒｄｅｒｓ ", "Orders"), c.same_name("a", "a")), (False, True, False))
+check("名前は原文のまま比べる（中の空白・大文字小文字が違えば別の名前。全角半角と前後の空白だけはそろえる。codex-review）",
+      (c.same_name("Order List", "orderlist"), c.same_name("Order List", "order list"), c.same_name(" Order List ", "Order List"), c.same_name("Ｏｒｄｅｒ List", "Order List"),
+       c.asked_target("shop で、『Order List』を削除してよいですか？")), (False, False, True, True, ("削除", "Order List")))
+check("1 文につないだ問い（か、・それとも）も数え、前置きはプロジェクト名だけ（codex-review）",
+      (c.question_count("proj で、残しますか、それとも『受注の記録』を削除してよいですか"), c.asked_target("proj で、残しますか、それとも『受注の記録』を削除してよいですか"),
+       c.asked_target("残すかどうかで、『受注の記録』を削除してよいですか？"), c.asked_target("agency-lp で、『受注の記録』を削除してよいですか？")),
+      (3, None, None, ("削除", "受注の記録")))
 check("入力の NUL で、説明の文の引用（対象の名前）を問いの文にまぎれ込ませられない",
       c.asked_questions("agency で、『受注の記録』は残します。\x000\x00を削除してよいですか？"), [("削除", "0を削除してよいですか?")])
 check("聞いた問いの操作の語: 文が 2 つの問いなら両方、構いませんか も読む",

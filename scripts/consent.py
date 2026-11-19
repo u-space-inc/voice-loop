@@ -80,8 +80,9 @@ _ASKS_END = re.compile(r"(?:[?？]|か|かな|かね|っけ)$")  # 問いで終�
 def _hide(heard: str):
     """聞いた文の引用・括弧を隠したもの (隠した文, 元に戻す関数 show)。引用・括弧は内側から順に「NUL 番号 NUL」のしるしに替える。
     隠すしるしには NUL を使うので、入力の NUL は先に取り除く（入力の文字と、しるしを取り違えない。codex-review）。
-    改行は文の区切りとして残す（句読点の無い問いを改行で並べた返答を、1 つの文に読まない。codex-review）。ほかの空白は除く。"""
-    flat, kept = re.sub(r"[^\S\n]+", "", _norm(heard)).replace("\x00", ""), []
+    改行は文の区切りとして残す（句読点の無い問いを改行で並べた返答を、1 つの文に読まない。codex-review）。ほかの空白は除き、小文字にする。
+    引用・括弧の中は、空白も大文字小文字もそのまま残す（対象の名前を原文のまま照らす。codex-review）。"""
+    flat, kept = unicodedata.normalize("NFKC", heard or "").replace("\x00", ""), []
 
     def hide(m):
         kept.append(m.group(0))
@@ -92,6 +93,7 @@ def _hide(heard: str):
         if hidden == flat:
             break
         flat = hidden
+    flat = re.sub(r"[^\S\n]+", "", flat).lower()  # 引用の外だけ（隠したしるしは数字と NUL なので変わらない）
 
     def show(s):
         for _ in range(len(kept) + 1):  # 入れ子の深さぶん戻せば足りる。戻せない形が残っても、回数で必ず終わる
@@ -110,9 +112,13 @@ def _sentences(heard: str) -> list[tuple[str, str]]:
     return [(s, show(s)) for s in _SENTENCE.findall(flat) if s.strip()]
 
 
+_ASKS_MID = re.compile(r"か、|か,|それとも")  # 文の途中の問い（「残しますか、それとも…」）
+
+
 def question_count(heard: str) -> int:
-    """聞いた文のうち、問いで終わる文（形を問わない。引用・括弧の中は数えない）の数。"""
-    return sum(1 for s, _ in _sentences(heard) if _ASKS_END.search(s.rstrip("。．.!！ ")))
+    """聞いた文のうち、問いの数（形を問わない。引用・括弧の中は数えない）。問いで終わる文を 1 つ、文の途中の「か、」「それとも」も 1 つずつ数える
+    （句読点を省いて問いを 1 文につないだ返答を、1 つの問いと数えない。codex-review）。多めに数えるのは、聞き返しに倒れる側。"""
+    return sum((1 if _ASKS_END.search(s.rstrip("。．.!！ ")) else 0) + len(_ASKS_MID.findall(s)) for s, _ in _sentences(heard))
 
 
 def asked_questions(heard: str) -> list[tuple[str, str]]:
@@ -133,10 +139,11 @@ def one_asked(heard: str) -> tuple[str, str] | None:
     return qs[0] if len(qs) == 1 and question_count(heard) == 1 else None
 
 
-# 対象を名指しした問いの形そのもの（隠した文に対して、文の全体で当てる）: （〇〇で、）『名前』（のページ など）を（完全に）△△して（も）よいですか？
+# 対象を名指しした問いの形そのもの（隠した文に対して、文の全体で当てる）: （プロジェクト名で、）『名前』（のページ など）を（完全に）△△して（も）よいですか？
+# 前置きはプロジェクト名（フォルダ名の英数字）だけ（前置きに別の問いを入れられない。codex-review）
 # 名前の前後に、ほかの語（以外・ではなく・のバックアップ・別の・旧 など）があれば当たらない（security-review・codex-review）
 _CONTAINER = "ページ|ファイル|フォルダ|ディレクトリ|下書き|投稿|メッセージ|データ|項目|記事|資料|シート|ドキュメント|予定|ブランチ"
-TARGET_Q = re.compile(r"(?:[^\x00]{0,40}?で、?)?\x00(?P<n>\d+)\x00(?:の(?:" + _CONTAINER + r"))?を(?:完全に|すべて|全部|本当に)?"
+TARGET_Q = re.compile(r"(?:[0-9a-z][0-9a-z_.\-]{0,39}で、?)?\x00(?P<n>\d+)\x00(?:の(?:" + _CONTAINER + r"))?を(?:完全に|すべて|全部|本当に)?"
                       r"(?P<act>[一-龥々ァ-ヶー]{1,12})しても?(?:よい|いい|良い|大丈夫|構わない|かまわない|構いません|かまいません)(?:です|でしょう)?か[?？]?")
 _QUOTED_NAME = re.compile(r"[「『“\"](.*)[」』”\"]", re.S)
 
@@ -156,8 +163,9 @@ def asked_target(heard: str) -> tuple[str, str] | None:
 
 
 def same_name(a: str, b: str) -> bool:
-    """2 つの名前が同じか（大文字小文字・全角半角・空白の違いは数えない。部分一致では同じとしない）。2 字に満たない名前は同じとみなさない。"""
-    fa, fb = _flat(a), _flat(b)
+    """2 つの名前が同じか。全角半角（NFKC）と前後の空白だけはそろえ、中の空白・大文字小文字は原文のまま比べる（部分一致・空白や大文字小文字の
+    違う名前は同じとしない。codex-review）。2 字に満たない名前は同じとみなさない。"""
+    fa, fb = (unicodedata.normalize("NFKC", x or "").strip() for x in (a, b))
     return len(fa) >= 2 and fa == fb
 
 
