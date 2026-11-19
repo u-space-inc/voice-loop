@@ -282,7 +282,8 @@ def run(page, who):
     page.goto(BASE + "/#i=1")
     page.wait_for_selector(".ibItem h3")
     wait(lambda: held5, 5)
-    page.click("#sitBtn")  # 💡 で閉じる
+    page.evaluate("$('sitBtn').click()")  # 💡 で閉じる（数の表示でボタンの幅が動いても押し外さないよう、ボタンそのものを押す）
+    check(f"{who} 💡 で受け箱を閉じた", page.is_visible("#situation"), False)
     for r in held5:
         r.continue_()
     page.unroute("**/api/agents")
@@ -345,6 +346,13 @@ def run(page, who):
     page.evaluate("location.hash = '#i=1'")
     check(f"{who} あとでに回した件も、通知から開ける", (later_ok, wait(lambda: page.locator(".ibItem h3").count() == 1 and page.text_content(".ibItem h3") == TITLE1, 6)), (True, True))
     check(f"{who} …開いた件への返信の状態になる", wait(lambda: page.is_visible("#replyBar") and "判断待ち [1]" in (page.text_content("#replyTo") or ""), 6), True)
+    # 通知で開いた一覧に出ていない件が、ほかで片づいたら、読み直したときに古い中身を出さない
+    with ITEMS.open("a") as fh:
+        fh.write(json.dumps({"op": "done", "at": time.time(), "n": 1, "note": "", "by": "ai"}) + "\n")
+    page.evaluate("loadSituation()")
+    check(f"{who} 通知で開いた件がほかで片づいたら、読み直したときに中身を出さない",
+          wait(lambda: "片づいたか見つかりませんでした" in (page.text_content(".ibItem") or "") and page.locator(".ibItem h3").count() == 0, 6), True)
+    ITEMS.write_text("".join(l + "\n" for l in ITEMS.read_text().splitlines() if '"op": "done", "at"' not in l or '"n": 1,' not in l))
     # 通知の 1 件を本体に聞いている間に、利用者が別のカードを選んだら、遅れて届いた結果で上書きしない
     page.click(".ibItem .ibBack")
     held_i = []

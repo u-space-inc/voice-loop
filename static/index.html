@@ -1534,6 +1534,14 @@ async function loadSituation() {
     $('sitCount').hidden = !waiting; $('sitCount').textContent = String(waiting);  // PC の「知らせ」タブの数（判断待ちと手順の承認待ち）
   }
   sitCache = [h, nt, lr, ib];
+  if (ibExtra && ib !== FAILED) {  // 通知で開いた一覧に出ていない件も、読み直すたびに本体に確かめる（ほかで片づいていたら、古い中身を出さない）
+    const n = ibExtra.n;
+    if (ib.items.some(x => x.n === n)) ibExtra = null;
+    else {
+      let got = null; try { const r = await fetch('/api/inbox/item?n=' + n); if (r.ok) got = await r.json(); } catch {}
+      if (ibExtra && ibExtra.n === n && got) { ibExtra = got.ok && got.item && got.item.n === n ? got.item : null; ibSig = ''; }
+    }
+  }
   if (ibWant != null && ib !== FAILED) {  // 通知・リンク（/#i=<番号>）で開いた件（読み込みを待つ間に利用者が選び直していたら、中身だけ出して返信先は付けない）
     const w = ibWant; ibWant = null;
     if (ib.items.some(x => x.n === w.n)) { openItem(w.n, w.seq); return; }

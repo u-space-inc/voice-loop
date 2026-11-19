@@ -305,7 +305,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     check("あとで: 選んだ時刻まで一覧から隠し、数だけ出す", (r["ok"], ns(d), d["later"]), (True, [22, 25], 1))
     check("…覚えるのは本体の状態フォルダ（利用者だけが読める 0600）で、置き場ではない", (st.parent == Path(TMP) / "state", oct(st.stat().st_mode & 0o777)), (True, "0o600"))
     m = json.loads(st.read_text())
-    m["later"]["23"] = time.time() - 1
+    m["later"]["23"]["until"] = time.time() - 1
     st.write_text(json.dumps(m))
     d = get()
     check("…時刻が来たら一覧の上に戻し、戻った印を付ける", (ns(d)[0], d["items"][0]["back"]), (23, True))
@@ -323,11 +323,16 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     # あとでから戻った古い件は、別の件をあとでにしても、戻った時刻で新しさを数え続ける（3 日より前に畳み直さない）
     keep_rows = ITEMS.read_text()
     write([add(51, at=NOW - 5 * 86400, title="古いが戻った件"), add(52, at=NOW - 60)])
-    st.write_text(json.dumps({"later": {"51": time.time() - 5}}))
+    st.write_text(json.dumps({"later": {"51": {"until": time.time() - 5, "set": time.time() - 100}}}))
     before_old = [x["old"] for x in get()["items"] if x["n"] == 51]
     post("/api/inbox/later", {"n": 52, "until": "morning"})
     after_old = [x["old"] for x in get()["items"] if x["n"] == 51]
     check("あとでから戻った件は、別の件をあとでにしても新しいまま（戻った時刻を残す）", (before_old, after_old), ([False], [False]))
+    # あとでにしたあとで、Hermes が片づけ、利用者の訂正で判断待ちに戻した件は、古いあとでで隠さない
+    with ITEMS.open("a") as fh:
+        fh.write(json.dumps({"op": "done", "at": time.time(), "n": 52, "note": "", "by": "ai"}) + "\n")
+        fh.write(json.dumps({"op": "reopen", "at": time.time() + 1, "n": 52, "note": "まだ"}) + "\n")
+    check("あとでのあとで判断待ちに戻された件は、古いあとでで隠さない", 52 in [x["n"] for x in get()["items"]], True)
     ITEMS.write_text(keep_rows)
     check("どの操作のあとも、置き場のファイルは本体が書いていない（印はコンテナの中の道具だけが書く）",
           [p for p in snapshot() if p[0] != "voice-loop/items.jsonl"] == [p for p in before if p[0] != "voice-loop/items.jsonl"], True)

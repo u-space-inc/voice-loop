@@ -136,23 +136,33 @@ def item(n) -> dict | None:
 
 
 # ---------- あとで ----------
-def _later() -> dict[int, float]:
+def _later() -> dict[int, tuple[float, float]]:
+    """番号 → (戻す時刻, あとでにした時刻)。"""
     try:
         d = json.loads(STATE_FILE.read_text()) if STATE_FILE.is_file() else {}
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         d = {}
     raw = d.get("later") if isinstance(d, dict) and isinstance(d.get("later"), dict) else {}
     out = {}
     for k, v in raw.items():
-        if isinstance(k, str) and k.isdigit() and isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < 1e11:
-            out[int(k)] = float(v)
+        if isinstance(k, str) and k.isdigit() and isinstance(v, dict) and vl_items._num(v.get("until")) and vl_items._num(v.get("set")):
+            out[int(k)] = (float(v["until"]), float(v["set"]))
     return out
 
 
-def _save_later(m: dict[int, float]):
+def _back(m: dict, r: dict) -> float | None:
+    """その件の「あとで」の戻す時刻。あとでにしたあとで判断待ちに戻された（reopen）件には効かせない（古いあとでで隠さない）。"""
+    e = m.get(r["n"])
+    if not e:
+        return None
+    moved = r.get("moved")
+    return None if vl_items._num(moved) and moved > e[1] else e[0]
+
+
+def _save_later(m: dict[int, tuple[float, float]]):
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
-    tmp.write_text(json.dumps({"later": {str(k): v for k, v in m.items()}}))
+    tmp.write_text(json.dumps({"later": {str(k): {"until": v[0], "set": v[1]} for k, v in m.items()}}))
     tmp.chmod(0o600)
     tmp.replace(STATE_FILE)
 
@@ -231,7 +241,7 @@ def inbox(now: float | None = None) -> dict:
         if p:
             out["pending"].append({"n": n, "left": _left(p), "state": p["state"]})
             continue
-        back = later.get(n)
+        back = _back(later, r)
         if back and back > now:
             out["later"] += 1
             continue
@@ -253,7 +263,7 @@ def one(n, now: float | None = None) -> dict | None:
     if not r or r.get("kind") != "judge" or n in done:
         return None
     with _lock:
-        back = _later().get(n)
+        back = _back(_later(), r)
     fresh = max(vl_items._fresh(r), back if back and back <= now else 0)
     return {**shape(r), "fresh": fresh, "old": now - fresh >= vl_items.OPEN_DAYS * 86400, "back": bool(back and back <= now)}
 
@@ -392,6 +402,6 @@ async def api_inbox_later(body: dict):
         return JSONResponse({"ok": False, "reason": "gone"})
     with _lock:  # 時刻を過ぎて一覧に戻った件の時刻も残す（戻った時刻で新しさを数え続ける）。片づいた・消えた件の分だけ外す
         m = {k: v for k, v in _later().items() if k in items and k not in done}
-        m[n] = opt["at"]
+        m[n] = (opt["at"], time.time())
         _save_later(m)
     return JSONResponse({"ok": True, "n": n, "at": opt["at"], "label": opt["label"]})
