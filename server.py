@@ -218,6 +218,23 @@ def parse_confirm(text: str) -> dict | None:
     return {"question": question, "order": order, "cursor": marks.index(True)}
 
 
+def confirm_text(text: str, at: int | None) -> str:
+    """番号の無い確認の画面（parse_confirm が読めるもの）で、カーソル（❯）を選択肢の at 番目（0 か 1）に置いた画面。at が None なら、どちらにも置かない。"""
+    lines = text.splitlines()
+    foot = next(i for i in range(len(lines) - 1, -1, -1) if "Esc to cancel" in lines[i])
+    for k, i in enumerate((foot - 2, foot - 1)):
+        m = CONFIRM_OPT.match(lines[i])
+        lines[i] = lines[i][:m.start(1)] + ("❯ " if k == at else "  ") + m.group(2)
+    return "\n".join(lines)
+
+
+def read_ask(text: str) -> dict:
+    """止まっている画面の問い（ハブの経路）。番号の無い「Yes / No」の確認を先に見る（その上に前の会話の番号つきの並びが残っていても、
+    確認として読む）。確認なら {"kind": "confirm", "options": {}, "question": 問いの文}、ほかは parse_prompt と同じ。"""
+    c = parse_confirm(text)
+    return {"kind": "confirm", "options": {}, "question": c["question"]} if c else parse_prompt(text)
+
+
 TRUST_PROMPT = re.compile(r"trust (this|the files in this) folder|Do you trust", re.I)
 
 
@@ -963,10 +980,7 @@ def hub_screen(pane: str, lines: int = 30):
         SEEN_PROMPT[pane] = (fp, hub_human_turn())
     # 同じ問いを見直しただけなら、最初に見たときの発言を起点のままにする（答える前に見直すと「同じ発言の中」になって断られていた。2026-11-19）
     SEEN_AT[pane] = time.time()  # 最後に見た時刻（報告が、どの問いを見て書かれたかを結ぶ）
-    prompt = parse_prompt(text)
-    if prompt["kind"] == "unknown" and (c := parse_confirm(text)):
-        prompt = {"kind": "confirm", "options": {}, "question": c["question"]}
-    return JSONResponse({"pane": pane, "status": "blocked", "screen": text, "prompt": prompt})
+    return JSONResponse({"pane": pane, "status": "blocked", "screen": text, "prompt": read_ask(text)})
 
 
 _probes: dict[str, tuple[float, str]] = {}  # 点検で実際に試した結果: 名前 → (時刻, 不具合の説明。空なら使える)
@@ -2123,6 +2137,25 @@ async def hub_send(body: dict):
 # ---------- 承認・質問への回答（ハブは決めない。ユーザーの答えを相手に伝えるだけ） ----------
 # 取り消しにくい操作に見える語。当たったら、ユーザーにもう一度確かめてからでないと「はい」を通さない
 RISKY = re.compile(r"(\brm\b|\btrash\b|delete|\bdrop\b|truncate|\bpush\b|deploy|publish|release|\bsend|mail|merge|reset --hard|force|terraform|\baws\b|gcloud|kubectl|migrat|prod|本番|削除|送信|公開|配信|反映|支払|振込|請求)", re.I)
+# 取り消しにくい操作の種類ごとに、画面の語（RISKY の語を分けたもの）と、ハブが問いの「〇〇してよいですか」の〇〇で名指しする語
+RISKY_KINDS = (
+    (re.compile(r"\brm\b|\btrash\b|delete|\bdrop\b|truncate|削除", re.I), re.compile(r"削除|消去")),
+    (re.compile(r"\bsend|mail|送信|配信", re.I), re.compile(r"送信|配信|送付|返信|投稿")),
+    (re.compile(r"\bpush\b|deploy|publish|release|merge|prod|本番|公開|反映|terraform|\baws\b|gcloud|kubectl|migrat", re.I),
+     re.compile(r"反映|公開|デプロイ|リリース|プッシュ|マージ|適用|移行")),
+    (re.compile(r"reset --hard|force", re.I), re.compile(r"上書き|強制|リセット")),
+    (re.compile(r"支払|振込|請求"), re.compile(r"支払|振込|請求")),
+)
+
+
+def risky_named(asked: str, heard: str) -> bool:
+    """画面の問い asked に出ている取り消しにくい操作の種類が、どれも、利用者が聞いた問い heard の「〇〇してよいですか」の〇〇で名指しされているか
+    （画面が rm なら「削除してよいですか」。別の種類の名指し・返答のどこかに語があるだけ・プロジェクト名や題の語は数えない）。"""
+    acts = consent.asked_acts(heard)
+    kinds = [act for screen, act in RISKY_KINDS if screen.search(asked)]
+    return bool(kinds) and all(any(act.search(w) for w in acts) for act in kinds)
+
+
 SEEN_PROMPT: dict[str, tuple[str, str | None]] = {}  # ハブが見た、止まっている画面: pane → (画面の指紋, 最初に見たときのユーザーの最後の発言)
 SEEN_AT: dict[str, float] = {}  # ハブが止まっている画面を最後に見た時刻: pane → 時刻（止まった報告が、どの問いを見て書かれたかを結ぶ）
 CONFIRMING: dict[str, tuple[str, str | None]] = {}  # 取り消しにくい操作の聞き返し中: pane → (画面の指紋, そのときのユーザーの最後の発言)
@@ -2140,12 +2173,7 @@ async def confirm_yes(pane: str, fp0: str) -> tuple[bool, str]:
     yes = c["order"].index("Yes")
     if c["cursor"] != yes:
         # カーソルを動かしたあとの画面は、選択肢の 2 行のカーソルだけが入れ替わり、ほかは 1 字も変わらないはず（道具の見出しの ⏺ の点滅だけは数えない）
-        lines = text.splitlines()
-        foot = next(i for i in range(len(lines) - 1, -1, -1) if "Esc to cancel" in lines[i])
-        for i, word in zip((foot - 2, foot - 1), c["order"]):
-            m = CONFIRM_OPT.match(lines[i])
-            lines[i] = lines[i][:m.start(1)] + ("❯ " if word == "Yes" else "  ") + word
-        want = " ".join(TOOL_MARK.sub("", "\n".join(lines)).split())
+        want = " ".join(TOOL_MARK.sub("", confirm_text(text, yes)).split())
         r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, "down" if yes > c["cursor"] else "up")
         if "result" not in r:
             return False, "herdr が応答しない（Enter は送っていない）"
@@ -2182,6 +2210,8 @@ def prompt_fp(text: str) -> str:
     選択式の質問などの画面は、問いの文が字下げなしで出るので、印も文字として数える。"""
     if is_permission(text):
         text = TOOL_MARK.sub("", text)
+    elif parse_confirm(text):  # 番号の無い確認も、道具の見出しの ⏺ の点滅と、カーソルの位置（答える直前に別に確かめる）では変わらない
+        text = TOOL_MARK.sub("", confirm_text(text, None))
     return hashlib.sha1(" ".join(text.split()).encode()).hexdigest()
 
 
@@ -2219,8 +2249,8 @@ async def _hub_answer(body: dict):
         return JSONResponse({"ok": False, "reason": "trust"})
     text = await asyncio.to_thread(read_prompt, pane)
     (turn, utter), = (await asyncio.to_thread(hub_turns, 1) or [(None, "")])[:1]
-    fp, prompt, project = prompt_fp(text), parse_prompt(text), a["cwd"].rsplit("/", 1)[-1]
-    conf = parse_confirm(text) if prompt["kind"] == "unknown" else None  # 番号の無い「Yes / No」の確認（はい・いいえだけで答える）
+    fp, prompt, project = prompt_fp(text), read_ask(text), a["cwd"].rsplit("/", 1)[-1]
+    conf = prompt["kind"] == "confirm"  # 番号の無い「Yes / No」の確認（はい・いいえだけで答える）
     if answer in ("no", "n"):
         key, said = "esc", "いいえ（取り消し）"
     else:
@@ -2252,9 +2282,10 @@ async def _hub_answer(body: dict):
         if answer in ("yes", "y"):
             # 取り消しにくい操作は、聞き返してからにする。ただし、利用者が答えた問い（直前に聞いた文）が「〇〇してよいですか」の〇〇で、取り消しにくい操作
             # （削除・送信・反映など）を名指ししていたら、その答えを確かめとする（「〇〇を削除してよいですか？」への「削除して」「はい」は聞き返さない。
-            # 2026-11-19 本人）。返答のどこかに語があるだけ（プロジェクト名・セッションの題の「本番」「prod」など）では名指しとみなさない
-            named = any(RISKY.search(w) for w in consent.asked_acts(heard))
-            if RISKY.search(asked_part(text)) and not named:
+            # 2026-11-19 本人）。返答のどこかに語があるだけ（プロジェクト名・セッションの題の「本番」「prod」など）や、画面と別の種類の操作の名指し
+            # （画面は rm なのに「送信してよいですか」）では省かない（risky_named）
+            asked = asked_part(text)
+            if RISKY.search(asked) and not risky_named(asked, heard):
                 held = CONFIRMING.get(pane)
                 if not (confirmed and held and held[0] == fp and held[1] != turn):
                     CONFIRMING[pane] = (fp, turn) if not (held and held[0] == fp) else held

@@ -156,24 +156,37 @@ asked_then("proj で、本当に build のフォルダを消していいです�
 check("次の発言の --confirmed で通る", answer(confirmed=True), ("ok", ["1"]))
 s.hermes.hermes_turn_end(s.hub_human_turn(), "許可しました")
 # 聞いた問いが取り消しにくい操作を名指ししていれば、その最初の答えで通す（聞き返さない。2026-11-19 本人）
-for q, utter in (("proj で、build のフォルダを削除してよいですか？", "はい"),
-                 ("proj で、build のフォルダを削除してよいですか？", "削除して"),
-                 ("proj で、build のフォルダを完全に削除しても大丈夫ですか？", "削除してください"),
-                 ("proj で、いまの変更を本番に反映してよいですか？", "許可")):
+DEPLOY = PERMISSION.replace("ls -la", "npm run deploy").replace("ls commands", "npm commands")
+for scr, q, utter in ((RISKY, "proj で、build のフォルダを削除してよいですか？", "はい"),
+                      (RISKY, "proj で、build のフォルダを削除してよいですか？", "削除して"),
+                      (RISKY, "proj で、build のフォルダを完全に削除しても大丈夫ですか？", "削除してください"),
+                      (DEPLOY, "proj で、いまの変更を本番に反映してよいですか？", "許可")):
+    state.update(screen=scr)
     begin("見て")
     screen()
     asked_then(q, utter)
-    check(f"取り消しにくい操作でも、聞いた問いが「〇〇してよいですか」で名指ししていれば最初の答えで通す: 「{q[-16:]}」に「{utter}」", answer(), ("ok", ["1"]))
+    check(f"取り消しにくい操作でも、聞いた問いが画面と同じ種類の操作を「〇〇してよいですか」で名指ししていれば最初の答えで通す: 「{q[-16:]}」に「{utter}」",
+          answer(), ("ok", ["1"]))
     s.hermes.hermes_turn_end(s.hub_human_turn(), "許可しました")
+state.update(screen=RISKY)
 for q in ("proj の「テスト」が、build のフォルダを消す（rm -rf build）許可を求めています。許可しますか？",  # 操作は前の文にあるだけ（問いは「許可しますか」）
           "proj の「本番の構築」が、ある操作の許可を求めています。許可しますか？",  # 題に「本番」があるだけ
-          "proj で、build のフォルダを確認してよいですか？"):  # 名指しした操作が取り消しにくい操作ではない
+          "proj で、build のフォルダを確認してよいですか？",  # 名指しした操作が取り消しにくい操作ではない
+          "proj で、ログを送信してよいですか？",  # 画面（rm）と別の種類の操作の名指し（security-review の指摘の形）
+          "proj で、いまの変更を本番に反映してよいですか？",  # 同じ
+          "proj から、ログの削除は不要という報告です。続けてよいですか？"):  # 語は返答の中にあるが、問いは「続けてよいですか」
     begin("見て")
     screen()
     asked_then(q, "はい")
-    check(f"問いが取り消しにくい操作を「〇〇してよいですか」で名指ししていなければ聞き返す: 「{q[:30]}…」", answer(), ("confirm", []))
+    check(f"問いが画面の取り消しにくい操作を「〇〇してよいですか」で名指ししていなければ聞き返す: 「{q[:30]}…」", answer(), ("confirm", []))
     s.hermes.hermes_turn_end(s.hub_human_turn(), "確かめ直します")
     s.CONFIRMING.clear()
+check("取り消しにくい操作の種類分けは、RISKY のどの語にも当たる（種類に入らない語があると、名指しを確かめられない）",
+      [w for w in ("rm -f", "trash x", "delete", "drop table", "truncate", "git push", "deploy", "publish", "release", "send", "mail", "merge", "reset --hard",
+                   "force", "terraform", "aws s3", "gcloud", "kubectl", "migrate", "prod", "本番", "削除", "送信", "公開", "配信", "反映", "支払", "振込", "請求")
+       if s.RISKY.search(w) and not any(scr.search(w) for scr, _ in s.RISKY_KINDS)], [])
+check("画面に 2 種類の取り消しにくい操作があれば、両方を名指ししたときだけ", (s.risky_named("git push && rm -rf x", "proj で、削除してよいですか？"),
+      s.risky_named("git push && rm -rf x", "proj で、削除してよいですか？ プッシュしてよいですか？")), (False, True))
 for q, utter in (("proj で、build のフォルダを削除してよいですか？", "送信して"), ("proj で、build のフォルダを削除してよいですか？", "削除しないで"),
                  ("proj の「テスト」が、ある操作の許可を求めています。許可しますか？", "削除して")):
     begin("見て")
@@ -212,6 +225,13 @@ odd = {"選択肢が 3 つ": CONFIRM_NO.replace("   Yes", "   Yes\n   Maybe"), "
        "番号つき": CONFIRM_NO.replace(" ❯ No", " ❯ 1. No").replace("   Yes", "   2. Yes"), "案内が無い": CONFIRM_NO.replace(" Esc to cancel · Tab to amend", "")}
 check("確認の形でないもの（3 つ・カーソルが無い/2 つ・同じ語が 2 つ・別の文・問いが無い・番号つき・案内が無い）は読まない",
       {k: s.parse_confirm(v) for k, v in odd.items()}, {k: None for k in odd})
+LEFTOVER = "⏺ 次の 2 つを片づけます。\n  1. 下書きを確かめる\n  2. 報告ページを消す\n" + CONFIRM_NO  # 確認の上に、前の会話の番号つきの並びが残っている
+check("確認の上に前の会話の番号つきの並びが残っていても、確認として読む（codex-review P2）",
+      (s.parse_prompt(LEFTOVER)["kind"], s.read_ask(LEFTOVER)["kind"], s.read_ask(PERMISSION)["kind"]), ("question", "confirm", "permission"))
+BLINK = CONFIRM_NO.replace("⏺ Artifact", "  Artifact")
+check("確認の指紋は、⏺ の点滅とカーソルの位置では変わらず、問い・道具の見出しが違えば変わる（codex-review P2）",
+      (s.prompt_fp(CONFIRM_NO) == s.prompt_fp(CONFIRM_YES) == s.prompt_fp(BLINK), s.prompt_fp(CONFIRM_NO) == s.prompt_fp(CONFIRM_NO.replace("受注", "別")),
+       s.prompt_fp(CONFIRM_NO) == s.prompt_fp(CONFIRM_NO.replace("artifact/abc", "artifact/xyz"))), (True, False, False))
 DQ = "proj で、『受注の記録』のページを完全に削除する確認で止まっています。削除してよいですか？"
 
 
@@ -234,6 +254,31 @@ screen()
 asked_then(DQ, "はい")
 check("確認: カーソルがもう Yes なら Enter だけ", answer(), ("ok", ["enter"]))
 s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+state.update(screen=LEFTOVER, on_key=lambda k: state.update(screen=LEFTOVER.replace(" ❯ No\n   Yes", "   No\n ❯ Yes")) if k == "down" else None)
+begin("見て")
+sc = screen()
+asked_then(DQ, "削除して")
+check("確認: 上に番号つきの並びが残る確認でも、ハブの画面は確認と読み、「削除して」で Yes を選ぶ", (sc["prompt"]["kind"], answer()), ("confirm", ("ok", ["down", "enter"])))
+s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+state.update(screen=CONFIRM_NO, on_key=lambda k: state.update(screen=CONFIRM_YES) if k == "down" else None)
+begin("見て")
+screen()  # ⏺ が見えているときに見た
+asked_then(DQ, "はい")
+state.update(screen=BLINK)  # 答えるときは ⏺ が点滅で消えていた
+check("確認: 見たときと答えるときで ⏺ の点滅が違っても、同じ問いとして答える", answer(), ("ok", ["down", "enter"]))
+s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+state.update(screen=CONFIRM_NO, on_key=lambda k: state.update(screen=CONFIRM_YES) if k == "down" else None)
+begin("見て")
+screen()
+asked_then(DQ, "はい")
+s.ANSWERED.clear()
+state["keys"].clear()
+r1 = json.loads(asyncio.run(s.hub_answer({"pane": "w9:p1", "answer": "yes"})).body)
+r2 = json.loads(asyncio.run(s.hub_answer({"pane": "w9:p1", "answer": "no"})).body)  # Yes へ動かしたあと（画面はカーソルだけ違う）に、すぐ「いいえ」を送ろうとした
+check("確認: Yes へ動かしたあとの画面も同じ問いとして「答えた問い」に入り、15 秒の間はもう送らない（codex-review P2）",
+      (r1.get("ok"), r2.get("reason"), state["keys"]), (True, "answered", ["down", "enter"]))
+s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+state.update(on_key=cursor_moves)
 state.update(screen=CONFIRM_NO, on_key=None)  # カーソルが動かない（キーが届かない・画面が固まった）
 begin("見て")
 screen()
