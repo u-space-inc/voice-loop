@@ -156,15 +156,24 @@ asked_then("proj で、本当に build のフォルダを消していいです�
 check("次の発言の --confirmed で通る", answer(confirmed=True), ("ok", ["1"]))
 s.hermes.hermes_turn_end(s.hub_human_turn(), "許可しました")
 # 聞いた問いが取り消しにくい操作を名指ししていれば、その最初の答えで通す（聞き返さない。2026-11-19 本人）
-for q, utter in (("proj の「テスト」が、build のフォルダを消す（rm -rf build）許可を求めています。許可しますか？", "許可"),
-                 ("proj で、build のフォルダを削除してよいですか？", "はい"),
+for q, utter in (("proj で、build のフォルダを削除してよいですか？", "はい"),
                  ("proj で、build のフォルダを削除してよいですか？", "削除して"),
-                 ("proj で、build のフォルダを完全に削除しても大丈夫ですか？", "削除してください")):
+                 ("proj で、build のフォルダを完全に削除しても大丈夫ですか？", "削除してください"),
+                 ("proj で、いまの変更を本番に反映してよいですか？", "許可")):
     begin("見て")
     screen()
     asked_then(q, utter)
-    check(f"取り消しにくい操作でも、聞いた問いが名指ししていれば最初の答えで通す: 「{utter}」", answer(), ("ok", ["1"]))
+    check(f"取り消しにくい操作でも、聞いた問いが「〇〇してよいですか」で名指ししていれば最初の答えで通す: 「{q[-16:]}」に「{utter}」", answer(), ("ok", ["1"]))
     s.hermes.hermes_turn_end(s.hub_human_turn(), "許可しました")
+for q in ("proj の「テスト」が、build のフォルダを消す（rm -rf build）許可を求めています。許可しますか？",  # 操作は前の文にあるだけ（問いは「許可しますか」）
+          "proj の「本番の構築」が、ある操作の許可を求めています。許可しますか？",  # 題に「本番」があるだけ
+          "proj で、build のフォルダを確認してよいですか？"):  # 名指しした操作が取り消しにくい操作ではない
+    begin("見て")
+    screen()
+    asked_then(q, "はい")
+    check(f"問いが取り消しにくい操作を「〇〇してよいですか」で名指ししていなければ聞き返す: 「{q[:30]}…」", answer(), ("confirm", []))
+    s.hermes.hermes_turn_end(s.hub_human_turn(), "確かめ直します")
+    s.CONFIRMING.clear()
 for q, utter in (("proj で、build のフォルダを削除してよいですか？", "送信して"), ("proj で、build のフォルダを削除してよいですか？", "削除しないで"),
                  ("proj の「テスト」が、ある操作の許可を求めています。許可しますか？", "削除して")):
     begin("見て")
@@ -241,6 +250,20 @@ s.CONFIRM_WAIT = 0.3
 check("確認: カーソルを動かしたら別の問いの画面になったら、Enter を送らずに止める", answer(), ("stuck", ["down"]))
 s.CONFIRM_WAIT = 3.0
 s.hermes.hermes_turn_end(s.hub_human_turn(), "止めました")
+state.update(screen=CONFIRM_NO, on_key=lambda k: state.update(screen=CONFIRM_YES.replace("artifact/abc", "artifact/xyz")) if k == "down" else None)
+begin("見て")
+screen()
+asked_then(DQ, "はい")
+s.CONFIRM_WAIT = 0.3
+check("確認: 問いの文と選択肢が同じでも、ほかの行（道具の見出し）が変わった画面なら、Enter を送らずに止める", answer(), ("stuck", ["down"]))
+s.CONFIRM_WAIT = 3.0
+s.hermes.hermes_turn_end(s.hub_human_turn(), "止めました")
+state.update(screen=CONFIRM_NO, on_key=lambda k: state.update(screen=CONFIRM_YES.replace("⏺ Artifact", "  Artifact")) if k == "down" else None)
+begin("見て")
+screen()
+asked_then(DQ, "はい")
+check("確認: 道具の見出しの ⏺ が点滅で消えているだけなら、カーソルが Yes に来たとして Enter を送る", answer(), ("ok", ["down", "enter"]))
+s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
 state.update(screen=CONFIRM_NO, on_key=cursor_moves)
 begin("見て")
 screen()

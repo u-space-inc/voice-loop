@@ -192,7 +192,7 @@ check("同じ発言の中では答えない", hub_answer(OFF), ("same_turn", [])
 s.hermes.hermes_turn_end(s.hub_human_turn(), Q)
 
 # ---- 取り消しにくい操作の聞き返し: 聞き返しのあとで点滅の向きが変わっても、同じ問いとして通す
-RQ = "proj の「テスト」が、ある操作の許可を求めています。許可しますか？"  # 取り消しにくい操作を名指ししない問い（名指しした問いへの答えは聞き返さない。2026-11-19）
+RQ = "proj の「テスト」が、build のフォルダを消す（rm -rf build）許可を求めています。許可しますか？"
 reset()
 begin("承認見て")
 screen(RISKY_ON)
@@ -237,7 +237,7 @@ check("同じ質問のままなら、番号を送る", hub_answer(ASK_A, answer=
 s.hermes.hermes_turn_end(s.hub_human_turn(), "答えました")
 
 # ---- 長い承認: 印ありで見て、印なしのときに答えても、取り消しにくい操作の聞き返しを飛ばさない
-LQ = "proj の「テスト」が、Python の実行の許可を求めています。許可しますか？"  # 取り消しにくい操作を名指ししない問い
+LQ = "proj の「テスト」が、build のフォルダを消す（rm -rf build）Python の実行の許可を求めています。許可しますか？"
 for name, seen, now in (("印ありで見て、印なしで答える", LONG_ON, LONG_OFF), ("印なしで見て、印なしで答える", LONG_OFF, LONG_OFF), ("印なしで見て、印ありで答える", LONG_OFF, LONG_ON)):
     reset()
     begin("承認見て")

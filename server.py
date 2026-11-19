@@ -2139,13 +2139,21 @@ async def confirm_yes(pane: str, fp0: str) -> tuple[bool, str]:
         return False, "答える前に画面が変わった（何も送っていない）"
     yes = c["order"].index("Yes")
     if c["cursor"] != yes:
+        # カーソルを動かしたあとの画面は、選択肢の 2 行のカーソルだけが入れ替わり、ほかは 1 字も変わらないはず（道具の見出しの ⏺ の点滅だけは数えない）
+        lines = text.splitlines()
+        foot = next(i for i in range(len(lines) - 1, -1, -1) if "Esc to cancel" in lines[i])
+        for i, word in zip((foot - 2, foot - 1), c["order"]):
+            m = CONFIRM_OPT.match(lines[i])
+            lines[i] = lines[i][:m.start(1)] + ("❯ " if word == "Yes" else "  ") + word
+        want = " ".join(TOOL_MARK.sub("", "\n".join(lines)).split())
         r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, "down" if yes > c["cursor"] else "up")
         if "result" not in r:
             return False, "herdr が応答しない（Enter は送っていない）"
         end = time.monotonic() + CONFIRM_WAIT
         while True:
-            c2 = parse_confirm(await asyncio.to_thread(read_prompt, pane))
-            if c2 and c2["question"] == c["question"] and c2["order"] == c["order"] and c2["cursor"] == yes:
+            t2 = await asyncio.to_thread(read_prompt, pane)
+            c2 = parse_confirm(t2)
+            if c2 and c2["question"] == c["question"] and c2["order"] == c["order"] and c2["cursor"] == yes and " ".join(TOOL_MARK.sub("", t2).split()) == want:
                 break
             if time.monotonic() >= end:
                 return False, "カーソルが Yes に来たのを確かめられない（Enter は送っていない）"
@@ -2242,9 +2250,11 @@ async def _hub_answer(body: dict):
         if not (consent.affirms(utter, "answer", project, heard) if answer in ("yes", "y") else consent.chooses(utter, int(answer), prompt["options"], project)):
             return JSONResponse({"ok": False, "reason": "not_said", "said": _clip(utter, 80), "project": project})
         if answer in ("yes", "y"):
-            # 取り消しにくい操作は、聞き返してからにする。ただし、利用者が答えた問い（直前に聞いた文）が、取り消しにくい操作（削除・送信・本番など）を
-            # 名指ししていたら、その答えを確かめとする（「agency-lp で、〇〇を削除してよいですか？」への「削除して」「はい」は聞き返さない。2026-11-19 本人）
-            if RISKY.search(asked_part(text)) and not RISKY.search(heard):
+            # 取り消しにくい操作は、聞き返してからにする。ただし、利用者が答えた問い（直前に聞いた文）が「〇〇してよいですか」の〇〇で、取り消しにくい操作
+            # （削除・送信・反映など）を名指ししていたら、その答えを確かめとする（「〇〇を削除してよいですか？」への「削除して」「はい」は聞き返さない。
+            # 2026-11-19 本人）。返答のどこかに語があるだけ（プロジェクト名・セッションの題の「本番」「prod」など）では名指しとみなさない
+            named = any(RISKY.search(w) for w in consent.asked_acts(heard))
+            if RISKY.search(asked_part(text)) and not named:
                 held = CONFIRMING.get(pane)
                 if not (confirmed and held and held[0] == fp and held[1] != turn):
                     CONFIRMING[pane] = (fp, turn) if not (held and held[0] == fp) else held
