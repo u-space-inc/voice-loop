@@ -44,6 +44,18 @@ check("選ぶ: 数字のプロジェクト名でも、番号を取り違えな�
       (c.chooses("22番", 2, {2: "低速", 22: "高速"}, "2"), c.chooses("22番", 22, {2: "低速", 22: "高速"}, "2"), c.chooses("22番", 2, {1: "a1", 2: "b2"}, "2")), (False, True, False))
 check("選ぶ: 選択肢に無い番号を言ったら、どの番号も選ばない", [k for k in (1, 2, 3) if c.chooses("5番で", k, OPTS, "proj")], [])
 check("選ぶ: 一字の文言では選ばない（取り違えやすい）", c.chooses("Aで", 1, {1: "A", 2: "B"}), False)
+DEL_Q = "agency で、『受注の記録』のページを完全に削除する確認で止まっています。削除してよいですか？"
+check("聞いた問いが名指しした操作の語（「〇〇して（も）よいですか」の〇〇）",
+      (c.asked_acts(DEL_Q), c.asked_acts("proj で、本番に反映しても大丈夫ですか？"), c.asked_acts("proj で、続けますか？"), c.asked_acts("")),
+      (["削除"], ["反映"], [], []))
+ACT_YES = ["削除して", "削除してください", "削除する", "削除します", "はい、削除して", "じゃあ削除して", "はい"]
+ACT_NO = ["削除しないで", "削除はまだ", "送信して", "削除して、それと送信して", "削除していいのかな", "削除してから考える", "ファイルを削除して"]
+check("答える: 聞いた問いが名指しした操作の語で答えたら許す", [t for t in ACT_YES if not c.affirms(t, "answer", "agency", DEL_Q)], [])
+check("答える: 断り・聞いていない操作の語・ほかのことも言っている発言は許さない", [t for t in ACT_NO if c.affirms(t, "answer", "agency", DEL_Q)], [])
+check("答える: 聞いた問いが操作を名指ししていなければ、操作の語だけでは許さない（「許可して」などは今までどおり）",
+      (c.affirms("削除して", "answer", "agency", "agency で、続けますか？"), c.affirms("削除して", "answer", "agency"), c.affirms("許可して", "answer", "agency", "")),
+      (False, False, True))
+check("閉じる: 聞いた問いの操作の語は、閉じる許可には使わない", c.affirms("削除して", "close", "agency", DEL_Q), False)
 ASKS = {"proj の「テスト」が、ls の実行の許可を求めています。許可しますか？": True, "proj で、本当に消していいですか": True,
         "**PROJ** の「テスト」を閉じていいですか**": True, "proj の資料です。": False, "許可しますか？": False, "": False}
 check("聞いた文: プロジェクト名（大文字小文字を問わない）と問いの形", {t: c.asks(t, "proj") for t in ASKS}, ASKS)

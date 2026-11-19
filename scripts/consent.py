@@ -65,11 +65,24 @@ def _yes_clause(action: str | None, project: str):
     return re.compile(f"{_pre(project)}(?:(?:{yes})(?:{_alt(TAIL)})*)+")
 
 
-def affirms(text: str, action: str, project: str = "") -> bool:
-    """発言全体が「許す」か（action は close か answer）。"""
+# 聞いた問いの「〇〇して（も）よいですか」の〇〇（漢字・カタカナの語）。利用者がその語で答えたら（「削除して」「送信してください」）、許す句として読む
+ASKED_ACT = re.compile(r"([一-龥々ァ-ヶー]{1,12})しても?(?:よい|いい|良い|大丈夫|構わない|かまわない|構いません|かまいません)")
+
+
+def asked_acts(heard: str) -> list[str]:
+    """聞いた問いが「〇〇して（も）よいですか」の形で名指しした操作の語（「削除してよいですか」の「削除」）。"""
+    return [w for w in dict.fromkeys(ASKED_ACT.findall(_flat(heard)))]
+
+
+def affirms(text: str, action: str, project: str = "", heard: str = "") -> bool:
+    """発言全体が「許す」か（action は close か answer）。answer では、聞いた問い heard が「〇〇してよいですか」と名指しした〇〇で答える
+    （「削除して」「削除する」「削除してください」）のも許す句として読む（聞いていない操作の語は読まない）。"""
     if refuses(text):
         return False
-    cs, clause = clauses(text), _yes_clause(action, project)
+    acts = asked_acts(heard) if action == "answer" else []
+    yes = _alt(YES + YES_FOR[action] + [w for a in acts for w in (a + "する", a)])
+    clause = re.compile(f"{_pre(project)}(?:(?:{yes})(?:{_alt(TAIL)})*)+")
+    cs = clauses(text)
     return bool(cs) and all(clause.fullmatch(c) for c in cs)
 
 

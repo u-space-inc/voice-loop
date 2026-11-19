@@ -49,8 +49,13 @@ class Brain:
 
     def replying(self, turn: str) -> str | None:
         """発言 turn が、画面の「返信」で報告を指したものなら、その報告のセッション（分からなければ空）。返信でなければ None。
-        返信の発言の「直前に聞いた文」（heard）は返信先の報告。返信の発言は、承認・質問への答えと閉じる許可には使わない（本体が断る）。"""
+        返信の発言の「直前に聞いた文」（heard）は返信先の報告。返信の発言は、閉じる許可には使わない（本体が断る）。"""
         raise NotImplementedError
+
+    def reply_ask(self, turn: str) -> dict | None:
+        """発言 turn が、画面の「返信」で報告を指したものなら、その報告が見ていた問い {"pane", "fp", "session"}（report_end の ask。
+        分からない欄は空）。返信でなければ None。本体は、その問いがいまも同じセッションに出ているときだけ、返信をその問いへの答えに使う。"""
+        return None
 
     async def report_target(self) -> dict | None:
         """頼んだ件の報告を受ける相手（一覧の項目と同じ形）。居なければ None。"""
@@ -60,8 +65,9 @@ class Brain:
         """報告の前。頭が記録を持たないときだけ、本体が見出しを記録する。記録に書けたら True。"""
         return True
 
-    async def report_end(self, state: str, reply: str, about: str, saved: bool, pane: str = "", topic: str = "") -> bool:
-        """報告のあと。記録に書けたかを返す。topic は、どの件の報告か（記録を持つ頭は、報告の記録に書く）。"""
+    async def report_end(self, state: str, reply: str, about: str, saved: bool, pane: str = "", topic: str = "", ask: dict | None = None) -> bool:
+        """報告のあと。記録に書けたかを返す。topic は、どの件の報告か（記録を持つ頭は、報告の記録に書く）。
+        ask は、止まった報告でハブが見た問い {"fp": 画面の指紋, "session": セッション}（記録を持つ頭は報告の記録に書き、reply_ask で返す）。"""
         return saved
 
     def reply_topic(self) -> str:
