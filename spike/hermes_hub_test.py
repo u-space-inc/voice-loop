@@ -251,6 +251,11 @@ odd = {"選択肢が 3 つ": CONFIRM_NO.replace("   Yes", "   Yes\n   Maybe"), "
        "番号つき": CONFIRM_NO.replace(" ❯ No", " ❯ 1. No").replace("   Yes", "   2. Yes"), "案内が無い": CONFIRM_NO.replace(" Esc to cancel · Tab to amend", "")}
 check("確認の形でないもの（3 つ・カーソルが無い/2 つ・同じ語が 2 つ・別の文・問いが無い・番号つき・案内が無い）は読まない",
       {k: s.parse_confirm(v) for k, v in odd.items()}, {k: None for k in odd})
+check("案内（Esc to cancel）の下に別の入力・選択肢が続く画面は、確認と読まない（古い確認の表示を、いまの確認と取り違えない。a2a）",
+      (s.parse_confirm(CONFIRM_YES + "\n ❯ 1. 次へ\n   2. やめる"), s.read_ask(CONFIRM_YES + "\n ❯ 1. 次へ\n   2. やめる")["kind"]), (None, "unknown"))
+SPACED = CONFIRM_NO.replace("  ⎿  Waiting…", "  ⎿ Waiting…")
+check("確認の指紋は、空白の連なり・行の区切りの違いも別の画面とみなす（a2a）",
+      (s.prompt_fp(CONFIRM_NO) == s.prompt_fp(SPACED), s.prompt_fp(CONFIRM_NO) == s.prompt_fp(CONFIRM_NO.replace("Waiting…\n", "Waiting… "))), (False, False))
 LEFTOVER = "⏺ 次の 2 つを片づけます。\n  1. 下書きを確かめる\n  2. 報告ページを消す\n" + CONFIRM_NO  # 確認の上に、前の会話の番号つきの並びが残っている
 check("確認の上に前の会話の番号つきの並びが残っていても、確認として読む（codex-review P2）",
       (s.parse_prompt(LEFTOVER)["kind"], s.read_ask(LEFTOVER)["kind"], s.read_ask(PERMISSION)["kind"]), ("question", "confirm", "permission"))
@@ -332,6 +337,14 @@ screen()
 asked_then(DQ, "はい")
 s.CONFIRM_WAIT = 0.3
 check("確認: 問いの文と選択肢が同じでも、ほかの行（道具の見出し）が変わった画面なら、Enter を送らずに止める", answer(), ("stuck", ["down"]))
+s.CONFIRM_WAIT = 3.0
+s.hermes.hermes_turn_end(s.hub_human_turn(), "止めました")
+state.update(screen=CONFIRM_NO, on_key=lambda k: state.update(screen=CONFIRM_YES.replace("  ⎿  Waiting…", "  ⎿ Waiting…")) if k == "down" else None)
+begin("見て")
+screen()
+asked_then(DQ, "はい")
+s.CONFIRM_WAIT = 0.3
+check("確認: カーソルを動かしたあと、ほかの行の空白だけが変わった画面でも、Enter を送らずに止める（a2a）", answer(), ("stuck", ["down"]))
 s.CONFIRM_WAIT = 3.0
 s.hermes.hermes_turn_end(s.hub_human_turn(), "止めました")
 state.update(screen=CONFIRM_NO, on_key=lambda k: state.update(screen=CONFIRM_YES.replace("⏺ Artifact", "  Artifact")) if k == "down" else None)

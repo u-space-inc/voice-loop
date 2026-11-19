@@ -206,7 +206,7 @@ def parse_confirm(text: str) -> dict | None:
     返すのは {"question": 問いの文, "order": 画面の上からの並び, "cursor": ❯ の位置（0 か 1）}。この形でなければ None（答えない）。"""
     lines = text.splitlines()
     foot = next((i for i in range(len(lines) - 1, -1, -1) if "Esc to cancel" in lines[i]), None)
-    if foot is None or foot < 3:
+    if foot is None or foot < 3 or foot != len(lines) - 1:  # 案内が画面の最後の行でなければ（下に別の入力・選択肢が続く）、確認と読まない（a2a）
         return None
     ms = [CONFIRM_OPT.match(l) for l in lines[foot - 2:foot]]
     if not all(ms):
@@ -216,6 +216,12 @@ def parse_confirm(text: str) -> dict | None:
     if sorted(order) != ["No", "Yes"] or marks.count(True) != 1 or not question or CONFIRM_OPT.match(lines[foot - 3]) or OPTION.match(lines[foot - 3]):
         return None
     return {"question": question, "order": order, "cursor": marks.index(True)}
+
+
+def confirm_norm(text: str) -> str:
+    """確認の画面の照らし合わせ用。行の頭の ⏺（実行を待つ道具の見出しの印。点滅して空白になる）だけを空白にそろえ、ほかの字・空白・
+    行の区切りはそのまま残す（空白の連なりや行の区切りの違いも、別の画面とみなす。a2a）。"""
+    return "\n".join(" " + l[1:] if l.startswith("⏺") else l for l in text.splitlines())
 
 
 def confirm_text(text: str, at: int | None) -> str:
@@ -2192,7 +2198,7 @@ async def confirm_yes(pane: str, fp0: str) -> tuple[bool, str]:
     yes = c["order"].index("Yes")
     if c["cursor"] != yes:
         # カーソルを動かしたあとの画面は、選択肢の 2 行のカーソルだけが入れ替わり、ほかは 1 字も変わらないはず（道具の見出しの ⏺ の点滅だけは数えない）
-        want = " ".join(TOOL_MARK.sub("", confirm_text(text, yes)).split())
+        want = confirm_norm(confirm_text(text, yes))
         r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, "down" if yes > c["cursor"] else "up")
         if "result" not in r:
             return False, "herdr が応答しない（Enter は送っていない）"
@@ -2200,7 +2206,7 @@ async def confirm_yes(pane: str, fp0: str) -> tuple[bool, str]:
         while True:
             t2 = await asyncio.to_thread(read_prompt, pane)
             c2 = parse_confirm(t2)
-            if c2 and c2["question"] == c["question"] and c2["order"] == c["order"] and c2["cursor"] == yes and " ".join(TOOL_MARK.sub("", t2).split()) == want:
+            if c2 and c2["question"] == c["question"] and c2["order"] == c["order"] and c2["cursor"] == yes and confirm_norm(t2) == want:
                 break
             if time.monotonic() >= end:
                 return False, "カーソルが Yes に来たのを確かめられない（Enter は送っていない）"
@@ -2228,9 +2234,10 @@ def prompt_fp(text: str) -> str:
     字下げされた行（コマンドの本文など）の印と、印より後ろの文字は、1 字でも違えば別の指紋になる。
     選択式の質問などの画面は、問いの文が字下げなしで出るので、印も文字として数える。"""
     if parse_confirm(text):  # 番号の無い確認は、道具の見出しの ⏺ の点滅と、カーソルの位置（答える直前に別に確かめる）では変わらない。
-        # 承認の判定より先に見る（上の会話に番号つきの Yes/No が残っていると、承認の画面とも読めてしまう。read_ask と同じ順。codex-review）
-        text = TOOL_MARK.sub("", confirm_text(text, None))
-    elif is_permission(text):
+        # 承認の判定より先に見る（上の会話に番号つきの Yes/No が残っていると、承認の画面とも読めてしまう。read_ask と同じ順。codex-review）。
+        # ほかの字・空白・行の区切りは潰さずに数える（a2a）
+        return hashlib.sha1(("confirm\n" + confirm_norm(confirm_text(text, None))).encode()).hexdigest()
+    if is_permission(text):
         text = TOOL_MARK.sub("", text)
     return hashlib.sha1(" ".join(text.split()).encode()).hexdigest()
 
