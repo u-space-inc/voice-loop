@@ -191,8 +191,12 @@ STATUS.unlink()
 STATUS.symlink_to(Path(TMP) / "other.jsonl")
 link = [w["reason"] for w in ib.inbox(NOW)["watch"]]
 STATUS.unlink()
-check("状態のファイルが有るのに読めない（大きすぎる・symlink）ときも、読めないと帯で出す（無いときとは分ける）", (big, link, ib.inbox(NOW)["watch"]),
-      (["見張りの状態を読めません"], ["見張りの状態を読めません"], []))
+STATUS.write_bytes(b"")
+empty = ib.inbox(NOW)
+STATUS.unlink()
+check("状態のファイルが有るのに読めない（大きすぎる・symlink・空）ときも、読めないと帯で出す（無いときとは分ける）",
+      (big, link, [w["reason"] for w in empty["watch"]], empty["problem"], ib.inbox(NOW)["watch"]),
+      (["見張りの状態を読めません"], ["見張りの状態を読めません"], ["見張りの状態を読めません"], "", []))
 
 
 class Vanish(dict):  # 一覧を作る間に、付け直しが成功して失敗の知らせを消す

@@ -66,17 +66,17 @@ _op_lock: asyncio.Lock | None = None  # 済んだ・戻すを 1 つずつ受け�
 
 # ---------- 記録を読む ----------
 def _read(name: str, cap: int) -> tuple[bytes | None, str]:
-    """置き場の voice-loop/<name> を読む。(中身, 読めない理由)。ファイルが無ければ (b"", "")。"""
+    """置き場の voice-loop/<name> を読む。(中身, 読めない理由)。ファイルが無ければ (b"", "missing")（空のファイルは (b"", "")）。"""
     try:
         dfd = hermes_skills._open_dir(HOME, ("voice-loop",))
     except FileNotFoundError:
-        return b"", ""
+        return b"", "missing"
     except (OSError, ValueError) as e:
         return None, f"記録のフォルダを開けません（{type(e).__name__}）"
     try:
         return hermes_skills._read_at(dfd, name, cap), ""
     except FileNotFoundError:
-        return b"", ""
+        return b"", "missing"
     except ValueError as e:
         return None, str(e)
     except OSError as e:
@@ -102,7 +102,7 @@ def records() -> tuple[dict, dict] | None:
 
 
 def records_problem() -> str:
-    data, why = _read("items.jsonl", ITEMS_MAX)
+    data, why = _read("items.jsonl", ITEMS_MAX)  # 無い（missing）・空は問題にしない
     return "" if data is not None else f"判断待ちの記録を読めませんでした（{why}）"
 
 
@@ -175,11 +175,11 @@ def _watch(now: float | None = None) -> list[dict]:
     """見張りが止まっている口（いまは Teams）。見張りの台本（vl_watch.teams）と同じ決まりで読む: 状態の時刻が 2 時間より古ければ止まっている、
     組織が読めなければその理由（決まった言葉に直す。ファイルの文は出さない）。状態のファイルが無ければ、Teams の見張りを使っていない。"""
     now = time.time() if now is None else now
-    data, _ = _read("teams-status.json", STATUS_MAX)
+    data, why = _read("teams-status.json", STATUS_MAX)
     title = "Teams の見張りが止まっています"
     if data is None:  # 有るのに読めない（symlink・大きすぎる・権限など）。無い（Teams の見張りを使っていない）とは分ける
         return [{"source": "teams", "title": title, "reason": "見張りの状態を読めません", "fix": ""}]
-    if not data:
+    if why == "missing":  # 無い = Teams の見張りを使っていない（空のファイルは、下で読めない形として帯を出す）
         return []
     try:
         d = json.loads(data)
