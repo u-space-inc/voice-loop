@@ -421,6 +421,16 @@ screen()
 asked_then("proj で、『受注の記録』のページを削除してよいですか？ 内容を確認してよいですか？", "確認して")
 check("確認: 問いが 2 つのとき、もう 1 つの問いの操作の語（確認して）を、この問いの許可には使わない（codex-review P1）", answer(), ("not_said", []))
 s.CONFIRMING.clear()
+check("確認の対象の名前に同じ引用符が入る・閉じていない引用符があるときは、名前を読み取れないとして空（codex-review）",
+      [s.confirm_targets(CONFIRM_NO.replace('"受注の記録"', x)) for x in ('"My "draft" page"', '"Bob"s file"', '"say "hi""', '"受注の記録')], [[], [], [], []])
+QUOTE_NO = CONFIRM_NO.replace('"受注の記録"', '"My "draft" page"')
+state.update(screen=QUOTE_NO, on_key=lambda k: state.update(screen=QUOTE_NO.replace(" ❯ No\n   Yes", "   No\n ❯ Yes")) if k == "down" else None)
+begin("見て")
+screen()
+asked_then("proj で、『My 』を削除してよいですか？", "はい")
+check("確認: 名前の一部だけを名指しした問いでは、聞き返しを省かない（codex-review P1）", answer(), ("confirm", []))
+s.CONFIRMING.clear()
+state.update(screen=CONFIRM_NO, on_key=cursor_moves)
 check("確認の対象の名前（引用符の種類・空白だけの名前・確認でない画面）",
       (s.confirm_targets(CONFIRM_NO), s.confirm_targets(CONFIRM_NO.replace('"受注の記録"', "「受注の記録」")), s.confirm_targets(CONFIRM_NO.replace('"受注の記録"', '" "')),
        s.confirm_targets(PERMISSION)), (["受注の記録"], ["受注の記録"], [], []))

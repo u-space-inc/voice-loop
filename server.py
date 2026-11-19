@@ -242,9 +242,17 @@ QUOTED = re.compile(r'"([^"\n]{1,200})"|“([^”\n]{1,200})”|「([^」\n]{1,2
 
 def confirm_targets(text: str) -> list[str]:
     """番号の無い確認の問いの文（parse_confirm の question）の、引用符で囲まれた対象の名前（Permanently delete "受注の記録"? の「受注の記録」）。
-    空白だけの名前は数えない。確認でない・名前が無ければ空。"""
+    空白だけの名前は数えない。確認でない・名前が無ければ空。問いの文の引用符の数が、取り出した名前の数のちょうど 2 倍でなければ
+    （名前の中に同じ引用符がある・閉じていない引用符がある）、名前を確かに読み取れないとして空（聞き返しに倒す。codex-review）。"""
     c = parse_confirm(text)
-    return [n for m in QUOTED.finditer(c["question"]) if (n := next(g for g in m.groups() if g is not None)).strip()] if c else []
+    if not c:
+        return []
+    spans = list(QUOTED.finditer(c["question"]))
+    names = [next(g for g in m.groups() if g is not None) for m in spans]
+    # 前後に空白のある名前は、名前の中の引用符で切れた一部とみなす（"My "draft" page" の "My " と " page"）
+    if sum(c["question"].count(ch) for ch in '"“”「」『』') != 2 * len(spans) or any(n != n.strip() for n in names):
+        return []
+    return [n for n in names if n.strip()]
 
 
 def read_ask(text: str) -> dict:
