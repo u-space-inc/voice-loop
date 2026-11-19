@@ -190,7 +190,8 @@ def _watch(now: float | None = None) -> list[dict]:
         reasons.append("Mac の見張りが 2 時間以上動いていない（Mac が止まっている・眠っている）")
     for o in d["orgs"].values():
         if isinstance(o, dict) and not o.get("ok"):
-            reasons.append(vl_watch.TEAMS_REASON.get(o.get("reason"), vl_watch.TEAMS_REASON["run"]))
+            code = o.get("reason")  # 文字でなければ（配列・物など）辞書を引かない
+            reasons.append(vl_watch.TEAMS_REASON.get(code, vl_watch.TEAMS_REASON["run"]) if isinstance(code, str) else vl_watch.TEAMS_REASON["run"])
     reasons = list(dict.fromkeys(reasons))
     return [{"source": "teams", "title": title, "reason": "／".join(reasons), "fix": ""}] if reasons else []
 
@@ -200,7 +201,11 @@ def inbox(now: float | None = None) -> dict:
     with _lock:
         later = _later()
     got = records()
-    out = {"on": True, "problem": "", "items": [], "fyi": [], "later": 0, "pending": [], "watch": _watch(now),
+    try:  # 見張りの状態のどんな形でも、判断待ちの一覧は止めない
+        watch = _watch(now)
+    except Exception:
+        watch = [{"source": "teams", "title": "Teams の見張りが止まっています", "reason": "見張りの状態を読めません", "fix": ""}]
+    out = {"on": True, "problem": "", "items": [], "fyi": [], "later": 0, "pending": [], "watch": watch,
            "days": vl_items.OPEN_DAYS, "later_options": later_options(now), "undo": UNDO}
     f = dict(FAIL)  # 一覧は別のスレッドで作るので、写してから見る（その間に付け直しが成功して消しても落ちない）
     if f.get("n") and now - f.get("at", 0) < 600:

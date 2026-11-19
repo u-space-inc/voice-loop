@@ -173,6 +173,12 @@ check("Teams の見張りが止まっていれば帯を出す（理由はファ�
 STATUS.write_text(json.dumps({"orgs": {"o": {"ok": False, "reason": "parse"}, "p": {"ok": False, "reason": "signin"}}, "at": NOW}))
 check("…理由の符号は、見張りの台本（vl_watch）と同じ言葉に直す", ib.inbox(NOW)["watch"][0]["reason"],
       ib.vl_watch.TEAMS_REASON["parse"] + "／" + ib.vl_watch.TEAMS_REASON["signin"])
+STATUS.write_text(json.dumps({"orgs": {"o": {"ok": False, "reason": ["parse"]}, "p": {"ok": False, "reason": {"x": 1}}, "q": "壊れた"}, "at": NOW}))
+d = ib.inbox(NOW)
+check("…理由が文字でなくても（配列・物）落ちず、取得に失敗と出す", (d["watch"][0]["reason"], d["problem"]), (ib.vl_watch.TEAMS_REASON["run"], ""))
+keep_w, ib._watch = ib._watch, lambda now=None: 1 / 0
+check("…帯を作るところで何が起きても、判断待ちの一覧は止めない", [w["reason"] for w in ib.inbox(NOW)["watch"]], ["見張りの状態を読めません"])
+ib._watch = keep_w
 STATUS.write_text(json.dumps({"orgs": {"o": {"ok": True}}, "at": NOW - 3 * 3600}))
 check("最後に読めてから 2 時間より古ければ、見張りそのものが止まっていると帯で出す", "2 時間以上動いていない" in ib.inbox(NOW)["watch"][0]["reason"], True)
 STATUS.write_text(json.dumps({"orgs": {"o": {"ok": True}}, "at": NOW - 600}))
