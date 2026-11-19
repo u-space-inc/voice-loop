@@ -1327,7 +1327,8 @@ async function doneItem(it) {
   const left = Math.max(0, Number(r.left) || 0) * 1000 - (performance.now() - t0) - 100;
   if (left > 0) {
     ibUndo = { n: it.n, title: it.title, until: Date.now() + left };
-    setTimeout(() => { if (ibUndo && ibUndo.n === it.n && Date.now() >= ibUndo.until) { ibUndo = null; loadSituation(); } }, left + 50);
+    // 期限が来たら、その場で「戻す」を消す（読み直しの応答を待たない。止まっても、押せない「戻す」を残さない）
+    setTimeout(() => { if (ibUndo && ibUndo.n === it.n && Date.now() >= ibUndo.until) { ibUndo = null; document.querySelectorAll('#sitBody .ibToast').forEach(e => e.remove()); loadSituation(); } }, left + 50);
   }
   loadSituation();
 }

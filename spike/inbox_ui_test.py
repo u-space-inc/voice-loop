@@ -194,7 +194,13 @@ def run(page, who):
     page.locator("#sitBody > .ibCard").nth(1).locator("button.done").click()
     page.wait_for_function("ibUndo !== null")
     rest, t_set = page.evaluate("ibUndo.until - Date.now()"), time.time()
-    page.wait_for_function("!document.querySelector('#sitBody .ibToast')", timeout=6000)
+    hold = []
+    page.route("**/api/inbox", lambda r: hold.append(r))  # 期限が来たあとの読み直しを止めても
+    gone = wait(lambda: page.locator("#sitBody .ibToast").count() == 0, ib.UNDO + 1.0)
+    for r in hold:
+        r.continue_()
+    page.unroute("**/api/inbox")
+    check(f"{who} 期限が来たら、読み直しの応答を待たずに「戻す」を消す", gone, True)
     if who.startswith("Chromium"):
         check(f"{who} 「戻す」は、届くまでの遅れを引いた残りで消える（本体の期限を超えない）",
               (0 < rest <= (ib.UNDO - (t_set - t_click) + 0.3) * 1000 and rest <= (ib.UNDO - 1.2) * 1000) or (rest, round(t_set - t_click, 2)), True)
