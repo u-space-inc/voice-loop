@@ -1340,6 +1340,7 @@ async function doneItem(it) {
 async function undoItem() {
   const u = ibUndo; if (!u) return;
   ibUndo = null;
+  document.querySelectorAll('#sitBody .ibToast').forEach(e => e.remove());  // 押したらその場で消す（読み直しが止まっても、押せない「戻す」を残さない）
   let r; try { r = await postJSON('/api/inbox/undo', { n: u.n }); } catch { r = { ok: false, reason: 'net' }; }
   if (!r.ok) ibNote(r.reason === 'late' ? `「${u.title}」は、もう済みの印を付け始めていたので戻せませんでした。ハブに「[${u.n}] はまだだった」と言えば戻せます` : '戻せませんでした（本体に届きません）', true);
   loadSituation();

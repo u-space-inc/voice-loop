@@ -218,11 +218,13 @@ def run(page, who):
     page.wait_for_function("ibUndo !== null")
     after = (cards(page), page.locator("#sitBody .ibToast").count())
     page.click("#sitBody .ibToast button")  # 戻す
+    undone = wait(lambda: page.locator("#sitBody .ibToast").count() == 0, 2)  # 読み直しは止まったまま
     for r in hold2:
         r.continue_()
     page.unroute("**/api/inbox")
     check(f"{who} 数だけ取り直したあとでも、押したカードはその場で消え、戻すと一覧に戻る",
           (after, wait(lambda: cards(page) == [TITLE1], 6)), (([], 1), True))
+    check(f"{who} 「戻す」を押したら、読み直しを待たずにその場で消す", undone, True)
     # あとで
     page.locator("#sitBody > .ibCard").first.click()
     page.select_option(".ibItem select", "morning")
