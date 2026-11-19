@@ -183,7 +183,22 @@ def run(page, who):
     page.click("#sitBody .ibToast button")
     page.wait_for_function("document.querySelectorAll('#sitBody > .ibCard').length === 2")
     check(f"{who} 戻すと一覧に戻り、道具は動かさない", (cards(page), CMDS), ([TITLE1, "処理時間のアラーム"], []))
+    # 「戻す」は本体が返した残りの秒だけ出す（応答が遅れても、本体より長く出さない）
+    def short(route):
+        r = route.fetch()
+        body = r.json()
+        body["left"] = 0.6
+        route.fulfill(response=r, json=body)
+    page.route("**/api/inbox/done", short)
     page.locator("#sitBody > .ibCard").nth(1).locator("button.done").click()
+    page.wait_for_function("ibUndo !== null")
+    rest = page.evaluate("ibUndo.until - Date.now()")
+    page.wait_for_function("!document.querySelector('#sitBody .ibToast')", timeout=6000)
+    if who.startswith("Chromium"):  # 応答の書き換え（route.fetch → fulfill）は WebKit では効かないので、WebKit は本体の残り（UNDO 秒）以内を見る
+        check(f"{who} 「戻す」は本体が返した残りの秒（0.6 秒）で消える（画面で数え直さない）", (0 < rest <= 600) or rest, True)
+    else:
+        check(f"{who} 「戻す」は本体が返した残りの秒（{ib.UNDO} 秒）以内で消える", (0 < rest <= ib.UNDO * 1000) or rest, True)
+    page.unroute("**/api/inbox/done")
     check(f"{who} カードの「済」: 時間がたつとコンテナの中の道具に付けさせ、一覧から消える",
           (wait(lambda: len(CMDS) == 1, 6), wait(lambda: cards(page) == [TITLE1], 8), CMDS[0][-6:-4] if CMDS else None), (True, True, ["done", "2"]))
     # あとで
@@ -198,6 +213,19 @@ def run(page, who):
     page.wait_for_selector(".ibItem h3")
     check(f"{who} /#i=<番号> でその件（3 日より前でも）を開き、URL の印は外す", (page.text_content(".ibItem h3"), page.evaluate("location.hash")), ("古い依頼", ""))
     check(f"{who} …Slack の件には、元を開くリンクを作らない", page.locator(".ibItem a").count(), 0)
+    # 通知から新しく開いたとき、話し相手の一覧が届く前に件が開いても、一覧が届いてから返信の状態にする
+    held = []
+    page.goto("about:blank")
+    page.route("**/api/agents", lambda r: held.append(r))
+    page.goto(BASE + "/#i=1")
+    page.wait_for_selector(".ibItem h3")
+    early = page.is_visible("#replyBar")
+    wait(lambda: held, 5)
+    for r in held:
+        r.continue_()
+    page.unroute("**/api/agents")
+    check(f"{who} 一覧が届く前に件が開いても、届いてからその件への返信の状態にする",
+          (early, wait(lambda: page.is_visible("#replyBar") and "判断待ち [1]" in (page.text_content("#replyTo") or ""), 8)), (False, True))
     page.goto(BASE + "/#i=999")
     page.wait_for_selector("#sitBody .ibCard")
     check(f"{who} 無い番号は案内だけ出し、一覧を開く", "判断待ち [999] は、片づいたか見つかりませんでした" in page.text_content("#sitBody"), True)

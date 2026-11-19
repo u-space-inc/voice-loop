@@ -50,10 +50,11 @@ _MAIL_ID = re.compile(r"[0-9a-f]{12,24}")  # Gmail の記録の id（16 進）�
 _lock = threading.Lock()
 router = APIRouter()
 
-# 「済んだ」を押して、まだ付けていないもの: 番号 → {"until": 付ける時刻, "handle": 付ける予約, "state": "wait"|"run"}
+# 「済んだ」を押して、まだ付けていないもの: 番号 → {"until": 付ける時刻, "handle": 付ける予約, "state": "wait"|"run", "gen": 予約の世代}
 PENDING: dict[int, dict] = {}
 FAIL: dict = {}  # 付けられなかった最後の知らせ {"n", "why", "at"}
-_done_lock: asyncio.Lock | None = None
+_done_lock: asyncio.Lock | None = None  # コンテナの中の道具を 1 つずつ動かす
+_op_lock: asyncio.Lock | None = None  # 済んだ・戻すを 1 つずつ受ける（記録を読む間に、別の画面の戻すと入れ違わないように）
 
 
 # ---------- 記録を読む ----------
@@ -204,7 +205,7 @@ def inbox(now: float | None = None) -> dict:
         if r.get("kind") != "judge":
             continue
         if n in PENDING:
-            out["pending"].append({"n": n, "until": PENDING[n]["until"], "state": PENDING[n]["state"]})
+            out["pending"].append({"n": n, "left": _left(PENDING[n]), "state": PENDING[n]["state"]})
             continue
         back = later.get(n)
         if back and back > now:
@@ -244,10 +245,10 @@ def run_done(n: int) -> str:
     return "" if got and n in got[1] else "記録に印が見当たりません"
 
 
-async def _commit(n: int):
+async def _commit(n: int, gen: str):
     global _done_lock
     p = PENDING.get(n)
-    if not p or p["state"] != "wait":
+    if not p or p["state"] != "wait" or p["gen"] != gen:  # 戻した・押し直した予約は、古い予約では付けない
         return
     p["state"] = "run"
     _done_lock = _done_lock or asyncio.Lock()
@@ -278,24 +279,37 @@ async def api_inbox():
     return JSONResponse(await asyncio.to_thread(inbox))
 
 
+def _ops() -> asyncio.Lock:
+    global _op_lock
+    _op_lock = _op_lock or asyncio.Lock()
+    return _op_lock
+
+
+def _left(p: dict) -> float:
+    """戻せる残りの秒（画面は、この秒で「戻す」を消す。端末の時計には頼らない）。"""
+    return max(0.0, round(p["until"] - time.time(), 2)) if p["state"] == "wait" else 0.0
+
+
 @router.post("/api/inbox/done")
 async def api_inbox_done(body: dict):
-    """「済んだ」。UNDO 秒あとに、コンテナの中で印を付ける（それまでは「戻す」で取り消せる）。コンテナからは使えない口。"""
+    """「済んだ」。UNDO 秒あとに、コンテナの中で印を付ける（それまでは「戻す」で取り消せる）。コンテナからは使えない口。
+    済んだ・戻すは 1 つずつ受ける。予約には世代を付け、付けるときに同じ世代かを確かめる。"""
     n = _num_of(body)
     if n is None:
         return JSONResponse({"ok": False, "reason": "bad_request"}, status_code=400)
-    if n in PENDING:
-        return JSONResponse({"ok": True, "n": n, "until": PENDING[n]["until"]})
-    got = await asyncio.to_thread(records)
-    if got is None:
-        return JSONResponse({"ok": False, "reason": "unreadable"})
-    items, done = got
-    if n not in items or items[n].get("kind") != "judge" or n in done:
-        return JSONResponse({"ok": False, "reason": "gone"})
-    loop = asyncio.get_running_loop()
-    PENDING[n] = {"until": time.time() + UNDO, "state": "wait",
-                  "handle": loop.call_later(UNDO, lambda: asyncio.ensure_future(_commit(n)))}
-    return JSONResponse({"ok": True, "n": n, "until": PENDING[n]["until"]})
+    async with _ops():
+        if n in PENDING:
+            return JSONResponse({"ok": True, "n": n, "left": _left(PENDING[n])})
+        got = await asyncio.to_thread(records)
+        if got is None:
+            return JSONResponse({"ok": False, "reason": "unreadable"})
+        items, done = got
+        if n not in items or items[n].get("kind") != "judge" or n in done:
+            return JSONResponse({"ok": False, "reason": "gone"})
+        loop, gen = asyncio.get_running_loop(), os.urandom(6).hex()
+        PENDING[n] = {"until": time.time() + UNDO, "state": "wait", "gen": gen,
+                      "handle": loop.call_later(UNDO, lambda: asyncio.ensure_future(_commit(n, gen)))}
+        return JSONResponse({"ok": True, "n": n, "left": _left(PENDING[n])})
 
 
 @router.post("/api/inbox/undo")
@@ -304,14 +318,13 @@ async def api_inbox_undo(body: dict):
     n = _num_of(body)
     if n is None:
         return JSONResponse({"ok": False, "reason": "bad_request"}, status_code=400)
-    p = PENDING.get(n)
-    if not p:
-        return JSONResponse({"ok": False, "reason": "late"})
-    if p["state"] != "wait":
-        return JSONResponse({"ok": False, "reason": "late"})
-    p["handle"].cancel()
-    PENDING.pop(n, None)
-    return JSONResponse({"ok": True, "n": n})
+    async with _ops():
+        p = PENDING.get(n)
+        if not p or p["state"] != "wait":
+            return JSONResponse({"ok": False, "reason": "late"})
+        p["handle"].cancel()
+        PENDING.pop(n, None)
+        return JSONResponse({"ok": True, "n": n})
 
 
 @router.post("/api/inbox/later")
@@ -327,9 +340,8 @@ async def api_inbox_later(body: dict):
     items, done = got
     if n not in items or items[n].get("kind") != "judge" or n in done:
         return JSONResponse({"ok": False, "reason": "gone"})
-    with _lock:
-        now = time.time()
-        m = {k: v for k, v in _later().items() if v > now and k in items and k not in done}
+    with _lock:  # 時刻を過ぎて一覧に戻った件の時刻も残す（戻った時刻で新しさを数え続ける）。片づいた・消えた件の分だけ外す
+        m = {k: v for k, v in _later().items() if k in items and k not in done}
         m[n] = opt["at"]
         _save_later(m)
     return JSONResponse({"ok": True, "n": n, "at": opt["at"], "label": opt["label"]})

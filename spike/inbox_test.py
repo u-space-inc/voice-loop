@@ -102,7 +102,13 @@ check("文は 1 行・上限の字数で切り、制御文字・向きを変え�
 check("案件の欄が文字でなくても、文字にそろえて出す", isinstance(x11["project"], str), True)
 check("見張りが止まっていなければ帯は出さない", d["watch"], [])
 
+write([add(12, at=NOW - 60, moved="きのう"), add(13, at=NOW - 120, moved=float("inf") if False else 1e30), add(14, at=NOW - 180)])
+d = ib.inbox(NOW)
+check("追加の行に書かれた戻した印（moved）の値は使わない（壊れた値 1 つで一覧全体を読めなくしない）", (ns(d), d["problem"]), ([12, 13, 14], ""))
+ITEMS.write_text("")
+
 # ---------- 置き場を安全に読む ----------
+write([add(1, at=NOW - 3600)])
 real = ITEMS.read_bytes()
 ITEMS.unlink()
 other = Path(TMP) / "other.jsonl"
@@ -175,9 +181,27 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     r = post("/api/inbox/done", {"n": 21}).json()
     d = get()
     check("済んだ: すぐ一覧から外し、戻せる間の印を返す（まだ道具は動かさない）", (r["ok"], ns(d), [p["n"] for p in d["pending"]], CMDS), (True, [22, 23, 25], [21], []))
+    again = post("/api/inbox/done", {"n": 21}).json()
+    check("…戻せる残りの秒を返す（押し直しても延びない。画面は端末の時計に頼らずこの秒で消す）", (0 < r["left"] <= ib.UNDO, again["left"] <= r["left"]), (True, True))
     check("…戻す: 取り消すと一覧に戻り、道具は動かさない", (post("/api/inbox/undo", {"n": 21}).json()["ok"], ns(get()), CMDS), (True, [21, 22, 23, 25], []))
     time.sleep(ib.UNDO + 0.4)
     check("…戻したものは、時間がたっても付けない", (CMDS, ns(get())), ([], [21, 22, 23, 25]))
+    # 2 つの画面から同時に「済んだ」、記録を読んでいる間に一方が「戻す」: 戻したあとに、遅れた「済んだ」が予約をよみがえらせない
+    import threading as _th
+    ib.UNDO = 0.8
+    real_records = ib.records
+    ib.records = lambda: (time.sleep(0.5), real_records())[1]
+    outs = {}
+    ta = _th.Thread(target=lambda: outs.update(a=post("/api/inbox/done", {"n": 25}).json()))
+    tb = _th.Thread(target=lambda: outs.update(b=post("/api/inbox/done", {"n": 25}).json()))
+    ta.start(); time.sleep(0.1); tb.start()
+    ta.join()
+    outs["undo"] = post("/api/inbox/undo", {"n": 25}).json()
+    tb.join()
+    ib.records = real_records
+    time.sleep(ib.UNDO + 0.6)
+    check("同時の「済んだ」と「戻す」が入れ違っても、戻したあとに予約がよみがえらない（済んだ・戻すは 1 つずつ受ける）",
+          (outs["a"]["ok"], outs["undo"]["ok"], CMDS, 25 in ns(get())), (True, True, [], True))
     ib.UNDO = 1.0  # 戻してすぐ押し直したら、前の予約で早く付けない（押し直した時刻から数え直す）
     t0 = time.time()
     post("/api/inbox/done", {"n": 21})
@@ -228,6 +252,15 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
           ["bad_request", "bad_request", "gone"])
     check("…選び方は今夜（19 時より前だけ）・明日の朝・来週の月曜", ([o["key"] for o in ib.later_options(today_start + 10 * 3600)], [o["key"] for o in ib.later_options(today_start + 20 * 3600)]),
           (["tonight", "morning", "week"], ["morning", "week"]))
+    # あとでから戻った古い件は、別の件をあとでにしても、戻った時刻で新しさを数え続ける（3 日より前に畳み直さない）
+    keep_rows = ITEMS.read_text()
+    write([add(51, at=NOW - 5 * 86400, title="古いが戻った件"), add(52, at=NOW - 60)])
+    st.write_text(json.dumps({"later": {"51": time.time() - 5}}))
+    before_old = [x["old"] for x in get()["items"] if x["n"] == 51]
+    post("/api/inbox/later", {"n": 52, "until": "morning"})
+    after_old = [x["old"] for x in get()["items"] if x["n"] == 51]
+    check("あとでから戻った件は、別の件をあとでにしても新しいまま（戻った時刻を残す）", (before_old, after_old), ([False], [False]))
+    ITEMS.write_text(keep_rows)
     check("どの操作のあとも、置き場のファイルは本体が書いていない（印はコンテナの中の道具だけが書く）",
           [p for p in snapshot() if p[0] != "voice-loop/items.jsonl"] == [p for p in before if p[0] != "voice-loop/items.jsonl"], True)
     lines = [json.loads(l) for l in ITEMS.read_text().splitlines()]

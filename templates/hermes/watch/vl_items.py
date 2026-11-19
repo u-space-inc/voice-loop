@@ -88,7 +88,7 @@ def _state(rows: list[dict]) -> tuple[dict, dict]:
             continue
         if op == "add":
             if _num(r.get("at")) and all(isinstance(r.get(k), str) for k in ("source", "id", "kind", "title")):
-                items[n] = r
+                items[n] = {k: v for k, v in r.items() if k not in ("moved", "moved_note")}  # 戻した印は reopen の行からだけ作る（追加の行の値は使わない）
         elif op == "done":
             done[n] = r
         elif op == "reopen" and n in items:
