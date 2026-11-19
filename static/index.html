@@ -1302,9 +1302,11 @@ function openItem(n) {
   if (it) itemReply(it);
 }
 // 話し相手の一覧がまだ届いていなければ（通知から新しく開いたときなど）、届くのを待ってから返信先にする（一覧が無いのと、ハブが居ないのを分ける）
+// 待つ間に、利用者が相手・返信先を選んだ・外した・送った・件を開いた（どれも cancelTopic で topicSeq が進む）なら、あとから上書きしない
 async function itemReply(it) {
+  const seq = topicSeq;
   if (!agents.length) await Promise.race([loadAgents(), new Promise(res => setTimeout(res, TOPIC_WAIT))]);
-  if (ibSel !== it.n) return;  // 待つ間に別の件を開いた・閉じた
+  if (ibSel !== it.n || seq !== topicSeq) return;  // 待つ間に別の件を開いた・閉じた・利用者が選び直した
   const hub = agents.find(a => a.hub);
   if (!hub) { ibNote(agents.length ? 'ハブが居ないので、この件への返信はできません（中身は読めます）' : '話し相手の一覧を読めないので、まだ返信の状態にできません。「↩ この件に返信」で付け直してください', true); renderSit(); return; }
   if ($('agent').value !== hub.pane) { $('agent').value = hub.pane; $('agent').dispatchEvent(new Event('change')); }  // ハブの会話に替える（返信先は外れる）
@@ -1316,11 +1318,13 @@ function closeItem() {
   ibSel = null; ibSig = ''; renderSit();
 }
 async function doneItem(it) {
+  const t0 = performance.now();
   let r; try { r = await postJSON('/api/inbox/done', { n: it.n }); } catch { ibNote('済みにできませんでした（本体に届きません）', true); renderSit(); return; }
   if (!r.ok) { ibNote({ gone: 'この判断待ちは、もう片づいているか見つかりません', unreadable: '判断待ちの記録を読めません' }[r.reason] || '済みにできませんでした', true); loadSituation(); return; }
   if (ibSel === it.n) closeItem();
-  // 「戻す」を出すのは、本体が返した残りの秒だけ（応答が遅れても・押し直しても、本体より長く出さない。端末の時計には頼らない）
-  const left = Math.max(0, Number(r.left) || 0) * 1000 - 300;
+  // 「戻す」を出すのは、本体が返した残りの秒から、送ってから受け取るまでにかかった時間を引いた分だけ
+  // （本体が残りを数えたのは、その間のどこか。応答が遅れても・押し直しても、本体より長く出さない。端末の時計には頼らない）
+  const left = Math.max(0, Number(r.left) || 0) * 1000 - (performance.now() - t0) - 100;
   if (left > 0) {
     ibUndo = { n: it.n, title: it.title, until: Date.now() + left };
     setTimeout(() => { if (ibUndo && ibUndo.n === it.n && Date.now() >= ibUndo.until) { ibUndo = null; loadSituation(); } }, left + 50);

@@ -183,19 +183,21 @@ def run(page, who):
     page.click("#sitBody .ibToast button")
     page.wait_for_function("document.querySelectorAll('#sitBody > .ibCard').length === 2")
     check(f"{who} 戻すと一覧に戻り、道具は動かさない", (cards(page), CMDS), ([TITLE1, "処理時間のアラーム"], []))
-    # 「戻す」は本体が返した残りの秒だけ出す（応答が遅れても、本体より長く出さない）
-    def short(route):
-        r = route.fetch()
-        body = r.json()
-        body["left"] = 0.6
-        route.fulfill(response=r, json=body)
-    page.route("**/api/inbox/done", short)
+    # 「戻す」は本体が返した残りの秒から、届くまでにかかった時間を引いた分だけ出す（応答の配送が遅れても、本体より長く出さない）
+    def slow(route):
+        r = route.fetch()  # 本体は応答を作り終えている（残りの秒を数えた）
+        time.sleep(1.2)  # 配送を遅らせる
+        route.fulfill(response=r)
+    if who.startswith("Chromium"):  # 応答を持って遅らせる差し替え（route.fetch → fulfill）は WebKit では効かないので、WebKit は本体の残り以内を見る
+        page.route("**/api/inbox/done", slow)
+    t_click = time.time()
     page.locator("#sitBody > .ibCard").nth(1).locator("button.done").click()
     page.wait_for_function("ibUndo !== null")
-    rest = page.evaluate("ibUndo.until - Date.now()")
+    rest, t_set = page.evaluate("ibUndo.until - Date.now()"), time.time()
     page.wait_for_function("!document.querySelector('#sitBody .ibToast')", timeout=6000)
-    if who.startswith("Chromium"):  # 応答の書き換え（route.fetch → fulfill）は WebKit では効かないので、WebKit は本体の残り（UNDO 秒）以内を見る
-        check(f"{who} 「戻す」は本体が返した残りの秒（0.6 秒）で消える（画面で数え直さない）", (0 < rest <= 600) or rest, True)
+    if who.startswith("Chromium"):
+        check(f"{who} 「戻す」は、届くまでの遅れを引いた残りで消える（本体の期限を超えない）",
+              (0 < rest <= (ib.UNDO - (t_set - t_click) + 0.3) * 1000 and rest <= (ib.UNDO - 1.2) * 1000) or (rest, round(t_set - t_click, 2)), True)
     else:
         check(f"{who} 「戻す」は本体が返した残りの秒（{ib.UNDO} 秒）以内で消える", (0 < rest <= ib.UNDO * 1000) or rest, True)
     page.unroute("**/api/inbox/done")
@@ -226,6 +228,21 @@ def run(page, who):
     page.unroute("**/api/agents")
     check(f"{who} 一覧が届く前に件が開いても、届いてからその件への返信の状態にする",
           (early, wait(lambda: page.is_visible("#replyBar") and "判断待ち [1]" in (page.text_content("#replyTo") or ""), 8)), (False, True))
+    # 一覧を待つ間に利用者が相手を選んだら、待ち終わってもハブに戻さない
+    # （一覧は届き、会話の読み込みが止まっている間に、利用者が一覧から別のセッションを選ぶ）
+    page.goto("about:blank")
+    held.clear()
+    page.route("**/api/history*", lambda r: held.append(r))
+    page.goto(BASE + "/#i=1")
+    page.wait_for_selector(".ibItem h3")
+    page.wait_for_function("[...document.getElementById('agent').options].some(o => o.value === 'w1:p1')")
+    page.select_option("#agent", "w1:p1")
+    for r in held:
+        r.continue_()
+    page.unroute("**/api/history*")
+    time.sleep(2.0)
+    check(f"{who} 一覧を待つ間に利用者が相手を選んだら、待ち終わってもハブに戻さず、件への返信にもしない",
+          (page.input_value("#agent"), page.is_visible("#replyBar")), ("w1:p1", False))
     page.goto(BASE + "/#i=999")
     page.wait_for_selector("#sitBody .ibCard")
     check(f"{who} 無い番号は案内だけ出し、一覧を開く", "判断待ち [999] は、片づいたか見つかりませんでした" in page.text_content("#sitBody"), True)
