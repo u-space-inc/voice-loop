@@ -193,6 +193,27 @@ def run(page, who):
     page.click('#sitBody .ibToast[data-n="2"] button')
     page.wait_for_function("document.querySelectorAll('#sitBody > .ibCard').length === 2")
     check(f"{who} 2 枚続けて済にしても、件ごとに「戻す」が出て、先に押した件も戻せる", (sorted(toasts), cards(page), CMDS), (["1", "2"], [TITLE1, "処理時間のアラーム"], []))
+    # 「済」を押す前に始まった一覧の読み直しが遅れて届いても、消したカードを戻さない
+    stash = []
+
+    def first_old(route):
+        if not stash:
+            stash.append((route, route.fetch()))  # 本体は「済」の前の一覧を作り終えている。届けるのを止めておく
+        else:
+            route.continue_()
+    page.route("**/api/inbox", first_old)
+    page.evaluate("void loadSituation()")
+    wait(lambda: stash, 5)
+    page.locator("#sitBody > .ibCard").nth(0).locator("button.done").click()
+    page.wait_for_function("ibUndos.size === 1")
+    wait(lambda: cards(page) == ["処理時間のアラーム"], 4)
+    stash[0][0].fulfill(response=stash[0][1])  # 古い一覧を、いま届ける
+    page.unroute("**/api/inbox")
+    time.sleep(0.8)
+    stale = cards(page)
+    page.click('#sitBody .ibToast[data-n="1"] button')
+    page.wait_for_function("document.querySelectorAll('#sitBody > .ibCard').length === 2")
+    check(f"{who} 「済」の前に始まった読み直しが遅れて届いても、消したカードを戻さない", (stale, CMDS), (["処理時間のアラーム"], []))
     # 「戻す」は本体が返した残りの秒から、届くまでにかかった時間を引いた分だけ出し、期限が来たらその場で消す。
     # 一覧の読み直し（/api/inbox）を止めたままにしても、押した直後にカードが消えて「戻す」が出て、期限で消えることを見る
     def slow(route):

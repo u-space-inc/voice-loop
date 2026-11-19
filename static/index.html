@@ -689,6 +689,7 @@ navigator.serviceWorker?.addEventListener('message', e => {
 });
 // 受け箱（💡）の状態: 最後に読んだ一覧・開いている件の番号・通知で開く件・案件の絞り込み・戻せる件・「その他」と畳みの開閉・案内・描いた件の印
 let ibExtra = null, ibWantTok = 0;
+let ibGen = 0;  // 手元で一覧を変えた（済んだ・戻す・あとで）世代。それより前に始まった読み直しの答えでは、一覧を戻さない
 const ibUndos = new Map();  // 戻せる件: 番号 → { n, title, until }（5 秒以内に何件押しても、件ごとに戻せる）  // ibWantTok: 通知で開く予約の世代（閉じる・別の通知で進む）  // 通知・リンクで開いた、一覧に出ていない 1 件（あとでに回した件・数の上限から外れた件）
 let inbox = null, ibSel = null, ibWant = null, ibProj = '', ibOther = false, ibOld = false, ibFyiOpen = false, ibMsg = null, ibSig = '';
 // 返信先。報告（{ at, about }）か、受け箱の判断待ち（{ item: 番号, about: 題 }）。ハブの会話のときだけ付けて送り、送ったら外す。相手を替えたら外す
@@ -1323,6 +1324,7 @@ function closeItem() {
   ibSel = null; ibSig = ''; ibExtra = null; renderSit();
 }
 async function doneItem(it) {
+  ibGen++;  // 押す前に始まった読み直しの答えでは、一覧を戻さない
   const t0 = performance.now();
   let r; try { r = await postJSON('/api/inbox/done', { n: it.n }); } catch { ibNote('済みにできませんでした（本体に届きません）', true); renderSit(); return; }
   if (!r.ok) { ibNote({ gone: 'この判断待ちは、もう片づいているか見つかりません', unreadable: '判断待ちの記録を読めません' }[r.reason] || '済みにできませんでした', true); loadSituation(); return; }
@@ -1342,10 +1344,12 @@ async function doneItem(it) {
   if (sitCache) sitCache[3] = drop(sitCache[3]);
   if (ibExtra && ibExtra.n === it.n) ibExtra = null;
   paintSitBtn(ibCount(inbox)); ibSig = ''; renderSit();
+  ibGen++;  // 応答を待つ間に始まった読み直しの答えも使わない（このあとの読み直しが描く）
   loadSituation();
 }
 async function undoItem(n) {
   const u = ibUndos.get(n); if (!u) return;
+  ibGen++;
   ibUndos.delete(n);
   document.querySelectorAll(`#sitBody .ibToast[data-n="${n}"]`).forEach(e => e.remove());  // 押したらその場で消す（読み直しが止まっても、押せない「戻す」を残さない）
   let r; try { r = await postJSON('/api/inbox/undo', { n: u.n }); } catch { r = { ok: false, reason: 'net' }; }
@@ -1353,6 +1357,7 @@ async function undoItem(n) {
   loadSituation();
 }
 async function laterItem(it, key) {
+  ibGen++;
   let r; try { r = await postJSON('/api/inbox/later', { n: it.n, until: key }); } catch { ibNote('あとでに回せませんでした（本体に届きません）', true); renderSit(); return; }
   if (!r.ok) { ibNote('あとでに回せませんでした（もう片づいているか、見つかりません）', true); loadSituation(); return; }
   if (ibSel === it.n) closeItem();
@@ -1525,8 +1530,10 @@ function renderSit() {
 async function loadSituation() {
   // 読めなかったときは、知らせが無いことと分けて出す（本体が止まった・接続が切れたときに「ありません」と見せない）
   const get = url => fetch(url).then(r => r.ok ? r.json() : FAILED).catch(() => FAILED);
+  const gen = ibGen;
   const [h, nt, lr, ib] = await Promise.all([get('/api/hermes/skills'), get('/api/notices'), get('/api/hermes/learned'), get('/api/inbox')]);
   if (sitHold) return;  // 読んでいるあいだに「採る」などが押された
+  if (gen !== ibGen) return;  // 読んでいる間に済んだ・戻す・あとでを押した（その操作のあとの読み直しが描く。古い答えで消したカードを戻さない）
   if (h === FAILED && nt === FAILED && ib === FAILED) { $('sitBody').textContent = '読めませんでした（接続を確かめてください）'; return; }  // 数の札はそのまま
   if (ib !== FAILED) { inbox = ib; paintSitBtn(ibCount(ib)); }
   if (h !== FAILED && ib !== FAILED) {  // 両方読めたときだけ数を描き直す
@@ -1569,7 +1576,7 @@ function openInboxHash() {
   return true;
 }
 // 💡 の数は、閉じていても 1 分ごとに取り直す（見えている間だけ）
-async function refreshSitCount() { try { const r = await fetch('/api/inbox'); if (r.ok) { inbox = await r.json(); if (sitCache) sitCache[3] = inbox; paintSitBtn(ibCount(inbox)); } } catch {} }  // 描く元もそろえる
+async function refreshSitCount() { try { const gen = ibGen; const r = await fetch('/api/inbox'); if (r.ok) { const d = await r.json(); if (gen !== ibGen) return; inbox = d; if (sitCache) sitCache[3] = inbox; paintSitBtn(ibCount(inbox)); } } catch {} }  // 描く元もそろえる
 setInterval(() => { if (!document.hidden && $('situation').hidden) refreshSitCount(); }, 60000);
 // 起動の読み込み（一覧・会話・声）と重ねないよう、少し待ってから数を取る。PC の形と、開いている受け箱は自分で読む
 setTimeout(() => { if (!wide && $('situation').hidden) refreshSitCount(); }, 3000);

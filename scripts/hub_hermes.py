@@ -344,7 +344,8 @@ async def hermes_exchange(text: str, reply_at: float | None = None, extra: str =
         if it:  # 判断待ちへの返信。返信先の問いは空（承認に答える・閉じるには使えない）。聞いた文も空（ハブの問いに答えた発言ではない）
             turn = hermes_turn_begin(text, f"判断待ち [{it['n']}]", "", "", extra, reply_ask={}, item=it["n"])
             REPLY_TOPIC["topic"] = ""
-            head = f"〔返信: 判断待ち [{it['n']}]「{it['title']}」（{it['project']}）〕"
+            plain = lambda v: " ".join(_REF_DROP.sub(" ", str(v or "")).split())  # 記録の文から前置きの括弧（〔〕）と制御文字を外す（報告への返信と同じ）
+            head = f"〔返信: 判断待ち [{it['n']}]「{plain(it['title'])}」（{plain(it['project'])}）〕"
             sent = f"{head}\n{text}" if text.strip() else f"{head}\n{ITEM_EMPTY}"
         else:
             ask = await asyncio.to_thread(report_ask, reply_at) if ref else {}  # 返信先の報告が見ていた問い（承認に答えるの守りが、いまの問いと照らす）
