@@ -208,6 +208,21 @@ def run(page, who):
     check(f"{who} 期限が来たら、読み直しの応答を待たずに「戻す」を消す", gone, True)
     check(f"{who} カードの「済」: 時間がたつとコンテナの中の道具に付けさせ、一覧から消える",
           (wait(lambda: len(CMDS) == 1, 6), wait(lambda: cards(page) == [TITLE1], 8), CMDS[0][-6:-4] if CMDS else None), (True, True, ["done", "2"]))
+    # 閉じている間に数だけ取り直したあと、開き直して読み直しが止まっていても、押したカードはその場で消える
+    page.click("#sitClose")
+    page.evaluate("refreshSitCount()")
+    hold2 = []
+    page.route("**/api/inbox", lambda r: hold2.append(r))
+    page.click("#sitBtn")
+    page.locator("#sitBody > .ibCard").first.locator("button.done").click()
+    page.wait_for_function("ibUndo !== null")
+    after = (cards(page), page.locator("#sitBody .ibToast").count())
+    page.click("#sitBody .ibToast button")  # 戻す
+    for r in hold2:
+        r.continue_()
+    page.unroute("**/api/inbox")
+    check(f"{who} 数だけ取り直したあとでも、押したカードはその場で消え、戻すと一覧に戻る",
+          (after, wait(lambda: cards(page) == [TITLE1], 6)), (([], 1), True))
     # あとで
     page.locator("#sitBody > .ibCard").first.click()
     page.select_option(".ibItem select", "morning")

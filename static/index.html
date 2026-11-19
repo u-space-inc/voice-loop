@@ -1330,7 +1330,11 @@ async function doneItem(it) {
     // 期限が来たら、その場で「戻す」を消す（読み直しの応答を待たない。止まっても、押せない「戻す」を残さない）
     setTimeout(() => { if (ibUndo && ibUndo.n === it.n && Date.now() >= ibUndo.until) { ibUndo = null; document.querySelectorAll('#sitBody .ibToast').forEach(e => e.remove()); loadSituation(); } }, left + 50);
   }
-  if (inbox && Array.isArray(inbox.items)) { inbox.items = inbox.items.filter(x => x.n !== it.n); ibSig = ''; renderSit(); }  // 読み直しを待たずに、カードを消して「戻す」を出す
+  // 読み直しを待たずに、カードを消して「戻す」を出す（数の札の元と、描く元の両方から外す）
+  const drop = d => d && d !== FAILED && Array.isArray(d.items) ? { ...d, items: d.items.filter(x => x.n !== it.n) } : d;
+  inbox = drop(inbox);
+  if (sitCache) sitCache[3] = drop(sitCache[3]);
+  paintSitBtn(ibCount(inbox)); ibSig = ''; renderSit();
   loadSituation();
 }
 async function undoItem() {
@@ -1540,7 +1544,7 @@ function openInboxHash() {
   return true;
 }
 // 💡 の数は、閉じていても 1 分ごとに取り直す（見えている間だけ）
-async function refreshSitCount() { try { const r = await fetch('/api/inbox'); if (r.ok) { inbox = await r.json(); paintSitBtn(ibCount(inbox)); } } catch {} }
+async function refreshSitCount() { try { const r = await fetch('/api/inbox'); if (r.ok) { inbox = await r.json(); if (sitCache) sitCache[3] = inbox; paintSitBtn(ibCount(inbox)); } } catch {} }  // 描く元もそろえる
 setInterval(() => { if (!document.hidden && $('situation').hidden) refreshSitCount(); }, 60000);
 refreshSitCount();
 function showSituation(open) { phone.sit = open; if (!wide) runSituation(open); }
