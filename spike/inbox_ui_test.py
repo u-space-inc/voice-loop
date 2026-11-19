@@ -214,6 +214,45 @@ def run(page, who):
     page.click('#sitBody .ibToast[data-n="1"] button')
     page.wait_for_function("document.querySelectorAll('#sitBody > .ibCard').length === 2")
     check(f"{who} 「済」の前に始まった読み直しが遅れて届いても、消したカードを戻さない", (stale, CMDS), (["処理時間のアラーム"], []))
+
+    def race(path, act, after):
+        """操作の POST の応答を待つ間に読み直しを始め、本体が操作の前の一覧で答えたものを、操作のあとの読み直しより後に届ける。"""
+        held_post, stash2 = [], []
+
+        def old_list(route):
+            if not stash2:
+                stash2.append((route, route.fetch()))
+            else:
+                route.continue_()
+        page.route(f"**{path}", lambda r: held_post.append(r))
+        act()
+        wait(lambda: held_post, 5)
+        page.route("**/api/inbox", old_list)
+        page.evaluate("void loadSituation()")
+        wait(lambda: stash2, 5)
+        held_post[0].continue_()
+        page.unroute(f"**{path}")
+        after()
+        stash2[0][0].fulfill(response=stash2[0][1])
+        page.unroute("**/api/inbox")
+        time.sleep(0.8)
+        return cards(page)
+    # あとで: 応答を待つ間に始まった読み直しが最後に届いても、隠した件を戻さない
+    page.locator("#sitBody > .ibCard").first.click()
+    got = race("/api/inbox/later", lambda: page.select_option(".ibItem select", "morning"),
+               lambda: wait(lambda: cards(page) == ["処理時間のアラーム"], 5))
+    check(f"{who} あとでの応答を待つ間に始まった読み直しが最後に届いても、隠した件を戻さない", got, ["処理時間のアラーム"])
+    ib.STATE_FILE.unlink(missing_ok=True)
+    page.evaluate("loadSituation()")
+    page.wait_for_function("document.querySelectorAll('#sitBody > .ibCard').length === 2")
+    # 戻す: 応答を待つ間に始まった読み直し（まだ済の予約がある一覧）が最後に届いても、戻した件を消さない
+    keep_undo, ib.UNDO = ib.UNDO, 8.0
+    page.locator("#sitBody > .ibCard").first.locator("button.done").click()
+    page.wait_for_function("ibUndos.size === 1")
+    got = race("/api/inbox/undo", lambda: page.click('#sitBody .ibToast[data-n="1"] button'),
+               lambda: wait(lambda: cards(page) == [TITLE1, "処理時間のアラーム"], 5))
+    ib.UNDO = keep_undo
+    check(f"{who} 戻すの応答を待つ間に始まった読み直しが最後に届いても、戻した件を消さない", (got, CMDS), ([TITLE1, "処理時間のアラーム"], []))
     # 「戻す」は本体が返した残りの秒から、届くまでにかかった時間を引いた分だけ出し、期限が来たらその場で消す。
     # 一覧の読み直し（/api/inbox）を止めたままにしても、押した直後にカードが消えて「戻す」が出て、期限で消えることを見る
     def slow(route):

@@ -1354,11 +1354,13 @@ async function undoItem(n) {
   document.querySelectorAll(`#sitBody .ibToast[data-n="${n}"]`).forEach(e => e.remove());  // 押したらその場で消す（読み直しが止まっても、押せない「戻す」を残さない）
   let r; try { r = await postJSON('/api/inbox/undo', { n: u.n }); } catch { r = { ok: false, reason: 'net' }; }
   if (!r.ok) ibNote(r.reason === 'late' ? `「${u.title}」は、もう済みの印を付け始めていたので戻せませんでした。ハブに「[${u.n}] はまだだった」と言えば戻せます` : '戻せませんでした（本体に届きません）', true);
+  ibGen++;  // 応答を待つ間に始まった読み直しの答えは使わない（このあとの読み直しが描く）
   loadSituation();
 }
 async function laterItem(it, key) {
   ibGen++;
   let r; try { r = await postJSON('/api/inbox/later', { n: it.n, until: key }); } catch { ibNote('あとでに回せませんでした（本体に届きません）', true); renderSit(); return; }
+  ibGen++;  // 応答を待つ間に始まった読み直しの答えは使わない（このあとの読み直しが描く）
   if (!r.ok) { ibNote('あとでに回せませんでした（もう片づいているか、見つかりません）', true); loadSituation(); return; }
   if (ibSel === it.n) closeItem();
   ibNote(`「${it.title}」を ${r.label} まで隠しました。その時刻に、一覧の上に戻ります`);
