@@ -125,7 +125,8 @@ for r in s.app.routes:
 # （本体の一覧を期待値に使うと、誤って画面の口を足しても試験が気づかない）
 HUB_OPEN = {("GET", "/api/hub/sessions"), ("GET", "/api/hub/read"), ("GET", "/api/hub/screen"), ("GET", "/api/hub/tasks"),
             ("POST", "/api/hub/send"), ("POST", "/api/hub/answer"), ("POST", "/api/hub/spawn"), ("POST", "/api/hub/close"),
-            ("POST", "/api/hub/notice")}  # 代理からの知らせを足すだけ（0.17.8）。一覧・消すは画面の口で、コンテナには開かない
+            ("POST", "/api/hub/notice"),  # 代理からの知らせを足すだけ（0.17.8）。一覧・消すは画面の口で、コンテナには開かない
+            ("GET", "/api/hub/sent")}  # 出ていく側の記録を読むだけ（0.32.0。scripts/sent_log.py）
 check("本体の「コンテナに開く口」の一覧が、試験の側の一覧と同じ", (sorted(origin_guard.DOCKER_ALLOWED - HUB_OPEN), sorted(HUB_OPEN - origin_guard.DOCKER_ALLOWED)), ([], []))
 check("コンテナに開く口は、どれも本体に実在する", sorted(HUB_OPEN - set(ROUTES)), [])
 # 1 回の docker exec で、口ごとに 3 通り（名前を偽る・鍵なし／名前そのまま・鍵つき／名前を偽る・鍵つき）を呼ぶ
