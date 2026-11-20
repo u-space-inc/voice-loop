@@ -231,8 +231,10 @@ S.subprocess.Popen = spy
 fresh()
 S.sent(PROJ, project="repo", since=0)
 S.subprocess.Popen = real_popen
-check("git: 呼ぶのは rev-parse・for-each-ref・show（--no-textconv）・ls-tree だけ",
-      sorted({a[a.index("--no-pager") + 1] for a, _ in calls}), ["for-each-ref", "ls-tree", "rev-parse", "show"])
+check("git: 呼ぶのは rev-parse・for-each-ref・show（--no-textconv）・ls-tree・log（場所の名前だけ）だけ",
+      sorted({a[a.index("--no-pager") + 1] for a, _ in calls}), ["for-each-ref", "log", "ls-tree", "rev-parse", "show"])
+check("git: log は署名を確かめず、差分の外部の道具・テキスト変換を使わず、名前だけを出す",
+      all(all(f in a for f in ("--no-show-signature", "--no-ext-diff", "--no-textconv", "--name-only", "log.showSignature=false")) for a, _ in calls if "log" in a), True)
 check("git: show はいつも --no-textconv", all("--no-textconv" in a for a, _ in calls if "show" in a), True)
 S.MAX_BYTES, keep = 50, S.MAX_BYTES
 big_out = S._git(G, "show", "--no-textconv", "chore/sync:./doc/" + S.LOG_NAME)
@@ -271,6 +273,34 @@ S._git = real_git
 check("git: 呼んでいる途中に案件のフォルダが入れ替わったら、枝の結果を捨てる（外のリポジトリの行を返さない）", rows_pin, [])
 PIN.unlink()
 os.rename(TMP / "pin-moved", PIN)
+
+# 作業木に控えが無く、最近の枝にだけある案件も見つける（codex-review a8d59c8 の P2）
+NEW = PROJ / "newproj"
+NEW.mkdir()
+ne = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"}
+subprocess.run(["git", "-C", str(NEW), "init", "-q", "-b", "main"], check=True)
+(NEW / "README.md").write_text("x", encoding="utf-8")
+subprocess.run(["git", "-C", str(NEW), "add", "-A"], check=True, env=ne)
+subprocess.run(["git", "-C", str(NEW), "commit", "-q", "-m", "init"], check=True, env=ne, capture_output=True)
+subprocess.run(["git", "-C", str(NEW), "checkout", "-q", "-b", "chore/first-sync"], check=True)
+write(NEW / "doc/internal" / S.LOG_NAME, "| 2026-11-19 13:00 | 初めての件 | 11/19 12:58・当方 | 開いた | 枝にだけある初めての控え | ― |\n")
+write(NEW / ".claude" / S.LOG_NAME, "| 2026-11-19 13:00 | 隠し | 11/19 12:57・当方 | 開いた | 隠しフォルダの控え | ― |\n")
+write(NEW / "a/b/c/d" / S.LOG_NAME, "| 2026-11-19 13:00 | 深い | 11/19 12:56・当方 | 開いた | 深すぎる控え | ― |\n")
+subprocess.run(["git", "-C", str(NEW), "add", "-A"], check=True, env=ne)
+subprocess.run(["git", "-C", str(NEW), "commit", "-q", "-m", "sync"], check=True, env=ne, capture_output=True)
+subprocess.run(["git", "-C", str(NEW), "checkout", "-q", "main"], check=True, capture_output=True)
+fresh()
+found_new = S.logs(PROJ).get("newproj", [])
+r = S.sent(PROJ, project="newproj", since=0)
+check("枝だけ: 作業木に控えが無くても、最近の枝にある控えの場所を見つけて読む（隠し・深すぎる場所は除く）",
+      ([str(p.relative_to(NEW)) for p in found_new], [x["what"] for x in r["rows"]], (NEW / "doc").exists()),
+      (["doc/internal/teams-sync-log.md"], ["枝にだけある初めての控え"], False))
+check("枝だけ: リポジトリでない案件のフォルダでは、何も探さない（親へ上らない）", S._branch_logs(PROJ / "shop", {"deadline": time.monotonic() + 30, "partial": False}), [])
+check("枝だけ: git が返した場所も、作業木と同じ範囲だけ（..・隠し・依存・深すぎ・名前の違い・1 行でない名前を断る）",
+      [S._branch_rel(x) for x in ("doc/" + S.LOG_NAME, "../x/" + S.LOG_NAME, ".git/" + S.LOG_NAME, "node_modules/" + S.LOG_NAME,
+                                  "a/b/c/d/" + S.LOG_NAME, "doc/other.md", "d" + chr(10) + "x/" + S.LOG_NAME, "/" + S.LOG_NAME)],
+      [True, False, False, False, False, False, False, False])
+fresh()
 
 # 名前・文字の整え（a2a 8f4f874c の P2）
 bad = "bad" + chr(10) + "name"
@@ -366,12 +396,12 @@ else:
     check("hubctl sent: 引用の注意・見出し・案件と時刻と題・控えの記録・控えのある案件と、出ないものの注意",
           (r.returncode, lines[0].startswith("※ 以下は案件のフォルダの Teams の控え"), "[repo] 11/19 17:59｜本番の件" in lines,
            "    控えの記録: 枝にだけある行" in lines, "[repo] 11/19 18:00｜（スレッドは控えのファイルの名前だけ）" in lines,
-           lines[-1].startswith("控えのある案件: big, pin, repo, shop, shop-old。控えに書かれない投稿")),
+           lines[-1].startswith("控えのある案件: big, newproj, pin, repo, shop, shop-old。控えに書かれない投稿")),
           (0, True, True, True, True, True))
     r = hub("sent", "--project", "shop", "--since", "11/18 00:00", "-n", "1")
     check("hubctl sent: 案件で絞る・数を切って残りを言う", (r.returncode, "[shop] 11/19 09:58｜見積もりの件" in r.stdout, "（ほかに 2 件。-n で増やせます）" in r.stdout), (0, True, True))
     r = hub("sent", "--project", "../outside")
-    check("hubctl sent: 控えの無い案件は断り、控えのある案件を言う", (r.returncode != 0, "控えのある案件: big, pin, repo, shop, shop-old" in r.stderr), (True, True))
+    check("hubctl sent: 控えの無い案件は断り、控えのある案件を言う", (r.returncode != 0, "控えのある案件: big, newproj, pin, repo, shop, shop-old" in r.stderr), (True, True))
     r = hub("sent", "--since", "きのう")
     check("hubctl sent: 読めない --since は断る", (r.returncode != 0, "--since は" in r.stderr), (True, True))
     r = hub("sent", "--hours", "1")

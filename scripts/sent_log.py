@@ -105,11 +105,41 @@ def logs(root: Path | None, state: dict | None = None) -> dict[str, list[Path]]:
             ps = _find_logs(d, walk)
         except OSError:
             continue
+        known = {p.relative_to(d).as_posix() for p in ps}
+        for rel in _branch_logs(d, walk):  # 作業木に無く、最近の枝にだけある控え（その案件で初めての控えが、マージ前の枝にだけある）
+            if rel not in known and len(ps) < MAX_LOGS:
+                known.add(rel)
+                ps.append(d / rel)
         if ps:
             found[d.name] = ps
     _found.update(at=time.time(), root=root, logs=found, partial=walk["partial"])
     state["partial"] = state["partial"] or walk["partial"]
     return found
+
+
+def _branch_rel(rel: str) -> bool:
+    """git が返した控えの場所（案件のフォルダからの相対）が、作業木で探すときと同じ範囲か。"""
+    parts = rel.split("/")
+    return (len(parts) <= MAX_DEPTH and parts[-1] == LOG_NAME
+            and all(x and x not in (".", "..") and not x.startswith(".") and x not in SKIP and _plain(x) for x in parts))
+
+
+def _branch_logs(project: Path, state: dict) -> list[str]:
+    """最近（GIT_DAYS 日）のコミットで変わった teams-sync-log.md の場所を、案件のリポジトリに聞く（作業木に無い控えも見つけるため）。
+    案件のフォルダがリポジトリでなければ何も返さない（親のリポジトリへは上らない）。場所は作業木で探すときと同じ範囲だけ。"""
+    if time.monotonic() > state["deadline"]:
+        state["partial"] = True
+        return []
+    out = _git(project, "log", "--all", f"--since={GIT_DAYS}.days.ago", "--no-show-signature", "--no-ext-diff", "--no-textconv",
+               "--name-only", "-z", "--format=", "--", ":(glob)**/" + LOG_NAME)
+    rels = []
+    for rel in (out or "").split("\0"):
+        rel = rel.strip("\n")
+        if rel and rel not in rels and _branch_rel(rel):
+            rels.append(rel)
+        if len(rels) >= MAX_LOGS:
+            break
+    return rels
 
 
 def _stamp(y: int, m: int, d: int, H: int, M: int) -> float | None:
@@ -219,12 +249,12 @@ def _local(root: Path, name: str, rel: tuple[str, ...]) -> list[tuple[str, list[
 def _git(project: Path, *args: str) -> str | None:
     """読むだけの git。fsmonitor・フック・テキスト変換を動かさず、足りないオブジェクトを取りに行かず（GIT_NO_LAZY_FETCH・protocol.allow=never）、
     親のフォルダへリポジトリを探しに上らず（GIT_CEILING_DIRECTORIES）、ロックを取らず、問い合わせない。失敗・時間切れは None。
-    呼ぶのは rev-parse・for-each-ref・show（blob を --no-textconv で）・ls-tree だけ。"""
+    呼ぶのは rev-parse・for-each-ref・show（blob を --no-textconv で）・ls-tree・log（場所の名前だけ。署名を確かめず、差分の外部の道具を使わない）だけ。"""
     env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1",
            "GIT_CEILING_DIRECTORIES": str(project.parent)}
     try:
         proc = subprocess.Popen(["git", "-C", str(project), "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
-                                 "-c", "protocol.allow=never", "--no-pager", *args],
+                                 "-c", "protocol.allow=never", "-c", "log.showSignature=false", "--no-pager", *args],
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
     except OSError:
         return None
