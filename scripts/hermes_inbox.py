@@ -62,6 +62,8 @@ UNNEEDED_NOTE = "画面の「不要だった」を押した"
 UNNEEDED = {"notice": ("周知・お知らせだった", "周知・お知らせ"), "test": ("試験・dev の通知だった", "試験・dev の通知"),
             "alarm": ("既知のアラームだった", "既知のアラーム"), "notmine": ("自分の件ではなかった", "自分の件ではない"), "none": ("理由は選ばない", "")}
 FYI_MAX, LIST_MAX = 30, 200
+AI_SHOW = 86400  # AI が片づけた件を受け箱に出す時間（秒）。その間は「戻す」で判断待ちに戻せる
+REOPEN_NOTE = "画面の「戻す」（AI の片づけを取り消した）"
 JST = vl_items.JST
 STATE_FILE = STATE_DIR / "inbox.json"
 LESSON_FILE = STATE_DIR / "inbox-lessons.json"  # 画面の「不要だった」で付いた印: 番号 → その印の時刻（Hermes が書けない側）
@@ -300,7 +302,7 @@ def inbox(now: float | None = None) -> dict:
         watch = _watch(now)
     except Exception:
         watch = [{"source": "teams", "title": "Teams の見張りが止まっています", "reason": "見張りの状態を読めません", "fix": ""}]
-    out = {"on": True, "problem": "", "items": [], "fyi": [], "later": 0, "pending": [], "watch": watch,
+    out = {"on": True, "problem": "", "items": [], "fyi": [], "ai_closed": [], "later": 0, "pending": [], "watch": watch,
            "days": vl_items.OPEN_DAYS, "later_options": later_options(now), "undo": UNDO,
            "unneeded_options": [{"key": k, "label": v[0]} for k, v in UNNEEDED.items()], "lessons": [], "lessons_more": 0}
     f = dict(FAIL)  # 一覧は別のスレッドで作るので、写してから見る（その間に付け直しが成功して消しても落ちない）
@@ -343,6 +345,12 @@ def inbox(now: float | None = None) -> dict:
     out["lessons_more"] = max(0, len(ls) - vl_items.LESSONS_MAX)
     out["lessons_partial"] = bool(read.get("trunc"))  # 新しい側だけを読んだ（それより前に付けた手本は、ここに出ていない。見張りは使う）
     out["fyi"] = sorted(out["fyi"], key=lambda x: -x["when"])[:FYI_MAX]
+    # AI が根拠を書いて片づけた判断待ち（本体の確かめ・ハブの会話）。1 日は出して、「戻す」で判断待ちに戻せるようにする
+    ai = [(d["at"], {**{k: v for k, v in shape(items[n]).items() if k in ("n", "source", "project", "title")},
+                     "why": vl_items.clip(d.get("note"), "note"), "closed_at": float(d["at"])})
+          for n, d in done.items() if n in items and items[n].get("kind") == "judge" and d.get("by") == "ai"
+          and vl_items._num(d.get("at")) and now - d["at"] < AI_SHOW]
+    out["ai_closed"] = [x for _, x in sorted(ai, key=lambda p: -p[0])][:FYI_MAX]
     return out
 
 
@@ -600,4 +608,32 @@ async def api_inbox_forget(body: dict):
         print(f"[inbox] 手本から外せませんでした [{n}]: {why}", flush=True)
         return JSONResponse({"ok": False, "reason": "failed", "why": why})
     print(f"[inbox] 手本から外した [{n}]（画面から）", flush=True)
+    return JSONResponse({"ok": True, "n": n})
+
+
+@router.post("/api/inbox/reopen")
+async def api_inbox_reopen(body: dict):
+    """「AI が片づけたもの」の「戻す」。AI の印（--by ai）の件だけを、コンテナの中の記録の道具で判断待ちに戻す（利用者の訂正の印が付く）。
+    戻ったことを記録で確かめる。コンテナからは使えない口。"""
+    global _done_lock
+    n = _num_of(body)
+    if n is None:
+        return JSONResponse({"ok": False, "reason": "bad_request"}, status_code=400)
+    async with _ops():
+        got = await asyncio.to_thread(records)
+        if got is None:
+            return JSONResponse({"ok": False, "reason": "unreadable"})
+        items, done = got
+        if n not in items or n not in done or done[n].get("by") != "ai":
+            return JSONResponse({"ok": False, "reason": "gone"})
+    _done_lock = _done_lock or asyncio.Lock()
+    async with _done_lock:
+        why = await asyncio.to_thread(_run, tool_command("reopen", str(n), "--note", REOPEN_NOTE))
+        after = await asyncio.to_thread(records)
+    if not why and (after is None or n in after[1]):
+        why = "判断待ちに戻ったことを確かめられませんでした"
+    if why:
+        print(f"[inbox] AI の片づけを戻せませんでした [{n}]: {why}", flush=True)
+        return JSONResponse({"ok": False, "reason": "failed", "why": why})
+    print(f"[inbox] AI の片づけを戻した [{n}]（画面から）", flush=True)
     return JSONResponse({"ok": True, "n": n})

@@ -22,6 +22,10 @@
   vl_items.py lessons                  見張りの手本（利用者が不要だったとした記録）を新しい順に LESSONS_MAX 件まで。見張りの回が、
                                        判断待ちにする前に照らす（同じ種類なら fyi にする）
   vl_items.py forget <番号>            手本から外す（利用者が「その手本は外して」と言ったとき）。済の印はそのまま
+  vl_items.py undo <番号> [--note N]   あなた（AI）が付けた済の印（--by ai）を取り消す（誤りに気づいたとき）。利用者の訂正（reopen）とは分け、
+                                       判断待ちに戻した印（moved）を付けない。利用者の印・不要の印は取り消せない
+  vl_items.py checked <番号> --result open|unknown [--note N]
+                                       本体が新しい会話で確かめた結果（まだ・確かめきれない）を残す。一覧に「確かめた:」の行で出る（本体だけが使う）
   vl_items.py projects                 これまでに使った案件の名前と件数
 
 記録は HERMES_HOME/voice-loop/items.jsonl。書くのはこの道具だけ（手で書き換えない）。中身はメール・Slack・録音からの要約（引用データ）。
@@ -44,6 +48,7 @@ HOME = Path(os.environ.get("HERMES_HOME") or "/opt/data")
 FILE = HOME / "voice-loop" / "items.jsonl"
 SOURCES = {"mail", "slack", "plaud", "cal", "teams"}
 KINDS = {"judge", "fyi", "info", "baseline"}
+CHECKED = {"open": "まだ", "unknown": "確かめきれない"}  # 本体の確かめの結果（済んだものは、本体が --by ai で片づける）
 LIMITS = {"title": 80, "note": 600, "prepared": 600, "project": 40, "id": 200}
 JST = dt.timezone(dt.timedelta(hours=9))  # 表示の時刻。コンテナの時計は UTC なので、決めて付ける
 LESSONS_MAX = 40  # 見張りの手本を出す数（新しい側から）。見張りの回が毎回読むので、多くしすぎない。押し出された古い手本は使わない
@@ -97,6 +102,10 @@ def _state(rows: list[dict]) -> tuple[dict, dict]:
                 items[n] = {k: v for k, v in r.items() if k not in ("moved", "moved_note")}  # 戻した印は reopen の行からだけ作る（追加の行の値は使わない）
         elif op == "done":
             done[n] = r
+        elif op == "undo" and n in done and done[n].get("by") == "ai":
+            done.pop(n, None)  # AI が自分の印を取り消した。利用者の訂正ではないので、戻した印（moved）は付けない
+        elif op == "checked" and n in items and n not in done and _num(r.get("at")) and r.get("result") in CHECKED:
+            items[n] = {**items[n], "checked": {"at": r["at"], "result": r["result"], "note": r.get("note") if isinstance(r.get("note"), str) else ""}}
         elif op == "reopen" and n in items:
             done.pop(n, None)
             items[n] = {**items[n], "kind": "judge", "moved": r["at"] if _num(r.get("at")) else items[n]["at"], "moved_note": r.get("note")}
@@ -182,6 +191,9 @@ def show(r: dict, done: dict) -> str:
         s += f"\n    照合の鍵: {raw_key(r['key'])}"
     if d and d.get("note"):
         s += f"\n    片づけ: {clip(d['note'], 'note')}"
+    c = r.get("checked")
+    if not d and isinstance(c, dict):
+        s += f"\n    確かめた: {dt.datetime.fromtimestamp(c['at'], JST).strftime('%m/%d %H:%M')} {CHECKED.get(c['result'], '')} {clip(c.get('note'), 'note')}".rstrip()
     if not d and r.get("moved") is not None:
         s += f"\n    判断待ちに戻した: {dt.datetime.fromtimestamp(r['moved'], JST).strftime('%m/%d %H:%M')} {clip(r.get('moved_note'), 'note')}".rstrip()
     return s
@@ -205,6 +217,8 @@ def main() -> int:
     s = sub.add_parser("reopen"); s.add_argument("n", type=int); s.add_argument("--note", default="")
     sub.add_parser("lessons")
     s = sub.add_parser("forget"); s.add_argument("n", type=int)
+    s = sub.add_parser("undo"); s.add_argument("n", type=int); s.add_argument("--note", default="")
+    s = sub.add_parser("checked"); s.add_argument("n", type=int); s.add_argument("--result", required=True, choices=sorted(CHECKED)); s.add_argument("--note", default="")
     sub.add_parser("projects")
     a = p.parse_args()
     rows = _rows()
@@ -287,7 +301,7 @@ def main() -> int:
             out.append(f"ほかに、古い手本が {len(ls) - LESSONS_MAX} 件（使いません）")
         print("\n".join(out) or "手本はありません")
         return 0
-    if a.cmd in ("done", "reopen", "forget") and a.n not in items:
+    if a.cmd in ("done", "reopen", "forget", "undo", "checked") and a.n not in items:
         print(f"{a.n} 番の記録はありません")
         return 1
     if a.cmd == "done":
@@ -304,6 +318,21 @@ def main() -> int:
         _append({"op": "done", "at": time.time(), "n": a.n, "note": clip(a.note, "note"), "by": a.by,
                  **({"unneeded": True, "why": clip(a.why, "title")} if a.unneeded else {})})
         print(f"片づけた印を付けました [{a.n}]" + ("（不要だった。見張りの手本にします）" if a.unneeded else ""))
+        return 0
+    if a.cmd == "undo":
+        d = done.get(a.n)
+        if not d or d.get("by") != "ai":
+            print(f"[{a.n}] には、あなた（AI）が付けた済の印がありません（利用者の印は取り消せません。利用者が「まだ」と言ったら reopen）")
+            return 1
+        _append({"op": "undo", "at": time.time(), "n": a.n, "note": clip(a.note, "note")})
+        print(f"あなたが付けた済の印を取り消しました [{a.n}]（判断待ちに戻りました）")
+        return 0
+    if a.cmd == "checked":
+        if a.n in done or items[a.n]["kind"] != "judge":
+            print(f"[{a.n}] は判断待ちではありません")
+            return 1
+        _append({"op": "checked", "at": time.time(), "n": a.n, "result": a.result, "note": clip(a.note, "note")})
+        print(f"確かめた結果を残しました [{a.n}]（{CHECKED[a.result]}）")
         return 0
     if a.cmd == "forget":
         if not any(r["n"] == a.n for r, _ in lessons(rows, items, done)):

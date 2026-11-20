@@ -1010,6 +1010,9 @@ SENT_WAIT = 30      # 1 回の読み取りを待つ秒（越えたら断る。�
 SENT_QUEUE_MAX = 3  # 待っている読み取りがこれ以上なら、すぐ断る
 SENT_PENDING = [0]
 SENT_LOCK = threading.Lock()
+# 判断待ちの確かめ（層 3）も、出ていく側の記録を同じ作業 1 本で読む（sent_log の覚えは 1 本の作業から使う）
+hermes.hermes_check.sent_reader = lambda since: (SENT_POOL.submit(sent_log.sent, PROJECTS_DIR, "", since, 200).result(timeout=60)
+                                                 if PROJECTS_DIR and PROJECTS_DIR.is_dir() else None)
 
 
 def _sent_work(*a):
