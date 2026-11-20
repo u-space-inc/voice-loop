@@ -102,6 +102,14 @@ m1 = S._merge([(HEAD + "| 2026-11-19 10:00 | Aの件 | 11/19 09:58・当方 | �
 check("同じ分: 表の行が 1 つでも、控えのファイルをその行に結び付けない",
       sorted((r["thread"], r.get("copy")) for r in m1), [("", "Aの送信"), ("", "Bの送信"), ("Aの件", None)])
 
+# 見分けは字数で切る前の値で（codex-review 0c0cd20 の P2）
+longa = "長い題" * 50 + "A"
+longb = "長い題" * 50 + "B"
+mlong = S._merge([(HEAD + "| 2026-11-19 11:00 | " + longa + " | 返信: 11/19 10:58・当方 | 開いた | Aへ | ― |\n"
+                   + "| 2026-11-19 11:00 | " + longb + " | 返信: 11/19 10:58・当方 | 開いた | Bへ | ― |\n", [])])
+check("見分け: 頭が同じで後ろが違う長い題の 2 つのスレッドは、切った題が同じでも別の投稿として残す",
+      (sorted(r["what"] for r in mlong), mlong[0]["thread"] == mlong[1]["thread"]), (["Aへ", "Bへ"], True))
+
 # ---------- 案件のフォルダから探す ----------
 def write(path: Path, body: str):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -347,6 +355,21 @@ S.WALK_DIRS = keep
 check("上限: 探しきれずに案件が見つからないときは、控えが無いとは言わない（incomplete）", (r.get("error"), r["partial"]), ("incomplete", True))
 fresh()
 check("上限: 上限の内なら一部ではない", S.sent(PROJ, since=0)["partial"], False)
+fresh()
+S.GIT_REFS, keep = 1, S.GIT_REFS
+r = S.sent(PROJ, project="repo", since=0)
+S.GIT_REFS = keep
+check("上限: 最近の枝が上限より多く、読み残したときは一部の印を付ける", r["partial"], True)
+fresh()
+write(PROJ / "twologs" / "a" / S.LOG_NAME, "| 2026-11-19 12:00 | 1 | 11/19 11:40・当方 | 開いた | 1 つ目 | ― |\n")
+write(PROJ / "twologs" / "b" / S.LOG_NAME, "| 2026-11-19 12:00 | 2 | 11/19 11:41・当方 | 開いた | 2 つ目 | ― |\n")
+S.MAX_LOGS, keep = 1, S.MAX_LOGS
+r = S.sent(PROJ, project="twologs", since=0)
+S.MAX_LOGS = keep
+check("上限: 1 つの案件の控えが上限より多く、読み残したときは一部の印を付ける", (len(r["rows"]), r["partial"]), (1, True))
+fresh()
+check("上限: 上限の内なら、両方を読み、一部ではない", (len(S.sent(PROJ, project="twologs", since=0)["rows"]), S.sent(PROJ, project="twologs", since=0)["partial"]), (2, False))
+
 
 # ---------- 本体の口 ----------
 c = TestClient(s.app, base_url="http://127.0.0.1:8790")
@@ -413,12 +436,12 @@ else:
     check("hubctl sent: 引用の注意・見出し・案件と時刻と題・控えの記録・控えのある案件と、出ないものの注意",
           (r.returncode, lines[0].startswith("※ 以下は案件のフォルダの Teams の控え"), "[repo] 11/19 17:59｜本番の件" in lines,
            "    控えの記録: 枝にだけある行" in lines, "[repo] 11/19 18:00｜（スレッドは控えのファイルの名前だけ）" in lines,
-           lines[-1].startswith("控えのある案件: big, newproj, pin, repo, shop, shop-old。控えに書かれない投稿")),
+           lines[-1].startswith("控えのある案件: big, newproj, pin, repo, shop, shop-old, twologs。控えに書かれない投稿")),
           (0, True, True, True, True, True))
     r = hub("sent", "--project", "shop", "--since", "11/18 00:00", "-n", "1")
     check("hubctl sent: 案件で絞る・数を切って残りを言う", (r.returncode, "[shop] 11/19 09:58｜見積もりの件" in r.stdout, "（ほかに 2 件。-n で増やせます）" in r.stdout), (0, True, True))
     r = hub("sent", "--project", "../outside")
-    check("hubctl sent: 控えの無い案件は断り、控えのある案件を言う", (r.returncode != 0, "控えのある案件: big, newproj, pin, repo, shop, shop-old" in r.stderr), (True, True))
+    check("hubctl sent: 控えの無い案件は断り、控えのある案件を言う", (r.returncode != 0, "控えのある案件: big, newproj, pin, repo, shop, shop-old, twologs" in r.stderr), (True, True))
     r = hub("sent", "--since", "きのう")
     check("hubctl sent: 読めない --since は断る", (r.returncode != 0, "--since は" in r.stderr), (True, True))
     r = hub("sent", "--hours", "1")

@@ -49,6 +49,11 @@ _found: dict = {"at": 0.0, "root": None, "logs": {}, "partial": False}
 _parsed: dict = {}  # 控えの場所 → (読んだ時刻, 行, 読み切れなかったか)
 
 
+def _full(v) -> str:
+    """見分けに使う値（1 行にそろえ、制御文字と向きを変える文字を空白にするが、字数では切らない）。"""
+    return " ".join(_CTRL.sub(" ", str(v or "")).split())
+
+
 def clip(v, key: str) -> str:
     """1 行にそろえ、制御文字と向きを変える文字を空白にして、字数で切る。"""
     v = " ".join(_CTRL.sub(" ", str(v or "")).split())
@@ -75,9 +80,10 @@ def _find_logs(project: Path, state: dict) -> list[Path]:
         if LOG_NAME in files:
             p = Path(cur) / LOG_NAME
             if not p.is_symlink() and p.is_file() and _inside(p, project):
-                out.append(p)
-                if len(out) >= MAX_LOGS:
+                if len(out) >= MAX_LOGS:  # 上限を越える控えがある。読み残すので一部の印
+                    state["partial"] = True
                     break
+                out.append(p)
     return out
 
 
@@ -107,9 +113,13 @@ def logs(root: Path | None, state: dict | None = None) -> dict[str, list[Path]]:
             continue
         known = {p.relative_to(d).as_posix() for p in ps}
         for rel in _branch_logs(d, walk):  # 作業木に無く、最近の枝にだけある控え（その案件で初めての控えが、マージ前の枝にだけある）
-            if rel not in known and len(ps) < MAX_LOGS:
-                known.add(rel)
-                ps.append(d / rel)
+            if rel in known:
+                continue
+            if len(ps) >= MAX_LOGS:  # 上限を越える控えがある。読み残すので一部の印
+                walk["partial"] = True
+                break
+            known.add(rel)
+            ps.append(d / rel)
         if ps:
             found[d.name] = ps
     _found.update(at=time.time(), root=root, logs=found, partial=walk["partial"])
@@ -145,9 +155,10 @@ def _branch_logs(project: Path, state: dict) -> list[str]:
     rels = []
     for rel in out.split("\0"):
         if rel and rel not in rels and _branch_rel(rel):
+            if len(rels) >= MAX_LOGS:  # 上限を越える候補がある。読み残すので一部の印
+                state["partial"] = True
+                break
             rels.append(rel)
-        if len(rels) >= MAX_LOGS:
-            break
     return rels
 
 
@@ -182,13 +193,14 @@ def parse(text: str) -> list[dict]:
             at = _stamp(year - (1 if mo > checked_month else 0), mo, int(p.group("d")), int(p.group("H")), int(p.group("M")))
             if at is None:
                 continue
-            label, thread = clip(p.group("label"), "thread"), clip(c[1], "thread")
-            key = (at, thread, label)  # 同じラベル・時刻でも、スレッドが違えば別の投稿として残す（後の回に同じ投稿を見ただけの行が重なることはある）
+            # 同じラベル・時刻でも、スレッドが違えば別の投稿として残す（後の回に同じ投稿を見ただけの行が重なることはある）。
+            # 見分けは字数で切る前の値で行う（頭の部分が同じ別のスレッドを、1 つにまとめない）。返す値だけを切る
+            key = (at, _full(c[1]), _full(p.group("label")))
             if key in seen:
                 continue
             seen.add(key)
-            out.append({"at": at, "thread": thread, "label": label, "what": clip(c[4], "what"),
-                        "done": clip(c[5], "done") if len(c) > 5 else ""})
+            out.append({"at": at, "thread": clip(c[1], "thread"), "label": clip(p.group("label"), "thread"), "what": clip(c[4], "what"),
+                        "done": clip(c[5], "done") if len(c) > 5 else "", "_id": (*key, _full(c[4]))})
     return out
 
 
@@ -199,7 +211,7 @@ def copies(names) -> list[dict]:
         m = _COPY.fullmatch(name)
         at = _stamp(*(int(m.group(i)) for i in range(1, 6))) if m else None
         if at is not None:
-            out.append({"at": at, "copy": clip(m.group(6).replace("_", " "), "copy")})
+            out.append({"at": at, "copy": clip(m.group(6).replace("_", " "), "copy"), "_id": (at, "", "", "", _full(m.group(6)))})
     return out
 
 
@@ -320,10 +332,12 @@ def _branches(root: Path, name: str, rel: tuple[str, ...], state: dict) -> list[
         sha, _, when = line.partition(" ")
         if not re.fullmatch(r"[0-9a-f]{40,64}", sha) or not when.isdigit() or time.time() - int(when) > GIT_DAYS * 86400:
             continue
-        if sha not in shas:
-            shas.append(sha)
-        if len(shas) >= GIT_REFS:
+        if sha in shas:
+            continue
+        if len(shas) >= GIT_REFS:  # 上限を越える最近の枝がある。読み残すので一部の印
+            state["partial"] = True
             break
+        shas.append(sha)
     for sha in shas:
         if time.monotonic() > state["deadline"]:
             state["partial"] = True
@@ -344,16 +358,16 @@ def _merge(sources: list[tuple[str, list[str]]]) -> list[dict]:
     rows, seen = [], set()
     for text, names in sources:
         for r in parse(text):
-            key = (r["at"], r["thread"], r["label"])
+            key = r["_id"][:3]
             if key not in seen:
                 seen.add(key)
                 rows.append(r)
     done = set()
     for text, names in sources:
         for cp in copies(names):
-            if (cp["at"], cp["copy"]) not in done:
-                done.add((cp["at"], cp["copy"]))
-                rows.append({"at": cp["at"], "thread": "", "label": "", "what": "", "done": "", "copy": cp["copy"]})
+            if cp["_id"] not in done:
+                done.add(cp["_id"])
+                rows.append({"at": cp["at"], "thread": "", "label": "", "what": "", "done": "", "copy": cp["copy"], "_id": cp["_id"]})
     return rows
 
 
@@ -401,11 +415,12 @@ def sent(root: Path | None, project: str = "", since: float | None = None, limit
                    key=lambda np: -_mtime(np[1]))
     for name, p in order:
         for r in _read(root, name, p, state):
-            key = (r["at"], r["thread"], r["label"], r["what"]) if (r["thread"] or r["what"]) else (r["at"], "", "", "", r.get("copy", ""))
+            key = r["_id"]  # 切る前の値で見分ける（控えの行は 時刻・スレッド・ラベル・記録、ファイルだけの行は 時刻・名前）
             if key in seen or (since is not None and r["at"] < since):
                 continue
             seen.add(key)
-            rows.append({**r, "project": name, "at_text": dt.datetime.fromtimestamp(r["at"], JST).strftime("%m/%d %H:%M")})
+            rows.append({**{k: v for k, v in r.items() if not k.startswith("_")}, "project": name,
+                         "at_text": dt.datetime.fromtimestamp(r["at"], JST).strftime("%m/%d %H:%M")})
     rows.sort(key=lambda r: -r["at"])
     n = max(1, min(int(limit), 200))
     return {"rows": rows[:n], "more": max(0, len(rows) - n), "projects": sorted(found), "partial": state["partial"]}
