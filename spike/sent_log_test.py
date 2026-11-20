@@ -161,6 +161,33 @@ check("枝: 案件のリポジトリの fsmonitor の設定を動かさない", 
 check("枝: git は作業木を変えない（枝を移らない・ファイルを書き換えない）",
       (git("branch", "--show-current").stdout.strip(), "枝にだけある行" in (G / "doc" / S.LOG_NAME).read_text(encoding="utf-8")), ("main", False))
 
+# 探したあとに、途中のフォルダを置き場所の外への symlink に替えても、外は読まない
+write(PROJ / "swap" / "doc" / S.LOG_NAME, "| 2026-11-19 10:00 | 入れ替え前 | 11/19 09:30・当方 | 開いた | 中の控え | ― |\n")
+fresh()
+S.logs(PROJ)
+os.rename(PROJ / "swap" / "doc", PROJ / "swap" / "doc-moved")
+(PROJ / "swap" / "doc").symlink_to(OUTSIDE, target_is_directory=True)
+r = S.sent(PROJ, project="swap", since=0)
+check("入れ替え: 探したあとに途中のフォルダを外への symlink に替えても、外の控えを読まない", [x["what"] for x in r["rows"]], [])
+os.rename(PROJ / "swap", TMP / "swap-gone")
+# 案件のフォルダが自分のリポジトリを持たないときは、親のリポジトリ（置き場所など）の枝を読まない
+P2 = TMP / "parent-repo"
+(P2 / "proj" / "doc").mkdir(parents=True)
+subprocess.run(["git", "-C", str(P2), "init", "-q", "-b", "main"], check=True)
+write(P2 / "proj" / "doc" / S.LOG_NAME, "| 2026-11-19 10:00 | 親 | 11/19 09:40・当方 | 開いた | 作業木の行 | ― |\n")
+pe = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"}
+subprocess.run(["git", "-C", str(P2), "add", "-A"], check=True, env=pe)
+subprocess.run(["git", "-C", str(P2), "commit", "-q", "-m", "main"], check=True, env=pe, capture_output=True)
+subprocess.run(["git", "-C", str(P2), "checkout", "-q", "-b", "side"], check=True)
+(P2 / "proj" / "doc" / S.LOG_NAME).write_text(HEAD + "| 2026-11-19 11:00 | 親 | 11/19 10:50・当方 | 開いた | 親の枝の行 | ― |\n", encoding="utf-8")
+subprocess.run(["git", "-C", str(P2), "add", "-A"], check=True, env=pe)
+subprocess.run(["git", "-C", str(P2), "commit", "-q", "-m", "side"], check=True, env=pe, capture_output=True)
+subprocess.run(["git", "-C", str(P2), "checkout", "-q", "main"], check=True, capture_output=True)
+fresh()
+check("枝: 案件のフォルダが自分のリポジトリでなければ、親のリポジトリの枝を読まない（作業木の控えだけ）",
+      [x["what"] for x in S.sent(P2, since=0)["rows"]], ["作業木の行"])
+fresh()
+
 # ---------- 本体の口 ----------
 c = TestClient(s.app, base_url="http://127.0.0.1:8790")
 s.PROJECTS_DIR = PROJ

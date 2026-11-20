@@ -18,6 +18,7 @@ from __future__ import annotations
 import datetime as dt
 import os
 import re
+import stat
 import subprocess
 import time
 from pathlib import Path
@@ -145,23 +146,64 @@ def copies(names) -> list[dict]:
     return out
 
 
-def _local(path: Path) -> list[tuple[str, list[str]]]:
-    """作業木にある控えの中身と、thread/ のファイルの名前（symlink は読まない）。"""
+def _open_dir(root: Path, name: str, parts: tuple[str, ...]) -> int:
+    """置き場所の中の案件のフォルダから、1 段ずつ symlink をたどらずにフォルダを開く（探したあとに途中を symlink に替えられても、外へ出ない）。"""
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        if path.is_symlink() or path.stat().st_size > MAX_BYTES:
-            return []
-        text = path.read_text(encoding="utf-8", errors="replace")
-        d = path.parent / "thread"
-        names = [f.name for f in d.iterdir() if not f.is_symlink() and f.is_file()] if d.is_dir() and not d.is_symlink() else []
+        for part in (name, *parts):
+            if part in ("", ".", "..") or "/" in part:
+                raise OSError("場所の形が違います")
+            nfd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = nfd
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _local(root: Path, name: str, rel: tuple[str, ...]) -> list[tuple[str, list[str]]]:
+    """作業木にある控えの中身と、thread/ のファイルの名前。読む直前に、置き場所から 1 段ずつ symlink をたどらずに開き直し、
+    通常のファイルだけを上限まで読む（FIFO などで止まらないよう O_NONBLOCK）。thread/ も同じ開き方で、通常のファイルの名前だけ。"""
+    try:
+        d = _open_dir(root, name, rel[:-1])
     except OSError:
         return []
-    return [(text, names)]
+    try:
+        try:
+            f = os.open(rel[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=d)
+        except OSError:
+            return []
+        with os.fdopen(f, "rb") as fh:
+            st = os.fstat(fh.fileno())
+            if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_BYTES:
+                return []
+            raw = fh.read(MAX_BYTES + 1)
+        if len(raw) > MAX_BYTES:
+            return []
+        names = []
+        try:
+            t = os.open("thread", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=d)
+        except OSError:
+            t = None
+        if t is not None:
+            try:
+                names = [n for n in os.listdir(t) if stat.S_ISREG(os.stat(n, dir_fd=t, follow_symlinks=False).st_mode)]
+            except OSError:
+                names = []
+            finally:
+                os.close(t)
+    finally:
+        os.close(d)
+    return [(raw.decode("utf-8", "replace"), names)]
 
 
 def _git(project: Path, *args: str) -> str | None:
-    """読むだけの git（フックや fsmonitor を動かさない・ロックを取らない・問い合わせない）。失敗・時間切れは None。"""
+    """読むだけの git（fsmonitor・フック・テキスト変換を動かさない・ロックを取らない・問い合わせない）。失敗・時間切れは None。
+    呼ぶのは for-each-ref・show（blob を --no-textconv で）・ls-tree だけ。"""
     try:
-        r = subprocess.run(["git", "-C", str(project), "-c", "core.fsmonitor=false", "--no-pager", *args], capture_output=True,
+        r = subprocess.run(["git", "-C", str(project), "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "--no-pager", *args],
+                           capture_output=True,
                            timeout=GIT_TIMEOUT, env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"})
     except (OSError, subprocess.SubprocessError):
         return None
@@ -174,6 +216,9 @@ def _branches(project: Path, path: Path) -> list[tuple[str, list[str]]]:
     """手元の枝（マージ前の控えの行は、セッションが作った枝にだけあることが多い）の、控えの中身と thread/ の名前。
     最後のコミットが GIT_DAYS 日以内の枝を、新しい順に GIT_REFS 本まで。"""
     rel = "./" + path.relative_to(project).as_posix()
+    top = _git(project, "rev-parse", "--show-toplevel")  # 案件のフォルダそのものがリポジトリの根のときだけ（親のリポジトリの枝・symlink の先のリポジトリを読まない）
+    if not top or Path(top.strip()) != project.parent.resolve() / project.name:
+        return []
     refs = _git(project, "for-each-ref", "--sort=-committerdate", "--format=%(objectname) %(committerdate:unix)", "refs/heads", "refs/remotes")
     out, shas = [], []
     for line in (refs or "").splitlines():
@@ -185,7 +230,7 @@ def _branches(project: Path, path: Path) -> list[tuple[str, list[str]]]:
         if len(shas) >= GIT_REFS:
             break
     for sha in shas:
-        text = _git(project, "show", f"{sha}:{rel}")
+        text = _git(project, "show", "--no-textconv", f"{sha}:{rel}")
         if text is None:
             continue
         tree = _git(project, "ls-tree", "-z", "--name-only", sha, "--", rel.rsplit("/", 1)[0] + "/thread/") or ""  # -z: 日本語の名前を引用符で包ませない
@@ -218,12 +263,19 @@ def _merge(sources: list[tuple[str, list[str]]]) -> list[dict]:
     return rows
 
 
-def _read(project: Path, path: Path) -> list[dict]:
+def _read(root: Path, name: str, path: Path) -> list[dict]:
     """作業木と手元の枝の控えを合わせた、当方の投稿の行。READ_TTL 秒は前の結果を使う。"""
     hit = _parsed.get(path)
     if hit and time.time() - hit[0] < READ_TTL:
         return hit[1]
-    rows = _merge(_local(path) + _branches(project, path))
+    project = root / name
+    try:
+        rel = path.relative_to(project).parts
+    except ValueError:
+        return []
+    if project.is_symlink():
+        return []
+    rows = _merge(_local(root, name, rel) + _branches(project, path))
     _parsed[path] = (time.time(), rows)
     return rows
 
@@ -245,7 +297,7 @@ def sent(root: Path | None, project: str = "", since: float | None = None, limit
     order = sorted(((name, p) for name, ps in found.items() if not project or name == project for p in ps),
                    key=lambda np: -_mtime(np[1]))
     for name, p in order:
-        for r in _read(root / name, p):
+        for r in _read(root, name, p):
             key = (r["at"], r["thread"], r["what"])
             if key in seen or (since is not None and r["at"] < since):
                 continue
