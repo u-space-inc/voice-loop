@@ -751,6 +751,14 @@ check("指示文・手順 4: 作業の途中（コミットだけ・公開の前
        "求められたことが相手に届いた記録（公開した・送った・投稿した）か、求められた判断を利用者が出した記録だけを、済んだ根拠にする。" in done4),
       (True, True, True, True))
 
+check("手順 4: teams はまず hubctl sent（案件の Teams の控えの当方の投稿）で、投稿より後の同じスレッドへの投稿を見て fyi にする。控えに無いことはまだの根拠にしない",
+      ("まず `/opt/voice-loop/hubctl sent --since \"<投稿の時刻>\"` で" in done4, "「対応済みと見た: <案件>の Teams の控えで、<時刻> に当方が <何を投稿したか>」" in done4,
+       "控えに無いことは、まだの根拠にしない" in done4, "`hubctl sent` で案件の Teams の控えにある利用者の側の投稿を読む" in allow),
+      (True, True, True, True))
+check("指示文: 判断待ちを確かめるときに hubctl sent も見て、控えの当方の投稿を根拠にしてよい。スレッドが違う・案まで・出てこないことは根拠にしない",
+      ("`hubctl sent --project <案件> --since \"<元の投稿・メールの時刻>\"`" in hsec, "案件の Teams の控えの当方の投稿）だけです" in hsec,
+       "記録が「案まで（未送信）」「下書き」なら根拠にしません" in hsec, "出てこないことを「まだ」の根拠にはしません" in hsec, "hubctl sent [--project P]" in HUB),
+      (True, True, True, True, True))
 ok = sum(r[1] for r in results)
 for name, passed, got, want in results:
     print(("✓ " if passed else "✗ ") + name + ("" if passed else f"\n    得た値: {got!r}\n    期待:   {want!r}"))

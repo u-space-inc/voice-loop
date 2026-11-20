@@ -48,6 +48,7 @@ import consent  # noqa: E402  利用者の発言が、許す・選ぶの答え�
 import ask_form  # noqa: E402  選択肢の問い（AskUserQuestion）に、画面と Slack から答える
 from places import CONFIG_DIR, STATE_DIR  # noqa: E402  端末ごとの設定と状態の置き場
 import attach  # noqa: E402  画面から添付したファイル
+import sent_log  # noqa: E402  出ていく側の記録（案件の Teams の控えの、当方の投稿）
 
 
 def _load_config_env():
@@ -1001,6 +1002,18 @@ def task_read(a: dict, tid: str, head: int, tail: int) -> JSONResponse:
     msgs = trim_range(msgs)
     return JSONResponse({"pane": a["pane"], "project": a["cwd"].rsplit("/", 1)[-1], "title": a["title"], "status": a["status"], "task": tid,
                          "messages": [{**m, "text": m["text"] if m["role"] == "gap" else _clip_ends(m["text"], head, tail)} for m in msgs]})
+
+
+@app.get("/api/hub/sent")
+async def hub_sent(project: str = "", since: float | None = None, limit: int = 30):
+    """出ていく側の記録（hubctl sent）。置き場所の各案件の Teams の控え（teams-sync-log.md）から、当方の投稿を新しい順に返す。
+    読むだけ。project は控えのある案件の名前と一字一句同じときだけ絞り、場所には使わない（scripts/sent_log.py）。"""
+    if not PROJECTS_DIR or not PROJECTS_DIR.is_dir():
+        return JSONResponse({"error": "no_projects_dir"}, status_code=404)
+    if since is not None and not (0 <= since < 1e11):
+        since = None
+    r = await asyncio.to_thread(sent_log.sent, PROJECTS_DIR, project.strip(), since, limit)
+    return JSONResponse(r, status_code=404 if r.get("error") else 200)
 
 
 @app.get("/api/hub/screen")
