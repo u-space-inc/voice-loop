@@ -76,10 +76,14 @@ s.hermes.ask_hermes = lambda text: ASKED.append(text) or "答えです"
 
 def fake_run(cmd, capture_output=True, timeout=None, **k):
     CMDS.append(cmd)
-    n = int(cmd[cmd.index("done") + 1])
+    op = "forget" if "forget" in cmd else "done"
+    n = int(cmd[cmd.index(op) + 1])
+    row = {"op": op, "at": time.time(), "n": n} if op == "forget" else {"op": "done", "at": time.time(), "n": n, "note": cmd[cmd.index("--note") + 1], "by": "user"}
+    if "--unneeded" in cmd:
+        row.update(unneeded=True, why=cmd[cmd.index("--why") + 1])
     with ITEMS.open("a") as f:
-        f.write(json.dumps({"op": "done", "at": time.time(), "n": n, "note": ib.DONE_NOTE, "by": "user"}, ensure_ascii=False) + "\n")
-    return subprocess.CompletedProcess(cmd, 0, f"片づけた印を付けました [{n}]\n".encode(), b"")
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return subprocess.CompletedProcess(cmd, 0, f"[{n}]\n".encode(), b"")
 
 
 ib.subprocess = types.SimpleNamespace(run=fake_run, TimeoutExpired=subprocess.TimeoutExpired)
@@ -256,7 +260,7 @@ def run(page, who):
         return cards(page)
     # あとで: 応答を待つ間に始まった読み直しが最後に届いても、隠した件を戻さない
     page.locator("#sitBody > .ibCard").first.click()
-    got = race("/api/inbox/later", lambda: page.select_option(".ibItem select", "morning"),
+    got = race("/api/inbox/later", lambda: page.select_option(".ibItem select.ibLater", "morning"),
                lambda: wait(lambda: cards(page) == ["処理時間のアラーム"], 5))
     check(f"{who} あとでの応答を待つ間に始まった読み直しが最後に届いても、隠した件を戻さない", got, ["処理時間のアラーム"])
     ib.STATE_FILE.unlink(missing_ok=True)  # 次の確かめのために元へ戻す（読み直しを繰り返して、2 枚に戻るまで待つ）
@@ -315,10 +319,36 @@ def run(page, who):
     check(f"{who} 「戻す」を押したら、読み直しを待たずにその場で消す", undone, True)
     # あとで
     page.locator("#sitBody > .ibCard").first.click()
-    page.select_option(".ibItem select", "morning")
+    page.select_option(".ibItem select.ibLater", "morning")
     page.wait_for_function("!document.querySelector('.ibItem') && document.querySelectorAll('#sitBody > .ibCard').length === 0")
     check(f"{who} あとで: 隠して数を出し、その件への返信もやめる",
           ("あとでに回したもの 1 件" in page.text_content("#sitBody"), page.is_visible("#replyBar")), (True, False))
+    # 不要だった（見張りの手本）: 件の中身で理由を選ぶと、すぐ消えて「戻す」が出る。時間がたつと不要の印。「その他」に手本が並び、「外す」で外せる
+    seed()
+    page.goto(BASE + "/#i=2")
+    page.wait_for_selector(".ibItem h3")
+    opts = page.eval_on_selector_all(".ibItem select.ibUnneeded option", "els => els.map(e => [e.value, e.textContent])")
+    check(f"{who} 件の中身に「不要だった ▾」と、本体が決めた理由の選び方を出す",
+          opts, [["", "不要だった ▾"], ["notice", "周知・お知らせだった"], ["test", "試験・dev の通知だった"], ["alarm", "既知のアラームだった"],
+                 ["notmine", "自分の件ではなかった"], ["none", "理由は選ばない"]])
+    page.select_option(".ibItem select.ibUnneeded", "alarm")
+    page.wait_for_selector("#sitBody .ibToast")
+    check(f"{who} 不要だった: 一覧に戻り、すぐ消えて「不要にしました…（見張りの手本にします）」と「戻す」を出す（まだ道具は動かさない）",
+          (page.text_content("#sitBody .ibToast span"), cards(page), CMDS), ("不要にしました「処理時間のアラーム」（見張りの手本にします）", [TITLE1], []))
+    check(f"{who} …時間がたつと、不要の印と理由をコンテナの中の道具に付けさせる",
+          (wait(lambda: len(CMDS) == 1, 6), CMDS[0][-8:] if CMDS else None),
+          (True, ["2", "--by", "user", "--note", ib.UNNEEDED_NOTE, "--unneeded", "--why", "既知のアラーム"]))
+    page.evaluate("loadSituation()")
+    page.wait_for_function("document.querySelectorAll('#sitOther .lesson').length === 1")
+    page.evaluate("document.getElementById('sitOther').open = true")
+    lesson = page.text_content("#sitOther .lesson")
+    check(f"{who} 「その他」に見張りの手本として、番号・題・理由を出す（畳みの見出しにも数）",
+          ("[2]" in lesson, "処理時間のアラーム" in lesson, "理由: 既知のアラーム" in lesson, "見張りの手本 1" in page.text_content("#sitOther > summary")),
+          (True, True, True, True))
+    page.click("#sitOther .lesson button.lessonOut")
+    gone = wait(lambda: page.locator("#sitOther .lesson").count() == 0, 6)
+    check(f"{who} 「外す」で手本から外し（コンテナの中の道具）、外したと出す",
+          (gone, CMDS[-1][-2:], "[2] を手本から外しました（済の印はそのままです）" in page.text_content("#sitBody")), (True, ["forget", "2"], True))
     # 通知・リンクの場所
     seed()
     page.goto(BASE + "/#i=3")

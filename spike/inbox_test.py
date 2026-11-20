@@ -247,13 +247,17 @@ CMDS = []
 
 def fake_run(cmd, capture_output=True, timeout=None, **k):
     CMDS.append(cmd)
-    n = int(cmd[cmd.index("done") + 1])
+    op = "forget" if "forget" in cmd else "done"
+    n = int(cmd[cmd.index(op) + 1])
     if FAKE.get("fail"):
         return subprocess.CompletedProcess(cmd, 1, b"", b"Error: No such container: hermes\n")
     if not FAKE.get("silent"):  # コンテナの中の道具が、記録に印を書き足すのにあたる
+        row = {"op": op, "at": time.time(), "n": n} if op == "forget" else {"op": "done", "at": time.time(), "n": n, "note": cmd[cmd.index("--note") + 1], "by": "user"}
+        if "--unneeded" in cmd and not FAKE.get("old"):  # old: 置き場の道具が古く、不要の印を知らない（印だけ付く）
+            row.update(unneeded=True, why=cmd[cmd.index("--why") + 1])
         with ITEMS.open("a") as f:
-            f.write(json.dumps({"op": "done", "at": time.time(), "n": n, "note": ib.DONE_NOTE, "by": "user"}, ensure_ascii=False) + "\n")
-    return subprocess.CompletedProcess(cmd, 0, f"片づけた印を付けました [{n}]\n".encode(), b"")
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return subprocess.CompletedProcess(cmd, 0, f"[{n}]\n".encode(), b"")
 
 
 FAKE = {}
@@ -366,6 +370,68 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     lines = [json.loads(l) for l in ITEMS.read_text().splitlines()]
     check("…記録に増えたのは、道具が書いた済みの印だけ", [r["op"] for r in lines[5:]], ["done"])
 
+    # ---------- 不要だった・見張りの手本（0.33.0） ----------
+    CMDS.clear()
+    write([add(71, at=NOW - 60, title="全社への周知"), add(72, at=NOW - 120, title="dev の鳴り"), add(73, at=NOW - 180), add(74, kind="fyi", at=NOW - 60)])
+    d = get()
+    check("一覧は「不要だった」の理由の選び方（key と画面の文）と、空の手本を返す",
+          ([o["key"] for o in d["unneeded_options"]], d["unneeded_options"][0]["label"], d["lessons"], d["lessons_more"]),
+          (["notice", "test", "alarm", "notmine", "none"], "周知・お知らせだった", [], 0))
+    check("不要だった: 決めた選び方の key でなければ断る（文字の理由・数・空・null 以外の形）。予約もしない",
+          ([post("/api/inbox/done", {"n": 71, "unneeded": v}).status_code for v in ("周知", "rm -rf", "", 1, True, ["notice"], {"k": 1})], ns(get())),
+          ([400] * 7, [71, 72, 73]))
+    r = post("/api/inbox/done", {"n": 71, "unneeded": "notice"}).json()
+    check("不要だった: すぐ一覧から外し、戻せる間は道具を動かさない", (r["ok"], ns(get()), CMDS), (True, [72, 73], []))
+    time.sleep(ib.UNDO + 0.6)
+    cmd = CMDS[-1] if CMDS else []
+    d = get()
+    check("…時間がたつと、コンテナの中の記録の道具に、利用者の不要の印と、本体が決めた理由の文を付けさせる",
+          (cmd[-11:], "HERMES_HOME=/opt/data" in cmd),
+          (["/opt/hermes/.venv/bin/python", ib.TOOL, "done", "71", "--by", "user", "--note", ib.UNNEEDED_NOTE, "--unneeded", "--why", "周知・お知らせ"], True))
+    check("…付いたら手本として一覧に出す（番号・口・案件・題・理由・時刻）",
+          ([(x["n"], x["source"], x["project"], x["title"], x["why"]) for x in d["lessons"]], isinstance(d["lessons"][0]["at"], float), set(d["lessons"][0])),
+          ([(71, "mail", "shop", "全社への周知", "周知・お知らせ")], True, {"n", "source", "project", "title", "why", "at"}))
+    post("/api/inbox/done", {"n": 72, "unneeded": "alarm"})
+    check("…戻すと何もしない（不要だったも同じ）", (post("/api/inbox/undo", {"n": 72}).json()["ok"], ns(get())), (True, [72, 73]))
+    FAKE["old"] = True
+    post("/api/inbox/done", {"n": 72, "unneeded": "none"})
+    time.sleep(ib.UNDO + 0.6)
+    d = get()
+    check("置き場の道具が古く、不要の印が記録に見えなければ、付けられなかったと出す（済の印だけで黙って終えない）",
+          (d.get("fail", {}).get("n"), "不要の印が見当たりません" in d.get("fail", {}).get("why", ""), [x["n"] for x in d["lessons"]]), (72, True, [71]))
+    FAKE.clear()
+    post("/api/inbox/done", {"n": 73, "unneeded": "none"})
+    time.sleep(ib.UNDO + 0.6)
+    d = get()
+    check("理由を選ばなければ、理由は空で手本になる（新しい順）", [(x["n"], x["why"]) for x in d["lessons"]], [(73, ""), (71, "周知・お知らせ")])
+    with ITEMS.open("a") as fh:  # Hermes が手で書いた形の違う不要の印は、手本に出さない
+        fh.write(json.dumps(add(75, title="偽の手本")) + "\n")
+        fh.write(json.dumps({"op": "done", "at": time.time(), "n": 75, "by": "ai", "unneeded": True}) + "\n")
+    check("AI の印・形の違う不要の印は手本に出さない（見張りの道具と同じ読み方）", 75 in [x["n"] for x in get()["lessons"]], False)
+    CMDS.clear()
+    check("外す: 手本でない番号・無い番号は、道具を動かさずに断る。番号の形が違えば 400",
+          ([post("/api/inbox/forget", {"n": v}).json().get("reason") for v in (74, 75, 999)], [post("/api/inbox/forget", b).status_code for b in ({"n": "71"}, {"n": True}, {"n": 0}, {})], CMDS),
+          (["gone", "gone", "gone"], [400] * 4, []))
+    r = post("/api/inbox/forget", {"n": 71}).json()
+    d = get()
+    check("外す: コンテナの中の記録の道具で外し、外れたことを記録で確かめる（済の印はそのまま。一覧に戻さない）",
+          (r, CMDS[-1][-3:], [x["n"] for x in d["lessons"]], 71 in ns(d)), ({"ok": True, "n": 71}, [ib.TOOL, "forget", "71"], [73], False))
+    FAKE["silent"] = True
+    r = post("/api/inbox/forget", {"n": 73}).json()
+    FAKE["fail"] = True
+    r2 = post("/api/inbox/forget", {"n": 73}).json()
+    FAKE.clear()
+    check("外す: 道具が答えても記録で外れていなければ・道具が失敗したら、外せなかったと返す",
+          ((r["ok"], r["reason"], r["why"]), (r2["ok"], "No such container" in r2["why"]), [x["n"] for x in get()["lessons"]]),
+          ((False, "failed", "手本から外れたことを確かめられませんでした"), (False, True), [73]))
+    keep_lmax = ib.vl_items.LESSONS_MAX
+    ib.vl_items.LESSONS_MAX = 1
+    with ITEMS.open("a") as fh:
+        fh.write(json.dumps({"op": "done", "at": time.time(), "n": 71, "by": "user", "unneeded": True, "why": "やはり"}) + "\n")
+    d = get()
+    ib.vl_items.LESSONS_MAX = keep_lmax
+    check("手本は見張りが使う数（LESSONS_MAX）だけ出し、押し出した古い手本は数だけ", ([x["n"] for x in d["lessons"]], d["lessons_more"]), ([71], 1))
+
 # ---------- 通知を押したときに開く場所 ----------
 PAY = []
 s._push_send = lambda subs, payload, urgency: (PAY.append(payload["url"]), (1, []))[1]
@@ -380,8 +446,9 @@ for f in ("static/sw.js", "static/index.html"):
 # ---------- コンテナからは使えない ----------
 H = {"host": "127.0.0.1:8790", "x-vl-key": "k1"}
 check("受け箱の口は、コンテナ（鍵あり）からは使えない",
-      [problem(H, m, p, container=True) is not None for m, p in (("GET", "/api/inbox"), ("GET", "/api/inbox/item"), ("POST", "/api/inbox/done"), ("POST", "/api/inbox/undo"), ("POST", "/api/inbox/later"))],
-      [True] * 5)
+      [problem(H, m, p, container=True) is not None for m, p in (("GET", "/api/inbox"), ("GET", "/api/inbox/item"), ("POST", "/api/inbox/done"), ("POST", "/api/inbox/undo"), ("POST", "/api/inbox/later"),
+                                                             ("POST", "/api/inbox/forget"))],
+      [True] * 6)
 
 # ---------- 件への返信 ----------
 SENT = []

@@ -168,6 +168,7 @@
   .ibFold > summary { font-size:12px; color:#c9b77a; cursor:pointer; padding:4px 0; }
   .ibFold > div { display:flex; flex-direction:column; gap:6px; margin-top:4px; }
   .ibFyi { padding:4px 2px; font-size:12px; overflow-wrap:anywhere; border-top:1px solid #2a2618; }
+  .lessonOut { margin-left:auto; border:1px solid #6b5a2a; border-radius:8px; background:none; color:var(--fg); font-size:12px; padding:2px 10px; }
   .ibToast { display:flex; align-items:center; gap:8px; padding:6px 10px; border:1px solid #3a3420; border-radius:8px; background:#1d1a12; font-size:12px; overflow-wrap:anywhere; }
   .ibToast span { flex:1; } .ibToast button { border:none; background:none; color:#f0d98a; font-size:13px; text-decoration:underline; padding:2px 4px; }
   .ibItem { display:flex; flex-direction:column; gap:6px; font-size:13px; }
@@ -1326,17 +1327,19 @@ function closeItem() {
   if (replyTarget && replyTarget.item === ibSel) setReplyTarget(null);  // 件を閉じたら、その件への返信もやめる
   ibSel = null; ibSig = ''; ibExtra = null; renderSit();
 }
-async function doneItem(it) {
+// unneeded は「不要だった」の理由の key（本体の unneeded_options）。無ければ「済んだ」
+async function doneItem(it, unneeded = null) {
   ibGen++;  // 押す前に始まった読み直しの答えでは、一覧を戻さない
   const t0 = performance.now();
-  let r; try { r = await postJSON('/api/inbox/done', { n: it.n }); } catch { ibNote('済みにできませんでした（本体に届きません）', true); renderSit(); return; }
-  if (!r.ok) { ibNote({ gone: 'この判断待ちは、もう片づいているか見つかりません', unreadable: '判断待ちの記録を読めません' }[r.reason] || '済みにできませんでした', true); loadSituation(); return; }
+  const what = unneeded ? '不要にできませんでした' : '済みにできませんでした';
+  let r; try { r = await postJSON('/api/inbox/done', unneeded ? { n: it.n, unneeded } : { n: it.n }); } catch { ibNote(what + '（本体に届きません）', true); renderSit(); return; }
+  if (!r.ok) { ibNote({ gone: 'この判断待ちは、もう片づいているか見つかりません', unreadable: '判断待ちの記録を読めません' }[r.reason] || what, true); loadSituation(); return; }
   if (ibSel === it.n) closeItem();
   // 「戻す」を出すのは、本体が返した残りの秒から、送ってから受け取るまでにかかった時間を引いた分だけ
   // （本体が残りを数えたのは、その間のどこか。応答が遅れても・押し直しても、本体より長く出さない。端末の時計には頼らない）
   const left = Math.max(0, Number(r.left) || 0) * 1000 - (performance.now() - t0) - 100;
   if (left > 0) {
-    const u = { n: it.n, title: it.title, until: Date.now() + left };
+    const u = { n: it.n, title: it.title, until: Date.now() + left, unneeded: !!unneeded };
     ibUndos.set(it.n, u);
     // 期限が来たら、その件の「戻す」をその場で消す（読み直しの応答を待たない。止まっても、押せない「戻す」を残さない）
     setTimeout(() => { if (ibUndos.get(it.n) === u) { ibUndos.delete(it.n); document.querySelectorAll(`#sitBody .ibToast[data-n="${it.n}"]`).forEach(e => e.remove()); loadSituation(); } }, left + 50);
@@ -1356,7 +1359,7 @@ async function undoItem(n) {
   ibUndos.delete(n);
   document.querySelectorAll(`#sitBody .ibToast[data-n="${n}"]`).forEach(e => e.remove());  // 押したらその場で消す（読み直しが止まっても、押せない「戻す」を残さない）
   let r; try { r = await postJSON('/api/inbox/undo', { n: u.n }); } catch { r = { ok: false, reason: 'net' }; }
-  if (!r.ok) ibNote(r.reason === 'late' ? `「${u.title}」は、もう済みの印を付け始めていたので戻せませんでした。ハブに「[${u.n}] はまだだった」と言えば戻せます` : '戻せませんでした（本体に届きません）', true);
+  if (!r.ok) ibNote(r.reason === 'late' ? `「${u.title}」は、もう${u.unneeded ? '不要' : '済み'}の印を付け始めていたので戻せませんでした。ハブに「[${u.n}] はまだだった」と言えば戻せます` : '戻せませんでした（本体に届きません）', true);
   ibGen++;  // 応答を待つ間に始まった読み直しの答えは使わない（このあとの読み直しが描く）
   loadSituation();
 }
@@ -1401,7 +1404,16 @@ function itemView(it) {
   if (acts.childNodes.length) { v.appendChild(acts); v.appendChild(node('div', 'ibNote', '送るのはご自分です（コピーして、メール・Teams・Slack に貼って送ります）')); }
   const acts2 = node('div', 'ibActs');
   const done = node('button', 'go', '済んだ'); done.type = 'button'; done.onclick = () => { done.disabled = true; doneItem(it); }; acts2.appendChild(done);
-  const later = document.createElement('select'); later.setAttribute('aria-label', 'あとでに回す');
+  // 不要だった: そもそも判断待ちでなかった。見張りの手本になる（同じ種類の知らせは、次から判断待ちにせず「届いたもの（対応不要）」に入る）
+  const opts = inbox?.unneeded_options || [];
+  if (opts.length) {
+    const un = document.createElement('select'); un.className = 'ibUnneeded'; un.setAttribute('aria-label', '不要だった（理由を選ぶ）');
+    un.appendChild(new Option('不要だった ▾', ''));
+    for (const o of opts) un.appendChild(new Option(o.label, o.key));
+    un.onchange = () => { if (un.value) { un.disabled = true; doneItem(it, un.value); } };
+    acts2.appendChild(un);
+  }
+  const later = document.createElement('select'); later.className = 'ibLater'; later.setAttribute('aria-label', 'あとでに回す');
   later.appendChild(new Option('あとで ▾', ''));
   for (const o of inbox?.later_options || []) later.appendChild(new Option(o.label, o.key));
   later.onchange = () => { if (later.value) laterItem(it, later.value); };
@@ -1409,6 +1421,7 @@ function itemView(it) {
   const on = replyTarget && replyTarget.item === it.n;
   if (!on) { const rb = node('button', null, '↩ この件に返信'); rb.type = 'button'; rb.onclick = () => itemReply(it); acts2.appendChild(rb); }
   v.appendChild(acts2);
+  if (opts.length) v.appendChild(node('div', 'ibNote', '「不要だった」は、見張りの手本になります。同じ種類の知らせは、次から判断待ちにせず「今日届いたもの（対応不要）」に入ります（手本は「その他」の学んだことで外せます）'));
   v.appendChild(node('div', 'ibNote', on ? 'いまこの件への「↩ 返信」の状態です。下の欄で、ことばを添えて「送る」か、空のまま「このまま送る」を押すと、ハブが答えます（答えはハブの会話に出ます）。開いただけでは何も送りません'
     : '「↩ この件に返信」で、この件についてハブに聞けます'));
   return v;
@@ -1418,7 +1431,7 @@ function undoToasts() {
   const out = [];
   for (const v of ibUndos.values()) {
     if (Date.now() >= v.until) continue;
-    const t = node('div', 'ibToast'); t.dataset.n = String(v.n); t.appendChild(node('span', null, `済みにしました「${v.title}」`));
+    const t = node('div', 'ibToast'); t.dataset.n = String(v.n); t.appendChild(node('span', null, v.unneeded ? `不要にしました「${v.title}」（見張りの手本にします）` : `済みにしました「${v.title}」`));
     const u = node('button', null, '戻す'); u.type = 'button'; u.setAttribute('aria-label', `判断待ち ${v.n} を戻す`); u.onclick = () => undoItem(v.n); t.appendChild(u); out.push(t);
   }
   return out;
@@ -1467,6 +1480,29 @@ function inboxView(d) {
     }
     det.appendChild(box); f.appendChild(det);
   }
+  return f;
+}
+// 見張りの手本: 「不要だった」とした記録。見張りの回は、同じ種類の知らせを判断待ちにせず「届いたもの（対応不要）」にする。「外す」で手本から外す（済の印はそのまま）
+function lessonList(ls, more) {
+  const f = document.createDocumentFragment();
+  f.appendChild(node('h4', null, `見張りの手本（不要だった ${ls.length} 件）— 同じ種類の知らせは、判断待ちにせず「今日届いたもの（対応不要）」に入れます。違えば「外す」`));
+  for (const x of ls) {
+    const r = node('div', 'ibFyi lesson');
+    const meta = node('div', 'meta'); meta.append(srcTag(x), `${x.project} ・ ${stamp(x.at)}`, node('span', 'ibNo', `[${x.n}]`));
+    const out = node('button', 'lessonOut', '外す'); out.type = 'button'; out.setAttribute('aria-label', `手本 ${x.n} を外す`);
+    out.onclick = async () => {
+      out.disabled = true; out.textContent = '外しています…';
+      let r2; try { r2 = await postJSON('/api/inbox/forget', { n: x.n }); } catch { r2 = { ok: false, reason: 'net' }; }
+      sitNote = r2.ok ? [`[${x.n}] を手本から外しました（済の印はそのままです）`, false]
+        : ['手本から外せませんでした: ' + ({ gone: 'もう手本にありません', unreadable: '記録を読めません', net: '本体に届きません' }[r2.reason] || r2.why || r2.reason), true];
+      loadSituation();
+    };
+    meta.appendChild(out);
+    r.appendChild(meta); r.appendChild(node('div', null, x.title));
+    r.appendChild(node('div', 'sitMeta', '理由: ' + (x.why || '選ばなかった')));
+    f.appendChild(r);
+  }
+  if (more) f.appendChild(node('div', 'sitMeta', `ほかに古い手本が ${more} 件あります（見張りは新しい ${ls.length} 件だけを使います）`));
   return f;
 }
 // 受け箱と「その他」（Hermes の知らせ・学んだこと・手順の書き足し・会話を新しく）を描く。読み直しは loadSituation
@@ -1521,6 +1557,8 @@ function renderSit() {
       other.appendChild(more);
     }
   }
+  const lessons = ib !== FAILED && ib.on && Array.isArray(ib.lessons) ? ib.lessons : [];
+  if (lessons.length) other.appendChild(lessonList(lessons, ib.lessons_more || 0));
   const asking = h !== FAILED && h.on && (h.items.length || h.unreadable || h.problem);
   if (asking) {
     other.appendChild(node('h4', null, `自動で当てていない手順の書き足し（Hermes・${h.items.length}）— 今日の上限を超えた分は次の日に自動で当てます。採ると、いま当てます`));
@@ -1535,7 +1573,7 @@ function renderSit() {
   det.open = ibOther === true || (ibOther !== 'closed' && h !== FAILED && h.on && h.items.length > 0);  // 承認待ちがあれば開いておく（閉じたら閉じたまま）
   det.ontoggle = () => { ibOther = det.open ? true : 'closed'; };
   const waiting = h !== FAILED && h.on ? h.items.length : 0;
-  det.appendChild(node('summary', null, `その他（Hermes の知らせ ${notes.length} 件・学んだこと・手順の書き足し${waiting ? `（承認待ち ${waiting}）` : ''}・ハブの会話を新しく）`));
+  det.appendChild(node('summary', null, `その他（Hermes の知らせ ${notes.length} 件・学んだこと${lessons.length ? `（見張りの手本 ${lessons.length}）` : ''}・手順の書き足し${waiting ? `（承認待ち ${waiting}）` : ''}・ハブの会話を新しく）`));
   det.appendChild(other);
   box.appendChild(det);
 }
