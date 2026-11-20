@@ -384,6 +384,16 @@ def run(page, who):
     check(f"{who} AI が片づけたもの: 開いた畳みで、題と根拠を文字として出す（判断待ちの一覧からは外れる）",
           ("処理時間のアラーム" in row, "根拠: 本体の確かめ（新しい会話）: 控え" in row, "<b>返した</b>" in row, page.locator("#ibAi b").count(), cards(page)),
           (True, True, True, 0, [TITLE1]))
+    with ITEMS.open("a") as f:
+        f.write(json.dumps({"op": "checked", "at": time.time(), "n": 1, "result": "open", "note": "送信済みに返事なし"}, ensure_ascii=False) + "\n")
+    page.evaluate("loadSituation()")
+    page.wait_for_function("[...document.querySelectorAll('#sitBody > .ibCard .ibTag')].some(e => e.textContent === '確かめた（まだ）')")
+    page.locator("#sitBody > .ibCard").first.click()
+    page.wait_for_selector(".ibItem h3")
+    check(f"{who} 確かめた結果: カードに「確かめた（まだ）」の札、中身に「確かめた（時刻・Hermes の答え。未確認）」とメモ",
+          ("確かめた（" in page.text_content(".ibItem"), "まだ：送信済みに返事なし" in page.text_content(".ibItem")), (True, True))
+    page.click(".ibItem .ibBack")
+    page.wait_for_selector("#ibAi .aiClosed")
     page.click("#ibAi .aiClosed button")
     back = wait(lambda: cards(page) == ["処理時間のアラーム", TITLE1] or cards(page) == [TITLE1, "処理時間のアラーム"], 6)
     check(f"{who} 「戻す」で判断待ちに戻し（コンテナの中の道具）、畳みから外して一覧に戻す",

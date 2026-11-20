@@ -172,9 +172,12 @@ def link(r: dict) -> dict | None:
 def shape(r: dict) -> dict:
     """画面に出す形。文字は 1 行にそろえて字数で切る（vl_items.clip）。"""
     src = r.get("source") if r.get("source") in vl_items.SOURCES else ""
+    c = r.get("checked")  # 本体の確かめの結果（vl_items._state が checked の行から作り、形を確かめたものだけ）
+    checked = {"at": float(c["at"]), "label": vl_items.CHECKED.get(c.get("result"), ""), "note": vl_items.clip(c.get("note"), "note")} \
+        if isinstance(c, dict) and vl_items._num(c.get("at")) else None
     return {"n": r["n"], "source": src, "project": vl_items.clip(r.get("project"), "project") or "未振り分け",
             "title": vl_items.clip(r.get("title"), "title") or "（題なし）", "note": vl_items.clip(r.get("note"), "note"),
-            "prepared": vl_items.clip(r.get("prepared"), "prepared"), "when": float(vl_items._when(r)), "link": link(r)}
+            "prepared": vl_items.clip(r.get("prepared"), "prepared"), "when": float(vl_items._when(r)), "link": link(r), "checked": checked}
 
 
 def item(n) -> dict | None:

@@ -582,7 +582,13 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         fh.write(json.dumps({"op": "done", "at": t - 600, "n": 101, "by": "ai", "note": "本体の確かめ（新しい会話）: Gmail の送信済み／根拠の時刻 2026-11-20 18:00／返した"}, ensure_ascii=False) + "\n")
         fh.write(json.dumps({"op": "done", "at": t - 2 * 86400, "n": 102, "by": "ai", "note": "前の根拠"}, ensure_ascii=False) + "\n")
         fh.write(json.dumps({"op": "done", "at": t - 600, "n": 103, "by": "user", "note": ""}, ensure_ascii=False) + "\n")
+    with ITEMS.open("a") as fh:
+        fh.write(json.dumps({"op": "checked", "at": t - 300, "n": 104, "result": "unknown", "note": "送信済みは 50 件ちょうど\x1b[2K"}, ensure_ascii=False) + "\n")
     d = get()
+    c104 = next(x for x in d["items"] if x["n"] == 104)["checked"]
+    check("確かめた結果（まだ・確かめきれない）を、時刻・文・メモ（制御文字は空白）で一覧に渡す。結果の無い件は null",
+          (c104["label"], c104["note"], abs(c104["at"] - (t - 300)) < 1e-6, [x["checked"] for x in d["items"] if x["n"] != 104]),
+          ("確かめきれない", "送信済みは 50 件ちょうど [2K", True, []))
     check("AI が片づけたもの: AI の印（--by ai）で 1 日以内の件を、根拠と片づけた時刻つきで出す（利用者の印・古い片づけは出さない）",
           ([(x["n"], x["title"]) for x in d["ai_closed"]], d["ai_closed"][0]["why"].startswith("本体の確かめ（新しい会話）: Gmail"), set(d["ai_closed"][0])),
           ([(101, "AI が片づけた件")], True, {"n", "source", "project", "title", "why", "closed_at"}))

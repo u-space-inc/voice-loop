@@ -1382,6 +1382,7 @@ function itemCard(x) {
   const meta = node('div', 'meta'); meta.append(srcTag(x), `${x.project} ・ ${ibStampOf(x)}`, node('span', 'ibNo', `[${x.n}]`));
   if (x.prepared) meta.appendChild(node('span', 'ibTag', '準備あり'));
   if (x.back) meta.appendChild(node('span', 'ibTag', 'あとでから戻った'));
+  if (x.checked) meta.appendChild(node('span', 'ibTag', `確かめた（${x.checked.label}）`));
   c.appendChild(meta); c.appendChild(node('div', 'title', x.title));
   const d = node('button', 'done', '済'); d.type = 'button'; d.setAttribute('aria-label', `判断待ち ${x.n} を済みにする`);
   d.onclick = e => { e.stopPropagation(); d.disabled = true; doneItem(x); };
@@ -1398,6 +1399,10 @@ function itemView(it) {
   v.appendChild(node('h3', null, it.title));
   if (it.note) { v.appendChild(node('div', 'ibLabel', '要ること（Hermes の要約。未確認）')); v.appendChild(node('div', 'ibBox', it.note)); }
   if (it.prepared) { v.appendChild(node('div', 'ibLabel', '準備したこと（返信案など。Hermes が書いたもの）')); v.appendChild(node('div', 'ibBox', it.prepared)); }
+  if (it.checked) {  // 本体が新しい会話で確かめた結果（まだ・確かめきれない）
+    v.appendChild(node('div', 'ibLabel', `確かめた（${stamp(it.checked.at)}・Hermes の答え。未確認）`));
+    v.appendChild(node('div', 'ibBox', it.checked.label + (it.checked.note ? '：' + it.checked.note : '')));
+  }
   const acts = node('div', 'ibActs');
   if (it.prepared) {
     const cp = node('button', null, 'コピー'); cp.type = 'button';

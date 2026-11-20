@@ -55,6 +55,7 @@ ORIG_BEFORE = 7 * 86400   # Hermes が答えた元の時刻として受け入れ
 LOG_MAX = 200
 LIM = {"where": 100, "quote": 120, "reason": 80}
 VERDICTS = {"done", "open", "unknown"}
+CHECKABLE = {"mail", "slack", "teams"}  # 確かめる口（録音・予定は確かめず、1 日の数を使わない）
 _TIME = re.compile(r"(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})")
 _lock = threading.Lock()   # 状態のファイル
 _run_lock = threading.Lock()  # 確かめは 1 つずつ
@@ -236,9 +237,12 @@ def check_one(r: dict, now: float | None = None, dry: bool = False) -> dict:
     e = {"n": n, "at": started, "verdict": "unknown", "said": "", "where": "", "ev_at": "", "quote": "", "reason": "", "closed": False}
     if not dry:
         got = _records()
-        cur = got[0].get(n) if got else None
-        if not got or not cur or n in got[1] or cur.get("kind") != "judge":
-            e.update(verdict="skip", reason="もう判断待ちではない・読めない")
+        if got is None:  # 読めない（一時の失敗かもしれない）: 頼まずに、並びに残して次の見回りへ
+            e.update(verdict="retry", reason="記録を読めない")
+            return e
+        cur = got[0].get(n)
+        if not cur or n in got[1] or cur.get("kind") != "judge" or cur.get("source") not in CHECKABLE:
+            e.update(verdict="skip", reason="もう判断待ちではない")
             return e
         r = cur
     expect = repr(float(r["moved"])) if vl_items._num(r.get("moved")) else "none"
@@ -282,7 +286,7 @@ def tick(now: float | None = None) -> list[dict]:
         if not got:
             return []
         items, done = got
-        open_ = {n: r for n, r in items.items() if r.get("kind") == "judge" and n not in done}
+        open_ = {n: r for n, r in items.items() if r.get("kind") == "judge" and n not in done and r.get("source") in CHECKABLE}
         with _lock:
             st = _load()
         if st["day"] != _day(now):
@@ -317,16 +321,21 @@ def tick(now: float | None = None) -> list[dict]:
                 if now - last.get(n, 0) >= RECHECK_GAP and n not in queue:
                     queue.append(n)
             st["morning"] = _day(now)
-        out = []
-        while queue and st["count"] < CAP and len(out) < PER_TICK:
+        out, asked = [], 0
+        while queue and st["count"] < CAP and asked < PER_TICK:
             n = queue.pop(0)
             st["count"] += 1
             with _lock:  # 頼む前に数を残す（途中で止まっても、上限を越えて頼まない）
                 _save({**st, "queue": queue})
             e = check_one(open_[n], now)
-            if e["verdict"] == "skip":  # 頼む前に読み直したら、もう判断待ちではなかった（頼んでいないので数に入れない）
-                st["count"] -= 1
             out.append(e)
+            if e["verdict"] in ("skip", "retry"):  # 頼んでいないので数に入れず、確かめた時刻も残さない
+                st["count"] -= 1
+                if e["verdict"] == "retry":  # 記録を読めなかった: 並びの先頭に戻し、この見回りは終える（次の見回りで頼む）
+                    queue.insert(0, n)
+                    break
+                continue
+            asked += 1
             st["items"][str(n)] = {"at": e["at"], "verdict": e["verdict"]}
             st["log"] = (st["log"] + [e])[-LOG_MAX:]
             print(f"[check] [{n}] {e['verdict']}{'（片づけた）' if e['closed'] else ''} {e['reason']}".rstrip(), flush=True)

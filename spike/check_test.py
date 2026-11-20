@@ -256,6 +256,25 @@ write([add(37, day - 86400)])
 hc.tick(day + 8 * 3600 + 60)
 check("Hermes に頼めなかった回も、上限の数に入れる（頼む前に数を残す）", (state()["count"], state()["log"][-1]["verdict"]), (1, "error"))
 hc.CAP = keep_cap
+# 録音・予定の件は確かめず、1 日の数を使わない。記録を一時読めなければ、頼まずに並びに残し、次の見回りで頼む
+hc.STATE_FILE.unlink(missing_ok=True)
+ASKED.clear()
+write([add(61, day - 5 * 86400, source="cal", id="ev1@x"), add(62, day - 4 * 86400, source="plaud", id="p1"), add(63, day - 86400)])
+real_records, calls_r = hc._records, []
+
+
+def flaky():
+    calls_r.append(1)
+    return None if len(calls_r) == 2 else real_records()  # 見回りの最初の読みは通り、頼む直前の読み直しだけ失敗する
+hc._records = flaky
+hc.tick(day + 8 * 3600 + 60)
+hc._records = real_records
+st = state()
+first = ([n for n, _, _ in ASKED], st["queue"], st["count"], "63" in st["items"])
+hc.tick(day + 8 * 3600 + 400)
+st = state()
+check("録音・予定の件は並べず数も使わない。頼む直前に記録を読めなければ、頼まず・数えず・並びの先頭に残し、次の見回りで頼む",
+      (first, [n for n, _, _ in ASKED], st["queue"], st["count"]), (([], [63], 0, False), [63], [], 1))
 # 出ていく側のきっかけ
 hc.STATE_FILE.unlink(missing_ok=True)
 ASKED.clear()
