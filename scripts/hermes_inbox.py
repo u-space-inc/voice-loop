@@ -222,7 +222,7 @@ def _save_later(m: dict[int, tuple[float, float]]):
 def lesson_sig(r: dict, d: dict) -> str:
     """手本の中身の指紋（見張りが照らすのに使うもの: 口・id・案件・題・照合の鍵と、不要の理由）。記録の値のまま（切らずに）数える。"""
     keep = [r.get(k) for k in ("source", "id", "project", "title", "key")] + [d.get("why")]
-    return hashlib.sha256(json.dumps(keep, ensure_ascii=False, default=str).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(keep, ensure_ascii=True, default=str).encode()).hexdigest()  # ASCII にしてから数える（記録に壊れた文字があっても止まらない）
 
 
 def _ui_lessons() -> dict[int, tuple[float, str]]:
@@ -423,13 +423,30 @@ def _lesson_ns() -> tuple[set[int] | None, bool]:
     return {r["n"] for r, _ in vl_items.lessons(info.get("rows") or [], *got)}, bool(info.get("trunc"))
 
 
+def _forget_marks(n: int) -> tuple[set[int] | None, set[float]]:
+    """(手本の番号, その番号の手本から外した行の時刻)。読めなければ (None, 空)。"""
+    info: dict = {}
+    got = records(info)
+    if got is None:
+        return None, set()
+    rows = info.get("rows") or []
+    ats = {r["at"] for r in rows if r.get("op") == "forget" and r.get("n") == n and vl_items._num(r.get("at"))}
+    return {r["n"] for r, _ in vl_items.lessons(rows, *got)}, ats
+
+
 def run_forget(n: int) -> str:
-    """コンテナの中で手本から外す。外れたら ""、だめならその理由。"""
+    """コンテナの中で手本から外す。外れたら ""、だめならその理由。
+    手本に見えなくなっただけでは外れたとしない（新しい側だけを読んだときは、もともと見えていない）。道具が書いた外した行が、新しく増えたかも見る。"""
+    _, before = _forget_marks(n)
     err = _run(tool_command("forget", str(n)))
     if err:
         return err
-    ls, _ = _lesson_ns()
-    return "" if ls is not None and n not in ls else "手本から外れたことを確かめられませんでした"
+    ls, after = _forget_marks(n)
+    if ls is None or n in ls:
+        return "手本から外れたことを確かめられませんでした"
+    if not after - before:
+        return "手本から外した記録が見当たりません"
+    return ""
 
 
 async def _commit(n: int, gen: str):

@@ -513,6 +513,26 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     check("新しい側だけを読んだら、手本が一部であることを出し、出ていない手本の「外す」も記録の道具に任せる（見張りは全部を使うので、外せなくしない）",
           (d["lessons_partial"], 94 in [x["n"] for x in d["lessons"]], r.get("ok"), [c[-2:] for c in CMDS]), (True, False, True, [["forget", "94"]]))
     check("…上限より小さい記録では、手本は全部（一部の印は出さない）", get()["lessons_partial"], False)
+    # 新しい側だけを読んだとき、道具が「外した」と答えても、外した行が増えていなければ外したとしない
+    ib.ITEMS_MAX = 20000
+    write(big)
+    FAKE["silent"] = True
+    r = post("/api/inbox/forget", {"n": 94}).json()
+    FAKE.clear()
+    ib.ITEMS_MAX = keep_max
+    check("新しい側だけを読んだとき、外した行が記録に増えていなければ、外せなかったと返す（見えないだけで成功にしない）",
+          (r.get("ok"), r.get("why")), (False, "手本から外した記録が見当たりません"))
+    # 記録に壊れた文字（対になっていない代理の文字）がある手本でも、受け箱は止まらない
+    write([add(96, at=NOW - 60)])
+    with ITEMS.open("a") as fh:
+        fh.write('{"op": "add", "at": %s, "source": "mail", "id": "sur1", "project": "shop", "kind": "judge", "title": "壊れた\\ud800文字", "note": "", "prepared": "", "n": 95}' % (NOW - 60) + "\n")
+        fh.write(json.dumps({"op": "done", "at": time.time(), "n": 95, "by": "user", "unneeded": True, "why": ""}) + "\n")
+    try:
+        d = ib.inbox(NOW)
+        got_sur = (95 in [x["n"] for x in d["lessons"]], ns(d))
+    except Exception as e:
+        got_sur = type(e).__name__
+    check("記録に壊れた文字がある手本でも、受け箱は止まらない（指紋は ASCII にして数える）", got_sur, (True, [96]))
 
 # ---------- 通知を押したときに開く場所 ----------
 PAY = []
