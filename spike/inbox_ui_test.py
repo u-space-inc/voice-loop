@@ -355,6 +355,23 @@ def run(page, who):
     page.wait_for_function("document.querySelectorAll('#sitOther .lesson').length === 1")
     check(f"{who} 画面で押していない手本には「ハブから」と出し、題は文字として出す",
           ("ハブから" in page.text_content("#sitOther .lesson"), page.evaluate("window.__xss === undefined"), page.locator("#sitBody img").count()), (True, True, 0))
+    # 「外す」の前に始まった読み直しが遅れて届いても、外した手本を戻さない
+    stash_l = []
+
+    def hold_first(route):
+        if not stash_l:
+            stash_l.append((route, route.fetch()))  # 本体は「外す」の前の一覧を作り終えている。届けるのを止めておく
+        else:
+            route.continue_()
+    page.route("**/api/inbox", hold_first)
+    page.evaluate("void loadSituation()")
+    wait(lambda: stash_l, 5)
+    page.click("#sitOther .lesson button.lessonOut")
+    gone_l = wait(lambda: page.locator("#sitOther .lesson").count() == 0, 6)
+    stash_l[0][0].fulfill(response=stash_l[0][1])  # 古い一覧を、いま届ける
+    page.unroute("**/api/inbox")
+    time.sleep(0.8)
+    check(f"{who} 「外す」の前に始まった読み直しが遅れて届いても、外した手本を戻さない", (gone_l, page.locator("#sitOther .lesson").count()), (True, 0))
     # 通知・リンクの場所
     seed()
     page.goto(BASE + "/#i=3")

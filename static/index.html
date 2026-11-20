@@ -1497,7 +1497,9 @@ function lessonList(ls, more, partial = false) {
     const out = node('button', 'lessonOut', '外す'); out.type = 'button'; out.setAttribute('aria-label', `手本 ${x.n} を外す`);
     out.onclick = async () => {
       out.disabled = true; out.textContent = '外しています…';
+      ibGen++;  // 押す前に始まった読み直しの答えでは、外した手本を戻さない
       let r2; try { r2 = await postJSON('/api/inbox/forget', { n: x.n }); } catch { r2 = { ok: false, reason: 'net' }; }
+      ibGen++;  // 応答を待つ間に始まった読み直しの答えも使わない（このあとの読み直しが描く）
       sitNote = r2.ok ? [`[${x.n}] を手本から外しました（済の印はそのままです）`, false]
         : ['手本から外せませんでした: ' + ({ gone: 'もう手本にありません', unreadable: '記録を読めません', net: '本体に届きません' }[r2.reason] || r2.why || r2.reason), true];
       loadSituation();

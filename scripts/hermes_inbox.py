@@ -394,8 +394,15 @@ def _run(cmd: list[str] | None) -> str:
     return ""
 
 
-def run_done(n: int, why: str | None = None) -> str:
-    """コンテナの中で片づけた印（不要だったなら、不要の印）を付ける。付いたら ""、だめならその理由。"""
+def run_done(n: int, why: str | None = None, snap: str | None = None) -> str:
+    """コンテナの中で片づけた印（不要だったなら、不要の印）を付ける。付いたら ""、だめならその理由。
+    画面で付けた手本として覚えるのは、この操作で新しく付いた印（前と違う行で、利用者の印・画面の文・選んだ理由が合うもの）で、
+    手本の中身が押した時点の指紋（snap）と同じときだけ（待つ間に件の中身を書き換えられていたら覚えない）。
+    待つ間にハブが先に不要の印を付けていた（道具は付け足さずに終わる）ときは、片づいたとはするが、画面で付けたとは覚えない。"""
+    before = None
+    if why is not None:
+        got0 = records()
+        before = got0[1].get(n) if got0 else None
     err = _run(done_command(n, why))
     if err:
         return err
@@ -406,7 +413,9 @@ def run_done(n: int, why: str | None = None) -> str:
         d = got[1][n]
         if d.get("unneeded") is not True:
             return "記録に不要の印が見当たりません（Hermes の置き場の vl_items.py が古いかもしれません）"
-        if vl_items._num(d.get("at")):
+        mine = (d != before and d.get("by") == "user" and d.get("note") == UNNEEDED_NOTE and d.get("why") == why
+                and (snap is None or lesson_sig(got[0][n], d) == snap))
+        if mine and vl_items._num(d.get("at")):
             try:  # 覚えられなくても、付いた印はそのまま（その手本は「ハブから」と出る）。片づけの成否には混ぜない
                 _mark_ui_lesson(n, d["at"], lesson_sig(got[0][n], d))
             except (OSError, ValueError, TypeError) as e:
@@ -458,7 +467,7 @@ async def _commit(n: int, gen: str):
     _done_lock = _done_lock or asyncio.Lock()
     async with _done_lock:
         try:
-            why = await asyncio.to_thread(run_done, n, p.get("why"))
+            why = await asyncio.to_thread(run_done, n, p.get("why"), p.get("snap"))
         except Exception as e:  # どんな止まり方でも予約は外す（実行中のまま残すと、あとで判断待ちに戻した件が一覧に出なくなる）
             why = f"印を付ける途中で止まりました（{type(e).__name__}）"
     PENDING.pop(n, None)
@@ -528,7 +537,9 @@ async def api_inbox_done(body: dict):
         if n not in items or items[n].get("kind") != "judge" or n in done:
             return JSONResponse({"ok": False, "reason": "gone"})
         loop, gen = asyncio.get_running_loop(), os.urandom(6).hex()
-        PENDING[n] = {"until": time.time() + UNDO, "state": "wait", "gen": gen, "why": why,
+        # 不要だったなら、押した時点の件の中身と選んだ理由の指紋を持っておく（付けたあとの手本がこれと同じときだけ、画面で付けたと覚える）
+        snap = lesson_sig(items[n], {"why": why}) if why is not None else None
+        PENDING[n] = {"until": time.time() + UNDO, "state": "wait", "gen": gen, "why": why, "snap": snap,
                       "handle": loop.call_later(UNDO, lambda: asyncio.ensure_future(_commit(n, gen)))}
         return JSONResponse({"ok": True, "n": n, "left": _left(PENDING[n])})
 

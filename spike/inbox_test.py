@@ -513,6 +513,27 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     check("新しい側だけを読んだら、手本が一部であることを出し、出ていない手本の「外す」も記録の道具に任せる（見張りは全部を使うので、外せなくしない）",
           (d["lessons_partial"], 94 in [x["n"] for x in d["lessons"]], r.get("ok"), [c[-2:] for c in CMDS]), (True, False, True, [["forget", "94"]]))
     check("…上限より小さい記録では、手本は全部（一部の印は出さない）", get()["lessons_partial"], False)
+    # 待つ間にハブが先に不要の印を付けていた（道具は付け足さずに終わる）ときは、片づいたとするが、画面で付けたとは覚えない
+    write([add(97, at=NOW - 60, title="先を越される件")])
+    post("/api/inbox/done", {"n": 97, "unneeded": "notice"})
+    with ITEMS.open("a") as fh:
+        fh.write(json.dumps({"op": "done", "at": time.time(), "n": 97, "by": "user", "unneeded": True, "why": "ハブの理由", "note": ""}, ensure_ascii=False) + "\n")
+    FAKE["silent"] = True
+    time.sleep(ib.UNDO + 0.6)
+    FAKE.clear()
+    d = get()
+    check("待つ間にハブが先に不要の印を付けていたら、片づいたとするが、画面で付けたとは覚えない（「ハブから」のまま）",
+          (97 in ib.PENDING, d.get("fail"), [(x["n"], x["why"], x["ui"]) for x in d["lessons"]], "97" in json.loads(ib.LESSON_FILE.read_text())["ui"]),
+          (False, None, [(97, "ハブの理由", False)], False))
+    # 押してから付けるまでの間に、件の中身（題など）を書き換えられていたら、画面で付けたとは覚えない
+    write([add(98, at=NOW - 60, title="押したときの題")])
+    post("/api/inbox/done", {"n": 98, "unneeded": "notice"})
+    with ITEMS.open("a") as fh:
+        fh.write(json.dumps(add(98, at=NOW - 60, title="書き換えた題"), ensure_ascii=False) + "\n")
+    time.sleep(ib.UNDO + 0.6)
+    d = get()
+    check("押してから付けるまでに件の中身を書き換えられていたら、片づいたとするが、画面で付けたとは覚えない",
+          (98 in ib.PENDING, d.get("fail"), [(x["n"], x["title"], x["ui"]) for x in d["lessons"]]), (False, None, [(98, "書き換えた題", False)]))
     # 新しい側だけを読んだとき、道具が「外した」と答えても、外した行が増えていなければ外したとしない
     ib.ITEMS_MAX = 20000
     write(big)
