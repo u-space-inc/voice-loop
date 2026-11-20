@@ -11,6 +11,7 @@
 他の全セッションの状況を読み、指示を送る（/api/hub/*）。
 """
 import asyncio
+import concurrent.futures
 import base64
 import hashlib
 import io
@@ -1004,15 +1005,40 @@ def task_read(a: dict, tid: str, head: int, tail: int) -> JSONResponse:
                          "messages": [{**m, "text": m["text"] if m["role"] == "gap" else _clip_ends(m["text"], head, tail)} for m in msgs]})
 
 
+SENT_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="sent")  # 読み取りは専用の 1 本で順に（ほかの口の to_thread を待たせない）
+SENT_WAIT = 30      # 1 回の読み取りを待つ秒（越えたら断る。読み取り自体は sent_log.BUDGET で区切られて終わる）
+SENT_QUEUE_MAX = 3  # 待っている読み取りがこれ以上なら、すぐ断る
+SENT_PENDING = [0]
+SENT_LOCK = threading.Lock()
+
+
+def _sent_work(*a):
+    """専用の作業で読む。待っている数は、作業が終わったときに減らす（待つのをやめた要求も、終わるまで数に入れる）。"""
+    try:
+        return sent_log.sent(*a)
+    finally:
+        with SENT_LOCK:
+            SENT_PENDING[0] -= 1
+
+
 @app.get("/api/hub/sent")
 async def hub_sent(project: str = "", since: float | None = None, limit: int = 30):
     """出ていく側の記録（hubctl sent）。置き場所の各案件の Teams の控え（teams-sync-log.md）から、当方の投稿を新しい順に返す。
-    読むだけ。project は控えのある案件の名前と一字一句同じときだけ絞り、場所には使わない（scripts/sent_log.py）。"""
+    読むだけ。project は控えのある案件の名前と一字一句同じときだけ絞り、場所には使わない（scripts/sent_log.py）。
+    専用の 1 本の作業で順に読み、待ちが多いとき・時間を越えたときは busy で断る。"""
     if not PROJECTS_DIR or not PROJECTS_DIR.is_dir():
         return JSONResponse({"error": "no_projects_dir"}, status_code=404)
     if since is not None and not (0 <= since < 1e11):
         since = None
-    r = await asyncio.to_thread(sent_log.sent, PROJECTS_DIR, project.strip(), since, limit)
+    with SENT_LOCK:
+        if SENT_PENDING[0] >= SENT_QUEUE_MAX:
+            return JSONResponse({"error": "busy"}, status_code=503)
+        SENT_PENDING[0] += 1
+    fut = asyncio.get_running_loop().run_in_executor(SENT_POOL, _sent_work, PROJECTS_DIR, project.strip(), since, limit)
+    try:
+        r = await asyncio.wait_for(asyncio.shield(fut), SENT_WAIT)
+    except asyncio.TimeoutError:
+        return JSONResponse({"error": "busy"}, status_code=503)
     return JSONResponse(r, status_code=404 if r.get("error") else 200)
 
 

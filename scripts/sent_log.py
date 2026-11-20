@@ -32,18 +32,20 @@ READ_TTL = 60            # 控えを読み直すまでの秒
 GIT_DAYS = 14            # 手元の枝のうち、最後のコミットがこの日数以内のものの控えも読む
 GIT_REFS = 12            # 1 つの案件で読む枝の数
 GIT_TIMEOUT = 5
+WALK_DIRS = 20000        # 1 回に探すフォルダの数の上限（置き場所の全案件で）
+BUDGET = 15              # 1 回の読み取りで、探す・読み直すのに使う秒の上限（越えたら残りは読まず、一部だと返す）
 SKIP = {"node_modules", "venv", "dist", "build", "target", "__pycache__", "vendor", "site-packages"}
 JST = dt.timezone(dt.timedelta(hours=9))
-CLIP = {"thread": 120, "what": 300, "done": 200, "copy": 120}
+CLIP = {"thread": 120, "what": 300, "done": 200, "copy": 120, "name": 100}
 
 _ROW_TIME = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})")
 # 「深夜帯: 11/17 22:54・当方」「11/14 11:33 以降・当方」。ラベルは「／」「、」で区切られた 1 つぶん
 _POST = re.compile(r"(?:(?P<label>[^:：／、]{1,40})[:：]\s*)?(?P<m>\d{1,2})/(?P<d>\d{1,2})\s+(?P<H>\d{1,2}):(?P<M>\d{2})(?:\s*以降)?\s*・\s*(?P<who>[^／、|]{1,40})")
 _COPY = re.compile(r"(\d{4})-(\d{2})-(\d{2})_(\d{2})(\d{2})_out_(.{1,200})\.md")
-_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ud800-\udfff]")
+_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ud800-\udfff]")
 
-_found: dict = {"at": 0.0, "root": None, "logs": {}}
-_parsed: dict = {}  # 控えの場所 → (読んだ時刻, 行)
+_found: dict = {"at": 0.0, "root": None, "logs": {}, "partial": False}
+_parsed: dict = {}  # 控えの場所 → (読んだ時刻, 行, 読み切れなかったか)
 
 
 def clip(v, key: str) -> str:
@@ -60,9 +62,13 @@ def _inside(path: Path, base: Path) -> bool:
         return False
 
 
-def _find_logs(project: Path) -> list[Path]:
+def _find_logs(project: Path, state: dict) -> list[Path]:
     out = []
     for cur, dirs, files in os.walk(project, followlinks=False):
+        state["dirs"] += 1
+        if state["dirs"] > WALK_DIRS or time.monotonic() > state["deadline"]:
+            state["partial"] = True
+            break
         depth = len(Path(cur).relative_to(project).parts)
         dirs[:] = [] if depth >= MAX_DEPTH - 1 else sorted(d for d in dirs if not d.startswith(".") and d not in SKIP)
         if LOG_NAME in files:
@@ -74,23 +80,34 @@ def _find_logs(project: Path) -> list[Path]:
     return out
 
 
-def logs(root: Path | None) -> dict[str, list[Path]]:
-    """案件の名前 → 控えの場所。置き場所の直下のフォルダ（隠し・symlink を除く）だけを見る。FIND_TTL 秒は前の結果を使う。"""
+def _plain(name: str) -> bool:
+    """案件の名前が、そのまま 1 行で見せられる文字だけか（制御文字・向きを変える文字・長すぎる名前の案件は読まない）。"""
+    return bool(name) and clip(name, "name") == name
+
+
+def logs(root: Path | None, state: dict | None = None) -> dict[str, list[Path]]:
+    """案件の名前 → 控えの場所。置き場所の直下のフォルダ（隠し・symlink・名前が 1 行の文字でないものを除く）だけを見る。
+    FIND_TTL 秒は前の結果を使う。探すフォルダの数（WALK_DIRS）か時間（state の期限）を越えたら、そこまでの結果を一部として覚える。"""
+    state = state if state is not None else {"deadline": time.monotonic() + BUDGET, "partial": False}
     if not root or not root.is_dir():
         return {}
     if _found["root"] == root and time.time() - _found["at"] < FIND_TTL:
+        state["partial"] = state["partial"] or _found["partial"]
         return _found["logs"]
-    found = {}
+    found, walk = {}, {"dirs": 0, "deadline": state["deadline"], "partial": False}
     for d in sorted(root.iterdir()):
-        if d.name.startswith(".") or d.is_symlink() or not d.is_dir():
+        if walk["partial"]:
+            break
+        if d.name.startswith(".") or not _plain(d.name) or d.is_symlink() or not d.is_dir():
             continue
         try:
-            ps = _find_logs(d)
+            ps = _find_logs(d, walk)
         except OSError:
             continue
         if ps:
             found[d.name] = ps
-    _found.update(at=time.time(), root=root, logs=found)
+    _found.update(at=time.time(), root=root, logs=found, partial=walk["partial"])
+    state["partial"] = state["partial"] or walk["partial"]
     return found
 
 
@@ -106,7 +123,7 @@ def _cells(line: str) -> list[str]:
 
 
 def parse(text: str) -> list[dict]:
-    """控えの表から、当方の投稿の行を出す。同じスレッド・同じ時刻の投稿は、最初に書かれた行だけ（後の回の行は、同じ投稿を末尾として見ただけ）。"""
+    """控えの表から、当方の投稿の行を出す。同じスレッド（題とラベル）・同じ時刻の投稿は、最初に書かれた行だけ（後の回の行は、同じ投稿を末尾として見ただけ）。"""
     out, seen = [], set()
     for line in text.split("\n"):  # splitlines は U+2028 などでも切るので使わない（行の途中で切れて、欄がずれる）
         if not line.startswith("|"):
@@ -125,12 +142,12 @@ def parse(text: str) -> list[dict]:
             at = _stamp(year - (1 if mo > checked_month else 0), mo, int(p.group("d")), int(p.group("H")), int(p.group("M")))
             if at is None:
                 continue
-            label = clip(p.group("label"), "thread")
-            key = (label or clip(c[1], "thread"), at)
+            label, thread = clip(p.group("label"), "thread"), clip(c[1], "thread")
+            key = (at, thread, label)  # 同じラベル・時刻でも、スレッドが違えば別の投稿として残す（後の回に同じ投稿を見ただけの行が重なることはある）
             if key in seen:
                 continue
             seen.add(key)
-            out.append({"at": at, "thread": clip(c[1], "thread"), "label": label, "what": clip(c[4], "what"),
+            out.append({"at": at, "thread": thread, "label": label, "what": clip(c[4], "what"),
                         "done": clip(c[5], "done") if len(c) > 5 else ""})
     return out
 
@@ -199,12 +216,14 @@ def _local(root: Path, name: str, rel: tuple[str, ...]) -> list[tuple[str, list[
 
 
 def _git(project: Path, *args: str) -> str | None:
-    """読むだけの git（fsmonitor・フック・テキスト変換を動かさない・ロックを取らない・問い合わせない）。失敗・時間切れは None。
-    呼ぶのは for-each-ref・show（blob を --no-textconv で）・ls-tree だけ。"""
+    """読むだけの git。fsmonitor・フック・テキスト変換を動かさず、足りないオブジェクトを取りに行かず（GIT_NO_LAZY_FETCH・protocol.allow=never）、
+    親のフォルダへリポジトリを探しに上らず（GIT_CEILING_DIRECTORIES）、ロックを取らず、問い合わせない。失敗・時間切れは None。
+    呼ぶのは rev-parse・for-each-ref・show（blob を --no-textconv で）・ls-tree だけ。"""
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1",
+           "GIT_CEILING_DIRECTORIES": str(project.parent)}
     try:
-        r = subprocess.run(["git", "-C", str(project), "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "--no-pager", *args],
-                           capture_output=True,
-                           timeout=GIT_TIMEOUT, env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"})
+        r = subprocess.run(["git", "-C", str(project), "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+                            "-c", "protocol.allow=never", "--no-pager", *args], capture_output=True, timeout=GIT_TIMEOUT, env=env)
     except (OSError, subprocess.SubprocessError):
         return None
     if r.returncode != 0 or len(r.stdout) > MAX_BYTES:
@@ -212,12 +231,33 @@ def _git(project: Path, *args: str) -> str | None:
     return r.stdout.decode("utf-8", "replace")
 
 
-def _branches(project: Path, path: Path) -> list[tuple[str, list[str]]]:
+def _same_dir(path: Path, st: os.stat_result) -> bool:
+    try:
+        now = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISDIR(now.st_mode) and (now.st_dev, now.st_ino) == (st.st_dev, st.st_ino)
+
+
+def _branches(root: Path, name: str, rel: tuple[str, ...], state: dict) -> list[tuple[str, list[str]]]:
     """手元の枝（マージ前の控えの行は、セッションが作った枝にだけあることが多い）の、控えの中身と thread/ の名前。
-    最後のコミットが GIT_DAYS 日以内の枝を、新しい順に GIT_REFS 本まで。"""
-    rel = "./" + path.relative_to(project).as_posix()
-    top = _git(project, "rev-parse", "--show-toplevel")  # 案件のフォルダそのものがリポジトリの根のときだけ（親のリポジトリの枝・symlink の先のリポジトリを読まない）
-    if not top or Path(top.strip()) != project.parent.resolve() / project.name:
+    最後のコミットが GIT_DAYS 日以内の枝を、新しい順に GIT_REFS 本まで。案件のフォルダは、置き場所から symlink をたどらずに開いた
+    フォルダと同じもの（同じ装置・inode）であることを、git を呼ぶ前と呼び終えたあとに確かめ、途中で入れ替わっていれば枝の結果を捨てる。
+    git は案件のフォルダがリポジトリの根のときだけ使う（親のリポジトリの枝・symlink の先のリポジトリを読まない）。時間の上限を越えたら残りは読まない。"""
+    try:
+        fd = _open_dir(root, name, ())
+    except OSError:
+        return []
+    try:
+        st = os.fstat(fd)
+    finally:
+        os.close(fd)
+    project = root.resolve() / name
+    if not _same_dir(project, st):
+        return []
+    rel_s = "./" + "/".join(rel)
+    top = _git(project, "rev-parse", "--show-toplevel")
+    if not top or Path(top.strip()) != project:
         return []
     refs = _git(project, "for-each-ref", "--sort=-committerdate", "--format=%(objectname) %(committerdate:unix)", "refs/heads", "refs/remotes")
     out, shas = [], []
@@ -230,44 +270,55 @@ def _branches(project: Path, path: Path) -> list[tuple[str, list[str]]]:
         if len(shas) >= GIT_REFS:
             break
     for sha in shas:
-        text = _git(project, "show", "--no-textconv", f"{sha}:{rel}")
+        if time.monotonic() > state["deadline"]:
+            state["partial"] = True
+            break
+        text = _git(project, "show", "--no-textconv", f"{sha}:{rel_s}")
         if text is None:
             continue
-        tree = _git(project, "ls-tree", "-z", "--name-only", sha, "--", rel.rsplit("/", 1)[0] + "/thread/") or ""  # -z: 日本語の名前を引用符で包ませない
+        tree = _git(project, "ls-tree", "-z", "--name-only", sha, "--", rel_s.rsplit("/", 1)[0] + "/thread/") or ""  # -z: 日本語の名前を引用符で包ませない
         out.append((text, [n.rsplit("/", 1)[-1] for n in tree.split("\0") if n]))
+    if not _same_dir(project, st):  # 呼んでいる間に案件のフォルダが入れ替わった。どのリポジトリを読んだか分からないので捨てる
+        return []
     return out
 
 
 def _merge(sources: list[tuple[str, list[str]]]) -> list[dict]:
-    rows, seen = [], {}
+    rows, seen = [], set()
     for text, names in sources:
         for r in parse(text):
-            key = (r["at"], r["label"] or r["thread"])
+            key = (r["at"], r["thread"], r["label"])
             if key not in seen:
-                seen[key] = r
+                seen.add(key)
                 rows.append(r)
-    by_at = {}
+    by_at: dict[float, list[dict]] = {}
     for r in rows:
-        by_at.setdefault(r["at"], r)
+        by_at.setdefault(r["at"], []).append(r)
     done = set()
     for text, names in sources:
-        for cp in copies(names):  # 同じ分の行があれば、控えのファイルの要約を添える。無ければ、ファイルだけの行にする
+        for cp in copies(names):
             if (cp["at"], cp["copy"]) in done:
                 continue
             done.add((cp["at"], cp["copy"]))
-            r = by_at.get(cp["at"])
-            if r is not None and "copy" not in r:
-                r["copy"] = cp["copy"]
-            elif r is None or r.get("copy") != cp["copy"]:
+            same = by_at.get(cp["at"], [])
+            # 同じ分の行が 1 つだけで、まだ控えのファイルが付いていないときだけ添える。どのスレッドの投稿か一つに決まらないものは、ファイルだけの行にする
+            if len(same) == 1 and "copy" not in same[0]:
+                same[0]["copy"] = cp["copy"]
+            else:
                 rows.append({"at": cp["at"], "thread": "", "label": "", "what": "", "done": "", "copy": cp["copy"]})
     return rows
 
 
-def _read(root: Path, name: str, path: Path) -> list[dict]:
-    """作業木と手元の枝の控えを合わせた、当方の投稿の行。READ_TTL 秒は前の結果を使う。"""
+def _read(root: Path, name: str, path: Path, state: dict) -> list[dict]:
+    """作業木と手元の枝の控えを合わせた、当方の投稿の行。READ_TTL 秒は前の結果を使う。時間の上限を越えていたら読み直さず、
+    前の結果（無ければ空）を使って一部と印を付ける。"""
     hit = _parsed.get(path)
     if hit and time.time() - hit[0] < READ_TTL:
+        state["partial"] = state["partial"] or hit[2]
         return hit[1]
+    if time.monotonic() > state["deadline"]:
+        state["partial"] = True
+        return hit[1] if hit else []
     project = root / name
     try:
         rel = path.relative_to(project).parts
@@ -275,8 +326,10 @@ def _read(root: Path, name: str, path: Path) -> list[dict]:
         return []
     if project.is_symlink():
         return []
-    rows = _merge(_local(root, name, rel) + _branches(project, path))
-    _parsed[path] = (time.time(), rows)
+    sub = {"deadline": state["deadline"], "partial": False}  # この控えを読み切れたか（読み切れなかった結果は、一部の印と一緒に覚える）
+    rows = _merge(_local(root, name, rel) + _branches(root, name, rel, sub))
+    _parsed[path] = (time.time(), rows, sub["partial"])
+    state["partial"] = state["partial"] or sub["partial"]
     return rows
 
 
@@ -288,21 +341,23 @@ def _mtime(p: Path) -> float:
 
 
 def sent(root: Path | None, project: str = "", since: float | None = None, limit: int = 30) -> dict:
-    """当方の投稿を新しい順に。project は控えのある案件の名前と一字一句同じときだけ絞る（場所には使わない）。"""
-    found = logs(root)
+    """当方の投稿を新しい順に。project は控えのある案件の名前と一字一句同じときだけ絞る（場所には使わない）。
+    探す・読み直すのは BUDGET 秒まで。越えて読めなかった案件・枝があれば partial を真にする。"""
+    state = {"deadline": time.monotonic() + BUDGET, "partial": False}
+    found = logs(root, state)
     if project and project not in found:
-        return {"error": "no_project", "projects": sorted(found)}
+        return {"error": "no_project", "projects": sorted(found), "partial": state["partial"]}
     rows, seen = [], set()
     # 同じ控えの写し（別のフォルダに置いた古い clone など）の同じ行は、新しく書かれた控えのほうの 1 行だけにする
     order = sorted(((name, p) for name, ps in found.items() if not project or name == project for p in ps),
                    key=lambda np: -_mtime(np[1]))
     for name, p in order:
-        for r in _read(root, name, p):
-            key = (r["at"], r["thread"], r["what"])
+        for r in _read(root, name, p, state):
+            key = (r["at"], r["thread"], r["label"], r["what"]) if (r["thread"] or r["what"]) else (r["at"], "", "", "", r.get("copy", ""))
             if key in seen or (since is not None and r["at"] < since):
                 continue
             seen.add(key)
             rows.append({**r, "project": name, "at_text": dt.datetime.fromtimestamp(r["at"], JST).strftime("%m/%d %H:%M")})
     rows.sort(key=lambda r: -r["at"])
     n = max(1, min(int(limit), 200))
-    return {"rows": rows[:n], "more": max(0, len(rows) - n), "projects": sorted(found)}
+    return {"rows": rows[:n], "more": max(0, len(rows) - n), "projects": sorted(found), "partial": state["partial"]}
