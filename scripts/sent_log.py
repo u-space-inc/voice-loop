@@ -323,12 +323,22 @@ def _branches(root: Path, name: str, rel: tuple[str, ...], state: dict) -> list[
     if not _same_dir(project, st):
         return []
     rel_s = "./" + "/".join(rel)
+    try:
+        os.lstat(project / ".git")
+    except OSError:
+        return []  # リポジトリではない（枝は無い）
     top = _git(project, "rev-parse", "--show-toplevel")
-    if not top or Path(top.strip()) != project:
+    if top is None:  # .git があるのに git が答えない。枝を読めなかった
+        state["partial"] = True
+        return []
+    if Path(top.strip()) != project:
         return []
     refs = _git(project, "for-each-ref", "--sort=-committerdate", "--format=%(objectname) %(committerdate:unix)", "refs/heads", "refs/remotes")
+    if refs is None:  # 枝の一覧を読めなかった
+        state["partial"] = True
+        return []
     out, shas = [], []
-    for line in (refs or "").splitlines():
+    for line in refs.splitlines():
         sha, _, when = line.partition(" ")
         if not re.fullmatch(r"[0-9a-f]{40,64}", sha) or not when.isdigit() or time.time() - int(when) > GIT_DAYS * 86400:
             continue

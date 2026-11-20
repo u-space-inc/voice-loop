@@ -269,7 +269,7 @@ check("枝: 枝の thread/ の symlink は、控えのファイルの名前に�
       ("リンク" in [x.get("copy") for x in r_same["rows"]], "枝の控え" in [x.get("copy") for x in r_same["rows"]]), (False, True))
 
 # 枝の一覧・中身を読めなかったら、一部の印を付ける（a2a f44492f6 の P2）
-for fail in ("ls-tree", "show"):
+for fail in ("ls-tree", "show", "for-each-ref", "rev-parse"):
     real_git3 = S._git
     S._git = lambda project, *a, _f=fail: None if a and a[0] == _f else real_git3(project, *a)
     fresh()
