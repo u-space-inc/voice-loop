@@ -184,7 +184,8 @@ def _cells(line: str) -> list[str]:
 
 
 def parse(text: str) -> list[dict]:
-    """控えの表から、当方の投稿の行を出す。同じスレッド（題とラベル）・同じ時刻の投稿は、最初に書かれた行だけ（後の回の行は、同じ投稿を末尾として見ただけ）。"""
+    """控えの表から、当方の投稿の行を出す。同じ投稿（時刻・題・ラベル）でも、記録・対応の欄が違う行は残す（後の回に同じ投稿を末尾として見ただけの行も
+    重なるが、送った回の記録を落とさないほうを選ぶ）。欄までまったく同じ行だけを 1 つにする。"""
     out, seen = [], set()
     for line in text.split("\n"):  # splitlines は U+2028 などでも切るので使わない（行の途中で切れて、欄がずれる）
         if not line.startswith("|"):
@@ -205,12 +206,13 @@ def parse(text: str) -> list[dict]:
                 continue
             # 同じラベル・時刻でも、スレッドが違えば別の投稿として残す（後の回に同じ投稿を見ただけの行が重なることはある）。
             # 見分けは字数で切る前の値で行う（頭の部分が同じ別のスレッドを、1 つにまとめない）。返す値だけを切る
-            key = (at, _full(c[1]), _full(p.group("label")))
+            done_full = _full(c[5]) if len(c) > 5 else ""
+            key = (at, _full(c[1]), _full(p.group("label")), _full(c[4]), done_full)  # 記録・対応の欄が違えば別の行として残す（送った回の記録を落とさない）
             if key in seen:
                 continue
             seen.add(key)
             out.append({"at": at, "thread": clip(c[1], "thread"), "label": clip(p.group("label"), "thread"), "what": clip(c[4], "what"),
-                        "done": clip(c[5], "done") if len(c) > 5 else "", "_id": (*key, _full(c[4]))})
+                        "done": clip(c[5], "done") if len(c) > 5 else "", "_id": key})
     return out
 
 
@@ -221,7 +223,7 @@ def copies(names) -> list[dict]:
         m = _COPY.fullmatch(name)
         at = _stamp(*(int(m.group(i)) for i in range(1, 6))) if m else None
         if at is not None:
-            out.append({"at": at, "copy": clip(m.group(6).replace("_", " "), "copy"), "_id": (at, "", "", "", _full(m.group(6)))})
+            out.append({"at": at, "copy": clip(m.group(6).replace("_", " "), "copy"), "_id": (at, "", "", "", "", _full(m.group(6)))})
     return out
 
 
@@ -412,7 +414,7 @@ def _merge(sources: list[tuple[str, list[str]]]) -> list[dict]:
     rows, seen = [], set()
     for text, names in sources:
         for r in parse(text):
-            key = r["_id"]  # 時刻・スレッド・ラベルが同じでも、記録の中身が違えば両方残す（作業木に後の回の行、枝に送った回の行、など）
+            key = r["_id"]  # 時刻・スレッド・ラベルが同じでも、記録・対応の欄が違えば両方残す（作業木に後の回の行、枝に送った回の行、など）
             if key not in seen:
                 seen.add(key)
                 rows.append(r)
