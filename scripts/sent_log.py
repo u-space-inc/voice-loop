@@ -28,6 +28,7 @@ LOG_NAME = "teams-sync-log.md"
 MAX_DEPTH = 4            # 案件のフォルダからの深さ（doc/internal/teams-sync-log.md は 3）
 MAX_BYTES = 2_000_000    # これより大きい控えは読まない
 MAX_LOGS = 5             # 1 つの案件で読む控えの数
+MAX_COPIES = 5000        # 1 つの thread/ で見るファイルの数
 FIND_TTL = 300           # 控えの場所を探し直すまでの秒
 READ_TTL = 60            # 控えを読み直すまでの秒
 GIT_DAYS = 14            # 手元の枝のうち、最後のコミットがこの日数以内のものの控えも読む
@@ -72,8 +73,8 @@ def _find_logs(project: Path, state: dict) -> list[Path]:
     out = []
     for cur, dirs, files in os.walk(project, followlinks=False):
         state["dirs"] += 1
-        if state["dirs"] > WALK_DIRS or time.monotonic() > state["deadline"]:
-            state["partial"] = True
+        if state["dirs"] > WALK_DIRS or time.monotonic() > state["deadline"]:  # 全体の上限。ここで探すのをやめる
+            state["partial"] = state["stop"] = True
             break
         depth = len(Path(cur).relative_to(project).parts)
         dirs[:] = [] if depth >= MAX_DEPTH - 1 else sorted(d for d in dirs if not d.startswith(".") and d not in SKIP)
@@ -101,9 +102,10 @@ def logs(root: Path | None, state: dict | None = None) -> dict[str, list[Path]]:
     if _found["root"] == root and time.time() - _found["at"] < FIND_TTL:
         state["partial"] = state["partial"] or _found["partial"]
         return _found["logs"]
-    found, walk = {}, {"dirs": 0, "deadline": state["deadline"], "partial": False}
+    # partial は「どこかを読み残した」（案件ごとの上限・git の失敗も）、stop は「全体の数・時間の上限に達した」で、stop だけが後の案件を探すのをやめる
+    found, walk = {}, {"dirs": 0, "deadline": state["deadline"], "partial": False, "stop": False}
     for d in sorted(root.iterdir()):
-        if walk["partial"]:
+        if walk["stop"]:
             break
         if d.name.startswith(".") or not _plain(d.name) or d.is_symlink() or not d.is_dir():
             continue
@@ -144,14 +146,15 @@ def _branch_logs(project: Path, state: dict) -> list[str]:
     except OSError:
         return []
     if time.monotonic() > state["deadline"]:
-        state["partial"] = True
+        state["partial"] = state["stop"] = True
         return []
     out = _git(project, "log", "--all", f"--since={GIT_DAYS}.days.ago", "--no-show-signature", "--no-ext-diff", "--no-textconv",
                "--name-only", "-z", "--format=", "--", ":(glob)**/" + LOG_NAME)
-    if out is None or time.monotonic() > state["deadline"]:
+    if time.monotonic() > state["deadline"]:
+        state["partial"] = state["stop"] = True
+    if out is None:  # この案件の git が答えない。この案件は読み残すが、ほかの案件は探し続ける
         state["partial"] = True
-        if out is None:
-            return []
+        return []
     rels = []
     for rel in out.split("\0"):
         if rel and rel not in rels and _branch_rel(rel):
@@ -169,8 +172,15 @@ def _stamp(y: int, m: int, d: int, H: int, M: int) -> float | None:
         return None
 
 
+_PIPE = re.compile(r"(?<!\\)\|")
+
+
 def _cells(line: str) -> list[str]:
-    return [c.strip() for c in line.strip().strip("|").split("|")]
+    """表の行を欄に分ける。エスケープした縦棒（\\|）は欄の区切りにせず、欄の中の | に戻す。"""
+    body = line.strip()
+    body = body[1:] if body.startswith("|") else body
+    body = body[:-1] if body.endswith("|") and not body.endswith("\\|") else body
+    return [c.strip().replace("\\|", "|") for c in _PIPE.split(body)]
 
 
 def parse(text: str) -> list[dict]:
@@ -231,7 +241,7 @@ def _open_dir(root: Path, name: str, parts: tuple[str, ...]) -> int:
     return fd
 
 
-def _local(root: Path, name: str, rel: tuple[str, ...]) -> list[tuple[str, list[str]]]:
+def _local(root: Path, name: str, rel: tuple[str, ...], state: dict) -> list[tuple[str, list[str]]]:
     """作業木にある控えの中身と、thread/ のファイルの名前。読む直前に、置き場所から 1 段ずつ symlink をたどらずに開き直し、
     通常のファイルだけを上限まで読む（FIFO などで止まらないよう O_NONBLOCK）。thread/ も同じ開き方で、通常のファイルの名前だけ。"""
     try:
@@ -255,11 +265,17 @@ def _local(root: Path, name: str, rel: tuple[str, ...]) -> list[tuple[str, list[
             t = os.open("thread", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=d)
         except OSError:
             t = None
-        if t is not None:
+        if t is not None:  # 1 つずつ見て、数（MAX_COPIES）と時間の上限で打ち切る（打ち切ったら一部の印）
             try:
-                names = [n for n in os.listdir(t) if stat.S_ISREG(os.stat(n, dir_fd=t, follow_symlinks=False).st_mode)]
+                with os.scandir(t) as it:
+                    for i, e in enumerate(it):
+                        if i >= MAX_COPIES or time.monotonic() > state["deadline"]:
+                            state["partial"] = True
+                            break
+                        if e.is_file(follow_symlinks=False):
+                            names.append(e.name)
             except OSError:
-                names = []
+                state["partial"] = True
             finally:
                 os.close(t)
     finally:
@@ -378,6 +394,9 @@ def _branches(root: Path, name: str, rel: tuple[str, ...], state: dict) -> list[
                 state["partial"] = True
             trees[tree] = [e.partition("\t")[2] for e in (names or "").split("\0")
                            if e.partition("\t")[0].split(" ")[:2] in (["100644", "blob"], ["100755", "blob"])]
+            if len(trees[tree]) > MAX_COPIES:
+                trees[tree] = trees[tree][:MAX_COPIES]
+                state["partial"] = True
         if blobs[blob] is None:  # 控えの中身を読めなかった
             state["partial"] = True
             continue
@@ -393,7 +412,7 @@ def _merge(sources: list[tuple[str, list[str]]]) -> list[dict]:
     rows, seen = [], set()
     for text, names in sources:
         for r in parse(text):
-            key = r["_id"][:3]
+            key = r["_id"]  # 時刻・スレッド・ラベルが同じでも、記録の中身が違えば両方残す（作業木に後の回の行、枝に送った回の行、など）
             if key not in seen:
                 seen.add(key)
                 rows.append(r)
@@ -424,7 +443,7 @@ def _read(root: Path, name: str, path: Path, state: dict) -> list[dict]:
     if project.is_symlink():
         return []
     sub = {"deadline": state["deadline"], "partial": False}  # この控えを読み切れたか（読み切れなかった結果は、一部の印と一緒に覚える）
-    rows = _merge(_local(root, name, rel) + _branches(root, name, rel, sub))
+    rows = _merge(_local(root, name, rel, sub) + _branches(root, name, rel, sub))
     _parsed[path] = (time.time(), rows, sub["partial"])
     state["partial"] = state["partial"] or sub["partial"]
     return rows
