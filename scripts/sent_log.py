@@ -126,15 +126,24 @@ def _branch_rel(rel: str) -> bool:
 
 def _branch_logs(project: Path, state: dict) -> list[str]:
     """最近（GIT_DAYS 日）のコミットで変わった teams-sync-log.md の場所を、案件のリポジトリに聞く（作業木に無い控えも見つけるため）。
-    案件のフォルダがリポジトリでなければ何も返さない（親のリポジトリへは上らない）。場所は作業木で探すときと同じ範囲だけ。"""
+    案件のフォルダに .git が無ければリポジトリではないので、何も返さない（親のリポジトリへは上らない）。.git があるのに git が
+    答えない（時間切れ・量の上限・失敗）とき、呼んでいる間に期限を越えたときは、探しきれなかったとして一部の印を付ける。
+    名前は NUL だけで区切られる（--format= と -z）ので、手を加えずにそのまま範囲を確かめる。場所は作業木で探すときと同じ範囲だけ。"""
+    try:
+        os.lstat(project / ".git")
+    except OSError:
+        return []
     if time.monotonic() > state["deadline"]:
         state["partial"] = True
         return []
     out = _git(project, "log", "--all", f"--since={GIT_DAYS}.days.ago", "--no-show-signature", "--no-ext-diff", "--no-textconv",
                "--name-only", "-z", "--format=", "--", ":(glob)**/" + LOG_NAME)
+    if out is None or time.monotonic() > state["deadline"]:
+        state["partial"] = True
+        if out is None:
+            return []
     rels = []
-    for rel in (out or "").split("\0"):
-        rel = rel.strip("\n")
+    for rel in out.split("\0"):
         if rel and rel not in rels and _branch_rel(rel):
             rels.append(rel)
         if len(rels) >= MAX_LOGS:

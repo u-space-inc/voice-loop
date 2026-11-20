@@ -295,7 +295,24 @@ r = S.sent(PROJ, project="newproj", since=0)
 check("枝だけ: 作業木に控えが無くても、最近の枝にある控えの場所を見つけて読む（隠し・深すぎる場所は除く）",
       ([str(p.relative_to(NEW)) for p in found_new], [x["what"] for x in r["rows"]], (NEW / "doc").exists()),
       (["doc/internal/teams-sync-log.md"], ["枝にだけある初めての控え"], False))
-check("枝だけ: リポジトリでない案件のフォルダでは、何も探さない（親へ上らない）", S._branch_logs(PROJ / "shop", {"deadline": time.monotonic() + 30, "partial": False}), [])
+st_nr = {"deadline": time.monotonic() + 30, "partial": False}
+check("枝だけ: リポジトリでない案件のフォルダでは、何も探さず、一部の印も付けない（親へ上らない）", (S._branch_logs(PROJ / "shop", st_nr), st_nr["partial"]), ([], False))
+real_git2 = S._git
+S._git = lambda *a: None  # 時間切れ・量の上限・失敗
+st_f = {"deadline": time.monotonic() + 30, "partial": False}
+got_f = S._branch_logs(NEW, st_f)
+S._git = real_git2
+check("枝だけ: リポジトリなのに git が答えないときは、探しきれなかったとして一部の印を付ける", (got_f, st_f["partial"]), ([], True))
+fresh()
+S._git = lambda *a: None
+r_f = S.sent(PROJ, project="newproj", since=0)
+S._git = real_git2
+check("枝だけ: そのとき、案件を「控えなし」とは言わない（incomplete）", (r_f.get("error"), r_f["partial"]), ("incomplete", True))
+fresh()
+S._git = lambda *a: "doc/" + S.LOG_NAME + "\0" + "\n" + "doc/internal/" + S.LOG_NAME + "\0"
+got_n = S._branch_logs(NEW, {"deadline": time.monotonic() + 30, "partial": False})
+S._git = real_git2
+check("枝だけ: git が返した名前は手を加えずに確かめる（頭に改行のある名前を、整えて通さない）", got_n, ["doc/" + S.LOG_NAME])
 check("枝だけ: git が返した場所も、作業木と同じ範囲だけ（..・隠し・依存・深すぎ・名前の違い・1 行でない名前を断る）",
       [S._branch_rel(x) for x in ("doc/" + S.LOG_NAME, "../x/" + S.LOG_NAME, ".git/" + S.LOG_NAME, "node_modules/" + S.LOG_NAME,
                                   "a/b/c/d/" + S.LOG_NAME, "doc/other.md", "d" + chr(10) + "x/" + S.LOG_NAME, "/" + S.LOG_NAME)],
