@@ -525,6 +525,20 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     check("待つ間にハブが先に不要の印を付けていたら、片づいたとするが、画面で付けたとは覚えない（「ハブから」のまま）",
           (97 in ib.PENDING, d.get("fail"), [(x["n"], x["why"], x["ui"]) for x in d["lessons"]], "97" in json.loads(ib.LESSON_FILE.read_text())["ui"]),
           (False, None, [(97, "ハブの理由", False)], False))
+    # 押す前の印を読めなかったら、付いた印があっても画面で付けたとは覚えない（「前の印は無い」と取り違えない）
+    write([add(99, at=NOW - 60, title="前を読めない件")])
+    post("/api/inbox/done", {"n": 99, "unneeded": "notice"})
+    real_rec, calls = ib.records, []
+
+    def first_fails(info=None):
+        calls.append(1)
+        return None if len(calls) == 1 else real_rec(info)
+    ib.records = first_fails
+    time.sleep(ib.UNDO + 0.6)
+    ib.records = real_rec
+    d = get()
+    check("押す前の印を読めなければ、片づいたとするが、画面で付けたとは覚えない",
+          (99 in ib.PENDING, d.get("fail"), [(x["n"], x["ui"]) for x in d["lessons"] if x["n"] == 99]), (False, None, [(99, False)]))
     # 押してから付けるまでの間に、件の中身（題など）を書き換えられていたら、画面で付けたとは覚えない
     write([add(98, at=NOW - 60, title="押したときの題")])
     post("/api/inbox/done", {"n": 98, "unneeded": "notice"})
