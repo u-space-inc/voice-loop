@@ -569,6 +569,64 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         got_sur = type(e).__name__
     check("記録に壊れた文字がある手本でも、受け箱は止まらない（指紋は ASCII にして数える）", got_sur, (True, [96]))
 
+# ---------- AI が片づけたもの（1 日）と「戻す」（層 3。0.34.0） ----------
+with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+    get = lambda: c.get("/api/inbox").json()
+    post = lambda path, body: c.post(path, content=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+    CMDS.clear()
+    FAKE.clear()
+    t = time.time()
+    write([add(101, at=NOW - 7200, title="AI が片づけた件"), add(102, at=NOW - 7200, title="古い AI の片づけ"), add(103, at=NOW - 7200, title="利用者が済んだ件"),
+           add(104, at=NOW - 7200, title="まだの件")])
+    with ITEMS.open("a") as fh:
+        fh.write(json.dumps({"op": "done", "at": t - 600, "n": 101, "by": "ai", "note": "本体の確かめ（新しい会話）: Gmail の送信済み／根拠の時刻 2026-11-20 18:00／返した"}, ensure_ascii=False) + "\n")
+        fh.write(json.dumps({"op": "done", "at": t - 2 * 86400, "n": 102, "by": "ai", "note": "前の根拠"}, ensure_ascii=False) + "\n")
+        fh.write(json.dumps({"op": "done", "at": t - 600, "n": 103, "by": "user", "note": ""}, ensure_ascii=False) + "\n")
+    with ITEMS.open("a") as fh:
+        fh.write(json.dumps({"op": "checked", "at": t - 300, "n": 104, "result": "unknown", "note": "送信済みは 50 件ちょうど\x1b[2K"}, ensure_ascii=False) + "\n")
+    d = get()
+    c104 = next(x for x in d["items"] if x["n"] == 104)["checked"]
+    check("確かめた結果（まだ・確かめきれない）を、時刻・文・メモ（制御文字は空白）で一覧に渡す。結果の無い件は null",
+          (c104["label"], c104["note"], abs(c104["at"] - (t - 300)) < 1e-6, [x["checked"] for x in d["items"] if x["n"] != 104]),
+          ("確かめきれない", "送信済みは 50 件ちょうど [2K", True, []))
+    check("AI が片づけたもの: AI の印（--by ai）で 1 日以内の件を、根拠と片づけた時刻つきで出す（利用者の印・古い片づけは出さない）",
+          ([(x["n"], x["title"]) for x in d["ai_closed"]], d["ai_closed"][0]["why"].startswith("本体の確かめ（新しい会話）: Gmail"), set(d["ai_closed"][0])),
+          ([(101, "AI が片づけた件")], True, {"n", "source", "project", "title", "why", "closed_at"}))
+    real_run = ib.subprocess.run
+
+    def reopen_run(cmd, capture_output=True, timeout=None, **k):  # コンテナの中の道具の代わりに、本物の vl_items.py を一時の置き場で動かす
+        CMDS.append(cmd)
+        if FAKE.get("silent"):
+            return subprocess.CompletedProcess(cmd, 0, b"", b"")
+        if FAKE.get("race"):  # 本体が読んだあと、道具が書く前に、利用者の済の印が付いた
+            with ITEMS.open("a") as fh:
+                fh.write(json.dumps({"op": "done", "at": time.time(), "n": int(cmd[cmd.index("reopen") + 1]), "by": "user", "note": ""}) + "\n")
+        return subprocess.run([sys.executable, str(ROOT / "templates/hermes/watch/vl_items.py")] + cmd[cmd.index(ib.TOOL) + 1:], capture_output=True,
+                              timeout=timeout, env={**os.environ, "HERMES_HOME": str(HOME)})
+    ib.subprocess = types.SimpleNamespace(run=reopen_run, TimeoutExpired=subprocess.TimeoutExpired)
+    check("戻す: AI の印でない件（利用者の印・まだの件・無い番号）は、道具を動かさずに断る。番号の形が違えば 400",
+          ([post("/api/inbox/reopen", {"n": v}).json().get("reason") for v in (103, 104, 999)], [post("/api/inbox/reopen", b).status_code for b in ({"n": "101"}, {})], CMDS),
+          (["gone", "gone", "gone"], [400, 400], []))
+    r = post("/api/inbox/reopen", {"n": 101}).json()
+    d = get()
+    check("戻す: コンテナの中の記録の道具で判断待ちに戻し（利用者の訂正の印）、戻ったことを記録で確かめる。一覧の上に戻る",
+          (r, CMDS[-1][-6:-1], d["ai_closed"], d["items"][0]["n"], d["items"][0]["back"] is False),
+          ({"ok": True, "n": 101}, ["reopen", "101", "--note", ib.REOPEN_NOTE, "--expect-ai-at"], [], 101, True))
+    with ITEMS.open("a") as fh:
+        fh.write(json.dumps({"op": "done", "at": time.time(), "n": 104, "by": "ai", "note": "根拠"}, ensure_ascii=False) + "\n")
+    FAKE["race"] = True
+    r = post("/api/inbox/reopen", {"n": 104}).json()
+    FAKE.clear()
+    got = ib.records()
+    check("戻す: 本体が読んだあと、道具が書く前に利用者の済の印が付いたら、道具が書き込みの錠の中で断り、利用者の印を外さない",
+          (r["ok"], "AI が付けた、その済の印ではなくなっていました" in r["why"], got[1][104]["by"]), (False, True, "user"))
+    FAKE["silent"] = True
+    r = post("/api/inbox/reopen", {"n": 102}).json()
+    FAKE.clear()
+    check("戻す: 道具が答えても記録で戻っていなければ、戻せなかったと返す（1 日を過ぎた AI の片づけも、番号で戻せる）",
+          (r["ok"], r["why"]), (False, "判断待ちに戻ったことを確かめられませんでした"))
+    ib.subprocess = types.SimpleNamespace(run=real_run, TimeoutExpired=subprocess.TimeoutExpired)
+
 # ---------- 通知を押したときに開く場所 ----------
 PAY = []
 s._push_send = lambda subs, payload, urgency: (PAY.append(payload["url"]), (1, []))[1]
@@ -584,8 +642,8 @@ for f in ("static/sw.js", "static/index.html"):
 H = {"host": "127.0.0.1:8790", "x-vl-key": "k1"}
 check("受け箱の口は、コンテナ（鍵あり）からは使えない",
       [problem(H, m, p, container=True) is not None for m, p in (("GET", "/api/inbox"), ("GET", "/api/inbox/item"), ("POST", "/api/inbox/done"), ("POST", "/api/inbox/undo"), ("POST", "/api/inbox/later"),
-                                                             ("POST", "/api/inbox/forget"))],
-      [True] * 6)
+                                                             ("POST", "/api/inbox/forget"), ("POST", "/api/inbox/reopen"))],
+      [True] * 7)
 
 # ---------- 件への返信 ----------
 SENT = []

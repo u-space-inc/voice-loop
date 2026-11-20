@@ -76,9 +76,11 @@ s.hermes.ask_hermes = lambda text: ASKED.append(text) or "答えです"
 
 def fake_run(cmd, capture_output=True, timeout=None, **k):
     CMDS.append(cmd)
-    op = "forget" if "forget" in cmd else "done"
+    op = "forget" if "forget" in cmd else "reopen" if "reopen" in cmd else "done"
     n = int(cmd[cmd.index(op) + 1])
-    row = {"op": op, "at": time.time(), "n": n} if op == "forget" else {"op": "done", "at": time.time(), "n": n, "note": cmd[cmd.index("--note") + 1], "by": "user"}
+    row = {"op": op, "at": time.time(), "n": n} if op == "forget" else \
+        {"op": "reopen", "at": time.time(), "n": n, "note": cmd[cmd.index("--note") + 1]} if op == "reopen" else \
+        {"op": "done", "at": time.time(), "n": n, "note": cmd[cmd.index("--note") + 1], "by": "user"}
     if "--unneeded" in cmd:
         row.update(unneeded=True, why=cmd[cmd.index("--why") + 1])
     with ITEMS.open("a") as f:
@@ -372,6 +374,31 @@ def run(page, who):
     page.unroute("**/api/inbox")
     time.sleep(0.8)
     check(f"{who} 「外す」の前に始まった読み直しが遅れて届いても、外した手本を戻さない", (gone_l, page.locator("#sitOther .lesson").count()), (True, 0))
+    # AI が片づけたもの（層 3）: 根拠つきで出し、「戻す」で判断待ちに戻す
+    seed()
+    with ITEMS.open("a") as f:
+        f.write(json.dumps({"op": "done", "at": time.time(), "n": 2, "by": "ai", "note": "本体の確かめ（新しい会話）: 控え／根拠の時刻 2026-11-20 18:00／<b>返した</b>"}, ensure_ascii=False) + "\n")
+    page.goto(BASE + "/#inbox")
+    page.wait_for_selector("#ibAi .aiClosed")
+    row = page.text_content("#ibAi .aiClosed")
+    check(f"{who} AI が片づけたもの: 開いた畳みで、題と根拠を文字として出す（判断待ちの一覧からは外れる）",
+          ("処理時間のアラーム" in row, "根拠: 本体の確かめ（新しい会話）: 控え" in row, "<b>返した</b>" in row, page.locator("#ibAi b").count(), cards(page)),
+          (True, True, True, 0, [TITLE1]))
+    with ITEMS.open("a") as f:
+        f.write(json.dumps({"op": "checked", "at": time.time(), "n": 1, "result": "open", "note": "送信済みに返事なし"}, ensure_ascii=False) + "\n")
+    page.evaluate("loadSituation()")
+    page.wait_for_function("[...document.querySelectorAll('#sitBody > .ibCard .ibTag')].some(e => e.textContent === '確かめた（まだ）')")
+    page.locator("#sitBody > .ibCard").first.click()
+    page.wait_for_selector(".ibItem h3")
+    check(f"{who} 確かめた結果: カードに「確かめた（まだ）」の札、中身に「確かめた（時刻・Hermes の答え。未確認）」とメモ",
+          ("確かめた（" in page.text_content(".ibItem"), "まだ：送信済みに返事なし" in page.text_content(".ibItem")), (True, True))
+    page.click(".ibItem .ibBack")
+    page.wait_for_selector("#ibAi .aiClosed")
+    page.click("#ibAi .aiClosed button")
+    back = wait(lambda: cards(page) == ["処理時間のアラーム", TITLE1] or cards(page) == [TITLE1, "処理時間のアラーム"], 6)
+    check(f"{who} 「戻す」で判断待ちに戻し（コンテナの中の道具）、畳みから外して一覧に戻す",
+          (back, page.locator("#ibAi").count(), CMDS[-1][-6:-1], "[2] を判断待ちに戻しました" in page.text_content("#sitBody")),
+          (True, 0, ["reopen", "2", "--note", ib.REOPEN_NOTE, "--expect-ai-at"], True))
     # 通知・リンクの場所
     seed()
     page.goto(BASE + "/#i=3")

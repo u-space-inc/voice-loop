@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse
 
 import attach  # 画面から添付したファイルを Hermes のコンテナの中に置く
 import hermes_memory  # Hermes の記憶を画面（PC の「記憶」）で足す・直す・消す
+import hermes_check  # 判断待ちを 1 件ずつ新しい会話で確かめる（層 3。VL_HERMES_CHECK=on のときだけ）
 import hermes_inbox  # 判断待ちの受け箱（画面の 💡）。Hermes の見張りの記録を読み、済んだ・あとでを受ける
 import hermes_learn  # Hermes の学びを自動で当て、跡を残し、画面の「戻す」で戻す
 import hermes_skills  # Hermes の手順の書き足しを画面で採る・捨てる、Hermes の記憶を読む
@@ -1544,7 +1545,7 @@ class Hermes(Brain, Talker):
         core.hlog(f"ハブは Hermes: {hermes_problem() or '使えます'}", flush=True)
 
     def watchers(self) -> list:
-        return [watch_hermes_skills]
+        return [watch_hermes_skills, hermes_check.watch]
 
     def doctor(self, add):
         problem = hermes_problem()

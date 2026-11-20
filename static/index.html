@@ -693,7 +693,7 @@ navigator.serviceWorker?.addEventListener('message', e => {
 let ibExtra = null, ibWantTok = 0;
 let ibGen = 0;  // 手元で一覧を変えた（済んだ・戻す・あとで）世代。それより前に始まった読み直しの答えでは、一覧を戻さない
 const ibUndos = new Map();  // 戻せる件: 番号 → { n, title, until }（5 秒以内に何件押しても、件ごとに戻せる）  // ibWantTok: 通知で開く予約の世代（閉じる・別の通知で進む）  // 通知・リンクで開いた、一覧に出ていない 1 件（あとでに回した件・数の上限から外れた件）
-let inbox = null, ibSel = null, ibWant = null, ibProj = '', ibOther = false, ibOld = false, ibFyiOpen = false, ibMsg = null, ibSig = '';
+let inbox = null, ibSel = null, ibWant = null, ibProj = '', ibOther = false, ibOld = false, ibFyiOpen = false, ibAiOpen = true, ibMsg = null, ibSig = '';
 // 返信先。報告（{ at, about }）か、受け箱の判断待ち（{ item: 番号, about: 題 }）。ハブの会話のときだけ付けて送り、送ったら外す。相手を替えたら外す
 let replyTarget = null;
 function setReplyTarget(t) {
@@ -1382,6 +1382,7 @@ function itemCard(x) {
   const meta = node('div', 'meta'); meta.append(srcTag(x), `${x.project} ・ ${ibStampOf(x)}`, node('span', 'ibNo', `[${x.n}]`));
   if (x.prepared) meta.appendChild(node('span', 'ibTag', '準備あり'));
   if (x.back) meta.appendChild(node('span', 'ibTag', 'あとでから戻った'));
+  if (x.checked) meta.appendChild(node('span', 'ibTag', `確かめた（${x.checked.label}）`));
   c.appendChild(meta); c.appendChild(node('div', 'title', x.title));
   const d = node('button', 'done', '済'); d.type = 'button'; d.setAttribute('aria-label', `判断待ち ${x.n} を済みにする`);
   d.onclick = e => { e.stopPropagation(); d.disabled = true; doneItem(x); };
@@ -1398,6 +1399,10 @@ function itemView(it) {
   v.appendChild(node('h3', null, it.title));
   if (it.note) { v.appendChild(node('div', 'ibLabel', '要ること（Hermes の要約。未確認）')); v.appendChild(node('div', 'ibBox', it.note)); }
   if (it.prepared) { v.appendChild(node('div', 'ibLabel', '準備したこと（返信案など。Hermes が書いたもの）')); v.appendChild(node('div', 'ibBox', it.prepared)); }
+  if (it.checked) {  // 本体が新しい会話で確かめた結果（まだ・確かめきれない）
+    v.appendChild(node('div', 'ibLabel', `確かめた（${stamp(it.checked.at)}・Hermes の答え。未確認）`));
+    v.appendChild(node('div', 'ibBox', it.checked.label + (it.checked.note ? '：' + it.checked.note : '')));
+  }
   const acts = node('div', 'ibActs');
   if (it.prepared) {
     const cp = node('button', null, 'コピー'); cp.type = 'button';
@@ -1473,6 +1478,27 @@ function inboxView(d) {
     const box = node('div'); for (const x of old) box.appendChild(itemCard(x)); det.appendChild(box); f.appendChild(det);
   }
   if (d.later) f.appendChild(node('div', 'sitMeta', `あとでに回したもの ${d.later} 件（時刻になると、一覧の上に戻ります）`));
+  if (d.ai_closed && d.ai_closed.length) {  // AI が根拠を書いて片づけたもの（1 日）。違えば「戻す」で判断待ちに戻す
+    const det = document.createElement('details'); det.className = 'ibFold'; det.id = 'ibAi'; det.open = ibAiOpen;
+    det.ontoggle = () => { ibAiOpen = det.open; };
+    det.appendChild(node('summary', null, `AI が片づけたもの（24 時間） ${d.ai_closed.length} 件`));
+    const box = node('div');
+    for (const x of d.ai_closed) {
+      const r = node('div', 'ibFyi aiClosed'); const meta = node('div', 'meta'); meta.append(srcTag(x), `${x.project} ・ ${stamp(x.closed_at)} に片づけ`, node('span', 'ibNo', `[${x.n}]`));
+      const back = node('button', 'lessonOut', '戻す'); back.type = 'button'; back.setAttribute('aria-label', `AI が片づけた ${x.n} を判断待ちに戻す`);
+      back.onclick = async () => {
+        back.disabled = true; back.textContent = '戻しています…';
+        ibGen++;  // 押す前に始まった読み直しの答えでは、戻した件を消さない
+        let r2; try { r2 = await postJSON('/api/inbox/reopen', { n: x.n }); } catch { r2 = { ok: false, reason: 'net' }; }
+        ibGen++;
+        ibNote(r2.ok ? `[${x.n}] を判断待ちに戻しました` : '戻せませんでした: ' + ({ gone: 'もう AI の片づけではありません', unreadable: '記録を読めません', net: '本体に届きません' }[r2.reason] || r2.why || r2.reason), !r2.ok);
+        loadSituation();
+      };
+      meta.appendChild(back);
+      r.appendChild(meta); r.appendChild(node('div', null, x.title)); if (x.why) r.appendChild(node('div', 'sitMeta', '根拠: ' + x.why)); box.appendChild(r);
+    }
+    det.appendChild(box); f.appendChild(det);
+  }
   if (d.fyi && d.fyi.length) {
     const det = document.createElement('details'); det.className = 'ibFold'; det.open = ibFyiOpen;
     det.ontoggle = () => { ibFyiOpen = det.open; };

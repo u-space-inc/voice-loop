@@ -723,8 +723,8 @@ check("落とし穴: 既に対応したかを相手の文や回復の知らせ�
       ("「既に対応したか」（手順 4）を、相手の文や回復の知らせで決めない。" in SK, "見張りの回は、前の回の判断待ちに済の印（`vl_items.py done`）を付けない" in SK), (True, True))
 HUB = (ROOT / "templates/hermes/hub.md").read_text(encoding="utf-8")
 hsec = HUB.split("## 見張りの回の記録（判断待ち）", 1)[1].split("\n## ", 1)[0]
-check("指示文: 判断待ちを伝える前に 1 件ずつ済んでいないかを確かめ、済んでいれば根拠つきで片づけ（--by ai）、一言添える",
-      ("判断待ちとして伝える前に、1 件ずつ、いまも済んでいないかを確かめます" in hsec, "`vl_items.py done <番号> --by ai --note \"<根拠: 何の記録で、いつ、何が済んだか>\"`" in hsec,
+check("指示文: 判断待ちは本体が 1 件ずつ新しい会話で確かめる。会話では全件を確かめ直さず、聞かれた件だけ確かめ、済んでいれば根拠つきで片づけ（--by ai）、一言添える（2026-11-20 層 3）",
+      ("本体が、判断待ちを 1 件ずつ別の新しい会話で確かめています" in hsec and "会話の中で全件を確かめ直さず" in hsec and "その件だけを確かめます" in hsec, "`vl_items.py done <番号> --by ai --note \"<根拠: 何の記録で、いつ、何が済んだか>\"`" in hsec,
        "「[番号] は済んでいたので片づけました（根拠）」" in hsec, "確かめられないものは判断待ちのまま伝えます" in hsec),
       (True, True, True, True))
 check("指示文: 返したかでなく済んだかを見る・セッションの記録は自分で行ったことだけを根拠にする・reopen は対応不要と分けたものも戻す",
@@ -843,6 +843,47 @@ check("指示文: 利用者が「不要だった」と言ったら --unneeded �
        "ユーザーが言っていないのに、あなたの判断で不要の印を付けたり、手本から外したりはしません" in hsec, "分からなければ、上の済の印にします" in hsec,
        "「済んだ」「不要だった」を押した件は、本体が" in hsec),
       (True, True, True, True, True))
+# ---------- 本体の確かめの結果（checked）と、AI の印の取り消し（undo）。2026-11-20 層 3 ----------
+T5 = Path(tempfile.mkdtemp())
+run5 = lambda *a: subprocess.run(PY + list(a), capture_output=True, text=True, env={**os.environ, "HERMES_HOME": str(T5)})
+L5 = T5 / "voice-loop/items.jsonl"
+run5("add", "--source", "mail", "--id", "k1", "--kind", "judge", "--title", "確かめる件")
+run5("add", "--source", "mail", "--id", "k2", "--kind", "judge", "--title", "利用者が済んだ件")
+run5("add", "--source", "mail", "--id", "k3", "--kind", "info", "--title", "情報")
+r = run5("checked", "1", "--result", "open", "--note", "送信済みに無い\x1b[2K")
+o = run5("open").stdout
+check("checked: 本体の確かめの結果を残し、一覧に「確かめた: <時刻> まだ <メモ>」の行で出す（メモの ESC は空白）",
+      (r.stdout.strip(), "    確かめた: " in o and " まだ 送信済みに無い [2K" in o, "\x1b" in o), ("確かめた結果を残しました [1]（まだ）", True, False))
+check("checked: 判断待ちでない件・済の件は断る。結果は open・unknown だけ",
+      (run5("checked", "3", "--result", "open").returncode, run5("checked", "1", "--result", "done").returncode != 0), (1, True))
+run5("done", "1", "--by", "ai", "--note", "根拠")
+r = run5("undo", "1", "--note", "見間違えた")
+o = run5("open").stdout
+check("undo: AI の済の印を取り消して判断待ちに戻す。利用者の訂正（判断待ちに戻した印）は付けない",
+      (r.stdout.strip(), "確かめる件" in o, "判断待ちに戻した" in o, run5("undo", "1").returncode), ("あなたが付けた済の印を取り消しました [1]（判断待ちに戻りました）", True, False, 1))
+run5("done", "2")
+with L5.open("a") as f:  # 手で書かれた取り消しの行（利用者の印を取り消そうとする）
+    f.write(json.dumps({"op": "undo", "at": 2e9, "n": 2}) + "\n")
+check("undo: 利用者の印は取り消せない（道具は断り、手で書かれた行も効かない）",
+      (run5("undo", "2").returncode, "利用者が済んだ件" in run5("open").stdout), (1, False))
+run5("add", "--source", "mail", "--id", "k4", "--kind", "judge", "--title", "前提を照らす件")
+check("前提: --expect-moved が合わない（戻した印が替わった・もう済）なら、書かずに終わりの数 3。形の違う値は 2",
+      (run5("done", "4", "--by", "ai", "--note", "x", "--expect-moved", "123.5").returncode, run5("checked", "4", "--result", "open", "--expect-moved", "1.0").returncode,
+       run5("done", "4", "--by", "ai", "--note", "x", "--expect-moved", "abc").returncode, "前提を照らす件" in run5("open").stdout,
+       run5("done", "4", "--by", "ai", "--note", "x", "--expect-moved", "none").returncode, run5("done", "4", "--by", "ai", "--note", "y", "--expect-moved", "none").returncode),
+      (3, 3, 2, True, 0, 3))
+ai_at = [json.loads(l) for l in L5.read_text().splitlines()][-1]["at"]
+check("前提: reopen --expect-ai-at は、AI が付けた、その時刻の済の印のときだけ戻す",
+      (run5("reopen", "4", "--expect-ai-at", repr(ai_at + 1)).returncode, run5("reopen", "4", "--expect-ai-at", repr(ai_at)).returncode, "前提を照らす件" in run5("open").stdout),
+      (3, 0, True))
+with L5.open("a") as f:  # 手で書かれた行: 追加の行に確かめた結果を混ぜる・結果が文字でない
+    f.write(json.dumps({"op": "add", "n": 50, "at": 1e9, "source": "mail", "id": "kx", "project": "p", "kind": "judge", "title": "混ぜた追加", "checked": {"result": "open"}}) + "\n")
+    f.write(json.dumps({"op": "checked", "n": 4, "at": 2e9, "result": ["open"], "note": "x"}) + "\n")
+r = run5("open", "--all")
+check("checked: 追加の行の確かめた結果は使わず、結果が文字でない行は飛ばす（一覧の読み取りを止めない）",
+      (r.returncode, "混ぜた追加" in r.stdout, r.stdout.split("混ぜた追加", 1)[1].split("\n[", 1)[0].count("確かめた:")), (0, True, 0))
+check("指示文: 自分の誤りは undo（利用者の訂正の reopen と分ける）",
+      ("`vl_items.py undo <番号> --note \"<気づいた理由>\"` で取り消します" in hsec, "あなたの取り消しには使いません" in hsec), (True, True))
 ok = sum(r[1] for r in results)
 for name, passed, got, want in results:
     print(("✓ " if passed else "✗ ") + name + ("" if passed else f"\n    得た値: {got!r}\n    期待:   {want!r}"))
