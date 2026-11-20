@@ -91,12 +91,16 @@ same = HEAD + "\n".join([
     "| 2026-11-19 10:05 | 個人チャット（田中さん） | 返信: 11/19 09:59・当方 | 開いた | 田中さんへ | ― |",
 ])
 m = S._merge([(same, ["2026-11-19_0958_out_日程の回答.md", "2026-11-19_0957_out_資料A.md", "2026-11-19_0957_out_資料B.md"])])
-check("同じ分: スレッドが 1 つに決まらない控えのファイルは、どの行にも添えずファイルだけの行にする",
+check("同じ分: 控えのファイルは、どの行にも添えずファイルだけの行にする",
       sorted((r["thread"], r.get("copy")) for r in m if r["at"] == at(2026, 11, 19, 9, 58)),
       [("", "日程の回答"), ("日程の件", None), ("見積もりの件", None)])
 check("同じ分: ファイルだけの行は、控えの名前が違えば別の行として残す", sorted(r["copy"] for r in m if r["at"] == at(2026, 11, 19, 9, 57)), ["資料A", "資料B"])
 check("同じ分: 同じラベル・時刻でもスレッドが違えば、別の投稿として残す",
       sorted(r["what"] for r in m if r["at"] == at(2026, 11, 19, 9, 59)), ["山田さんへ", "田中さんへ"])
+
+m1 = S._merge([(HEAD + "| 2026-11-19 10:00 | Aの件 | 11/19 09:58・当方 | 開いた | Aへ送った | ― |\n", ["2026-11-19_0958_out_Bの送信.md", "2026-11-19_0958_out_Aの送信.md"])])
+check("同じ分: 表の行が 1 つでも、控えのファイルをその行に結び付けない",
+      sorted((r["thread"], r.get("copy")) for r in m1), [("", "Aの送信"), ("", "Bの送信"), ("Aの件", None)])
 
 # ---------- 案件のフォルダから探す ----------
 def write(path: Path, body: str):
@@ -123,11 +127,11 @@ found = S.logs(PROJ)
 check("探す: 置き場所の直下の案件の控えだけ（深すぎる・依存・隠しフォルダ・symlink の案件・symlink の控え・symlink のフォルダは除く）",
       {k: [str(p.relative_to(PROJ)) for p in v] for k, v in found.items()}, {"shop": ["shop/doc/internal/teams-sync-log.md"], "big": ["big/teams-sync-log.md"]})
 r = S.sent(PROJ, since=at(2026, 11, 1, 0, 0))
-check("読む: 控えの行に、同じ分の控えのファイルの要約を添え、行の無いファイルはファイルだけの行にする。大きすぎる控えは読まない",
+check("読む: 控えのファイルは、同じ分の行があっても結び付けず、ファイルだけの行にする。大きすぎる控えは読まない",
       [(x["project"], x["at_text"], x["thread"], x.get("copy")) for x in r["rows"]],
-      [("shop", "11/19 09:58", "見積もりの件", "見積もりの送付"), ("shop", "11/18 12:00", "", "日程の候補")])
+      [("shop", "11/19 09:58", "見積もりの件", None), ("shop", "11/19 09:58", "", "見積もりの送付"), ("shop", "11/18 12:00", "", "日程の候補")])
 check("読む: 時刻で絞る・数を切って残りの数を返す",
-      (len(S.sent(PROJ, since=at(2026, 11, 19, 0, 0))["rows"]), S.sent(PROJ, since=at(2026, 11, 1, 0, 0), limit=1)["more"]), (1, 1))
+      (len(S.sent(PROJ, since=at(2026, 11, 19, 0, 0))["rows"]), S.sent(PROJ, since=at(2026, 11, 1, 0, 0), limit=1)["more"]), (2, 2))
 check("読む: 案件の名前は控えのある案件と一字一句同じときだけ（場所に使わない）",
       [S.sent(PROJ, project=p).get("error") for p in ("shop", "../outside", str(OUTSIDE), "linked", "shop/doc", "")], [None, "no_project", "no_project", "no_project", "no_project", None])
 check("読む: 置き場所が無ければ空", S.sent(None), {"rows": [], "more": 0, "projects": [], "partial": False})
@@ -137,7 +141,8 @@ write(PROJ / "shop-old" / "doc/internal" / S.LOG_NAME, "| 2026-11-19 10:00 | 見
 os.utime(PROJ / "shop-old/doc/internal" / S.LOG_NAME, (time.time() - 86400, time.time() - 86400))
 fresh()
 r = S.sent(PROJ, since=at(2026, 11, 19, 0, 0))
-check("読む: 別のフォルダにある同じ控えの同じ行は、新しく書かれた控えの 1 行だけ", [(x["project"], x["at_text"]) for x in r["rows"]], [("shop", "11/19 09:58")])
+check("読む: 別のフォルダにある同じ控えの同じ行は、新しく書かれた控えの 1 行だけ", [(x["project"], x["at_text"], x.get("copy")) for x in r["rows"]],
+      [("shop", "11/19 09:58", None), ("shop", "11/19 09:58", "見積もりの送付")])
 
 # ---------- 手元の枝の控え ----------
 G = PROJ / "repo"
@@ -205,30 +210,35 @@ fresh()
 
 # git は取り寄せ・通信をせず、親へ上らず、フック・テキスト変換・fsmonitor を動かさない（a2a 8f4f874c の P1）
 calls = []
-real_run = S.subprocess.run
+real_popen = S.subprocess.Popen
 
 
 def spy(args, **kw):
     calls.append((list(args), dict(kw.get("env") or {})))
-    return real_run(args, **kw)
+    return real_popen(args, **kw)
 
 
-S.subprocess.run = spy
+S.subprocess.Popen = spy
 S._git(G, "rev-parse", "--show-toplevel")
-S.subprocess.run = real_run
+S.subprocess.Popen = real_popen
 a0, e0 = calls[0]
 check("git: 足りないオブジェクトを取りに行かない・通信しない・親へ上らない・フックとロックと問い合わせを止める",
       (e0.get("GIT_NO_LAZY_FETCH"), "protocol.allow=never" in a0, e0.get("GIT_CEILING_DIRECTORIES") == str(G.parent), "core.hooksPath=/dev/null" in a0,
        "core.fsmonitor=false" in a0, e0.get("GIT_OPTIONAL_LOCKS"), e0.get("GIT_TERMINAL_PROMPT")),
       ("1", True, True, True, True, "0", "0"))
 calls.clear()
-S.subprocess.run = spy
+S.subprocess.Popen = spy
 fresh()
 S.sent(PROJ, project="repo", since=0)
-S.subprocess.run = real_run
+S.subprocess.Popen = real_popen
 check("git: 呼ぶのは rev-parse・for-each-ref・show（--no-textconv）・ls-tree だけ",
       sorted({a[a.index("--no-pager") + 1] for a, _ in calls}), ["for-each-ref", "ls-tree", "rev-parse", "show"])
 check("git: show はいつも --no-textconv", all("--no-textconv" in a for a, _ in calls if "show" in a), True)
+S.MAX_BYTES, keep = 50, S.MAX_BYTES
+big_out = S._git(G, "show", "--no-textconv", "chore/sync:./doc/" + S.LOG_NAME)
+S.MAX_BYTES = keep
+check("git: 受け取る量は上限まで。越えたら途中で止めて、何も返さない（上限の内なら返す）",
+      (big_out, "枝にだけある行" in (S._git(G, "show", "--no-textconv", "chore/sync:./doc/" + S.LOG_NAME) or "")), (None, True))
 
 # git を呼んでいる途中に案件のフォルダを別のリポジトリへの symlink に替えたら、枝の結果を捨てる
 OTHER = TMP / "other-repo"
@@ -283,6 +293,11 @@ S.BUDGET, keep = 0, S.BUDGET
 r = S.sent(PROJ, since=0)
 S.BUDGET = keep
 check("上限: 時間を越えたら残りは読まず、一部だと返す", r["partial"], True)
+fresh()
+S.WALK_DIRS, keep = 2, S.WALK_DIRS
+r = S.sent(PROJ, project="shop", since=0)
+S.WALK_DIRS = keep
+check("上限: 探しきれずに案件が見つからないときは、控えが無いとは言わない（incomplete）", (r.get("error"), r["partial"]), ("incomplete", True))
 fresh()
 check("上限: 上限の内なら一部ではない", S.sent(PROJ, since=0)["partial"], False)
 
@@ -354,7 +369,7 @@ else:
            lines[-1].startswith("控えのある案件: big, pin, repo, shop, shop-old。控えに書かれない投稿")),
           (0, True, True, True, True, True))
     r = hub("sent", "--project", "shop", "--since", "11/18 00:00", "-n", "1")
-    check("hubctl sent: 案件で絞る・数を切って残りを言う", (r.returncode, "[shop] 11/19 09:58｜見積もりの件" in r.stdout, "（ほかに 1 件。-n で増やせます）" in r.stdout), (0, True, True))
+    check("hubctl sent: 案件で絞る・数を切って残りを言う", (r.returncode, "[shop] 11/19 09:58｜見積もりの件" in r.stdout, "（ほかに 2 件。-n で増やせます）" in r.stdout), (0, True, True))
     r = hub("sent", "--project", "../outside")
     check("hubctl sent: 控えの無い案件は断り、控えのある案件を言う", (r.returncode != 0, "控えのある案件: big, pin, repo, shop, shop-old" in r.stderr), (True, True))
     r = hub("sent", "--since", "きのう")
@@ -367,6 +382,12 @@ else:
     S.WALK_DIRS = keep
     check("hubctl sent: 一部しか読めなかったときは、そう言い、出てこないことをまだの根拠にしないよう添える",
           "一部の案件・枝を読めていません。出てこないことを、まだの根拠にしないでください" in r.stdout, True)
+    fresh()
+    S.WALK_DIRS, keep = 2, S.WALK_DIRS
+    r = hub("sent", "--project", "shop")
+    S.WALK_DIRS = keep
+    check("hubctl sent: 探しきれずに案件が見つからないときは、無いとは言わず、確かめられなかったと言う",
+          (r.returncode != 0, "確かめられませんでした（無いとは言えません）" in r.stderr, "控えがありません" in r.stderr), (True, True, False))
     fresh()
     check("hubctl の説明に sent がある", "hubctl sent [--project P]" in hub("--help").stdout, True)
     write(PROJ / "multi" / S.LOG_NAME, "| 2026-11-19 18:00 | 一覧＋2 つ | 深夜帯: 11/19 17:30・当方／完全削除: 11/19 17:41・当方 | 開いた | 2 件 | ― |\n")

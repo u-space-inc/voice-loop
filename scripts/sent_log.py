@@ -20,6 +20,7 @@ import os
 import re
 import stat
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -222,13 +223,28 @@ def _git(project: Path, *args: str) -> str | None:
     env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1",
            "GIT_CEILING_DIRECTORIES": str(project.parent)}
     try:
-        r = subprocess.run(["git", "-C", str(project), "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
-                            "-c", "protocol.allow=never", "--no-pager", *args], capture_output=True, timeout=GIT_TIMEOUT, env=env)
-    except (OSError, subprocess.SubprocessError):
+        proc = subprocess.Popen(["git", "-C", str(project), "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+                                 "-c", "protocol.allow=never", "--no-pager", *args],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+    except OSError:
         return None
-    if r.returncode != 0 or len(r.stdout) > MAX_BYTES:
+    timer = threading.Timer(GIT_TIMEOUT, proc.kill)  # 時間切れで止める（読み取りが詰まっても、ここで終わる）
+    timer.start()
+    try:
+        data = proc.stdout.read(MAX_BYTES + 1)  # 受け取る量は上限 + 1 まで。越えたら、それ以上は受け取らずに止める
+        if len(data) > MAX_BYTES:
+            proc.kill()
+        proc.stdout.close()
+        code = proc.wait()
+    except (OSError, ValueError):
+        proc.kill()
+        proc.wait()
         return None
-    return r.stdout.decode("utf-8", "replace")
+    finally:
+        timer.cancel()
+    if code != 0 or len(data) > MAX_BYTES:
+        return None
+    return data.decode("utf-8", "replace")
 
 
 def _same_dir(path: Path, st: os.stat_result) -> bool:
@@ -284,6 +300,8 @@ def _branches(root: Path, name: str, rel: tuple[str, ...], state: dict) -> list[
 
 
 def _merge(sources: list[tuple[str, list[str]]]) -> list[dict]:
+    """控えの行と、thread/ の控えのファイルの名前を合わせる。ファイルは、どの行の投稿かを確かめる手がかりが無いので、
+    時刻が同じでも行に結び付けず、ファイルだけの行として返す（取り違えて別の投稿の根拠にしないため）。"""
     rows, seen = [], set()
     for text, names in sources:
         for r in parse(text):
@@ -291,20 +309,11 @@ def _merge(sources: list[tuple[str, list[str]]]) -> list[dict]:
             if key not in seen:
                 seen.add(key)
                 rows.append(r)
-    by_at: dict[float, list[dict]] = {}
-    for r in rows:
-        by_at.setdefault(r["at"], []).append(r)
     done = set()
     for text, names in sources:
         for cp in copies(names):
-            if (cp["at"], cp["copy"]) in done:
-                continue
-            done.add((cp["at"], cp["copy"]))
-            same = by_at.get(cp["at"], [])
-            # 同じ分の行が 1 つだけで、まだ控えのファイルが付いていないときだけ添える。どのスレッドの投稿か一つに決まらないものは、ファイルだけの行にする
-            if len(same) == 1 and "copy" not in same[0]:
-                same[0]["copy"] = cp["copy"]
-            else:
+            if (cp["at"], cp["copy"]) not in done:
+                done.add((cp["at"], cp["copy"]))
                 rows.append({"at": cp["at"], "thread": "", "label": "", "what": "", "done": "", "copy": cp["copy"]})
     return rows
 
@@ -345,8 +354,8 @@ def sent(root: Path | None, project: str = "", since: float | None = None, limit
     探す・読み直すのは BUDGET 秒まで。越えて読めなかった案件・枝があれば partial を真にする。"""
     state = {"deadline": time.monotonic() + BUDGET, "partial": False}
     found = logs(root, state)
-    if project and project not in found:
-        return {"error": "no_project", "projects": sorted(found), "partial": state["partial"]}
+    if project and project not in found:  # 探しきれなかったときは、控えが無いとは言わない
+        return {"error": "incomplete" if state["partial"] else "no_project", "projects": sorted(found), "partial": state["partial"]}
     rows, seen = [], set()
     # 同じ控えの写し（別のフォルダに置いた古い clone など）の同じ行は、新しく書かれた控えのほうの 1 行だけにする
     order = sorted(((name, p) for name, ps in found.items() if not project or name == project for p in ps),
