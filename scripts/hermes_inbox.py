@@ -396,7 +396,10 @@ def run_done(n: int, why: str | None = None) -> str:
         if d.get("unneeded") is not True:
             return "記録に不要の印が見当たりません（Hermes の置き場の vl_items.py が古いかもしれません）"
         if vl_items._num(d.get("at")):
-            _mark_ui_lesson(n, d["at"])
+            try:  # 覚えられなくても、付いた印はそのまま（その手本は「ハブから」と出る）。片づけの成否には混ぜない
+                _mark_ui_lesson(n, d["at"])
+            except (OSError, ValueError, TypeError) as e:
+                print(f"[inbox] 画面で付けた手本を覚えられませんでした [{n}]: {type(e).__name__}", flush=True)
     return ""
 
 
@@ -423,7 +426,10 @@ async def _commit(n: int, gen: str):
     p["state"] = "run"
     _done_lock = _done_lock or asyncio.Lock()
     async with _done_lock:
-        why = await asyncio.to_thread(run_done, n, p.get("why"))
+        try:
+            why = await asyncio.to_thread(run_done, n, p.get("why"))
+        except Exception as e:  # どんな止まり方でも予約は外す（実行中のまま残すと、あとで判断待ちに戻した件が一覧に出なくなる）
+            why = f"印を付ける途中で止まりました（{type(e).__name__}）"
     PENDING.pop(n, None)
     if why:
         FAIL.update(n=n, why=why, at=time.time())

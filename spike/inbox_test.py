@@ -466,7 +466,31 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     time.sleep(ib.UNDO + 0.3)
     check("手本を外す道具を待つ間に「戻す」が来ても、待たせずに取り消す（済の印を付けない）",
           (u["ok"], waited < 1.0, outs2["f"]["ok"], [c[c.index("done") + 1] for c in CMDS if "done" in c]), (True, True, True, []))
-    ib.UNDO = 0.4
+    # 画面で付けた手本を覚えられなくても・道具の呼び出しが例外で止まっても、予約は外し、付いた印はそのまま
+    write([add(91, at=NOW - 60, title="覚えられない件"), add(92, at=NOW - 60, title="止まる件")])
+    keep_mark, keep_rd = ib._mark_ui_lesson, ib.run_done
+    ib.FAIL.clear()  # 前の確かめの「付けられなかった」の知らせを残さない
+
+    def broken(*a):
+        raise OSError("disk full")
+    ib._mark_ui_lesson = broken
+    post("/api/inbox/done", {"n": 91, "unneeded": "notice"})
+    time.sleep(ib.UNDO + 0.6)
+    ib._mark_ui_lesson = keep_mark
+    d = get()
+    check("画面で付けた手本を覚えられなくても、予約を外し、付いた不要の印はそのまま（その手本は「ハブから」の扱い）",
+          (91 in ib.PENDING, d.get("fail", {}).get("n"), {x["n"]: x["ui"] for x in d["lessons"]}.get(91), 91 in ns(d)), (False, None, False, False))
+
+    def boom(*a):
+        raise RuntimeError("x")
+    ib.run_done = boom
+    post("/api/inbox/done", {"n": 92})
+    time.sleep(ib.UNDO + 0.6)
+    ib.run_done = keep_rd
+    d = get()
+    check("道具の呼び出しが例外で止まっても、予約を外して一覧に戻し、理由を出す",
+          (92 in ib.PENDING, 92 in ns(d), d.get("fail", {}).get("n"), "途中で止まりました" in d.get("fail", {}).get("why", "")), (False, True, 92, True))
+    ib.FAIL.clear()
 
 # ---------- 通知を押したときに開く場所 ----------
 PAY = []
