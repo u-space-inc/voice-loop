@@ -588,13 +588,15 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
           ([(101, "AI が片づけた件")], True, {"n", "source", "project", "title", "why", "closed_at"}))
     real_run = ib.subprocess.run
 
-    def reopen_run(cmd, capture_output=True, timeout=None, **k):
+    def reopen_run(cmd, capture_output=True, timeout=None, **k):  # コンテナの中の道具の代わりに、本物の vl_items.py を一時の置き場で動かす
         CMDS.append(cmd)
-        n = int(cmd[cmd.index("reopen") + 1])
-        if not FAKE.get("silent"):
+        if FAKE.get("silent"):
+            return subprocess.CompletedProcess(cmd, 0, b"", b"")
+        if FAKE.get("race"):  # 本体が読んだあと、道具が書く前に、利用者の済の印が付いた
             with ITEMS.open("a") as fh:
-                fh.write(json.dumps({"op": "reopen", "at": time.time(), "n": n, "note": cmd[cmd.index("--note") + 1]}, ensure_ascii=False) + "\n")
-        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+                fh.write(json.dumps({"op": "done", "at": time.time(), "n": int(cmd[cmd.index("reopen") + 1]), "by": "user", "note": ""}) + "\n")
+        return subprocess.run([sys.executable, str(ROOT / "templates/hermes/watch/vl_items.py")] + cmd[cmd.index(ib.TOOL) + 1:], capture_output=True,
+                              timeout=timeout, env={**os.environ, "HERMES_HOME": str(HOME)})
     ib.subprocess = types.SimpleNamespace(run=reopen_run, TimeoutExpired=subprocess.TimeoutExpired)
     check("戻す: AI の印でない件（利用者の印・まだの件・無い番号）は、道具を動かさずに断る。番号の形が違えば 400",
           ([post("/api/inbox/reopen", {"n": v}).json().get("reason") for v in (103, 104, 999)], [post("/api/inbox/reopen", b).status_code for b in ({"n": "101"}, {})], CMDS),
@@ -602,8 +604,16 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     r = post("/api/inbox/reopen", {"n": 101}).json()
     d = get()
     check("戻す: コンテナの中の記録の道具で判断待ちに戻し（利用者の訂正の印）、戻ったことを記録で確かめる。一覧の上に戻る",
-          (r, CMDS[-1][-4:], d["ai_closed"], d["items"][0]["n"], d["items"][0]["back"] is False),
-          ({"ok": True, "n": 101}, ["reopen", "101", "--note", ib.REOPEN_NOTE], [], 101, True))
+          (r, CMDS[-1][-6:-1], d["ai_closed"], d["items"][0]["n"], d["items"][0]["back"] is False),
+          ({"ok": True, "n": 101}, ["reopen", "101", "--note", ib.REOPEN_NOTE, "--expect-ai-at"], [], 101, True))
+    with ITEMS.open("a") as fh:
+        fh.write(json.dumps({"op": "done", "at": time.time(), "n": 104, "by": "ai", "note": "根拠"}, ensure_ascii=False) + "\n")
+    FAKE["race"] = True
+    r = post("/api/inbox/reopen", {"n": 104}).json()
+    FAKE.clear()
+    got = ib.records()
+    check("戻す: 本体が読んだあと、道具が書く前に利用者の済の印が付いたら、道具が書き込みの錠の中で断り、利用者の印を外さない",
+          (r["ok"], "AI が付けた、その済の印ではなくなっていました" in r["why"], got[1][104]["by"]), (False, True, "user"))
     FAKE["silent"] = True
     r = post("/api/inbox/reopen", {"n": 102}).json()
     FAKE.clear()

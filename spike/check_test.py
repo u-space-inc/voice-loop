@@ -57,19 +57,16 @@ def append(row):
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-# コンテナの中の記録の道具（done・checked）の偽物: 記録に行を書き足す
+# コンテナの中の記録の道具: docker の代わりに、本物の vl_items.py を一時の置き場で動かす（前提の照らし・錠も本物）
 CMDS = []
+VL = ROOT / "templates/hermes/watch/vl_items.py"
+real_subprocess_run = subprocess.run
 
 
 def fake_run(cmd, capture_output=True, timeout=None, **k):
     CMDS.append(cmd)
-    tool = cmd[cmd.index(ib.TOOL) + 1:]
-    op, n = tool[0], int(tool[1])
-    if op == "done":
-        append({"op": "done", "at": time.time(), "n": n, "note": tool[tool.index("--note") + 1], "by": tool[tool.index("--by") + 1]})
-    elif op == "checked":
-        append({"op": "checked", "at": time.time(), "n": n, "result": tool[tool.index("--result") + 1], "note": tool[tool.index("--note") + 1]})
-    return subprocess.CompletedProcess(cmd, 0, b"", b"")
+    return real_subprocess_run([sys.executable, str(VL)] + cmd[cmd.index(ib.TOOL) + 1:], capture_output=True, timeout=timeout,
+                               env={**os.environ, "HERMES_HOME": str(HOME)})
 
 
 ib.subprocess = types.SimpleNamespace(run=fake_run, TimeoutExpired=subprocess.TimeoutExpired)
@@ -120,6 +117,8 @@ try:
 except RuntimeError as e:
     err = str(e)
 hc.urllib.request.urlopen = keep_open
+check("答え: 判定の欄が文字でない（配列・物）なら形が違うとする（止まらない）",
+      (hc.parse('VL_CHECK {"verdict": ["done"]}'), hc.parse('VL_CHECK {"verdict": {"a": 1}}'), hc.parse(None)), (None, None, None))
 check("新しい会話の名前で、確かめの指示文を system にして、1 件の依頼を送る（API の鍵は Authorization にだけ）",
       (SEEN["url"], SEEN["headers"].get("X-hermes-session-id"), SEEN["body"]["messages"][0], SEEN["body"]["messages"][1], "Hermes に接続できません" in err),
       ("http://127.0.0.1:9/v1/chat/completions", "vl-check-1-abc", {"role": "system", "content": hc.GUIDE.read_text().strip()},
@@ -153,6 +152,14 @@ check("判定: done は、元の時刻（答えの orig_at を記録の時刻で
       [("done", ""), ("unknown", "根拠が元の時刻（戻した件は戻した時刻）より前"), ("unknown", "元の時刻が分からない"), ("unknown", "元の時刻が分からない"),
        ("unknown", "元の時刻が分からない"), ("unknown", "根拠の時刻が読めない"), ("unknown", "根拠の時刻がいまより先"), ("open", ""), ("unknown", ""),
        ("unknown", "答えの形が合わない")])
+check("判定: done でも、根拠の場所か要約が無い・根拠の時刻がいまより少しでも先なら、片づけない",
+      [hc.judge(R, hc.parse(x), at(20)) for x in (vl("done", "2026-11-20 09:00", "2026-11-20 11:00", where=""), vl("done", "2026-11-20 09:00", "2026-11-20 11:00", quote=""),
+                                                  vl("done", "2026-11-20 09:00", "2026-11-20 20:04"))],
+      [("unknown", "根拠の場所か要約が無い"), ("unknown", "根拠の場所か要約が無い"), ("unknown", "根拠の時刻がいまより先")])
+sl = add(9, at(10), source="slack", id="C0123/" + str(int(at(9))) + ".000100")
+check("判定: Slack の件は、元の時刻を記録の id の ts から取る（Hermes の答えた元の時刻は使わない）",
+      (hc.judge(sl, hc.parse(vl("done", "2026-11-20 08:00", "2026-11-20 08:30")), at(20)), hc.judge(sl, hc.parse(vl("done", "", "2026-11-20 09:30")), at(20))),
+      (("unknown", "根拠が元の時刻（戻した件は戻した時刻）より前"), ("done", "")))
 check("判定: --sent があれば元の時刻はそれ（Hermes の答えより優先）。判断待ちに戻した件は、戻した時刻より後の根拠だけ",
       (hc.judge(add(2, at(10), sent=at(9)), hc.parse(vl("done", "2026-11-20 09:50", "2026-11-20 09:30")), at(20)),
        hc.judge(add(3, at(10), moved=at(15)), hc.parse(vl("done", "2026-11-20 09:00", "2026-11-20 14:00")), at(20)),
@@ -169,24 +176,41 @@ items, _ = ib.records()
 e = hc.check_one(items[11])
 got = ib.records()
 check("done で根拠の時刻が合えば、コンテナの中の記録の道具に --by ai と根拠で印を付けさせ、記録で確かめる",
-      (e["verdict"], e["closed"], CMDS[-1][-7:-2], CMDS[-1][-1].startswith("本体の確かめ（新しい会話）: Gmail の送信済み（同じスレッド）／根拠の時刻 "),
-       "金額で進めると返した" in CMDS[-1][-1], got[1][11]["by"]),
+      (e["verdict"], e["closed"], CMDS[-1][-9:-4], CMDS[-1][-3].startswith("本体の確かめ（新しい会話）: Gmail の送信済み（同じスレッド）／根拠の時刻 "),
+       "金額で進めると返した" in CMDS[-1][-3], got[1][11]["by"]),
       ("done", True, [ib.TOOL, "done", "11", "--by", "ai"], True, True, "ai"))
 e = hc.check_one(items[12])
 check("まだ・確かめきれない件は、印を付けず、checked で結果と根拠のメモを残す（一覧の「確かめた:」の行）",
-      (e["verdict"], e["closed"], CMDS[-1][-7:], 12 in ib.records()[1]),
-      ("open", False, [ib.TOOL, "checked", "12", "--result", "open", "--note", "送信済みに無い／返した"], False))
+      (e["verdict"], e["closed"], CMDS[-1][-9:], 12 in ib.records()[1], ib.records()[0][12]["checked"]["result"]),
+      ("open", False, [ib.TOOL, "checked", "12", "--result", "open", "--note", "送信済みに無い／返した", "--expect-moved", "none"], False, "open"))
 HOOK[13] = lambda: append({"op": "done", "at": time.time(), "n": 13, "note": "画面", "by": "user"})
 HOOK[14] = lambda: append({"op": "reopen", "at": time.time() + 1, "n": 14, "note": "まだ"})
-before = len(CMDS)
 e13, e14 = hc.check_one(items[13]), hc.check_one(items[14])
-check("頼んでから付けるまでに、利用者が片づけた・判断待ちに戻した件には、印もメモも付けない",
-      (e13["closed"], e14["closed"], len(CMDS) - before, ib.records()[1][13]["by"], 14 in ib.records()[1]), (False, False, 0, "user", False))
+st13 = ib.records()
+check("頼んでから付けるまでに、利用者が片づけた・判断待ちに戻した件には、印もメモも付けない（道具が書き込みの錠の中で、頼む直前の「戻した印」と照らす）",
+      (e13["closed"], e14["closed"], CMDS[-1][-2:], st13[1][13]["by"], 14 in st13[1], "checked" in st13[0][14], "判断待ちではなくなっていました" in e13["reason"],
+       "判断待ちに戻した印が替わっていました" in e14["reason"]),
+      (False, False, ["--expect-moved", "none"], "user", False, False, True, True))
 ANSWERS[15] = RuntimeError("Hermes が 502 を返しました")
+before = len(CMDS)
 e = hc.check_one(items[15])
 check("Hermes に頼めなければ error（印もメモも付けない）", (e["verdict"], e["reason"], len(CMDS) - before), ("error", "Hermes が 502 を返しました", 0))
+# 並びに入れたあとで（頼む前に）利用者が判断待ちに戻した件は、頼む直前に読み直した「戻した時刻」で判定する
+write([add(17, t0 - 3600)])
+stale = ib.records()[0][17]
+moved_t = time.time() - 600
+append({"op": "reopen", "at": moved_t, "n": 17, "note": "まだ"})
+ev_before = dt.datetime.fromtimestamp(moved_t - 1200, JST).strftime("%Y-%m-%d %H:%M")
+ANSWERS[17] = vl("done", dt.datetime.fromtimestamp(t0 - 4000, JST).strftime("%Y-%m-%d %H:%M"), ev_before)
+e = hc.check_one(stale)
+check("並びに入れたあとで戻された件は、頼む直前に読み直した戻した時刻で判定する（戻す前の根拠では片づけない）",
+      (e["verdict"], e["closed"], 17 in ib.records()[1], "判断待ちに戻した時刻: " in ASKED[-1][2]), ("unknown", False, False, True))
+append({"op": "done", "at": time.time(), "n": 17, "by": "user", "note": ""})
+n_ask = len(ASKED)
+e = hc.check_one(stale)
+check("頼む直前に読み直して、もう判断待ちでなければ頼まない（skip）", (e["verdict"], len(ASKED) - n_ask), ("skip", 0))
 sessions = [s_ for _, s_, _ in ASKED]
-check("1 件ごとに新しい会話（会話の名前が毎回違う）", (len(sessions), len(set(sessions)), all(x.startswith("vl-check-") for x in sessions)), (5, 5, True))
+check("1 件ごとに新しい会話（会話の名前が毎回違う）", (len(sessions), len(set(sessions)), all(x.startswith("vl-check-") for x in sessions)), (6, 6, True))
 ANSWERS[16] = vl("done", orig, ev)
 before = len(CMDS)
 e = hc.check_one(add(16, t0), dry=True)
@@ -238,7 +262,7 @@ ASKED.clear()
 ANSWERS.clear()
 READS = []
 SENT = {"rows": [], "partial": False}
-hc.sent_reader = lambda since: (READS.append(since), SENT)[1]
+hc.sent_reader = lambda since, project="", limit=200: (READS.append(since), SENT)[1]
 write([add(41, day - 86400, project="shop"), add(42, day - 86400, project="ops"), add(43, day - 86400, project="shop")])
 st0 = {"day": "2026-11-20", "count": 0, "morning": "2026-11-20", "sent_seen": day + 3600, "queue": [],
        "items": {"41": {"at": day + 7200, "verdict": "open"}, "43": {"at": day + 3 * 3600, "verdict": "open"}}, "log": []}
@@ -252,7 +276,23 @@ SENT.update(rows=[{"project": "ops", "at": day + 11 * 3600, "thread": "z"}], par
 hc.tick(day + 11.5 * 3600)
 check("…読み残しがあった回は、読んだ時刻を進めない（次の回にもう一度読む）。見つけた分は頼む",
       ([n for n, _, _ in ASKED], state()["sent_seen"]), ([41, 42], day + 2.5 * 3600))
-hc.sent_reader = lambda since: (_ for _ in ()).throw(TimeoutError())
+# 上限で切られた（more）ときは、案件ごとにいちばん新しい 1 件を読み直す
+CALLS = []
+
+
+def reader_more(since, project="", limit=200):
+    CALLS.append((project, limit))
+    if not project:
+        return {"rows": [{"project": "shop", "at": day + 13 * 3600}], "more": 5, "projects": ["shop", "ops"], "partial": False}
+    return {"rows": [{"project": project, "at": day + 13 * 3600 + (60 if project == "ops" else 0)}], "more": 0, "partial": False}
+hc.sent_reader = reader_more
+ASKED.clear()
+hc._save({**state(), "items": {"41": {"at": day + 12.5 * 3600, "verdict": "open"}, "42": {"at": day + 12.5 * 3600, "verdict": "open"},
+                                "43": {"at": day + 12.5 * 3600, "verdict": "open"}}, "queue": []})
+hc.tick(day + 13.5 * 3600)
+check("出ていく側: 上限で切られたら、案件ごとにいちばん新しい 1 件を読み直し、切られた案件（ops）も落とさない",
+      (CALLS, sorted(n for n, _, _ in ASKED)), ([("", 200), ("shop", 1), ("ops", 1)], [41, 42]))
+hc.sent_reader = lambda since, project="", limit=200: (_ for _ in ()).throw(TimeoutError())
 check("…出ていく側を読めなくても、見回りは止まらない", isinstance(hc.tick(day + 12 * 3600), list), True)
 hc.sent_reader = None
 

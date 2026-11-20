@@ -387,8 +387,8 @@ def run(page, who):
     page.click("#ibAi .aiClosed button")
     back = wait(lambda: cards(page) == ["処理時間のアラーム", TITLE1] or cards(page) == [TITLE1, "処理時間のアラーム"], 6)
     check(f"{who} 「戻す」で判断待ちに戻し（コンテナの中の道具）、畳みから外して一覧に戻す",
-          (back, page.locator("#ibAi").count(), CMDS[-1][-4:], "[2] を判断待ちに戻しました" in page.text_content("#sitBody")),
-          (True, 0, ["reopen", "2", "--note", ib.REOPEN_NOTE], True))
+          (back, page.locator("#ibAi").count(), CMDS[-1][-6:-1], "[2] を判断待ちに戻しました" in page.text_content("#sitBody")),
+          (True, 0, ["reopen", "2", "--note", ib.REOPEN_NOTE, "--expect-ai-at"], True))
     # 通知・リンクの場所
     seed()
     page.goto(BASE + "/#i=3")

@@ -866,6 +866,22 @@ with L5.open("a") as f:  # 手で書かれた取り消しの行（利用者の�
     f.write(json.dumps({"op": "undo", "at": 2e9, "n": 2}) + "\n")
 check("undo: 利用者の印は取り消せない（道具は断り、手で書かれた行も効かない）",
       (run5("undo", "2").returncode, "利用者が済んだ件" in run5("open").stdout), (1, False))
+run5("add", "--source", "mail", "--id", "k4", "--kind", "judge", "--title", "前提を照らす件")
+check("前提: --expect-moved が合わない（戻した印が替わった・もう済）なら、書かずに終わりの数 3。形の違う値は 2",
+      (run5("done", "4", "--by", "ai", "--note", "x", "--expect-moved", "123.5").returncode, run5("checked", "4", "--result", "open", "--expect-moved", "1.0").returncode,
+       run5("done", "4", "--by", "ai", "--note", "x", "--expect-moved", "abc").returncode, "前提を照らす件" in run5("open").stdout,
+       run5("done", "4", "--by", "ai", "--note", "x", "--expect-moved", "none").returncode, run5("done", "4", "--by", "ai", "--note", "y", "--expect-moved", "none").returncode),
+      (3, 3, 2, True, 0, 3))
+ai_at = [json.loads(l) for l in L5.read_text().splitlines()][-1]["at"]
+check("前提: reopen --expect-ai-at は、AI が付けた、その時刻の済の印のときだけ戻す",
+      (run5("reopen", "4", "--expect-ai-at", repr(ai_at + 1)).returncode, run5("reopen", "4", "--expect-ai-at", repr(ai_at)).returncode, "前提を照らす件" in run5("open").stdout),
+      (3, 0, True))
+with L5.open("a") as f:  # 手で書かれた行: 追加の行に確かめた結果を混ぜる・結果が文字でない
+    f.write(json.dumps({"op": "add", "n": 50, "at": 1e9, "source": "mail", "id": "kx", "project": "p", "kind": "judge", "title": "混ぜた追加", "checked": {"result": "open"}}) + "\n")
+    f.write(json.dumps({"op": "checked", "n": 4, "at": 2e9, "result": ["open"], "note": "x"}) + "\n")
+r = run5("open", "--all")
+check("checked: 追加の行の確かめた結果は使わず、結果が文字でない行は飛ばす（一覧の読み取りを止めない）",
+      (r.returncode, "混ぜた追加" in r.stdout, r.stdout.split("混ぜた追加", 1)[1].split("\n[", 1)[0].count("確かめた:")), (0, True, 0))
 check("指示文: 自分の誤りは undo（利用者の訂正の reopen と分ける）",
       ("`vl_items.py undo <番号> --note \"<気づいた理由>\"` で取り消します" in hsec, "あなたの取り消しには使いません" in hsec), (True, True))
 ok = sum(r[1] for r in results)

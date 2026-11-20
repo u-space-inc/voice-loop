@@ -7,9 +7,12 @@
   - きっかけ: 出ていく側（案件の Teams の控え。sent_log）に新しい当方の投稿が出た案件の判断待ちと、毎朝 MORNING_HOUR 時に、
     まだ確かめていない（RECHECK_GAP より前に確かめた）判断待ち。動くのは HOURS の間だけ
   - 上限: 1 日 CAP 件（Hermes に頼んだ数。失敗も数える）。越えた分は次の日に回す（2026-11-20 利用者が 10 件に決めた）
-  - 片づけ: 答えが done で、根拠の時刻が元の時刻（--sent か、Hermes が答えた元の時刻を記録の時刻で挟んだもの。判断待ちに戻した
-    件は戻した時刻）より後で、いまより先でないときだけ、本体がコンテナの中の記録の道具に --by ai と根拠で印を付けさせる。
-    頼んでから印を付けるまでに、利用者が片づけた・判断待ちに戻した件には付けない。まだ・確かめきれない件は checked で結果を残す
+  - 片づけ: 答えが done で、根拠の場所と要約があり、根拠の時刻が元の時刻（--sent、Slack は記録の id の ts、ほかは Hermes が答えた
+    元の時刻を記録の時刻で挟んだもの。判断待ちに戻した件は戻した時刻）より後で、いまより先でないときだけ、本体がコンテナの中の
+    記録の道具に --by ai と根拠で印を付けさせる。頼む直前に記録を読み直し、そのときの「戻した印」を --expect-moved で渡して、
+    道具が書き込みの錠の中で照らす（確かめている間に利用者が片づけた・戻した件には付けない）。まだ・確かめきれない件は checked で残す
+  - 元の時刻を Hermes の答えに頼る件があるのは、勘違いへの備えで、悪意への守りではない（Hermes はいまも記録の道具で --by ai の印を
+    付けられる。見張りの回と同じく、決まりで守る。2026-11-13 利用者の決定）
   - 守り: Hermes の答えは引用データ（外の文面に乗せられているかもしれない）。本体がするのは、決めた形を機械で確かめたうえでの
     片づけ（受け箱に「AI が片づけた」として 1 日出て、利用者が「戻す」で戻せる）と、結果のメモだけ。文は字数で切り、argv で渡す
   - 動かすのは config.env の VL_HERMES_CHECK=on のときだけ（答え合わせのあとで本番に入れる）
@@ -157,7 +160,7 @@ def ask(text: str, session: str) -> str:
 
 def parse(text: str) -> dict | None:
     """答えの最後の VL_CHECK の行を読む。形が違えば None。文は字数で切り、1 行にそろえる。"""
-    for line in reversed((text or "").splitlines()):
+    for line in reversed(text.splitlines() if isinstance(text, str) else []):
         line = line.strip().strip("`").strip()
         if not line.startswith("VL_CHECK "):
             continue
@@ -165,7 +168,7 @@ def parse(text: str) -> dict | None:
             d = json.loads(line[len("VL_CHECK "):])
         except (ValueError, RecursionError):
             return None
-        if not isinstance(d, dict) or d.get("verdict") not in VERDICTS:
+        if not isinstance(d, dict) or not isinstance(d.get("verdict"), str) or d["verdict"] not in VERDICTS:
             return None
         return {"verdict": d["verdict"], "orig_at": d.get("orig_at") if isinstance(d.get("orig_at"), str) else "",
                 "where": _clip(d.get("where"), LIM["where"]), "at": d.get("at") if isinstance(d.get("at"), str) else "",
@@ -179,11 +182,16 @@ def judge(r: dict, ans: dict | None, now: float) -> tuple[str, str]:
         return "unknown", "答えの形が合わない"
     if ans["verdict"] != "done":
         return ans["verdict"], ""
+    if not ans["where"] or not ans["quote"]:
+        return "unknown", "根拠の場所か要約が無い"
     ev = _ts(ans["at"])
     if ev is None:
         return "unknown", "根拠の時刻が読めない"
+    slack = _slack_ts(r)
     if vl_items._num(r.get("sent")):
         base = r["sent"]
+    elif slack is not None:
+        base = slack
     else:
         orig = _ts(ans["orig_at"])
         if orig is None or not (r["at"] - ORIG_BEFORE <= orig <= r["at"] + 300):
@@ -193,9 +201,18 @@ def judge(r: dict, ans: dict | None, now: float) -> tuple[str, str]:
         base = max(base, r["moved"])
     if ev <= base:
         return "unknown", "根拠が元の時刻（戻した件は戻した時刻）より前"
-    if ev > now + 300:
+    if ev > now:
         return "unknown", "根拠の時刻がいまより先"
     return "done", ""
+
+
+def _slack_ts(r: dict) -> float | None:
+    """Slack の記録の id（<チャンネル>/<ts>）の ts。発言の時刻そのもの（Hermes の答えに頼らない）。"""
+    if r.get("source") != "slack" or not isinstance(r.get("id"), str):
+        return None
+    m = re.fullmatch(r"[A-Z0-9]{1,40}/([0-9]{1,12})\.[0-9]{1,12}", r["id"])
+    t = float(m.group(1)) if m else None
+    return t if t is not None and vl_items._num(t) else None
 
 
 def _note(ans: dict | None, reason: str) -> str:
@@ -212,34 +229,44 @@ def _records():
 
 
 def check_one(r: dict, now: float | None = None, dry: bool = False) -> dict:
-    """1 件を確かめる。dry なら印を付けない（答え合わせ）。結果の 1 件（日誌の形）を返す。"""
-    now = time.time() if now is None else now
+    """1 件を確かめる。dry なら、渡された記録のまま確かめ、印を付けない（答え合わせ）。
+    そうでなければ、頼む直前に記録を読み直し、まだ判断待ちの件だけを、そのときの中身と「戻した印」で確かめる。
+    印・メモは --expect-moved で、そのときの「戻した印」を書き込みの錠の中で照らさせる。結果の 1 件（日誌の形）を返す。"""
     n, started = r["n"], time.time()
     e = {"n": n, "at": started, "verdict": "unknown", "said": "", "where": "", "ev_at": "", "quote": "", "reason": "", "closed": False}
+    if not dry:
+        got = _records()
+        cur = got[0].get(n) if got else None
+        if not got or not cur or n in got[1] or cur.get("kind") != "judge":
+            e.update(verdict="skip", reason="もう判断待ちではない・読めない")
+            return e
+        r = cur
+    expect = repr(float(r["moved"])) if vl_items._num(r.get("moved")) else "none"
     try:
         text = ask(prompt_for(r), f"vl-check-{n}-{os.urandom(3).hex()}")
     except Exception as x:  # 接続・時間切れ・形の違う応答
         e.update(verdict="error", reason=_clip(str(x), LIM["reason"]))
         return e
-    ans = parse(text)
-    v, reason = judge(r, ans, time.time())
+    try:
+        ans = parse(text)
+        v, reason = judge(r, ans, time.time())
+    except Exception as x:  # 答えの形が思いがけないものでも、確かめきれないとして残す
+        ans, v, reason = None, "unknown", _clip(f"答えを読めない（{type(x).__name__}）", LIM["reason"])
     e.update(verdict=v, reason=reason, said=ans["verdict"] if ans else "",
              where=ans["where"] if ans else "", ev_at=ans["at"] if ans else "", quote=ans["quote"] if ans else "")
     if dry:
         return e
-    got = _records()
-    cur = got[0].get(n) if got else None
-    if not got or not cur or n in got[1] or cur.get("kind") != "judge" or (vl_items._num(cur.get("moved")) and cur["moved"] > started):
-        e["reason"] = e["reason"] or "確かめている間に片づいた・戻された・読めない"
-        return e
     if v == "done":
-        why = hermes_inbox._run(hermes_inbox.tool_command("done", str(n), "--by", "ai", "--note", "本体の確かめ（新しい会話）: " + _note(ans, "")))
+        why = hermes_inbox._run(hermes_inbox.tool_command("done", str(n), "--by", "ai", "--note", "本体の確かめ（新しい会話）: " + _note(ans, ""),
+                                                          "--expect-moved", expect))
         after = _records()
         e["closed"] = not why and bool(after) and n in after[1] and after[1][n].get("by") == "ai"
         if not e["closed"]:
             e["reason"] = _clip(why or "記録に印が見当たりません", LIM["reason"])
     else:
-        hermes_inbox._run(hermes_inbox.tool_command("checked", str(n), "--result", v, "--note", _note(ans, reason)))
+        why = hermes_inbox._run(hermes_inbox.tool_command("checked", str(n), "--result", v, "--note", _note(ans, reason), "--expect-moved", expect))
+        if why:
+            e["reason"] = _clip(why, LIM["reason"])
     return e
 
 
@@ -264,8 +291,13 @@ def tick(now: float | None = None) -> list[dict]:
         queue = [n for n in st["queue"] if n in open_]
         # 出ていく側に新しい当方の投稿が出た案件の判断待ち（その投稿より前に確かめた件だけ）
         if sent_reader is not None:
+            since = st["sent_seen"] or now - 86400
             try:
-                res = sent_reader(st["sent_seen"] or now - 86400)
+                res = sent_reader(since)
+                if isinstance(res, dict) and res.get("more"):  # 上限で切られた: 案件ごとに、いちばん新しい 1 件を読み直す（切られた案件を落とさない）
+                    per = [sent_reader(since, p, 1) for p in res.get("projects") or [] if isinstance(p, str)]
+                    res = {"rows": [x for q in per if isinstance(q, dict) for x in (q.get("rows") or [])],
+                           "partial": any(isinstance(q, dict) and (q.get("partial") or q.get("error")) for q in per) or res.get("partial")}
             except Exception:
                 res = None
             rows = res.get("rows") if isinstance(res, dict) and isinstance(res.get("rows"), list) else []
@@ -292,6 +324,8 @@ def tick(now: float | None = None) -> list[dict]:
             with _lock:  # 頼む前に数を残す（途中で止まっても、上限を越えて頼まない）
                 _save({**st, "queue": queue})
             e = check_one(open_[n], now)
+            if e["verdict"] == "skip":  # 頼む前に読み直したら、もう判断待ちではなかった（頼んでいないので数に入れない）
+                st["count"] -= 1
             out.append(e)
             st["items"][str(n)] = {"at": e["at"], "verdict": e["verdict"]}
             st["log"] = (st["log"] + [e])[-LOG_MAX:]

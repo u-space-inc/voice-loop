@@ -624,13 +624,15 @@ async def api_inbox_reopen(body: dict):
         if got is None:
             return JSONResponse({"ok": False, "reason": "unreadable"})
         items, done = got
-        if n not in items or n not in done or done[n].get("by") != "ai":
+        if n not in items or n not in done or done[n].get("by") != "ai" or not vl_items._num(done[n].get("at")):
             return JSONResponse({"ok": False, "reason": "gone"})
+        ai_at, moved_before = float(done[n]["at"]), items[n].get("moved")
     _done_lock = _done_lock or asyncio.Lock()
-    async with _done_lock:
-        why = await asyncio.to_thread(_run, tool_command("reopen", str(n), "--note", REOPEN_NOTE))
+    async with _done_lock:  # 道具が、書き込みの錠の中で「AI が付けた、その済の印」のままかを照らす（途中で付いた利用者の印は外さない）
+        why = await asyncio.to_thread(_run, tool_command("reopen", str(n), "--note", REOPEN_NOTE, "--expect-ai-at", repr(ai_at)))
         after = await asyncio.to_thread(records)
-    if not why and (after is None or n in after[1]):
+    cur = after[0].get(n) if after else None
+    if not why and not (cur and cur.get("kind") == "judge" and n not in after[1] and cur.get("moved") != moved_before):
         why = "判断待ちに戻ったことを確かめられませんでした"
     if why:
         print(f"[inbox] AI の片づけを戻せませんでした [{n}]: {why}", flush=True)

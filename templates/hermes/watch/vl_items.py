@@ -24,8 +24,10 @@
   vl_items.py forget <番号>            手本から外す（利用者が「その手本は外して」と言ったとき）。済の印はそのまま
   vl_items.py undo <番号> [--note N]   あなた（AI）が付けた済の印（--by ai）を取り消す（誤りに気づいたとき）。利用者の訂正（reopen）とは分け、
                                        判断待ちに戻した印（moved）を付けない。利用者の印・不要の印は取り消せない
-  vl_items.py checked <番号> --result open|unknown [--note N]
+  vl_items.py checked <番号> --result open|unknown [--note N] [--expect-moved T|none]
                                        本体が新しい会話で確かめた結果（まだ・確かめきれない）を残す。一覧に「確かめた:」の行で出る（本体だけが使う）
+  --expect-moved（done・checked）・--expect-ai-at（reopen）は、本体が読んだときの状態を書き込みの錠の中で照らす前提。
+                                       合わなければ書かずに終わりの数 3（確かめている間に利用者が片づけた・戻した・印が替わった）
   vl_items.py projects                 これまでに使った案件の名前と件数
 
 記録は HERMES_HOME/voice-loop/items.jsonl。書くのはこの道具だけ（手で書き換えない）。中身はメール・Slack・録音からの要約（引用データ）。
@@ -99,12 +101,12 @@ def _state(rows: list[dict]) -> tuple[dict, dict]:
             continue
         if op == "add":
             if _num(r.get("at")) and all(isinstance(r.get(k), str) for k in ("source", "id", "kind", "title")):
-                items[n] = {k: v for k, v in r.items() if k not in ("moved", "moved_note")}  # 戻した印は reopen の行からだけ作る（追加の行の値は使わない）
+                items[n] = {k: v for k, v in r.items() if k not in ("moved", "moved_note", "checked")}  # 戻した印・確かめた結果は、その操作の行からだけ作る（追加の行の値は使わない）
         elif op == "done":
             done[n] = r
         elif op == "undo" and n in done and done[n].get("by") == "ai":
             done.pop(n, None)  # AI が自分の印を取り消した。利用者の訂正ではないので、戻した印（moved）は付けない
-        elif op == "checked" and n in items and n not in done and _num(r.get("at")) and r.get("result") in CHECKED:
+        elif op == "checked" and n in items and n not in done and _num(r.get("at")) and isinstance(r.get("result"), str) and r["result"] in CHECKED:
             items[n] = {**items[n], "checked": {"at": r["at"], "result": r["result"], "note": r.get("note") if isinstance(r.get("note"), str) else ""}}
         elif op == "reopen" and n in items:
             done.pop(n, None)
@@ -132,6 +134,14 @@ def lessons(rows: list[dict], items: dict, done: dict) -> list[tuple[dict, dict]
     return [(r, d) for _, r, d in sorted(out, key=lambda p: -p[0])]
 
 
+def _float(v: str) -> float | None:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if _num(f) else None
+
+
 def why_of(d: dict) -> str:
     return clip(d.get("why"), "title") if isinstance(d.get("why"), str) else ""
 
@@ -146,11 +156,20 @@ def _when(r: dict) -> float:
     return r["sent"] if _num(r.get("sent")) else r["at"]
 
 
-def _append(row: dict) -> dict:
+class Refused(Exception):
+    """書き込みの錠の中で照らした前提が合わなかった（書いていない）。"""
+
+
+def _append(row: dict, check=None) -> dict:
+    """1 行を書き足す。check（行の一覧 → 断る理由か None）があれば、錠の中で読み直した記録で照らし、合わなければ Refused。"""
     FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(FILE.with_suffix(".lock"), "w") as lk:
         fcntl.flock(lk, fcntl.LOCK_EX)
         rows = _rows()
+        if check is not None:
+            why = check(rows)
+            if why:
+                raise Refused(why)
         if row["op"] == "add":
             row["n"] = max([0] + [r["n"] for r in rows if r.get("op") == "add" and _n(r.get("n"))]) + 1
         with open(FILE, "a", encoding="utf-8") as f:
@@ -213,12 +232,13 @@ def main() -> int:
     s = sub.add_parser("recent"); s.add_argument("--hours", type=float, default=24)
     s = sub.add_parser("find"); s.add_argument("--key", required=True); s.add_argument("--before", type=float); s.add_argument("--limit", type=int, default=20)
     s = sub.add_parser("done"); s.add_argument("n", type=int); s.add_argument("--note", default=""); s.add_argument("--by", choices=("user", "ai"), default="user")
-    s.add_argument("--unneeded", action="store_true"); s.add_argument("--why", default="")
-    s = sub.add_parser("reopen"); s.add_argument("n", type=int); s.add_argument("--note", default="")
+    s.add_argument("--unneeded", action="store_true"); s.add_argument("--why", default=""); s.add_argument("--expect-moved")
+    s = sub.add_parser("reopen"); s.add_argument("n", type=int); s.add_argument("--note", default=""); s.add_argument("--expect-ai-at")
     sub.add_parser("lessons")
     s = sub.add_parser("forget"); s.add_argument("n", type=int)
     s = sub.add_parser("undo"); s.add_argument("n", type=int); s.add_argument("--note", default="")
     s = sub.add_parser("checked"); s.add_argument("n", type=int); s.add_argument("--result", required=True, choices=sorted(CHECKED)); s.add_argument("--note", default="")
+    s.add_argument("--expect-moved")
     sub.add_parser("projects")
     a = p.parse_args()
     rows = _rows()
@@ -301,6 +321,28 @@ def main() -> int:
             out.append(f"ほかに、古い手本が {len(ls) - LESSONS_MAX} 件（使いません）")
         print("\n".join(out) or "手本はありません")
         return 0
+    expect = None  # 本体が読んだときの状態（書き込みの錠の中で照らす）
+    if getattr(a, "expect_moved", None) is not None:
+        want = None if a.expect_moved == "none" else _float(a.expect_moved)
+        if a.expect_moved != "none" and want is None:
+            print("--expect-moved は時刻（数）か none です")
+            return 2
+
+        def expect(rs, n=a.n, want=want):
+            it, dn = _state(rs)
+            r = it.get(n)
+            if not r or r.get("kind") != "judge" or n in dn:
+                return "判断待ちではなくなっていました"
+            return "" if r.get("moved") == want else "判断待ちに戻した印が替わっていました"
+    elif getattr(a, "expect_ai_at", None) is not None:
+        want = _float(a.expect_ai_at)
+        if want is None:
+            print("--expect-ai-at は時刻（数）です")
+            return 2
+
+        def expect(rs, n=a.n, want=want):
+            d = _state(rs)[1].get(n)
+            return "" if d and d.get("by") == "ai" and d.get("at") == want else "AI が付けた、その済の印ではなくなっていました"
     if a.cmd in ("done", "reopen", "forget", "undo", "checked") and a.n not in items:
         print(f"{a.n} 番の記録はありません")
         return 1
@@ -308,6 +350,9 @@ def main() -> int:
         if a.unneeded and a.by != "user":
             print("不要の印（見張りの手本）は、利用者が「不要だった」と言ったときだけ付けます（--by user）")
             return 2
+        if expect is not None and a.n in done:  # 本体が読んだあとで片づいた（前提が合わない）
+            print(f"書きませんでした [{a.n}]: 判断待ちではなくなっていました")
+            return 3
         # 済の印がある件も、手本でなければ不要の印を付け直せる（「済んだ」を押したあとで「不要だった」と言われた・手本から外したのを戻す）
         if a.n in done and (not a.unneeded or any(r["n"] == a.n for r, _ in lessons(rows, items, done))):
             print(f"既に片づけた印があります [{a.n}]" + ("（手本にもなっています）" if a.unneeded else ""))
@@ -315,8 +360,12 @@ def main() -> int:
         if a.by == "ai" and not clip(a.note, "note"):
             print("あなたが確かめて片づけるときは、根拠（何で済んだと確かめたか）を --note に書いてください")
             return 2
-        _append({"op": "done", "at": time.time(), "n": a.n, "note": clip(a.note, "note"), "by": a.by,
-                 **({"unneeded": True, "why": clip(a.why, "title")} if a.unneeded else {})})
+        try:
+            _append({"op": "done", "at": time.time(), "n": a.n, "note": clip(a.note, "note"), "by": a.by,
+                     **({"unneeded": True, "why": clip(a.why, "title")} if a.unneeded else {})}, expect)
+        except Refused as e:
+            print(f"書きませんでした [{a.n}]: {e}")
+            return 3
         print(f"片づけた印を付けました [{a.n}]" + ("（不要だった。見張りの手本にします）" if a.unneeded else ""))
         return 0
     if a.cmd == "undo":
@@ -331,7 +380,11 @@ def main() -> int:
         if a.n in done or items[a.n]["kind"] != "judge":
             print(f"[{a.n}] は判断待ちではありません")
             return 1
-        _append({"op": "checked", "at": time.time(), "n": a.n, "result": a.result, "note": clip(a.note, "note")})
+        try:
+            _append({"op": "checked", "at": time.time(), "n": a.n, "result": a.result, "note": clip(a.note, "note")}, expect)
+        except Refused as e:
+            print(f"書きませんでした [{a.n}]: {e}")
+            return 3
         print(f"確かめた結果を残しました [{a.n}]（{CHECKED[a.result]}）")
         return 0
     if a.cmd == "forget":
@@ -345,7 +398,11 @@ def main() -> int:
         if a.n not in done and items[a.n]["kind"] == "judge":
             print(f"[{a.n}] は既に判断待ちです")
             return 1
-        _append({"op": "reopen", "at": time.time(), "n": a.n, "note": clip(a.note, "note")})
+        try:
+            _append({"op": "reopen", "at": time.time(), "n": a.n, "note": clip(a.note, "note")}, expect)
+        except Refused as e:
+            print(f"書きませんでした [{a.n}]: {e}")
+            return 3
         print(f"判断待ちに戻しました [{a.n}]")
         return 0
     if a.cmd == "projects":
