@@ -164,6 +164,7 @@
   .ibCard .done { grid-row:1 / span 2; grid-column:2; border:1px solid #6b5a2a; border-radius:8px; background:none; color:var(--fg); font-size:12px; padding:7px 11px; }
   .ibSrc { background:#2a3248; color:var(--fg); border-radius:4px; padding:0 5px; font-size:10.5px; }
   .ibTag { color:#f0d98a; }
+  .ibNo { font-size:10px; opacity:.75; font-variant-numeric:tabular-nums; }  /* 記録の番号（ハブに「[番号] は…」と言うときの手がかり） */
   .ibFold > summary { font-size:12px; color:#c9b77a; cursor:pointer; padding:4px 0; }
   .ibFold > div { display:flex; flex-direction:column; gap:6px; margin-top:4px; }
   .ibFyi { padding:4px 2px; font-size:12px; overflow-wrap:anywhere; border-top:1px solid #2a2618; }
@@ -1371,7 +1372,7 @@ async function laterItem(it, key) {
 function itemCard(x) {
   const c = node('div', 'ibCard' + (Date.now() / 1000 - x.fresh < 6 * 3600 || x.back ? ' fresh' : ''));
   c.setAttribute('role', 'button'); c.tabIndex = 0; c.setAttribute('aria-label', `判断待ち ${x.n}: ${x.title} を開く`);
-  const meta = node('div', 'meta'); meta.append(srcTag(x), `${x.project} ・ ${ibStampOf(x)}`);
+  const meta = node('div', 'meta'); meta.append(srcTag(x), `${x.project} ・ ${ibStampOf(x)}`, node('span', 'ibNo', `[${x.n}]`));
   if (x.prepared) meta.appendChild(node('span', 'ibTag', '準備あり'));
   if (x.back) meta.appendChild(node('span', 'ibTag', 'あとでから戻った'));
   c.appendChild(meta); c.appendChild(node('div', 'title', x.title));
@@ -1461,7 +1462,7 @@ function inboxView(d) {
     det.appendChild(node('summary', null, `今日届いたもの（対応不要） ${d.fyi.length} 件`));
     const box = node('div');
     for (const x of d.fyi) {
-      const r = node('div', 'ibFyi'); const meta = node('div', 'meta'); meta.append(srcTag(x), `${x.project} ・ ${ibStampOf(x)}`);
+      const r = node('div', 'ibFyi'); const meta = node('div', 'meta'); meta.append(srcTag(x), `${x.project} ・ ${ibStampOf(x)}`, node('span', 'ibNo', `[${x.n}]`));
       r.appendChild(meta); r.appendChild(node('div', null, x.title)); if (x.prepared) r.appendChild(node('div', 'sitMeta', x.prepared)); box.appendChild(r);
     }
     det.appendChild(box); f.appendChild(det);

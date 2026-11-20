@@ -145,6 +145,9 @@ def run(page, who):
     check(f"{who} 見張りが止まった帯と直し方を出す", ("Teams の見張りが止まっています" in text, "左の「メンション」を選んだまま" in text), (True, True))
     check(f"{who} 判断待ちのカードを新しい順に出し、題は文字として出す（タグを解釈しない）",
           (cards(page), page.evaluate("window.__xss === undefined"), page.locator("#sitBody img").count()), ([TITLE1, "処理時間のアラーム"], True, 0))
+    check(f"{who} カードには記録の番号を小さく出す（今日の宛ての畳みの行にも）",
+          (page.eval_on_selector_all("#sitBody > .ibCard .meta .ibNo", "els => els.map(e => e.textContent)"),
+           page.eval_on_selector_all("#sitBody .ibFyi .meta .ibNo", "els => els.map(e => e.textContent)")), (["[1]", "[2]"], ["[4]"]))
     folds = page.eval_on_selector_all("#sitBody > details > summary", "els => els.map(e => e.textContent)")
     check(f"{who} 3 日より前・今日の宛て・その他は畳んで出す",
           [f.split("（")[0].split(" ")[0] for f in folds], ["3", "今日届いたもの", "その他"])
