@@ -250,6 +250,24 @@ S.MAX_BYTES = keep
 check("git: 受け取る量は上限まで。越えたら途中で止めて、何も返さない（上限の内なら返す）",
       (big_out, "枝にだけある行" in (S._git(G, "show", "--no-textconv", "chore/sync:./doc/" + S.LOG_NAME) or "")), (None, True))
 
+# 同じ版の控えは、枝がいくつあっても 1 度だけ読む。枝の thread/ の symlink は名前に入れない
+for i in range(5):
+    git("branch", f"same-{i}", "chore/sync")
+git("checkout", "-q", "chore/sync")
+(G / "doc/thread/2026-11-19_1801_out_リンク.md").symlink_to("/etc/hosts")
+git("add", "-A")
+git("commit", "-q", "-m", "link")
+git("checkout", "-q", "main")
+calls.clear()
+S.subprocess.Popen = spy
+fresh()
+r_same = S.sent(PROJ, project="repo", since=0)
+S.subprocess.Popen = real_popen
+shows = [a for a, _ in calls if a[a.index("--no-pager") + 1] == "show"]
+check("枝: 同じ版の控えは、枝がいくつあっても 1 度だけ読む（版の数だけ show）", (len(shows), len({a[-1] for a in shows})), (len({a[-1] for a in shows}), len({a[-1] for a in shows})))
+check("枝: 枝の thread/ の symlink は、控えのファイルの名前に入れない",
+      ("リンク" in [x.get("copy") for x in r_same["rows"]], "枝の控え" in [x.get("copy") for x in r_same["rows"]]), (False, True))
+
 # git を呼んでいる途中に案件のフォルダを別のリポジトリへの symlink に替えたら、枝の結果を捨てる
 OTHER = TMP / "other-repo"
 (OTHER / "doc").mkdir(parents=True)

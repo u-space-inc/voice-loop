@@ -31,7 +31,7 @@ MAX_LOGS = 5             # 1 つの案件で読む控えの数
 FIND_TTL = 300           # 控えの場所を探し直すまでの秒
 READ_TTL = 60            # 控えを読み直すまでの秒
 GIT_DAYS = 14            # 手元の枝のうち、最後のコミットがこの日数以内のものの控えも読む
-GIT_REFS = 12            # 1 つの案件で読む枝の数
+GIT_REFS = 60            # 1 つの案件で見る枝の数（枝ごとには控えの階層の一覧を 1 回だけ取り、同じ版の控え・thread/ は 1 度だけ読む）
 GIT_TIMEOUT = 5
 WALK_DIRS = 20000        # 1 回に探すフォルダの数の上限（置き場所の全案件で）
 BUDGET = 15              # 1 回の読み取りで、探す・読み直すのに使う秒の上限（越えたら残りは読まず、一部だと返す）
@@ -338,15 +338,33 @@ def _branches(root: Path, name: str, rel: tuple[str, ...], state: dict) -> list[
             state["partial"] = True
             break
         shas.append(sha)
+    blobs, trees = {}, {}  # 控えの版（blob）・thread/ の版（tree）→ 中身。同じ版は 1 度だけ読む
     for sha in shas:
         if time.monotonic() > state["deadline"]:
             state["partial"] = True
             break
-        text = _git(project, "show", "--no-textconv", f"{sha}:{rel_s}")
-        if text is None:
+        listing = _git(project, "ls-tree", "-z", sha, "--", rel_s.rsplit("/", 1)[0] + "/")  # 控えの階層の一覧（-z: 日本語の名前を引用符で包ませない）
+        blob = tree = None
+        for entry in (listing or "").split("\0"):
+            meta, _, path = entry.partition("\t")
+            f = meta.split(" ")
+            if len(f) != 3 or not re.fullmatch(r"[0-9a-f]{40,64}", f[2]):
+                continue
+            base = path.rsplit("/", 1)[-1]
+            if base == LOG_NAME and f[1] == "blob" and f[0] in ("100644", "100755"):
+                blob = f[2]
+            elif base == "thread" and f[1] == "tree":
+                tree = f[2]
+        if blob is None:
             continue
-        tree = _git(project, "ls-tree", "-z", "--name-only", sha, "--", rel_s.rsplit("/", 1)[0] + "/thread/") or ""  # -z: 日本語の名前を引用符で包ませない
-        out.append((text, [n.rsplit("/", 1)[-1] for n in tree.split("\0") if n]))
+        if blob not in blobs:
+            blobs[blob] = _git(project, "show", "--no-textconv", blob)
+        if tree and tree not in trees:
+            names = _git(project, "ls-tree", "-z", tree) or ""  # thread/ の中の通常のファイルの名前だけ（symlink・フォルダは除く）
+            trees[tree] = [e.partition("\t")[2] for e in names.split("\0")
+                           if e.partition("\t")[0].split(" ")[:2] in (["100644", "blob"], ["100755", "blob"])]
+        if blobs[blob] is not None:
+            out.append((blobs[blob], trees.get(tree, []) if tree else []))
     if not _same_dir(project, st):  # 呼んでいる間に案件のフォルダが入れ替わった。どのリポジトリを読んだか分からないので捨てる
         return []
     return out
