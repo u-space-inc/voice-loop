@@ -491,6 +491,28 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     check("道具の呼び出しが例外で止まっても、予約を外して一覧に戻し、理由を出す",
           (92 in ib.PENDING, 92 in ns(d), d.get("fail", {}).get("n"), "途中で止まりました" in d.get("fail", {}).get("why", "")), (False, True, 92, True))
     ib.FAIL.clear()
+    # 画面で付けた手本の中身（題・鍵・理由など）が、あとで書き換えられたら「ハブから」
+    write([add(93, at=NOW - 60, title="中身を変える件", key="alarm a@example.com x")])
+    post("/api/inbox/done", {"n": 93, "unneeded": "alarm"})
+    time.sleep(ib.UNDO + 0.6)
+    before_ui = {x["n"]: x["ui"] for x in get()["lessons"]}.get(93)
+    with ITEMS.open("a") as fh:  # 同じ番号の追加の行を書き足して、題と鍵を変える（印の行と時刻はそのまま）
+        fh.write(json.dumps(add(93, at=NOW - 60, title="中身を変えた件", key="alarm a@example.com y")) + "\n")
+    check("画面で付けた手本も、中身（題・鍵など）が書き換えられたら「ハブから」の扱い（番号と時刻だけで決めない）",
+          (before_ui, {x["n"]: x["ui"] for x in get()["lessons"]}.get(93)), (True, False))
+    # 記録が大きくて新しい側だけを読んだときは、手本も一部。そのことを出し、出ていない手本も「外す」は記録の道具に任せる
+    keep_max = ib.ITEMS_MAX
+    ib.ITEMS_MAX = 20000
+    big = [add(94, at=NOW - 86400, title="古い手本"), {"op": "done", "at": NOW - 86000, "n": 94, "by": "user", "unneeded": True, "why": ""}]
+    big += [add(1000 + i, kind="info", at=NOW - 3600, title="埋め" * 20) for i in range(200)]
+    write(big)
+    d = get()
+    CMDS.clear()
+    r = post("/api/inbox/forget", {"n": 94}).json()
+    ib.ITEMS_MAX = keep_max
+    check("新しい側だけを読んだら、手本が一部であることを出し、出ていない手本の「外す」も記録の道具に任せる（見張りは全部を使うので、外せなくしない）",
+          (d["lessons_partial"], 94 in [x["n"] for x in d["lessons"]], r.get("ok"), [c[-2:] for c in CMDS]), (True, False, True, [["forget", "94"]]))
+    check("…上限より小さい記録では、手本は全部（一部の印は出さない）", get()["lessons_partial"], False)
 
 # ---------- 通知を押したときに開く場所 ----------
 PAY = []

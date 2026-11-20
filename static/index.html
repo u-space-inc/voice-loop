@@ -1487,7 +1487,7 @@ function inboxView(d) {
   return f;
 }
 // 見張りの手本: 「不要だった」とした記録。見張りの回は、同じ種類の知らせを判断待ちにせず「届いたもの（対応不要）」にする。「外す」で手本から外す（済の印はそのまま）
-function lessonList(ls, more) {
+function lessonList(ls, more, partial = false) {
   const f = document.createDocumentFragment();
   f.appendChild(node('h4', null, `見張りの手本（不要だった ${ls.length} 件）— 同じ種類の知らせは、判断待ちにせず「今日届いたもの（対応不要）」に入れます。違えば「外す」。この画面で押していないもの（ハブに言ったもの）には「ハブから」と出ます`));
   for (const x of ls) {
@@ -1508,6 +1508,7 @@ function lessonList(ls, more) {
     f.appendChild(r);
   }
   if (more) f.appendChild(node('div', 'sitMeta', `ほかに古い手本が ${more} 件あります（見張りは新しい ${ls.length} 件だけを使います）`));
+  if (partial) f.appendChild(node('div', 'sitMeta bad', '記録が大きいので、新しい側だけから手本を並べています。見張りは、ここに出ていない手本も使っていることがあります（ハブに「手本を見せて」と言えば全部を読み、「[番号] の手本を外して」で外せます）'));
   return f;
 }
 // 受け箱と「その他」（Hermes の知らせ・学んだこと・手順の書き足し・会話を新しく）を描く。読み直しは loadSituation
@@ -1563,7 +1564,7 @@ function renderSit() {
     }
   }
   const lessons = ib !== FAILED && ib.on && Array.isArray(ib.lessons) ? ib.lessons : [];
-  if (lessons.length) other.appendChild(lessonList(lessons, ib.lessons_more || 0));
+  if (lessons.length || (ib !== FAILED && ib.lessons_partial)) other.appendChild(lessonList(lessons, ib.lessons_more || 0, !!ib.lessons_partial));
   const asking = h !== FAILED && h.on && (h.items.length || h.unreadable || h.problem);
   if (asking) {
     other.appendChild(node('h4', null, `自動で当てていない手順の書き足し（Hermes・${h.items.length}）— 今日の上限を超えた分は次の日に自動で当てます。採ると、いま当てます`));

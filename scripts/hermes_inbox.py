@@ -10,8 +10,9 @@
     押してから UNDO 秒は本体の手元に置くだけで（「戻す」なら何もしない）、そのあとで付ける。付けられなければ一覧に戻し、画面に知らせる
   - 「不要だった」（0.33.0）は、「済んだ」と同じ道に --unneeded と理由を足す。その記録は見張りの手本になる（見張りの回は、同じ種類の知らせを
     判断待ちにせず fyi にする。下げるのは fyi まで）。理由は本体が決めた選び方だけ。手本は「学んだこと」に並べ、「外す」で外す（forget。同じ道）。
-    置き場は Hermes が書けるので、手本の行は偽れる。画面で押して付いた印（番号と、その印の時刻）は本体の状態フォルダに覚え、
-    それと合わない手本には「ハブから」と出す（画面で押していない手本に気づけるように）
+    置き場は Hermes が書けるので、手本の行は偽れる。画面で押して付いた印（番号と、その印の時刻と、手本の中身（口・id・案件・題・鍵・理由）の
+    指紋）は本体の状態フォルダに覚え、それと合わない手本には「ハブから」と出す（画面で押していない手本・あとで中身を書き換えた手本に気づけるように）。
+    記録が大きくて新しい側だけを読んだときは、手本も新しい側の分だけになる（見張りは全部を使う）。そのことを画面に出し、「外す」は記録の道具に任せる
   - 「あとで」は本体の状態フォルダ（Hermes が書けない側）に覚える
   - 件への返信は、ハブへのふつうの発言として送る（hub_hermes が返信の前置きを付ける）。返信の台帳に載るので、承認に答える・閉じるには使えない
 記録の読み方（片づけた印・戻した印・3 日の区切り）は、見張りの道具（templates/hermes/watch/vl_items.py）の関数をそのまま使う。
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import hashlib
 import importlib.util
 import json
 import os
@@ -217,24 +219,32 @@ def _save_later(m: dict[int, tuple[float, float]]):
 
 
 # ---------- 画面で付けた手本 ----------
-def _ui_lessons() -> dict[int, float]:
+def lesson_sig(r: dict, d: dict) -> str:
+    """手本の中身の指紋（見張りが照らすのに使うもの: 口・id・案件・題・照合の鍵と、不要の理由）。記録の値のまま（切らずに）数える。"""
+    keep = [r.get(k) for k in ("source", "id", "project", "title", "key")] + [d.get("why")]
+    return hashlib.sha256(json.dumps(keep, ensure_ascii=False, default=str).encode()).hexdigest()
+
+
+def _ui_lessons() -> dict[int, tuple[float, str]]:
+    """番号 → (その印の時刻, 手本の中身の指紋)。"""
     try:
         d = json.loads(LESSON_FILE.read_text()) if LESSON_FILE.is_file() else {}
     except (OSError, ValueError, RecursionError):
         d = {}
     raw = d.get("ui") if isinstance(d, dict) and isinstance(d.get("ui"), dict) else {}
-    return {int(k): float(v) for k, v in raw.items() if isinstance(k, str) and k.isdigit() and vl_items._num(v)}
+    return {int(k): (float(v["at"]), v["sig"]) for k, v in raw.items()
+            if isinstance(k, str) and k.isdigit() and isinstance(v, dict) and vl_items._num(v.get("at")) and isinstance(v.get("sig"), str)}
 
 
-def _mark_ui_lesson(n: int, at: float):
+def _mark_ui_lesson(n: int, at: float, sig: str):
     """画面で押して付いた不要の印を覚える（同じ番号は新しい印で上書き。古い順に LESSON_KEEP 件を超えた分は捨てる）。"""
     with _lock:
         m = _ui_lessons()
-        m[n] = at
-        m = dict(sorted(m.items(), key=lambda p: p[1])[-LESSON_KEEP:])
+        m[n] = (at, sig)
+        m = dict(sorted(m.items(), key=lambda p: p[1][0])[-LESSON_KEEP:])
         LESSON_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp = LESSON_FILE.with_name(LESSON_FILE.name + ".tmp")
-        tmp.write_text(json.dumps({"ui": {str(k): v for k, v in m.items()}}))
+        tmp.write_text(json.dumps({"ui": {str(k): {"at": v[0], "sig": v[1]} for k, v in m.items()}}))
         tmp.chmod(0o600)
         tmp.replace(LESSON_FILE)
 
@@ -328,9 +338,10 @@ def inbox(now: float | None = None) -> dict:
     with _lock:
         ui = _ui_lessons()
     out["lessons"] = [{k: v for k, v in shape(r).items() if k in ("n", "source", "project", "title")}
-                      | {"why": vl_items.why_of(d), "at": float(d["at"]), "ui": ui.get(r["n"]) == d["at"]}  # 画面で押して付いた、その印か
+                      | {"why": vl_items.why_of(d), "at": float(d["at"]), "ui": ui.get(r["n"]) == (d["at"], lesson_sig(r, d))}  # 画面で押して付いた、その印と中身か
                       for r, d in ls[:vl_items.LESSONS_MAX]]
     out["lessons_more"] = max(0, len(ls) - vl_items.LESSONS_MAX)
+    out["lessons_partial"] = bool(read.get("trunc"))  # 新しい側だけを読んだ（それより前に付けた手本は、ここに出ていない。見張りは使う）
     out["fyi"] = sorted(out["fyi"], key=lambda x: -x["when"])[:FYI_MAX]
     return out
 
@@ -397,16 +408,19 @@ def run_done(n: int, why: str | None = None) -> str:
             return "記録に不要の印が見当たりません（Hermes の置き場の vl_items.py が古いかもしれません）"
         if vl_items._num(d.get("at")):
             try:  # 覚えられなくても、付いた印はそのまま（その手本は「ハブから」と出る）。片づけの成否には混ぜない
-                _mark_ui_lesson(n, d["at"])
+                _mark_ui_lesson(n, d["at"], lesson_sig(got[0][n], d))
             except (OSError, ValueError, TypeError) as e:
                 print(f"[inbox] 画面で付けた手本を覚えられませんでした [{n}]: {type(e).__name__}", flush=True)
     return ""
 
 
-def _lesson_ns() -> set[int] | None:
+def _lesson_ns() -> tuple[set[int] | None, bool]:
+    """(手本の番号, 新しい側だけを読んだか)。読めなければ (None, False)。新しい側だけなら、手本は一部（見張りの道具は全部を読む）。"""
     info: dict = {}
     got = records(info)
-    return None if got is None else {r["n"] for r, _ in vl_items.lessons(info.get("rows") or [], *got)}
+    if got is None:
+        return None, False
+    return {r["n"] for r, _ in vl_items.lessons(info.get("rows") or [], *got)}, bool(info.get("trunc"))
 
 
 def run_forget(n: int) -> str:
@@ -414,7 +428,7 @@ def run_forget(n: int) -> str:
     err = _run(tool_command("forget", str(n)))
     if err:
         return err
-    ls = _lesson_ns()
+    ls, _ = _lesson_ns()
     return "" if ls is not None and n not in ls else "手本から外れたことを確かめられませんでした"
 
 
@@ -545,10 +559,10 @@ async def api_inbox_forget(body: dict):
     n = _num_of(body)
     if n is None:
         return JSONResponse({"ok": False, "reason": "bad_request"}, status_code=400)
-    ls = await asyncio.to_thread(_lesson_ns)
+    ls, partial = await asyncio.to_thread(_lesson_ns)
     if ls is None:
         return JSONResponse({"ok": False, "reason": "unreadable"})
-    if n not in ls:
+    if n not in ls and not partial:  # 新しい側だけを読んだときは、出ていない手本かもしれないので、記録の道具に任せる（手本でなければ道具が断る）
         return JSONResponse({"ok": False, "reason": "gone"})
     _done_lock = _done_lock or asyncio.Lock()
     async with _done_lock:
