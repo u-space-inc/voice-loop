@@ -344,8 +344,11 @@ def _branches(root: Path, name: str, rel: tuple[str, ...], state: dict) -> list[
             state["partial"] = True
             break
         listing = _git(project, "ls-tree", "-z", sha, "--", rel_s.rsplit("/", 1)[0] + "/")  # 控えの階層の一覧（-z: 日本語の名前を引用符で包ませない）
+        if listing is None:  # 時間切れ・量の上限・失敗（空の一覧は "" で返る）。この枝は読めなかった
+            state["partial"] = True
+            continue
         blob = tree = None
-        for entry in (listing or "").split("\0"):
+        for entry in listing.split("\0"):
             meta, _, path = entry.partition("\t")
             f = meta.split(" ")
             if len(f) != 3 or not re.fullmatch(r"[0-9a-f]{40,64}", f[2]):
@@ -360,11 +363,15 @@ def _branches(root: Path, name: str, rel: tuple[str, ...], state: dict) -> list[
         if blob not in blobs:
             blobs[blob] = _git(project, "show", "--no-textconv", blob)
         if tree and tree not in trees:
-            names = _git(project, "ls-tree", "-z", tree) or ""  # thread/ の中の通常のファイルの名前だけ（symlink・フォルダは除く）
-            trees[tree] = [e.partition("\t")[2] for e in names.split("\0")
+            names = _git(project, "ls-tree", "-z", tree)  # thread/ の中の通常のファイルの名前だけ（symlink・フォルダは除く）
+            if names is None:
+                state["partial"] = True
+            trees[tree] = [e.partition("\t")[2] for e in (names or "").split("\0")
                            if e.partition("\t")[0].split(" ")[:2] in (["100644", "blob"], ["100755", "blob"])]
-        if blobs[blob] is not None:
-            out.append((blobs[blob], trees.get(tree, []) if tree else []))
+        if blobs[blob] is None:  # 控えの中身を読めなかった
+            state["partial"] = True
+            continue
+        out.append((blobs[blob], trees.get(tree, []) if tree else []))
     if not _same_dir(project, st):  # 呼んでいる間に案件のフォルダが入れ替わった。どのリポジトリを読んだか分からないので捨てる
         return []
     return out

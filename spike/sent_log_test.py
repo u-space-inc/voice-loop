@@ -268,6 +268,17 @@ check("枝: 同じ版の控えは、枝がいくつあっても 1 度だけ読�
 check("枝: 枝の thread/ の symlink は、控えのファイルの名前に入れない",
       ("リンク" in [x.get("copy") for x in r_same["rows"]], "枝の控え" in [x.get("copy") for x in r_same["rows"]]), (False, True))
 
+# 枝の一覧・中身を読めなかったら、一部の印を付ける（a2a f44492f6 の P2）
+for fail in ("ls-tree", "show"):
+    real_git3 = S._git
+    S._git = lambda project, *a, _f=fail: None if a and a[0] == _f else real_git3(project, *a)
+    fresh()
+    r_fail = S.sent(PROJ, project="repo", since=0)
+    S._git = real_git3
+    check(f"枝: git の {fail} が答えないときは、その枝を読めなかったとして一部の印を付ける（覚えた結果にも残る）",
+          (r_fail["partial"], S.sent(PROJ, project="repo", since=0)["partial"]), (True, True))
+fresh()
+
 # git を呼んでいる途中に案件のフォルダを別のリポジトリへの symlink に替えたら、枝の結果を捨てる
 OTHER = TMP / "other-repo"
 (OTHER / "doc").mkdir(parents=True)
