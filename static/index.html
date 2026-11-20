@@ -1333,7 +1333,11 @@ async function doneItem(it, unneeded = null) {
   const t0 = performance.now();
   const what = unneeded ? '不要にできませんでした' : '済みにできませんでした';
   let r; try { r = await postJSON('/api/inbox/done', unneeded ? { n: it.n, unneeded } : { n: it.n }); } catch { ibNote(what + '（本体に届きません）', true); renderSit(); return; }
-  if (!r.ok) { ibNote({ gone: 'この判断待ちは、もう片づいているか見つかりません', unreadable: '判断待ちの記録を読めません' }[r.reason] || what, true); loadSituation(); return; }
+  if (!r.ok) {
+    ibNote({ gone: 'この判断待ちは、もう片づいているか見つかりません', unreadable: '判断待ちの記録を読めません',
+      busy: 'この件は、ほかの画面で「済んだ」か「不要だった」を押したところです（数秒で片づきます。違う方にするなら、その画面で「戻す」を押してください）' }[r.reason] || what, true);
+    loadSituation(); return;
+  }
   if (ibSel === it.n) closeItem();
   // 「戻す」を出すのは、本体が返した残りの秒から、送ってから受け取るまでにかかった時間を引いた分だけ
   // （本体が残りを数えたのは、その間のどこか。応答が遅れても・押し直しても、本体より長く出さない。端末の時計には頼らない）
@@ -1485,10 +1489,11 @@ function inboxView(d) {
 // 見張りの手本: 「不要だった」とした記録。見張りの回は、同じ種類の知らせを判断待ちにせず「届いたもの（対応不要）」にする。「外す」で手本から外す（済の印はそのまま）
 function lessonList(ls, more) {
   const f = document.createDocumentFragment();
-  f.appendChild(node('h4', null, `見張りの手本（不要だった ${ls.length} 件）— 同じ種類の知らせは、判断待ちにせず「今日届いたもの（対応不要）」に入れます。違えば「外す」`));
+  f.appendChild(node('h4', null, `見張りの手本（不要だった ${ls.length} 件）— 同じ種類の知らせは、判断待ちにせず「今日届いたもの（対応不要）」に入れます。違えば「外す」。この画面で押していないもの（ハブに言ったもの）には「ハブから」と出ます`));
   for (const x of ls) {
     const r = node('div', 'ibFyi lesson');
     const meta = node('div', 'meta'); meta.append(srcTag(x), `${x.project} ・ ${stamp(x.at)}`, node('span', 'ibNo', `[${x.n}]`));
+    if (!x.ui) meta.appendChild(node('span', 'ibTag', 'ハブから'));
     const out = node('button', 'lessonOut', '外す'); out.type = 'button'; out.setAttribute('aria-label', `手本 ${x.n} を外す`);
     out.onclick = async () => {
       out.disabled = true; out.textContent = '外しています…';

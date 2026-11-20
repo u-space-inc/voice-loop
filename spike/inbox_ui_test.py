@@ -343,12 +343,18 @@ def run(page, who):
     page.evaluate("document.getElementById('sitOther').open = true")
     lesson = page.text_content("#sitOther .lesson")
     check(f"{who} 「その他」に見張りの手本として、番号・題・理由を出す（畳みの見出しにも数）",
-          ("[2]" in lesson, "処理時間のアラーム" in lesson, "理由: 既知のアラーム" in lesson, "見張りの手本 1" in page.text_content("#sitOther > summary")),
-          (True, True, True, True))
+          ("[2]" in lesson, "処理時間のアラーム" in lesson, "理由: 既知のアラーム" in lesson, "見張りの手本 1" in page.text_content("#sitOther > summary"), "ハブから" in lesson),
+          (True, True, True, True, False))
     page.click("#sitOther .lesson button.lessonOut")
     gone = wait(lambda: page.locator("#sitOther .lesson").count() == 0, 6)
     check(f"{who} 「外す」で手本から外し（コンテナの中の道具）、外したと出す",
           (gone, CMDS[-1][-2:], "[2] を手本から外しました（済の印はそのままです）" in page.text_content("#sitBody")), (True, ["forget", "2"], True))
+    with ITEMS.open("a") as f:  # 画面で押していない手本（ハブに言った・置き場に書かれた）
+        f.write(json.dumps({"op": "done", "at": time.time(), "n": 1, "by": "user", "unneeded": True, "why": "周知・お知らせ"}, ensure_ascii=False) + "\n")
+    page.evaluate("loadSituation()")
+    page.wait_for_function("document.querySelectorAll('#sitOther .lesson').length === 1")
+    check(f"{who} 画面で押していない手本には「ハブから」と出し、題は文字として出す",
+          ("ハブから" in page.text_content("#sitOther .lesson"), page.evaluate("window.__xss === undefined"), page.locator("#sitBody img").count()), (True, True, 0))
     # 通知・リンクの場所
     seed()
     page.goto(BASE + "/#i=3")

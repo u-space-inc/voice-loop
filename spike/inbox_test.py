@@ -249,6 +249,8 @@ def fake_run(cmd, capture_output=True, timeout=None, **k):
     CMDS.append(cmd)
     op = "forget" if "forget" in cmd else "done"
     n = int(cmd[cmd.index(op) + 1])
+    if FAKE.get("slow"):
+        time.sleep(FAKE["slow"])
     if FAKE.get("fail"):
         return subprocess.CompletedProcess(cmd, 1, b"", b"Error: No such container: hermes\n")
     if not FAKE.get("silent"):  # コンテナの中の道具が、記録に印を書き足すのにあたる
@@ -390,7 +392,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
           (["/opt/hermes/.venv/bin/python", ib.TOOL, "done", "71", "--by", "user", "--note", ib.UNNEEDED_NOTE, "--unneeded", "--why", "周知・お知らせ"], True))
     check("…付いたら手本として一覧に出す（番号・口・案件・題・理由・時刻）",
           ([(x["n"], x["source"], x["project"], x["title"], x["why"]) for x in d["lessons"]], isinstance(d["lessons"][0]["at"], float), set(d["lessons"][0])),
-          ([(71, "mail", "shop", "全社への周知", "周知・お知らせ")], True, {"n", "source", "project", "title", "why", "at"}))
+          ([(71, "mail", "shop", "全社への周知", "周知・お知らせ")], True, {"n", "source", "project", "title", "why", "at", "ui"}))
     post("/api/inbox/done", {"n": 72, "unneeded": "alarm"})
     check("…戻すと何もしない（不要だったも同じ）", (post("/api/inbox/undo", {"n": 72}).json()["ok"], ns(get())), (True, [72, 73]))
     FAKE["old"] = True
@@ -431,6 +433,40 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     d = get()
     ib.vl_items.LESSONS_MAX = keep_lmax
     check("手本は見張りが使う数（LESSONS_MAX）だけ出し、押し出した古い手本は数だけ", ([x["n"] for x in d["lessons"]], d["lessons_more"]), ([71], 1))
+    # 画面で押して付いた手本か（置き場は Hermes が書けるので、画面で押していない手本に「ハブから」と出す）
+    ui = {x["n"]: x["ui"] for x in get()["lessons"]}
+    check("画面で押して付いた不要の印は本体の状態フォルダ（0600）に覚え、手で書かれた印（ハブから・偽の行）と分ける",
+          (ui, oct(ib.LESSON_FILE.stat().st_mode & 0o777), ib.LESSON_FILE.parent == Path(TMP) / "state"), ({71: False, 73: True}, "0o600", True))
+    with ITEMS.open("a") as fh:  # 画面で付けた手本の番号に、あとから別の印を書き足す（時刻が違う）
+        fh.write(json.dumps({"op": "done", "at": time.time() + 5, "n": 73, "by": "user", "unneeded": True, "why": "上書き"}) + "\n")
+    check("…画面で付けた番号でも、印が書き換えられていれば「ハブから」", {x["n"]: x["ui"] for x in get()["lessons"]}[73], False)
+    # 同じ件の予約の途中に、ほかの画面から違う方を押したら、押し直しとして受けない（表示と記録を食い違わせない）
+    write([add(81, at=NOW - 60, title="競る件"), add(82, at=NOW - 60, title="外す件")])
+    ib.UNDO = 1.0
+    a = post("/api/inbox/done", {"n": 81}).json()
+    b = post("/api/inbox/done", {"n": 81, "unneeded": "notice"}).json()
+    b2 = post("/api/inbox/done", {"n": 81}).json()
+    check("済んだの予約の途中に「不要だった」が来たら busy で断り、同じ方の押し直しは受ける", (a["ok"], b, b2["ok"]), (True, {"ok": False, "reason": "busy"}, True))
+    post("/api/inbox/undo", {"n": 81})
+    # 手本を外す道具を待つ間も、「戻す」は待たせない
+    with ITEMS.open("a") as fh:
+        fh.write(json.dumps({"op": "done", "at": time.time(), "n": 82, "by": "user", "unneeded": True, "why": ""}) + "\n")
+    CMDS.clear()
+    FAKE["slow"] = 2.5
+    outs2 = {}
+    tf = _th.Thread(target=lambda: outs2.update(f=post("/api/inbox/forget", {"n": 82}).json()))
+    post("/api/inbox/done", {"n": 81})
+    tf.start()
+    time.sleep(0.3)
+    t1 = time.time()
+    u = post("/api/inbox/undo", {"n": 81}).json()
+    waited = time.time() - t1
+    tf.join()
+    FAKE.clear()
+    time.sleep(ib.UNDO + 0.3)
+    check("手本を外す道具を待つ間に「戻す」が来ても、待たせずに取り消す（済の印を付けない）",
+          (u["ok"], waited < 1.0, outs2["f"]["ok"], [c[c.index("done") + 1] for c in CMDS if "done" in c]), (True, True, True, []))
+    ib.UNDO = 0.4
 
 # ---------- 通知を押したときに開く場所 ----------
 PAY = []

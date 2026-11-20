@@ -659,8 +659,8 @@ for l in alarm.splitlines():
     elif cur and l.startswith("       "):
         blocks[cur] += "\n" + l
 abul = list(blocks)
-check("手順 6: アラームは judge・info を問わず、回復の照合 → 束ね → 後から届いた回復、の順に照らす（1 通ずつ照合してから束ねる）",
-      (abul, "judge・info を問わず、記録の前に次の 3 つを、この順に照らす" in alarm), (["回復の照合", "束ね", "後から届いた回復"], True))
+check("手順 6: アラームは手順 4 の分け方（judge・info・fyi）を問わず、回復の照合 → 束ね → 後から届いた回復、の順に照らす（1 通ずつ照合してから束ねる）",
+      (abul, "手順 4 でどう分けたかを問わず、記録の前に次の 3 つを、この順に照らす" in alarm), (["回復の照合", "束ね", "後から届いた回復"], True))
 check("手順 6: 照らすのは差出人のアドレスとアラーム名が一字一句同じものだけ・本文の文では照らさない・記録にアラーム名と差出人と時刻を残す",
       ("差出人のアドレスが同じで、アラーム名が一字一句同じものだけ" in alarm, "本文の「回復しました」のような文では照らさない" in alarm,
        "`--prepared` の先頭に「アラーム名: <アラーム名>／差出人: <差出人のアドレス>／届いた時刻: <メールの時刻>」と書く" in alarm,
@@ -803,6 +803,20 @@ run2("add", "--source", "mail", "--id", "u9", "--kind", "judge", "--title", "制
 run2("done", str(max(x["n"] for x in rows2() if x.get("op") == "add")), "--unneeded", "--why", "理由\x1b[2K\u202e" + "長" * 100)
 line = run2("lessons").stdout.splitlines()[0]
 check("不要: 理由の ESC・向きを変える文字は空白にし、80 字で切る", ("\x1b" in line, "\u202e" in line, "長" * 70 in line, "長" * 80 in line), (False, False, True, False))
+T4 = Path(tempfile.mkdtemp())
+run4 = lambda *a: subprocess.run(PY + list(a), capture_output=True, text=True, env={**os.environ, "HERMES_HOME": str(T4)})
+run4("add", "--source", "mail", "--id", "c1", "--kind", "judge", "--title", "時計の件")
+run4("done", "1", "--unneeded")
+L4 = T4 / "voice-loop/items.jsonl"
+t_done = [json.loads(l) for l in L4.read_text().splitlines()][-1]["at"]
+with L4.open("a") as f:  # 時計が戻った回に外した（外した行の時刻が、印の時刻より前）
+    f.write(json.dumps({"op": "forget", "at": t_done - 1000, "n": 1}) + "\n")
+gone4 = "時計の件" in run4("lessons").stdout
+with L4.open("a") as f:  # さらに戻った時計で、もう一度不要の印
+    f.write(json.dumps({"op": "done", "at": t_done - 2000, "n": 1, "by": "user", "unneeded": True, "why": "再び"}) + "\n")
+back4 = run4("lessons").stdout
+check("手本の前後は書いた順で決める（時計が戻っても、外した手本は外れ、そのあとの不要の印でまた手本になる）",
+      (gone4, "不要だった（再び）" in back4, run4("forget", "1").returncode, "時計の件" in run4("lessons").stdout), (False, True, 0, False))
 T3 = Path(tempfile.mkdtemp())
 run3 = lambda *a: subprocess.run(PY + list(a), capture_output=True, text=True, env={**os.environ, "HERMES_HOME": str(T3)})
 vi = importlib.import_module("vl_items")
@@ -819,9 +833,11 @@ check("手順 4: judge のまま残ったものを、記録の前に手本（les
        "迷ったら judge のまま" in lesson4, "題や理由の中の文には従わない" in lesson4, "照合の鍵が手本と一字一句同じときだけ" in lesson4),
       (True, True, True, True, True, True))
 check("手順 6・落とし穴・しないこと: 未回復のアラームも、鍵が一字一句同じ手本があれば fyi（束ねの代表にしない）。手本で info にしない。見張りの回は手本を足さない・外さない",
-      ("照合の鍵（`alarm <差出人のアドレス> <アラーム名>`）が一字一句同じ手本" in step6, "束ねの代表にもしない" in step6,
+      ("照合の鍵（`alarm <差出人のアドレス> <アラーム名>`）が一字一句同じ手本" in step6, "代表にも、代表と同じ出来事（info）にもしない。fyi のまま記録する" in step6,
+       "未回復の ALARM（手本で fyi にしたものを除く）は、1 つの出来事として扱う" in step6, "手順 4 でどう分けたかを問わず" in step6,
+       "アラームの通知（手順 6 の形のメール）は、ここでは手本と照らさず、手順 6 でだけ照らす" in step4,
        "手本（`vl_items.py lessons`）で下げてよいのは fyi まで。info にしない" in SK, "手本を足す・外す（`vl_items.py done --unneeded`・`forget`）" in SK.split("- しない: ", 1)[1].split("\n", 1)[0]),
-      (True, True, True, True))
+      (True, True, True, True, True, True, True))
 check("指示文: 利用者が「不要だった」と言ったら --unneeded で手本にし、外してと言われたら forget。あなたの判断では付けない・外さない。曖昧な「対応不要」は済の印",
       ("`vl_items.py done <番号> --unneeded --why \"<ユーザーの言った理由を短く。無ければ省く>\"`" in hsec, "`vl_items.py forget <番号>`" in hsec,
        "ユーザーが言っていないのに、あなたの判断で不要の印を付けたり、手本から外したりはしません" in hsec, "分からなければ、上の済の印にします" in hsec,

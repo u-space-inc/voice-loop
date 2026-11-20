@@ -104,15 +104,23 @@ def _state(rows: list[dict]) -> tuple[dict, dict]:
 
 
 def lessons(rows: list[dict], items: dict, done: dict) -> list[tuple[dict, dict]]:
-    """見張りの手本: 利用者が「不要だった」とした記録（[(出来事, 片づけた印)]、片づけた時刻の新しい順）。
-    いまの片づけた印が利用者の不要の印で、そのあとに手本から外して（forget）いないものだけ。判断待ちに戻した（reopen）ものは、印が外れるので入らない。"""
-    forgot: dict[int, float] = {}
-    for r in rows:
-        if r.get("op") == "forget" and _n(r.get("n")) and _num(r.get("at")):
-            forgot[r["n"]] = max(forgot.get(r["n"], 0.0), r["at"])
-    out = [(items[n], d) for n, d in done.items()
-           if n in items and d.get("unneeded") is True and d.get("by") == "user" and _num(d.get("at")) and d["at"] > forgot.get(n, -1.0)]
-    return sorted(out, key=lambda p: -p[1]["at"])
+    """見張りの手本: 利用者が「不要だった」とした記録（[(出来事, 片づけた印)]、新しく付けた順）。
+    いまの片づけた印が利用者の不要の印で、その行より後ろに手本から外した行（forget）が無いものだけ。判断待ちに戻した（reopen）ものは、印が外れるので入らない。
+    前後は書いた順（行の並び）で決める（時刻で比べると、時計が戻ったときに、外したのに残る）。時刻は表示にだけ使う。"""
+    last_done: dict[int, int] = {}
+    last_forget: dict[int, int] = {}
+    for i, r in enumerate(rows):
+        n = r.get("n")
+        if not _n(n):
+            continue
+        if r.get("op") == "done":
+            last_done[n] = i  # _state の片づけた印（いちばん後ろの done の行）と同じ行
+        elif r.get("op") == "forget":
+            last_forget[n] = i
+    out = [(last_done[n], items[n], d) for n, d in done.items()
+           if n in items and n in last_done and d.get("unneeded") is True and d.get("by") == "user" and _num(d.get("at"))
+           and last_done[n] > last_forget.get(n, -1)]
+    return [(r, d) for _, r, d in sorted(out, key=lambda p: -p[0])]
 
 
 def why_of(d: dict) -> str:
