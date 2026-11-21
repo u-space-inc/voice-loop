@@ -1043,7 +1043,7 @@ function playNext() {
 player.addEventListener('ended', () => { if (nowSilent) { nowSilent = false; if (queue.length && !playing) playNext(); return; } playNext(); });
 player.addEventListener('error', () => { if (nowSilent || !playing) return; clog('audio error code=' + (player.error && player.error.code)); playNext(); });
 $('tap').onclick = () => { showTap(false); playNext(); };
-function stopPlayback() { gen++; queue = []; playing = false; accepting = false; player.pause(); showTap(false); if (speakingEl) speakingEl.classList.remove('speaking'); speakingEl = null; }
+function stopPlayback() { gen++; queue = []; playing = false; accepting = false; player.pause(); showTap(false); if (speakingEl) speakingEl.classList.remove('speaking'); speakingEl = null; face(rec && rec.state === 'recording' ? 'listen' : 'idle'); } // 止めたら口を閉じる（録音中なら聞いている顔のまま）
 function finishSpeaking(msg = muted ? '返答が届きました（文字だけ）' : '話し終わりました') { if (speakingEl) speakingEl.classList.remove('speaking'); speakingEl = null; setStatus(msg); face('idle'); }
 
 // ---------- 読み上げの切り替え（🔇） ----------
@@ -2260,7 +2260,7 @@ if (FACE) {
     try { if (!wake && navigator.wakeLock) navigator.wakeLock.request('screen').then(w => { wake = w; w.addEventListener('release', () => { wake = null; }); }).catch(() => {}); } catch {}
   };
   $('face').addEventListener('click', tapFace);
-  $('face').addEventListener('keydown', e => { if (e.target.closest('#faceBack')) return; if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); tapFace(e); } }); // 戻るリンクの Enter は止めない
+  $('face').addEventListener('keydown', e => { if (e.target.closest('#faceBack')) return; if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); if (!e.repeat) tapFace(e); } }); // 戻るリンクの Enter は止めない。長押しの繰り返しでは押さない（codex-review b5a95ff）
   face('idle');
 }
 </script>

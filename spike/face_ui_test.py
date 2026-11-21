@@ -7,7 +7,8 @@
   - 承認・入力待ちがあると縁が光り、無くなると消える
   - 状態の文が顔の下に出る。失敗の理由（聞き取れなかったなど）も顔の下に出る
   - 再生にタップが要るとき（自動の再生を断られた）に顔を押すと、録音ではなく再生を始める
-  - 「画面に戻る」に Enter を押すと戻る（顔のキー操作で止めない）
+  - 「画面に戻る」に Enter を押すと戻る（顔のキー操作で止めない）。顔のキーの長押しの繰り返しでは押さない
+  - 「停止」で再生を止めたら、口を閉じる
   - 録音中・再生中に接続が切れたら、録音や再生の終わりで「ふつう」に戻さず「つながっていない」のまま
 使い方: uv run spike/face_ui_test.py"""
 import json
@@ -128,6 +129,15 @@ with sync_playwright() as pw:
     pg.locator("#face svg").click()
     check("顔: 再生にタップが要るときは、録音でなく再生を押す", (pg.evaluate("window.__tap"), pg.evaluate("window.__talk")), (1, 0))
     pg.evaluate("stopPlayback()")
+
+    # 「停止」（PC では Esc）で再生を止めたら、口を閉じる（codex-review b5a95ff）
+    pg.evaluate("face('speak'); document.getElementById('stop').click()")
+    check("顔: 停止で再生を止めたら「ふつう」に戻る", pg.evaluate("document.getElementById('face').dataset.s"), "idle")
+    # 顔にフォーカスしてキーを長押ししても、繰り返しでは押さない
+    pg.evaluate("window.__talk = 0; const f = document.getElementById('face');"
+                "f.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', repeat: true, bubbles: true }));"
+                "f.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', repeat: true, bubbles: true }))")
+    check("顔: キーの長押しの繰り返しでは「話す」を押さない", pg.evaluate("window.__talk"), 0)
 
     # 失敗の理由を顔の下に出す
     pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'error', text: '聞き取れませんでした' }) })")
