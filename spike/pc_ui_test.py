@@ -15,7 +15,7 @@ PC の見た目（Chromium）: 頼んだ件を「動いている」「終わっ�
 時刻だけ動いて並びが同じなら作り直さない・PC の左の一覧の更新順も同じ並び。
 広げて読む（Chromium）: ⤢ で右の列を画面いっぱいに・ほかの列は inert・長い記憶を切らずに出す・直す途中の文が残る・Esc（文の欄・一行の欄・
 変換の途中では効かない）・✕・狭めると戻る・広げている間だけ承認・入力待ちの数を出し、押すと戻ってカードのボタンへ。
-代理からの知らせ（Chromium）: 💡 の「その他」に文字として出す（タグを解釈しない）・× とすべて消す・タブの数は判断待ちの数・会話の欄に「📨」の行は出さない（0.31.0）。
+代理からの知らせ（Chromium）: 鳴らすだけで 💡 に一覧では出さない・タブの数は判断待ちの数だけ（手順の承認待ちも数えない）・届いたら受け箱を取り直す・会話の欄に「📨」の行は出さない。
 キー（Chromium）: PC の幅で Space が話す（押し続けの繰り返し・変換の途中・文字の欄の中では効かない。押しているボタンの既定の動きは止める）・
 Esc が停止（文字の欄の中でも効く・ほかの欄の中では効かない）・広げて読んでいる間は Esc で戻るだけ・スマホの幅では効かない。
 添付（Chromium）: 📎 で選ぶと入力の上に並ぶ（文字の欄の上・同じ幅）・扱えない種類と 6 つ目は断る・✕ で外す・送ると本体に置いて id を発言に付け、
@@ -127,8 +127,7 @@ def seed():
     CALLS.clear()
     OUT.clear()
     STILL["v"] = False
-    now = time.time()
-    s.write_json(s.NOTICES_FILE, {"next": 2, "rows": [{"n": 1, "title": "ひな形を作ってください", "text": "", "at": now - 600}], "sent": []})  # 💡 の「その他」に 1 件
+    s.write_json(s.NOTICES_FILE, {"next": 1, "rows": [], "sent": []})
     judge(1)
 
 
@@ -225,7 +224,7 @@ def run_wide(page, who):
     check(f"{who} 右は「記憶」が先に開く（判断待ちのタブに、判断待ちの数が出る）", (visible(page, "#memPanel"), visible(page, "#situation"), wait(lambda: page.text_content("#sitCount") == "1")),
           (True, False, True))
     page.click("#tabSit")
-    check(f"{who} 「判断待ち」を押すと、💡 の中身（判断待ちと、その他の知らせ）が出る", (visible(page, "#situation"), visible(page, "#memPanel"), wait(lambda: "ひな形を作ってください" in (page.text_content("#sitBody") or ""))),
+    check(f"{who} 「判断待ち」を押すと、💡 の中身（判断待ちの受け箱）が出る", (visible(page, "#situation"), visible(page, "#memPanel"), wait(lambda: "判断待ち1" in (page.text_content("#sitBody") or ""))),
           (True, False, True))
     page.click("#tabMem")
 
@@ -680,7 +679,7 @@ def run_reading(page, who):
           (card(1).locator(".text").evaluate("e => e.scrollHeight <= e.clientHeight + 2"), more()), (True, [False, False]))
     check(f"{who} 直している途中の文は、広げても残る", card(0).locator("textarea").input_value(), "広げる前に打った文")
     page.click("#tabSit")
-    check(f"{who} 広げたまま「知らせ」に替えられる", wait(lambda: page.locator("#situation").is_visible() and "ひな形を作ってください" in (page.text_content("#sitBody") or "")), True)
+    check(f"{who} 広げたまま「判断待ち」に替えられる", wait(lambda: page.locator("#situation").is_visible() and "判断待ち1" in (page.text_content("#sitBody") or "")), True)
     page.click("#tabMem")
     card(0).locator("textarea").focus()
     page.keyboard.press("Escape")
@@ -868,49 +867,42 @@ def run_reply(page, who):
 
 
 def run_notice(page, who):
-    """代理（Hermes）からの知らせ: 💡 の一覧に文字として出す・数に入る・× と「すべて消す」・開いている画面に一行で出す。"""
+    """代理（Hermes）からの知らせ: 鳴らすだけで、💡 に一覧では出さない（判断待ちは受け箱に、見張りが止まった口は受け箱の帯に出る）。
+    記録に残っている知らせも出さない・数の札は判断待ちの数だけ・届いたら受け箱を取り直す・会話の欄に行を出さない。"""
     seed()
     now = time.time()
     s.write_json(s.NOTICES_FILE, {"next": 3, "rows": [{"n": 1, "title": "古い知らせ", "text": "", "at": now - 3600},
                                                      {"n": 2, "title": XSS, "text": "一言も" + XSS, "at": now - 60}], "sent": []})
     judge(2)
+    asked = []
+    page.on("request", lambda r: asked.append(r.url) if "/api/notices" in r.url else None)
     open_page(page, 1400)
-    check(f"{who} タブの数は判断待ちの数（知らせの数は数えない。0.31.0）", wait(lambda: page.text_content("#sitCount") == "2"), True)
+    check(f"{who} タブの数は判断待ちの数（知らせの数は数えない）", wait(lambda: page.text_content("#sitCount") == "2"), True)
     page.click("#tabSit")
     page.wait_for_selector("#sitOther > summary")
-    page.click("#sitOther > summary")  # 知らせ（これまでの記録）は「その他」に畳んである
-    # 読めなかったとき（本体が止まった・接続が切れた）は、知らせが無いことと分けて出し、数の札も消さない
-    page.route("**/api/notices", lambda r: r.abort())
-    page.evaluate("loadSituation()")
-    check(f"{who} 知らせを読めなければそう出し、「ありません」とは出さない・数の札は消さない",
-          (wait(lambda: "知らせを読めませんでした" in (page.text_content("#sitBody") or "")), "いまは知らせも承認待ちもありません" in (page.text_content("#sitBody") or ""),
-           page.text_content("#sitCount")), (True, False, "2"))
+    page.click("#sitOther > summary")
+    body = lambda: page.text_content("#sitBody") or ""
+    check(f"{who} 記録に残っている知らせは、一覧に出さない（題も・見出しも・消すボタンも無い）",
+          ("古い知らせ" in body(), "からの知らせ" in body(), page.locator("#sitBody .notice, #sitBody .noteAll").count(), page.evaluate("window.__xss || 0")), (False, False, 0, 0))
+    check(f"{who} 「その他」の見出しに、知らせの数は出さない", "知らせ" in (page.text_content("#sitOther > summary") or ""), False)
     page.route("**/api/hermes/skills", lambda r: r.abort())
     page.route("**/api/inbox", lambda r: r.abort())
     page.evaluate("loadSituation()")
-    check(f"{who} どれも読めなければ、読めなかったとだけ出す・数の札は消さない",
-          (wait(lambda: (page.text_content("#sitBody") or "") == "読めませんでした（接続を確かめてください）"), page.text_content("#sitCount")), (True, "2"))
-    page.unroute("**/api/notices")
+    check(f"{who} 手順も受け箱も読めなければ、読めなかったとだけ出す・数の札は消さない",
+          (wait(lambda: body() == "読めませんでした（接続を確かめてください）"), page.text_content("#sitCount")), (True, "2"))
     page.unroute("**/api/hermes/skills")
     page.unroute("**/api/inbox")
     page.evaluate("loadSituation()")
-    check(f"{who} 知らせは新しい順に、題と一言を文字として出す（タグを解釈しない）",
-          wait(lambda: page.locator("#sitBody .notice").count() == 2 and XSS in (page.locator("#sitBody .notice").first.text_content() or "")), True)
-    check(f"{who} …そしてタグは動かない", (page.evaluate("window.__xss || 0"), page.locator("#sitBody .notice img").count()), (0, 0))
-    check(f"{who} 見出しに送り手と数、未確認の情報であること", ("Hermes からの知らせ（2）" in (page.text_content("#sitBody") or ""), "未確認の情報" in (page.text_content("#sitBody") or "")), (True, True))
-    page.locator("#sitBody .notice").first.locator("button").click()
-    check(f"{who} × で 1 件消える（消したのは新しいほう）",
-          wait(lambda: page.locator("#sitBody .notice").count() == 1 and "古い知らせ" in (page.locator("#sitBody .notice").first.text_content() or "")), True)
+    wait(lambda: page.locator("#sitBody .ibCard, #sitBody .ibHead").count() > 0)
+    judge(3)  # 見張りが 3 件目を記録して、知らせた
     import urllib.request
     req = urllib.request.Request(BASE + "/api/hub/notice", data=json.dumps({"title": "新しい知らせ", "text": "下書きを作りました"}).encode(),
                                  headers={"Content-Type": "application/json"}, method="POST")
     r = json.loads(urllib.request.urlopen(req, timeout=10).read())
-    check(f"{who} 開いている画面には、プッシュは送らない。会話の欄に「📨」の行は出さない（0.31.0）",
-          (r.get("push"), wait(lambda: page.locator("#sitBody .notice").count() == 2), "📨" in (page.text_content("#log") or "")), ("visible", True, False))
-    check(f"{who} …そして一覧も取り直す", wait(lambda: page.locator("#sitBody .notice").count() == 2), True)
-    page.click("#sitBody .noteAll")
-    check(f"{who} 「すべて消す」で知らせが空になり、無いことを一言で出す（数の札は判断待ちの数のまま）",
-          wait(lambda: page.locator("#sitBody .notice").count() == 0 and page.text_content("#sitCount") == "2" and "いまは知らせも手順の承認待ちもありません" in (page.text_content("#sitBody") or "")), True)
+    check(f"{who} 開いている画面には、プッシュは送らない。知らせが届いたら受け箱と数を取り直す",
+          (r.get("push"), wait(lambda: page.text_content("#sitCount") == "3")), ("visible", True))
+    check(f"{who} …届いた知らせも一覧には出さず、会話の欄にも行を出さない", ("新しい知らせ" in body(), "📨" in (page.text_content("#log") or "")), (False, False))
+    check(f"{who} 画面は、知らせの一覧の口を一度も呼ばない", asked, [])
     page.close()
 
 
@@ -955,7 +947,7 @@ def run_phone(page, who):
     check(f"{who} PC にして戻すと、元の並びと、閉じた状態に戻る", (page.evaluate(order), visible(page, "#situation"), visible(page, "#tasks")),
           ("side,rec,asks,tasks,situation,log,bar,viewer,face", False, False))
     page.click("#sitBtn")
-    check(f"{who} 💡 で知らせが開く", wait(lambda: visible(page, "#situation") and "ひな形を作ってください" in (page.text_content("#sitBody") or "")), True)
+    check(f"{who} 💡 で判断待ちが開く", wait(lambda: visible(page, "#situation") and "判断待ち1" in (page.text_content("#sitBody") or "")), True)
     page.click("#tasksBtn")
     check(f"{who} 📋 を押すと知らせは閉じて頼んだ件が開く（今の相互の開閉）", (visible(page, "#tasks"), visible(page, "#situation")), (True, False))
     page.click("#sitBtn")

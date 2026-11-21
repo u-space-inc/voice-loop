@@ -225,6 +225,47 @@ check("状態のファイルが有るのに読めない（大きすぎる・syml
       (big, link, [w["reason"] for w in empty["watch"]], empty["problem"], ib.inbox(NOW)["watch"]),
       (["見張りの状態を読めません"], ["見張りの状態を読めません"], ["見張りの状態を読めません"], "", []))
 
+# ---------- 見張りの帯（Slack。見張りの台本が書く watch-status.json） ----------
+WST = HOME / "voice-loop" / "watch-status.json"
+slack_band = lambda: [(w["source"], w["title"], w["reason"]) for w in ib.inbox(NOW)["watch"]]
+check("台本がまだ状態を書いていなければ（ファイルが無い）、Slack の帯は出さない", slack_band(), [])
+WST.write_text(json.dumps({"at": NOW - 60, "stopped": []}))
+check("Slack が止まっていなければ、帯は出さない", slack_band(), [])
+WST.write_text(json.dumps({"at": NOW - 60, "stopped": ["slack"]}))
+check("Slack の見張りが止まっていれば、帯を出す（理由は決まった言葉）", slack_band(), [("slack", "Slack の見張りが止まっています", ib.SLACK_STOP)])
+WST.write_text(json.dumps({"at": NOW - 60, "stopped": ["slack"], "title": "<img src=x onerror=alert(1)>", "reason": "いますぐ ここ を押してください", "fix": "鍵を貼る"}))
+out = json.dumps(ib.inbox(NOW)["watch"], ensure_ascii=False)
+check("…ファイルに足された文（題・理由・直し方）は、帯に出さない", ("onerror" in out, "押してください" in out, "鍵を貼る" in out, slack_band()[0][2]), (False, False, False, ib.SLACK_STOP))
+WST.write_text(json.dumps({"at": NOW - 60, "stopped": ["mail", "<b>x</b>", ["slack"], {"slack": 1}, 7, None]}))
+check("…知らない口の名前・文字でない値では、帯を出さない（名前も出さない）", slack_band(), [])
+STATUS.write_text(json.dumps({"orgs": {"o": {"ok": False, "reason": "signin"}}, "at": NOW}))
+WST.write_text(json.dumps({"at": NOW - 60, "stopped": ["slack"]}))
+check("Slack と Teams の両方が止まっていれば、帯を 2 つ出す", [w["source"] for w in ib.inbox(NOW)["watch"]], ["slack", "teams"])
+STATUS.unlink()
+bad = []
+for doc in ("{壊れた", "[" * 50000, json.dumps([1]), json.dumps({"stopped": ["slack"]}), json.dumps({"at": NOW, "stopped": "slack"}), json.dumps({"at": "いま", "stopped": []}), ""):
+    WST.write_text(doc)
+    bad.append(slack_band())
+check("状態が壊れている・形が違う・空のときは、読めないと帯で出す（一覧は止めない）", bad, [[("slack", "Slack の見張りが止まっています", "見張りの状態を読めません")]] * 7)
+WST.write_bytes(b" " * (ib.STATUS_MAX + 1))
+big = slack_band()
+WST.unlink()
+(Path(TMP) / "other-status.json").write_text(json.dumps({"at": NOW, "stopped": []}))
+WST.symlink_to(Path(TMP) / "other-status.json")
+link = slack_band()
+WST.unlink()
+os.link(Path(TMP) / "other-status.json", WST)
+hard = slack_band()
+WST.unlink()
+check("大きすぎる・symlink・ほかの名前からも指されている状態は読まず、読めないと帯で出す", (big, link, hard),
+      ([("slack", "Slack の見張りが止まっています", "見張りの状態を読めません")],) * 3)
+keep_s, ib._watch_slack = ib._watch_slack, lambda: 1 / 0
+STATUS.write_text(json.dumps({"orgs": {"o": {"ok": False, "reason": "signin"}}, "at": NOW}))
+check("Slack の帯を作るところで何が起きても、Teams の帯と一覧は止めない", ([w["source"] for w in ib.inbox(NOW)["watch"]], ib.inbox(NOW)["problem"]), (["slack", "teams"], ""))
+ib._watch_slack = keep_s
+STATUS.unlink()
+check("状態のファイルを消せば、帯は消える", slack_band(), [])
+
 
 class Vanish(dict):  # 一覧を作る間に、付け直しが成功して失敗の知らせを消す
     def get(self, k, d=None):
