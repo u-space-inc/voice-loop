@@ -13,7 +13,7 @@ voice-loop（herdr の拡張）は、声・画面・通知・セッションの�
 """
 
 # 頭の部品が使ってよい本体の道具（本体のモジュールの名前）
-CORE_TOOLS = {"CLIENTS", "_clip", "_probe", "_probes", "hlog", "pane_lock", "push_all", "read_lines", "write_json"}
+CORE_TOOLS = {"CLIENTS", "_clip", "_probe", "_probes", "hlog", "pane_lock", "push_all", "read_lines", "read_sent", "write_json"}
 
 
 class Brain:

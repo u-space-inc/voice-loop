@@ -69,6 +69,8 @@ check("本体の /api/hermes の口はコードに書いていない", any(isins
 part = (ROOT / "scripts" / "hub_hermes.py").read_text()
 check("頭の部品が使う本体の名前は約束の中だけ", sorted(set(re.findall(r"\bcore\.(\w+)", part)) - CORE_TOOLS), [])
 check("約束の名前はどれも本体にある", sorted(n for n in CORE_TOOLS if not hasattr(s, n)), [])
+check("判断待ちの確かめが出ていく側を読む口は、頭の setup で本体の read_sent に結ばれている",
+      (callable(s.hermes.hermes_check.sent_reader), s.hermes.hermes_check.sent_reader(0.0) is None if not (s.PROJECTS_DIR and s.PROJECTS_DIR.is_dir()) else True), (True, True))
 imports = {a.name for n in ast.walk(ast.parse(part)) if isinstance(n, ast.Import) for a in n.names} | {n.module for n in ast.walk(ast.parse(part)) if isinstance(n, ast.ImportFrom)}
 check("頭の部品は本体を読み込まない（core で受け取る）", "server" in imports, False)
 

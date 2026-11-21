@@ -1621,5 +1621,6 @@ def setup(server_module):
     """本体が読み込みの最後に呼ぶ。本体を core に置き、前の起動から続く状態を戻す。"""
     global core
     core = server_module
+    hermes_check.sent_reader = lambda since, project="", limit=200: core.read_sent(since, project, limit)  # 判断待ちの確かめが、出ていく側の記録を読む口
     _load_hermes_turns()
     _recover_hermes_skills()
