@@ -2146,7 +2146,7 @@ async function startRec() {
   rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
   rec.onstop = async () => {
     stream.getTracks().forEach(t => t.stop());
-    face(linked() ? 'idle' : 'offline'); // 録音中に切れたときは、つながっていない顔のまま
+    face('idle'); // 録音中に切れたときは、face が「つながっていない」の顔のままにする
     setSession('playback'); // マイクを離したら再生用に戻す（受話口から小さく鳴るのを防ぐ）
     if (!linked()) { setStatus(UNREACHABLE); return; } // 話しているあいだに届かなくなった（短い録音でも、こちらの案内を残す）
     const blob = new Blob(chunks, { type: mime || 'audio/webm' });
@@ -2247,7 +2247,8 @@ Promise.race([Promise.allSettled([loadAgents(), ensureSpeakers()]).then(() => tr
 
 // ---------- 顔の表示（/?face） ----------
 // 表情: idle（ふつう）・listen（聞いている）・think（考えている）・speak（話している）・offline（つながっていない）。顔をタップすると「タップして話す」と同じ
-function face(s) { if (FACE) $('face').dataset.s = s; }
+// つながっていない間は、ほかの表情より「つながっていない」を優先する（再生の始まり・終わり・録音の終わり・失敗の知らせが、切断の顔を上書きしないように。codex-review c62083a）
+function face(s) { if (FACE) $('face').dataset.s = linked() ? s : 'offline'; }
 if (FACE) {
   $('face').hidden = false;
   let wake = null;
@@ -2260,7 +2261,7 @@ if (FACE) {
   };
   $('face').addEventListener('click', tapFace);
   $('face').addEventListener('keydown', e => { if (e.target.closest('#faceBack')) return; if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); tapFace(e); } }); // 戻るリンクの Enter は止めない
-  face(linked() ? 'idle' : 'offline');
+  face('idle');
 }
 </script>
 </body>

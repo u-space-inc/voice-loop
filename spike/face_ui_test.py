@@ -8,7 +8,7 @@
   - 状態の文が顔の下に出る。失敗の理由（聞き取れなかったなど）も顔の下に出る
   - 再生にタップが要るとき（自動の再生を断られた）に顔を押すと、録音ではなく再生を始める
   - 「画面に戻る」に Enter を押すと戻る（顔のキー操作で止めない）
-  - 録音中に接続が切れたら、録音の終わりで「ふつう」に戻さず「つながっていない」のまま
+  - 録音中・再生中に接続が切れたら、録音や再生の終わりで「ふつう」に戻さず「つながっていない」のまま
 使い方: uv run spike/face_ui_test.py"""
 import json
 import os
@@ -113,6 +113,14 @@ with sync_playwright() as pw:
     pg.wait_for_timeout(600)
     check("顔: 録音中に切れたら、録音の終わりでも「つながっていない」のまま", pg.evaluate("document.getElementById('face').dataset.s"), "offline")
     pg.wait_for_function("document.getElementById('face').dataset.s === 'idle'", timeout=10000)
+    # 再生の途中で切れたら、再生の始まり・終わりでも「つながっていない」のまま（codex-review c62083a）
+    pg.evaluate("ws.close()")
+    pg.wait_for_timeout(200)
+    pg.evaluate("face('speak'); finishSpeaking()")
+    check("顔: 再生の途中で切れたら、話し終わっても「つながっていない」のまま", pg.evaluate("document.getElementById('face').dataset.s"), "offline")
+    pg.wait_for_function("document.getElementById('face').dataset.s === 'idle' || linked()", timeout=10000)
+    pg.wait_for_function("linked()", timeout=10000)
+    pg.evaluate("face('idle')")
 
     # 再生にタップが要るとき（iPhone で自動の再生を断られたとき）は、顔を押すと再生を始める
     pg.evaluate("window.__talk = 0; window.__tap = 0; document.getElementById('tap').addEventListener('click', () => { window.__tap++; }, true);"
