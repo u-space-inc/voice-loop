@@ -228,19 +228,33 @@ STATUS = "watch-status.json"
 
 
 def write_status(stopped: list[str], now: float | None = None) -> None:
-    """見張りの状態を voice-loop/watch-status.json に書く（{"at": 時刻, "stopped": [口の名前]}）。別の名前に書いてから置き換える。
+    """見張りの状態を voice-loop/watch-status.json に書く（{"at": 時刻, "stopped": [口の名前]}）。
+    置き場の voice-loop/ を symlink をたどらずに開き、その中にだけ書く。書きかけの名前に何か置かれていたら（symlink・ほかのファイルと同じ実体・
+    FIFO など）、開かずに名前だけを外してから、新しいファイルとして作る（置かれたものの先には書かない・待たされない）。作ってから置き換える。
     書けなくても見張りは止めない（出力が変わると Agent が起きるので、何も出さない）。"""
+    dfd = None
     try:
         home = Path(vl_mcp.HOME) / "voice-loop"
-        home.mkdir(parents=True, exist_ok=True)
-        tmp = home / (STATUS + ".tmp")
+        try:
+            os.mkdir(home, 0o755)
+        except FileExistsError:
+            pass
+        dfd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        tmp = STATUS + ".tmp"
+        try:
+            os.unlink(tmp, dir_fd=dfd)
+        except FileNotFoundError:
+            pass
         at = dt.datetime.now(JST).timestamp() if now is None else now
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=dfd)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump({"at": at, "stopped": stopped}, f)
-        os.replace(tmp, home / STATUS)
+        os.replace(tmp, STATUS, src_dir_fd=dfd, dst_dir_fd=dfd)
     except Exception:  # noqa: BLE001
         pass
+    finally:
+        if dfd is not None:
+            os.close(dfd)
 
 
 def main(now: float | None = None) -> None:

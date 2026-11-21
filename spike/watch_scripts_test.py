@@ -267,9 +267,46 @@ WST.unlink()
 vl_watch.slack = garble
 o_link = out_at(D1)
 vl_watch.slack = slack_ok
-check("main: 書きかけの名前が symlink にされていても、その先には書かず、出力も変えない（見張りは止めない）",
-      ((TMP / "elsewhere.json").exists(), WST.exists(), o_link == o_bad), (False, False, True))
-(WST.parent / "watch-status.json.tmp").unlink()
+check("main: 書きかけの名前が symlink にされていても、その先には書かず、名前を外して状態を書く・出力も変えない",
+      ((TMP / "elsewhere.json").exists(), st(), o_link == o_bad, (WST.parent / "watch-status.json.tmp").exists()), (False, {"at": D1, "stopped": ["slack"]}, True, False))
+# 相手（置き場に書ける Hermes）が、書きかけの名前・置き場のフォルダに仕掛けたとき
+vl_watch.slack = garble
+TMPN = WST.parent / "watch-status.json.tmp"
+victim = TMP / "victim.txt"
+victim.write_text("大事な中身")
+WST.unlink()
+os.link(victim, TMPN)
+out_at(D1)
+check("main: 書きかけの名前が、ほかのファイルと同じ実体（ハードリンク）にされていても、そのファイルを書き換えない・状態は別の実体で書く",
+      (victim.read_text(), victim.stat().st_nlink, st(), WST.stat().st_nlink), ("大事な中身", 1, {"at": D1, "stopped": ["slack"]}, 1))
+WST.unlink()
+os.mkfifo(TMPN)
+import threading as _th  # noqa: E402
+got = {}
+t = _th.Thread(target=lambda: got.update(o=out_at(D1)), daemon=True)
+t.start()
+t.join(10)
+check("main: 書きかけの名前が FIFO にされていても、待たされずに終わり、出力は同じ・状態も書く",
+      (t.is_alive(), got.get("o") == o_bad, WST.exists() and st()), (False, True, {"at": D1, "stopped": ["slack"]}))
+WST.unlink()
+TMPN.mkdir()
+(TMPN / "x").write_text("x")
+o_dir = out_at(D1)
+check("main: 書きかけの名前が外せないもの（中身のあるフォルダ）なら、状態は書かずに終わり、出力は変えない", (WST.exists(), o_dir == o_bad, (TMPN / "x").read_text()), (False, True, "x"))
+(TMPN / "x").unlink()
+TMPN.rmdir()
+real = WST.parent
+moved = TMP / "voice-loop-real"
+real.rename(moved)
+outside = TMP / "outside"
+outside.mkdir()
+real.symlink_to(outside)
+o_par = out_at(D1)
+check("main: 置き場の voice-loop が、外のフォルダへの symlink にされていたら、その先には何も書かない・出力は変えない",
+      (sorted(p.name for p in outside.iterdir()), o_par == o_bad), ([], True))
+real.unlink()
+moved.rename(real)
+vl_watch.slack = slack_ok
 check("clip: 長い文は … で切る・改行と | と ESC を入れない",
       (vl_watch.clip("あ" * 60, 50)[-1], len(vl_watch.clip("あ" * 60, 50)), "|" in vl_watch.clip("a|b", 10), "\n" in vl_watch.clip("a\nb", 10),
        "\x1b" in vl_watch.clip("a\x1b[2Kb", 10)),
