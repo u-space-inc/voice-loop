@@ -426,6 +426,7 @@
 const $ = id => document.getElementById(id);
 // 顔の表示（/?face）。スマホを仮のスタックチャンにして、声だけで使う体感を確かめる。録音・再生・接続はこの画面のものをそのまま使う
 const FACE = new URLSearchParams(location.search).has('face');
+let faceOn = FACE; // 顔を閉じたら（通知で件を開いた・「画面に戻る」）、ふだんの画面として名乗り直す
 const setStatus = t => { $('statusText').textContent = t; if (FACE) $('faceCap').textContent = t; };
 let ws, rec, chunks = [], mime = '', ext = 'webm';
 let agents = [], agentsSig = '', threadSource = 'jsonl', loadSeq = 0;
@@ -996,7 +997,7 @@ async function loadSpeakers() {
 }
 // ハブからの報告を、選んでいる声で届けてもらう。読み上げを切っていれば、音声を送らないでもらう
 // 画面が見えているかも知らせる（見えている画面があれば、本体はプッシュ通知を送らない）
-const hello = (visible = !document.hidden) => { try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'hello', speaker: $('speaker').value, voice: !muted, visible, ...(FACE ? { kind: 'stackchan', place: 'home' } : {}) })); } catch {} };
+const hello = (visible = !document.hidden) => { try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'hello', speaker: $('speaker').value, voice: !muted, visible, ...(faceOn ? { kind: 'stackchan', place: 'home' } : {}) })); } catch {} };
 $('speaker').onchange = e => { localStorage.setItem('vl.speaker', e.target.value); hello(); };
 
 // ---------- 再生 ----------
@@ -2259,11 +2260,23 @@ if (FACE) {
   document.addEventListener('visibilitychange', () => { if (!document.hidden && wantWake) askWake(); });
   const tapFace = e => {
     if (e.target.closest('#faceBack')) return;
+    if (rec && rec.state === 'recording') { $('talk').click(); return; } // 録音中は、まず録音を止めて送る（再生のタップ待ちより先。codex-review dc4b0b9）
     if ($('tap').style.display === 'inline-block') { $('tap').click(); return; } // 再生にタップが要るとき（自動の再生を断られた）は、録音ではなく再生を始める（codex-review 779f0c2）
     if ($('talk').disabled) { $('faceCap').textContent = 'いまは話せません（' + ($('statusText').textContent || '準備中') + '）'; return; } // 黙って何もしないと、壊れたように見える
     $('talk').click(); // 先に押す（録音と再生の準備は、タップの中で始める必要がある）
     wantWake = true; askWake();
   };
+  // 顔を閉じる。読み込み直さないので、開いた件・会話・録音はそのまま（URL の ?face だけを外す）。名乗りも画面に戻す
+  const closeFace = () => {
+    if (!faceOn) return;
+    faceOn = false; $('face').hidden = true;
+    try { history.replaceState(null, '', location.pathname + location.hash); } catch {}
+    hello();
+  };
+  $('faceBack').addEventListener('click', e => { e.preventDefault(); closeFace(); });
+  // 通知・リンクで件・受け箱・判断待ちを開いたら、顔を閉じて中身を見せる（顔の裏に隠れないように。codex-review dc4b0b9）
+  // 場所は、変わった先の URL で見る（受け箱の処理が先に動いて、場所を消すことがあるため）
+  window.addEventListener('hashchange', e => { let h = ''; try { h = new URL(e.newURL).hash; } catch {} if (/^#(t=|inbox|i=)/.test(h)) closeFace(); });
   $('face').addEventListener('click', tapFace);
   $('face').addEventListener('keydown', e => { if (e.target.closest('#faceBack')) return; if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); if (!e.repeat) tapFace(e); } }); // 戻るリンクの Enter は止めない。長押しの繰り返しでは押さない（codex-review b5a95ff）
   face('idle');

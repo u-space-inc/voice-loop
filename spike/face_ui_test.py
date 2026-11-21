@@ -7,7 +7,9 @@
   - 承認・入力待ちがあると縁が光り、無くなると消える
   - 状態の文が顔の下に出る。失敗の理由（聞き取れなかったなど）も顔の下に出る
   - 再生にタップが要るとき（自動の再生を断られた）に顔を押すと、録音ではなく再生を始める
-  - 「画面に戻る」に Enter を押すと戻る（顔のキー操作で止めない）。顔のキーの長押しの繰り返しでは押さない
+  - 「画面に戻る」（押す・Enter）は、読み込み直さずに顔を閉じ、名乗りを画面に戻す。顔のキーの長押しの繰り返しでは押さない
+  - 通知・リンクで件・受け箱を開いたら、顔を閉じて中身を見せる
+  - 録音中は、再生のタップ待ちがあっても、顔のタップで録音を止めて送る
   - 「停止」で再生を止めたら、口を閉じる。録音中は、再生の始まり・終わり・停止でも「聞いている」のまま
   - タップのときに画面を消さない許可を頼み、外されたら画面に戻ったときに取り直す
   - 録音中・再生中に接続が切れたら、録音や再生の終わりで「ふつう」に戻さず「つながっていない」のまま
@@ -133,14 +135,16 @@ with sync_playwright() as pw:
     pg.evaluate("window.__talk = 0")
     pg.locator("#face svg").click()  # 録音を始める（作り物のマイク）
     pg.wait_for_function("window.__wake === 1 && rec && rec.state === 'recording'", timeout=10000)
-    pg.locator("#face svg").click()  # 送る（作り物の音なので短すぎるか、聞き取れない）
+    pg.evaluate("window.__tap = 0; document.getElementById('tap').addEventListener('click', () => { window.__tap++; }, true); queue.push(new ArrayBuffer(8)); showTap(true)")
+    pg.locator("#face svg").click()  # 録音中は、再生のタップ待ちがあっても、まず録音を止めて送る（作り物の音なので短すぎるか、聞き取れない）
     pg.wait_for_function("rec.state !== 'recording'", timeout=10000)
+    check("顔: 録音中は、再生のタップ待ちより録音を止めるのが先", pg.evaluate("window.__tap"), 0)
+    pg.evaluate("stopPlayback()")
     pg.evaluate("window.__sentinel.dispatchEvent(new Event('release')); document.dispatchEvent(new Event('visibilitychange'))")
     pg.wait_for_function("window.__wake === 2", timeout=5000)
     check("顔: 外された画面を消さない許可を、画面に戻ったときに取り直す", pg.evaluate("window.__wake"), 2)
 
-    pg.evaluate("window.__talk = 0; window.__tap = 0; document.getElementById('tap').addEventListener('click', () => { window.__tap++; }, true);"
-                "queue.push(new ArrayBuffer(8)); showTap(true)")
+    pg.evaluate("window.__talk = 0; window.__tap = 0; queue.push(new ArrayBuffer(8)); showTap(true)")
     pg.locator("#face svg").click()
     check("顔: 再生にタップが要るときは、録音でなく再生を押す", (pg.evaluate("window.__tap"), pg.evaluate("window.__talk")), (1, 0))
     pg.evaluate("stopPlayback()")
@@ -179,16 +183,26 @@ with sync_playwright() as pw:
         pg.wait_for_timeout(400)
         pg.screenshot(path=f"{shots}/face-attn.png")
         pg.evaluate("document.getElementById('face').classList.remove('attn')")
-    pg.evaluate("window.__talk = 0")
+    pg.evaluate("window.__talk = 0; window.__keep = 1; window.__hello.length = 0")
     pg.locator("#faceBack").focus()
     pg.keyboard.press("Enter")
-    pg.wait_for_url(BASE + "/", timeout=5000)
-    check("顔: 「画面に戻る」に Enter で、ふだんの画面に戻る", (pg.locator("#face").is_visible(), pg.evaluate("window.__talk ?? 0")), (False, 0))
+    pg.wait_for_function("document.getElementById('face').hidden", timeout=5000)
+    check("顔: 「画面に戻る」に Enter で、読み込み直さずに顔を閉じる（?face も外れる）",
+          (pg.locator("#face").is_visible(), pg.evaluate("window.__talk ?? 0"), pg.evaluate("window.__keep"), pg.evaluate("location.search")), (False, 0, 1, ""))
+    pg.wait_for_function("window.__hello.length > 0", timeout=5000)
+    check("顔: 閉じたら、名乗りを画面に戻す（kind なし）", pg.evaluate("window.__hello[window.__hello.length - 1].kind ?? null"), None)
     pg.goto(BASE + "/?face")
     pg.wait_for_function("document.getElementById('face').dataset.s === 'idle'", timeout=10000)
+    pg.evaluate("window.__keep = 2")
     pg.locator("#faceBack").click()
-    pg.wait_for_url(BASE + "/", timeout=5000)
-    check("顔: 「画面に戻る」を押すと、ふだんの画面に戻る", pg.locator("#face").is_visible(), False)
+    pg.wait_for_function("document.getElementById('face').hidden", timeout=5000)
+    check("顔: 「画面に戻る」を押すと、読み込み直さずに顔を閉じる", (pg.locator("#face").is_visible(), pg.evaluate("window.__keep")), (False, 2))
+    # 通知で受け箱・件を開いたら、顔を閉じて中身を見せる（通知は開いている画面の場所（#…）を変える）
+    pg.goto(BASE + "/?face")
+    pg.wait_for_function("document.getElementById('face').dataset.s === 'idle'", timeout=10000)
+    pg.evaluate("location.hash = '#inbox'")
+    pg.wait_for_function("document.getElementById('face').hidden", timeout=5000)
+    check("顔: 通知で受け箱を開いたら、顔を閉じる（?face も外れる）", (pg.locator("#face").is_visible(), pg.evaluate("location.search")), (False, ""))
     b.close()
 
 srv.should_exit = True
