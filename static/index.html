@@ -361,6 +361,37 @@
   #vStage { flex:1; min-height:0; display:flex; align-items:center; justify-content:center; padding:0 20px; }
   #vStage img, #vStage video { max-width:100%; max-height:100%; object-fit:contain; }
   #vPath { padding:8px 20px 14px; font-size:12px; color:var(--w-t3); overflow-wrap:anywhere; }
+  /* ---------- 顔の表示（/?face。スマホを仮のスタックチャンにする） ----------
+     機械の画面に寄せて、黒い地に目と口だけ。状態は表情で示し、承認・判断待ちがあるときは縁を琥珀色に光らせる。色はこの表示だけの一つの見た目 */
+  #face { position:fixed; inset:0; z-index:1000; background:#000; color:#d8d8d8; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3vh;
+    padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); cursor:pointer;
+    touch-action:manipulation; user-select:none; -webkit-user-select:none; -webkit-tap-highlight-color:transparent; }
+  #face[hidden] { display:none; }
+  #face::after { content:""; position:absolute; inset:0; pointer-events:none; box-shadow:inset 0 0 0 0 transparent; transition:box-shadow .3s; }
+  #face.attn::after { box-shadow:inset 0 0 0 6px #f0a500, inset 0 0 48px rgba(240,165,0,.45); }
+  #face[data-s="listen"]::after { box-shadow:inset 0 0 0 6px #3fb6c9, inset 0 0 48px rgba(63,182,201,.45); }
+  #face svg { width:min(94vw, 70vh); height:auto; overflow:visible; }
+  #face .eye { fill:#f4f4f4; transform-box:fill-box; transform-origin:center; animation:faceBlink 5.2s infinite; transition:transform .25s; }
+  #face .lid { stroke:#f4f4f4; stroke-width:7; stroke-linecap:round; opacity:0; }
+  #face .mouth { stroke:#f4f4f4; stroke-width:7; stroke-linecap:round; fill:none; transition:opacity .15s; }
+  #face .mouthO { fill:#f4f4f4; opacity:0; transform-box:fill-box; transform-origin:center; }
+  @keyframes faceBlink { 0%,93%,100% { transform:scaleY(1) } 95% { transform:scaleY(.08) } }
+  @keyframes faceTalk { 0%,100% { transform:scaleY(.35) } 50% { transform:scaleY(1) } }
+  @keyframes faceThink { 0%,100% { transform:translate(-6px,-10px) } 50% { transform:translate(6px,-10px) } }
+  #face[data-s="listen"] .eye { transform:scale(1.15); animation:none; }
+  #face[data-s="listen"] .mouth, #face[data-s="speak"] .mouth { opacity:0; }
+  #face[data-s="listen"] .mouthO { opacity:1; transform:scale(.55); }
+  #face[data-s="speak"] .mouthO { opacity:1; animation:faceTalk .28s infinite; }
+  #face[data-s="think"] .eye { animation:faceThink 1.6s ease-in-out infinite; }
+  #face[data-s="offline"] .eye { opacity:0; animation:none; }
+  #face[data-s="offline"] .lid { opacity:.55; }
+  #face[data-s="offline"] .mouth { opacity:.4; }
+  #faceCap { min-height:2.8em; max-width:min(90vw, 36em); text-align:center; font-size:17px; line-height:1.4; color:#bdbdbd;
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  #faceBack { position:absolute; top:calc(10px + env(safe-area-inset-top)); right:calc(12px + env(safe-area-inset-right)); color:#8a8a8a; font-size:14px;
+    text-decoration:none; padding:6px 10px; border:1px solid #333; border-radius:999px; }
+  #faceBack:focus-visible, #face:focus-visible { outline:2px solid #3fb6c9; outline-offset:2px; }
+  @media (prefers-reduced-motion: reduce) { #face .eye, #face[data-s="speak"] .mouthO, #face[data-s="think"] .eye { animation:none; } }
 </style>
 </head>
 <body>
@@ -380,11 +411,22 @@
     <form id="typedForm" class="row"><button id="attachBtn" type="button" aria-label="ファイルを添付する" title="ファイルを添付する（画像・PDF・テキスト。1 つ 20MB・5 つまで）">📎</button><input id="attachInput" type="file" multiple accept="image/png,image/jpeg,image/gif,image/webp,image/heic,.heic,application/pdf,text/plain,text/markdown,text/csv,.md,.txt,.csv" hidden><textarea id="typed" rows="1" placeholder="文字で送る" autocomplete="off"></textarea><button id="send" type="submit">送る</button></form>
   </div>
   <div id="viewer" hidden role="dialog" aria-modal="true" aria-labelledby="vName"><div class="vhead"><span id="vName"></span><span id="vPos"></span><button id="vPrev" aria-label="前の成果物">←</button><button id="vNext" aria-label="次の成果物">→</button><button id="vClose">✕ 閉じる</button></div><div id="vStage"></div><div id="vPath"></div></div>
+<div id="face" hidden role="button" tabindex="0" aria-label="タップして話す（もう一度タップで送る）" data-s="idle">
+  <a id="faceBack" href="/">画面に戻る</a>
+  <svg viewBox="0 0 320 200" aria-hidden="true">
+    <circle class="eye" cx="92" cy="80" r="28"/><circle class="eye" cx="228" cy="80" r="28"/>
+    <line class="lid" x1="64" y1="82" x2="120" y2="82"/><line class="lid" x1="200" y1="82" x2="256" y2="82"/>
+    <path class="mouth" d="M138 150 Q160 160 182 150"/><ellipse class="mouthO" cx="160" cy="152" rx="20" ry="14"/>
+  </svg>
+  <div id="faceCap">タップして話しかけてください</div>
+</div>
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/purify.min.js"></script>
 <script>
 const $ = id => document.getElementById(id);
-const setStatus = t => { $('statusText').textContent = t; };
+// 顔の表示（/?face）。スマホを仮のスタックチャンにして、声だけで使う体感を確かめる。録音・再生・接続はこの画面のものをそのまま使う
+const FACE = new URLSearchParams(location.search).has('face');
+const setStatus = t => { $('statusText').textContent = t; if (FACE) $('faceCap').textContent = t; };
 let ws, rec, chunks = [], mime = '', ext = 'webm';
 let agents = [], agentsSig = '', threadSource = 'jsonl', loadSeq = 0;
 
@@ -823,6 +865,7 @@ async function loadAsks() {
   let list; try { list = await (await fetch('/api/prompts')).json(); } catch { list = []; } // 読めないときは、ボタンを出さないほうに倒す
   if (seq !== asksSeq) return;
   applyAsks(list);
+  if (FACE) $('face').classList.toggle('attn', Array.isArray(list) && list.length > 0); // 承認・入力待ちがあれば縁を光らせる
 }
 // 読んだ問いの一覧を、上の欄に描く（件の URL で開く処理も、自分で読んだ一覧をここで描く。そのとき asksSeq を進め、並んで走る古い読み込みを捨てる）
 function applyAsks(list) {
@@ -953,7 +996,7 @@ async function loadSpeakers() {
 }
 // ハブからの報告を、選んでいる声で届けてもらう。読み上げを切っていれば、音声を送らないでもらう
 // 画面が見えているかも知らせる（見えている画面があれば、本体はプッシュ通知を送らない）
-const hello = (visible = !document.hidden) => { try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'hello', speaker: $('speaker').value, voice: !muted, visible })); } catch {} };
+const hello = (visible = !document.hidden) => { try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'hello', speaker: $('speaker').value, voice: !muted, visible, ...(FACE ? { kind: 'stackchan', place: 'home' } : {}) })); } catch {} };
 $('speaker').onchange = e => { localStorage.setItem('vl.speaker', e.target.value); hello(); };
 
 // ---------- 再生 ----------
@@ -988,7 +1031,7 @@ function playNext() {
   player.src = curUrl;
   player.play().then(() => {
     if (g !== gen) return;
-    setStatus('話しています'); showTap(false);
+    setStatus('話しています'); showTap(false); face('speak');
     if (!playLogged) { clog('first audio playing'); playLogged = true; }
   }).catch(e => {
     if (g !== gen || e.name === 'AbortError') return;
@@ -1000,8 +1043,8 @@ function playNext() {
 player.addEventListener('ended', () => { if (nowSilent) { nowSilent = false; if (queue.length && !playing) playNext(); return; } playNext(); });
 player.addEventListener('error', () => { if (nowSilent || !playing) return; clog('audio error code=' + (player.error && player.error.code)); playNext(); });
 $('tap').onclick = () => { showTap(false); playNext(); };
-function stopPlayback() { gen++; queue = []; playing = false; accepting = false; player.pause(); showTap(false); if (speakingEl) speakingEl.classList.remove('speaking'); speakingEl = null; }
-function finishSpeaking(msg = muted ? '返答が届きました（文字だけ）' : '話し終わりました') { if (speakingEl) speakingEl.classList.remove('speaking'); speakingEl = null; setStatus(msg); }
+function stopPlayback() { gen++; queue = []; playing = false; accepting = false; player.pause(); showTap(false); if (speakingEl) speakingEl.classList.remove('speaking'); speakingEl = null; face(rec && rec.state === 'recording' ? 'listen' : 'idle'); } // 止めたら口を閉じる（録音中なら聞いている顔のまま）
+function finishSpeaking(msg = muted ? '返答が届きました（文字だけ）' : '話し終わりました') { if (speakingEl) speakingEl.classList.remove('speaking'); speakingEl = null; setStatus(msg); face('idle'); }
 
 // ---------- 読み上げの切り替え（🔇） ----------
 // 端末ごとに覚える。切ると、鳴っている声をその場で止め、本体にも音声を送らないよう伝える（返答の文字はこれまでどおり出る）。
@@ -2036,13 +2079,13 @@ function connect() {
   ws.binaryType = 'arraybuffer';
   const sock = ws, giveUp = setTimeout(() => { if (sock.readyState === 0) sock.close(); }, 5000); // 通信が止まって待たされるときは見切る
   ws.onopen = () => {
-    clearTimeout(giveUp); $('conn').classList.add('on'); setStatus('準備できました'); applyTarget(); hello(); clog('connected ' + navigator.userAgent);
+    clearTimeout(giveUp); $('conn').classList.add('on'); setStatus('準備できました'); face('idle'); applyTarget(); hello(); clog('connected ' + navigator.userAgent);
     if (away || !agentsSig || !$('speaker').options.length || pendingTopic) { away = false; catchUp(); } // 起動時に読めなかったもの（開けなかった件も）を取り直す
   };
   ws.onclose = () => {
     clearTimeout(giveUp); if (sock !== ws) return;
     if (rec && rec.state === 'recording') stopRec(); // 話している途中なら止めてマイクを離す（送らずに捨てる）
-    $('conn').classList.remove('on'); away = true; applyTarget(); setStatus(UNREACHABLE); retry = setTimeout(connect, 2000);
+    $('conn').classList.remove('on'); away = true; applyTarget(); setStatus(UNREACHABLE); face('offline'); retry = setTimeout(connect, 2000);
   };
   ws.onmessage = async ev => {
     if (ev.data instanceof ArrayBuffer) { enqueue(ev.data); return; }
@@ -2061,7 +2104,7 @@ function connect() {
       const ai = $('log').querySelectorAll('.msg.ai'); speakingEl = ai[ai.length - 1] || null; if (speakingEl) speakingEl.classList.add('speaking');
     }
     else if (m.type === 'speaking') { accepting = !muted; serverDone = false; } // 切っている間に届いた音声は鳴らさない（本体も送らないが、切った直後の分が届くことがある）
-    else if (m.type === 'error') { sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); setStatus(''); if (m.gone) { agentsSig = ''; loadAgents(); } } // 相手が消えた・入れ替わった → 一覧を取り直す
+    else if (m.type === 'error') { face('idle'); sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); setStatus(''); if (FACE) $('faceCap').textContent = '⚠ ' + m.text; if (m.gone) { agentsSig = ''; loadAgents(); } } // 相手が消えた・入れ替わった → 一覧を取り直す
     else if (m.type === 'notice') { sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); } // ハブから報告を受け取れなかった等（いまの話し相手とは別の知らせ）
     else if (m.type === 'done') { serverDone = true; if (!playing && !queue.length) finishSpeaking(); loadAgents(); }
     else if (m.type === 'stopped') { stopPlayback(); setStatus('止めました'); }
@@ -2103,6 +2146,7 @@ async function startRec() {
   rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
   rec.onstop = async () => {
     stream.getTracks().forEach(t => t.stop());
+    face('idle'); // 録音中に切れたときは、face が「つながっていない」の顔のままにする
     setSession('playback'); // マイクを離したら再生用に戻す（受話口から小さく鳴るのを防ぐ）
     if (!linked()) { setStatus(UNREACHABLE); return; } // 話しているあいだに届かなくなった（短い録音でも、こちらの案内を残す）
     const blob = new Blob(chunks, { type: mime || 'audio/webm' });
@@ -2119,9 +2163,9 @@ async function startRec() {
     if (sameTarget(rf)) setReplyTarget(null);
     dropSent(list);
     ws.send(await blob.arrayBuffer());
-    setStatus('聞き取り中…');
+    setStatus('聞き取り中…'); face('think');
   };
-  rec.start();
+  rec.start(); face('listen');
   $('talk').classList.add('rec'); $('talk').textContent = '話してください（タップで送る）';
 }
 function stopRec() { if (rec && rec.state !== 'inactive') rec.stop(); $('talk').classList.remove('rec'); $('talk').textContent = 'タップして話す'; }
@@ -2200,6 +2244,25 @@ loadAsks();
 if (location.hash && !openInboxHash()) openTopic();
 Promise.race([Promise.allSettled([loadAgents(), ensureSpeakers()]).then(() => true), new Promise(r => setTimeout(() => r(false), 5000))])
   .then(replied => { if (!replied) setStatus(UNREACHABLE); connect(); });
+
+// ---------- 顔の表示（/?face） ----------
+// 表情: idle（ふつう）・listen（聞いている）・think（考えている）・speak（話している）・offline（つながっていない）。顔をタップすると「タップして話す」と同じ
+// つながっていない間は、ほかの表情より「つながっていない」を優先する（再生の始まり・終わり・録音の終わり・失敗の知らせが、切断の顔を上書きしないように。codex-review c62083a）
+function face(s) { if (FACE) $('face').dataset.s = linked() ? s : 'offline'; }
+if (FACE) {
+  $('face').hidden = false;
+  let wake = null;
+  const tapFace = e => {
+    if (e.target.closest('#faceBack')) return;
+    if ($('tap').style.display === 'inline-block') { $('tap').click(); return; } // 再生にタップが要るとき（自動の再生を断られた）は、録音ではなく再生を始める（codex-review 779f0c2）
+    if ($('talk').disabled) { $('faceCap').textContent = 'いまは話せません（' + ($('statusText').textContent || '準備中') + '）'; return; } // 黙って何もしないと、壊れたように見える
+    $('talk').click(); // 先に押す（録音と再生の準備は、タップの中で始める必要がある）
+    try { if (!wake && navigator.wakeLock) navigator.wakeLock.request('screen').then(w => { wake = w; w.addEventListener('release', () => { wake = null; }); }).catch(() => {}); } catch {}
+  };
+  $('face').addEventListener('click', tapFace);
+  $('face').addEventListener('keydown', e => { if (e.target.closest('#faceBack')) return; if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); if (!e.repeat) tapFace(e); } }); // 戻るリンクの Enter は止めない。長押しの繰り返しでは押さない（codex-review b5a95ff）
+  face('idle');
+}
 </script>
 </body>
 </html>
