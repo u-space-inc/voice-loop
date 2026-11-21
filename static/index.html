@@ -2254,29 +2254,37 @@ Promise.race([Promise.allSettled([loadAgents(), ensureSpeakers()]).then(() => tr
 function face(s) { if (FACE) $('face').dataset.s = !linked() ? 'offline' : rec && rec.state === 'recording' ? 'listen' : s; }
 if (FACE) {
   $('face').hidden = false;
-  let wake = null, wantWake = false;
-  const askWake = () => { // 画面を消さない（一度タップして頼んだあとは、画面に戻るたびに取り直す。ほかのアプリへ移ると、ブラウザが外すため）
+  // 画面を消さない許可（Wake Lock）。一度タップしたあとは、画面に戻るたびに取り直す（ほかのアプリへ移ると、ブラウザが外すため）。
+  // 頼んでいる途中の分は 1 つだけ（重ねると、閉じたあとにも 1 つ残る。codex-review 0b06aa8）
+  let wake = null, wakeAsking = false, wantWake = false;
+  const askWake = () => {
+    if (wake || wakeAsking || !faceOn || !navigator.wakeLock) return;
+    wakeAsking = true;
     try {
-      if (!wake && navigator.wakeLock) navigator.wakeLock.request('screen').then(w => {
-        if (!faceOn) { w.release().catch(() => {}); return; } // 頼んでいる間に顔を閉じたら、すぐ手放す
-        wake = w; w.addEventListener('release', () => { wake = null; });
-      }).catch(() => {});
-    } catch {}
+      navigator.wakeLock.request('screen').then(w => {
+        wakeAsking = false;
+        if (!faceOn || wake) { w.release().catch(() => {}); return; } // 頼んでいる間に顔を閉じた・もう持っているなら、すぐ手放す
+        wake = w; w.addEventListener('release', () => { if (wake === w) wake = null; });
+      }).catch(() => { wakeAsking = false; });
+    } catch { wakeAsking = false; }
   };
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && wantWake && faceOn) askWake(); });
-  const tapFace = e => {
-    if (e.target.closest('#faceBack')) return;
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && wantWake) askWake(); });
+  const tapAct = () => {
     if (rec && rec.state === 'recording') { $('talk').click(); return; } // 録音中は、まず録音を止めて送る（再生のタップ待ちより先。codex-review dc4b0b9）
     if ($('tap').style.display === 'inline-block') { $('tap').click(); return; } // 再生にタップが要るとき（自動の再生を断られた）は、録音ではなく再生を始める（codex-review 779f0c2）
     if ($('talk').disabled) { $('faceCap').textContent = 'いまは話せません（' + ($('statusText').textContent || '準備中') + '）'; return; } // 黙って何もしないと、壊れたように見える
-    $('talk').click(); // 先に押す（録音と再生の準備は、タップの中で始める必要がある）
-    wantWake = true; askWake();
+    $('talk').click();
+  };
+  const tapFace = e => {
+    if (e.target.closest('#faceBack')) return;
+    tapAct(); // 先に押す（録音と再生の準備は、タップの中で始める必要がある）
+    wantWake = true; askWake(); // どの押し方でも頼む（録音せずに報告を聞くだけの使い方でも、画面が消えないように）
   };
   // 顔を閉じる。読み込み直さないので、開いた件・会話・録音はそのまま（URL の ?face だけを外す）。名乗りも画面に戻す
   const closeFace = () => {
     if (!faceOn) return;
     faceOn = false; $('face').hidden = true;
-    wantWake = false; if (wake) { wake.release().catch(() => {}); wake = null; } // ふだんの画面では眠れるように、許可を手放す（codex-review bc775f6）
+    wantWake = false; if (wake) { const w = wake; wake = null; w.release().catch(() => {}); } // ふだんの画面では眠れるように、許可を手放す（頼んでいる途中の分は、届いたら手放す。codex-review bc775f6）
     try { history.replaceState(null, '', location.pathname + location.hash); } catch {}
     hello();
   };

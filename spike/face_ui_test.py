@@ -203,12 +203,23 @@ with sync_playwright() as pw:
     pg.wait_for_function("document.getElementById('face').dataset.s === 'idle'", timeout=10000)
     pg.evaluate(WAKE + "; window.__wakeDelay = 400; window.__keep = 2")
     pg.locator("#face svg").click()  # 許可を頼む（届くのは 0.4 秒後）。録音も始まる
+    pg.evaluate("queue.push(new ArrayBuffer(8)); showTap(true)")
+    pg.locator("#face svg").click()  # 届く前にもう一度タップ（頼みは重ねない）
+    check("顔: 許可が届く前に続けてタップしても、頼みは 1 つだけ", pg.evaluate("window.__wake"), 1)
     pg.locator("#faceBack").click()  # 頼んでいる途中で閉じる
     pg.wait_for_function("document.getElementById('face').hidden", timeout=5000)
     check("顔: 「画面に戻る」を押すと、読み込み直さずに顔を閉じる", (pg.locator("#face").is_visible(), pg.evaluate("window.__keep")), (False, 2))
     pg.wait_for_function("window.__released >= 1", timeout=5000)
     check("顔: 許可を頼んでいる途中で閉じても、届いたらすぐ手放す", pg.evaluate("window.__released"), 1)
     pg.evaluate("if (rec && rec.state === 'recording') stopRec()")
+    # 再生にタップが要るとき（報告を聞くだけの使い方）のタップでも、画面を消さない許可を頼む
+    pg.goto(BASE + "/?face")
+    pg.wait_for_function("document.getElementById('face').dataset.s === 'idle'", timeout=10000)
+    pg.evaluate(WAKE + "; window.__tap = 0; document.getElementById('tap').addEventListener('click', () => { window.__tap++; }, true); queue.push(new ArrayBuffer(8)); showTap(true)")
+    pg.locator("#face svg").click()
+    pg.wait_for_function("window.__wake === 1", timeout=5000)
+    check("顔: 再生を始めるタップでも、画面を消さない許可を頼む", (pg.evaluate("window.__tap"), pg.evaluate("window.__wake")), (1, 1))
+    pg.evaluate("stopPlayback()")
     # 件・受け箱の場所つきで開いたとき（最初の表示では場所の変化が起きない）
     pg.goto(BASE + "/?face#inbox")
     pg.wait_for_function("document.getElementById('face').hidden", timeout=10000)
