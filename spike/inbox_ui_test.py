@@ -618,6 +618,20 @@ def run_wide(page, who):
     check(f"{who} 丸印で理由を選んで「済んだ」を押すと、不要の印と理由を付けさせる",
           (page.text_content("#sitBody .ibToast span"), wait(lambda: len(CMDS) == 2, 6), CMDS[1][-8:] if len(CMDS) > 1 else None),
           ("不要にしました「処理時間のアラーム」（見張りの手本にします）", True, ["2", "--by", "user", "--note", ib.UNNEEDED_NOTE, "--unneeded", "--why", "自分の件ではない"]))
+    # あとで・済んだの通信が続けて失敗しても、押したときに止めたボタンは押せる状態に戻る（同じ失敗の文で、描き直しが省かれない）
+    seed()
+    page.goto(BASE + "/#i=2")
+    page.wait_for_selector(".ibItem .ibLaterRow button.ibLater")
+    page.route("**/api/inbox/later", lambda r: r.abort())
+    page.route("**/api/inbox/done", lambda r: r.abort())
+    back = []
+    for sel in ['.ibItem button.ibLater[data-key="morning"]', '.ibItem button.ibLater[data-key="morning"]', ".ibItem .ibDone button.go", ".ibItem .ibDone button.go"]:
+        page.click(sel)
+        back.append(wait(lambda: page.locator(".ibItem .ibLaterRow button.ibLater").count() >= 2
+                         and page.locator(".ibItem button:disabled").count() == 0, 3))
+    page.unroute("**/api/inbox/later")
+    page.unroute("**/api/inbox/done")
+    check(f"{who} あとで・済んだの通信が 2 回続けて失敗しても、ボタンは押せる状態に戻る", (back, CMDS), ([True, True, True, True], []))
 
 
 with sync_playwright() as pw:

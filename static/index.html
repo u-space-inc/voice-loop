@@ -1342,11 +1342,13 @@ async function doneItem(it, unneeded = null) {
   ibGen++;  // 押す前に始まった読み直しの答えでは、一覧を戻さない
   const t0 = performance.now();
   const what = unneeded ? '不要にできませんでした' : '済みにできませんでした';
-  let r; try { r = await postJSON('/api/inbox/done', unneeded ? { n: it.n, unneeded } : { n: it.n }); } catch { ibNote(what + '（本体に届きません）', true); renderSit(); return; }
+  // 失敗したら中身を必ず描き直す（押したときに止めた「済んだ」を戻す。同じ失敗の文が続いても押し直せるように）
+  let r; try { r = await postJSON('/api/inbox/done', unneeded ? { n: it.n, unneeded } : { n: it.n }); } catch { ibNote(what + '（本体に届きません）', true); ibSig = ''; renderSit(); return; }
   if (!r.ok) {
+    ibSig = '';
     ibNote({ gone: 'この判断待ちは、もう片づいているか見つかりません', unreadable: '判断待ちの記録を読めません',
       busy: 'この件は、ほかの画面で「済んだ」を押したところです（数秒で片づきます。理由を変えるなら、その画面で「戻す」を押してください）' }[r.reason] || what, true);
-    loadSituation(); return;
+    renderSit(); loadSituation(); return;
   }
   if (ibWhy && ibWhy.n === it.n) ibWhy = null;
   if (ibSel === it.n) closeItem();
@@ -1380,9 +1382,10 @@ async function undoItem(n) {
 }
 async function laterItem(it, key) {
   ibGen++;
-  let r; try { r = await postJSON('/api/inbox/later', { n: it.n, until: key }); } catch { ibNote('あとでに回せませんでした（本体に届きません）', true); renderSit(); return; }
+  // 失敗したら中身を必ず描き直す（押したときに止めたボタンを戻す。同じ失敗の文が続くと、描き直しが省かれて押せないままになる）
+  let r; try { r = await postJSON('/api/inbox/later', { n: it.n, until: key }); } catch { ibNote('あとでに回せませんでした（本体に届きません）', true); ibSig = ''; renderSit(); return; }
   ibGen++;  // 応答を待つ間に始まった読み直しの答えは使わない（このあとの読み直しが描く）
-  if (!r.ok) { ibNote('あとでに回せませんでした（もう片づいているか、見つかりません）', true); loadSituation(); return; }
+  if (!r.ok) { ibNote('あとでに回せませんでした（もう片づいているか、見つかりません）', true); ibSig = ''; renderSit(); loadSituation(); return; }
   if (ibSel === it.n) closeItem();
   ibNote(`「${it.title}」を ${r.label} まで隠しました。その時刻に、一覧の上に戻ります`);
   loadSituation();
