@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path
 
 TMP = tempfile.mkdtemp()
+os.environ.pop("VL_WHISPER_LANG", None)  # 外の設定を引き継がない（既定の ja を確かめる）
 os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HERMES_KEY="k1", VL_HERMES_URL="http://127.0.0.1:9")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -28,7 +29,9 @@ def check(name, got, want):
 for given, want in [("rec.wav", "audio.wav"), ("audio.webm", "audio.webm"), ("x.MP4", "audio.mp4"), ("a.m4a", "audio.m4a"),
                     ("rec.ogg", "audio.ogg"), ("rec.opus", "audio.opus"), ("../../etc/passwd.wav", "audio.wav"),
                     ("noext", "audio.webm"), ("run.exe", "audio.webm"), ("", "audio.webm"), (None, "audio.webm"), (123, "audio.webm"),
-                    ('x"; name="model\r\n\r\nevil\r\n--b.webm', "audio.webm"), ("a.webm\r\nX-Evil: 1", "audio.webm")]:
+                    ('x"; name="model\r\n\r\nevil\r\n--b.webm', "audio.webm"), ("a.webm\r\nX-Evil: 1", "audio.webm"),
+                    ("rec.ｗａｖ", "audio.webm"), ("録音.ＷＥＢＭ", "audio.webm"), ("a." + "w" * 5000, "audio.webm"), ("x" * 5000 + ".wav", "audio.wav"),
+                    (["a.wav"], "audio.webm"), ({"name": "a.wav"}, "audio.webm"), (".wav", "audio.wav"), ("a.", "audio.webm")]:
     check(f"名前 {given!r}", s.audio_name(given), want)
 
 # ---------- 要求の中身 ----------
