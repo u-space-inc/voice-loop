@@ -819,7 +819,7 @@ async def hub_accepted(talker, text: str, pane: str, reply_at: float | None, fil
         if not why:
             extra, why = await attachment_lines(files, talker, pane)
         if why:
-            await talker.refused(text, why)
+            await talker.refused(text, why, **({"via": via} if via else {}))  # 断った発言も、機械からなら機械の印で台帳に載せる
             return "", why, True
         # via は機械からの発言のときだけ渡す（画面からの往復は、これまでの頭の約束の形のまま）
         return await talker.exchange(text, reply_at, extra, item, **({"via": via} if via else {}))
@@ -2387,7 +2387,7 @@ async def _hub_answer(body: dict):
     取り消しにくい操作の「はい」は、聞き返してユーザーがもう一度発言してから（どちらの発言も上の確かめを通ること）。「今後は聞かずに許可」は選ばない。"""
     if REPORTING:
         return JSONResponse({"ok": False, "reason": "reporting"})
-    if await asyncio.to_thread(hub_via, hub_human_turn()) == "device":  # 機械（スタックチャン）からの発言は答えに使わない。答えは画面で（README「守り」）
+    if await asyncio.to_thread(hub_via, hub_human_turn()) == "device":  # 機械（スタックチャン）からの発言は答えに使わない。答えは画面で（README「守り」）。早めに断るだけで、確かめの本番は下の発言の取り直しのあと
         return JSONResponse({"ok": False, "reason": "device"})
     pane, answer, confirmed = str(body.get("pane", "")), str(body.get("answer", "")).strip().lower(), bool(body.get("confirmed"))
     a = await asyncio.to_thread(_worker, pane)
@@ -2402,6 +2402,8 @@ async def _hub_answer(body: dict):
         return JSONResponse({"ok": False, "reason": "trust"})
     text = await asyncio.to_thread(read_prompt, pane)
     (turn, utter), = (await asyncio.to_thread(hub_turns, 1) or [(None, "")])[:1]
+    if await asyncio.to_thread(hub_via, turn) == "device":  # 答えに使うこの発言そのもので確かめる（入口で見たあとに、機械からの発言が入れ替わりで届いても使わない。a2a 356c8a73）
+        return JSONResponse({"ok": False, "reason": "device"})
     fp, prompt, project = prompt_fp(text), read_ask(text), a["cwd"].rsplit("/", 1)[-1]
     conf = prompt["kind"] == "confirm"  # 番号の無い「Yes / No」の確認（はい・いいえだけで答える）
     if answer in ("no", "n"):

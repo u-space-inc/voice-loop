@@ -30,6 +30,14 @@ import server as s  # noqa: E402
 import origin_guard as g  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+PEERS = []  # 試験の tailnet の端末の一覧（本物の tailscale は読まない）
+g._tailscale_peers = lambda: PEERS
+
+
+def peers(v):
+    PEERS[:] = v
+    g._TS_CACHE.update(at=0.0, raw="", peers=None)
+
 results = []
 
 
@@ -48,6 +56,27 @@ check("住所: 2 つ目の住所も機械", g.from_device({"x-forwarded-for": "1
 os.environ["VL_DEVICE_ADDRS"] = ""
 check("住所: 設定が空なら誰も機械でない", g.from_device({"x-forwarded-for": DEV}), False)
 os.environ["VL_DEVICE_ADDRS"] = f" {DEV} , 100.64.0.10"
+
+# IPv6: 書いた住所・名前に当たる端末の、IPv4 と IPv6 の住所を全部見る（a2a 356c8a73 の 1）
+peers([{"TailscaleIPs": [DEV, "fd7a:115c:a1e0::9"], "HostName": "stackchan-home", "DNSName": "stackchan-home.tail0000.ts.net."},
+       {"TailscaleIPs": ["100.70.0.1", "fd7a:115c:a1e0::1"], "HostName": "phone"}])
+check("住所: IPv4 を書けば、同じ機械の IPv6 も機械", g.from_device({"x-forwarded-for": "fd7a:115c:a1e0::9"}), True)
+check("住所: 角かっこ付きの IPv6 も機械", g.from_device({"x-forwarded-for": "[FD7A:115C:A1E0::9]"}), True)
+check("住所: ほかの端末の IPv6 は機械でない", g.from_device({"x-forwarded-for": "fd7a:115c:a1e0::1"}), False)
+os.environ["VL_DEVICE_ADDRS"] = "stackchan-home"
+check("住所: 機械の名前で書いても、IPv4 は機械", g.from_device({"x-forwarded-for": DEV}), True)
+check("住所: 機械の名前で書いても、IPv6 は機械", g.from_device({"x-forwarded-for": "fd7a:115c:a1e0::9"}), True)
+check("住所: 名前そのものは住所の一覧に入らない", "stackchan-home" in g.device_addresses(), False)
+os.environ["VL_DEVICE_ADDRS"] = "fd7a:115c:a1e0::9"
+check("住所: IPv6 を書けば、同じ機械の IPv4 も機械", g.from_device({"x-forwarded-for": DEV}), True)
+peers([])
+g._tailscale_peers = lambda: None
+g._TS_CACHE.update(at=0.0, raw="", peers=None)
+os.environ["VL_DEVICE_ADDRS"] = DEV
+check("住所: tailscale の状態が読めなくても、書いた住所は機械", g.from_device({"x-forwarded-for": DEV}), True)
+g._tailscale_peers = lambda: PEERS
+os.environ["VL_DEVICE_ADDRS"] = f" {DEV} , 100.64.0.10"
+g._TS_CACHE.update(at=0.0, raw="", peers=None)
 
 # ---------- 口 ----------
 h = {"host": TS}
@@ -121,6 +150,20 @@ finally:
 check("通し: 機械の住所からの発言は via=device で頭に渡る", dict(seen_via).get("機械の住所から"), "device")
 check("通し: 画面からの発言は via なし", dict(seen_via).get("画面から"), "")
 
+# 添付の形が違う発言は、本体が送らずに断る。機械からなら、断った発言も機械の印で台帳に載る（a2a 356c8a73 の 3）
+with TestClient(s.app, base_url=f"https://{TS}") as c:
+    with c.websocket_connect(f"wss://{TS}/ws", headers={"x-forwarded-for": DEV, "host": TS}) as w:
+        n0 = len(s.hermes.HERMES_TURNS)
+        w.send_text(json.dumps({"type": "text", "text": "いいえ", "pane": s.hermes.HERMES_PANE, "speaker": "8", "attachments": ["../../etc/passwd"]}))
+        for _ in range(200):
+            if len(s.hermes.HERMES_TURNS) > n0:
+                break
+            time.sleep(0.02)
+check("通し: 添付を断った機械の発言も、台帳では機械", s.hub_via(s.hub_human_turn()), "device")
+s.hermes.HERMES_TURNS.clear()
+s.hermes._load_hermes_turns()
+check("通し: 起動し直しても、断った機械の発言は機械", s.hub_via(s.hub_human_turn()), "device")
+
 # ---------- 守り ----------
 s._worker = lambda pane: None  # セッションは見つからない（守りの先に進んだかを、見つからないの答えで見る）
 s.REPORTING = False
@@ -153,6 +196,26 @@ check("守り: 画面からの発言は、いまの守りに進む（相手が�
 got, code = close({"pane": "w0:p1", "confirmed": True})
 check("守り: 画面からの閉じる許可も、いまの守りに進む", got.get("reason"), "gone")
 
+# 入れ替わり: 入口で見た最後の発言は画面のもの。セッションを確かめている間に、機械からの「はい」が届く（a2a 356c8a73 の 2）
+hm.hermes_turn_begin("ふつうの発言")
+real_worker, real_trust, real_prompt = s._worker, s.pane_shows_trust, s.read_prompt
+sent_keys = []
+
+
+def worker_then_device(pane):
+    hm.hermes_turn_begin("はい、許可して", via="device")  # 確かめの途中で、機械からの発言が台帳の最後に入る
+    return {"status": "blocked", "cwd": "/x/proj", "session": "s1", "project": "proj", "title": "t"}
+
+s._worker = worker_then_device
+s.pane_shows_trust = lambda pane: False
+s.read_prompt = lambda pane: "Do you want to proceed?\n❯ 1. Yes\n  2. No"
+real_send = getattr(s, "send_keys", None)
+try:
+    got, code = answer({"pane": "w0:p1", "answer": "yes"})
+finally:
+    s._worker, s.pane_shows_trust, s.read_prompt = real_worker, real_trust, real_prompt
+check("守り: 確かめの途中で機械の発言が入れ替わりで届いても、それを答えに使わない", got.get("reason"), "device")
+
 check("守り: 台帳に無い発言は機械として扱う", s.HUB.via("hzzzzzzzzzzzz"), "device")
 check("守り: 発言が無ければ空", s.hub_via(None), "")
 
@@ -161,9 +224,8 @@ hm.HERMES_TURNS.clear()
 hm._load_hermes_turns()
 check("守り: 起動し直しても、機械からの発言は機械", s.HUB.via(t_dev), "device")
 check("守り: 起動し直しても、画面からの発言は画面", s.HUB.via(t_scr), "")
-check("守り: 起動し直したあとの最後の発言は画面のもの", s.hub_human_turn(), t_scr)
-log = [json.loads(x) for x in Path(hm.HERMES_LOG).read_text().splitlines() if x.strip()]
-check("守り: 記録の発言に via が残る（機械だけ）", [d.get("via") for d in log if d.get("role") == "me"][-2:], ["device", None])
+log = {d.get("turn"): d for d in (json.loads(x) for x in Path(hm.HERMES_LOG).read_text().splitlines() if x.strip()) if d.get("role") == "me"}
+check("守り: 記録の発言に via が残る（機械だけ）", (log[t_dev].get("via"), log[t_scr].get("via")), ("device", None))
 
 # ---------- 声 ----------
 def tone_wav(sec=0.4, rate=24000):

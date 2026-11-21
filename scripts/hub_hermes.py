@@ -1524,11 +1524,11 @@ class Hermes(Brain, Talker):
     def ask(self, text: str) -> str:
         return ask_hermes(text)
 
-    async def refused(self, text: str, why: str):
+    async def refused(self, text: str, why: str, via: str = ""):
         # 往復と同じ鍵の中で載せる: 前の往復（画面が止めても裏で続く）がまだ返事を待っていれば、それが終わって最後に聞いた文を書いたあとで
         # 空にする（鍵の外で空にすると、あとから終わった往復が古い返事で書き戻し、利用者に届いていない問いが次の発言の「聞いた文」になる）
         async with core.pane_lock(HERMES_PANE):
-            turn = hermes_turn_begin(text, heard="", refused=True)  # 断った発言も台帳に載せる（「すぐ次の発言」を進め、保留中の確認を失効させる。承認・閉じる許可にはならない）
+            turn = hermes_turn_begin(text, heard="", refused=True, via=via)  # 断った発言も台帳に載せる（「すぐ次の発言」を進め、保留中の確認を失効させる。承認・閉じる許可にはならない）
             HERMES_HEARD["text"] = ""  # 利用者が聞くのは本体の断り（前に聞いた問いへの答えに、次の発言を使わせない。失敗のときと同じ）
             await asyncio.to_thread(hermes_log, "error", why[:300], turn=turn)
             _unsaved.discard(turn)  # 画面には断りをそのまま出すので、記録に書けたかは返さない
