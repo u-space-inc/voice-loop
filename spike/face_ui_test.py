@@ -8,7 +8,8 @@
   - 状態の文が顔の下に出る。失敗の理由（聞き取れなかったなど）も顔の下に出る
   - 再生にタップが要るとき（自動の再生を断られた）に顔を押すと、録音ではなく再生を始める
   - 「画面に戻る」に Enter を押すと戻る（顔のキー操作で止めない）。顔のキーの長押しの繰り返しでは押さない
-  - 「停止」で再生を止めたら、口を閉じる
+  - 「停止」で再生を止めたら、口を閉じる。録音中は、再生の始まり・終わり・停止でも「聞いている」のまま
+  - タップのときに画面を消さない許可を頼み、外されたら画面に戻ったときに取り直す
   - 録音中・再生中に接続が切れたら、録音や再生の終わりで「ふつう」に戻さず「つながっていない」のまま
 使い方: uv run spike/face_ui_test.py"""
 import json
@@ -110,6 +111,8 @@ with sync_playwright() as pw:
     check("顔: タップすると「タップして話す」が押される", pg.evaluate("window.__talk"), 1)
     pg.wait_for_function("document.getElementById('face').dataset.s === 'listen'", timeout=10000)
     check("顔: 録音中は「聞いている」", pg.evaluate("document.getElementById('face').dataset.s"), "listen")
+    pg.evaluate("face('speak'); finishSpeaking()")  # 録音中に、前の返答・ハブの報告の再生が始まり、終わる
+    check("顔: 録音中は、再生の始まり・終わりでも「聞いている」のまま", pg.evaluate("document.getElementById('face').dataset.s"), "listen")
     pg.evaluate("ws.close()")  # 録音中に接続が切れる（画面は録音を止め、2 秒後につなぎ直す）
     pg.wait_for_timeout(600)
     check("顔: 録音中に切れたら、録音の終わりでも「つながっていない」のまま", pg.evaluate("document.getElementById('face').dataset.s"), "offline")
@@ -124,6 +127,18 @@ with sync_playwright() as pw:
     pg.evaluate("face('idle')")
 
     # 再生にタップが要るとき（iPhone で自動の再生を断られたとき）は、顔を押すと再生を始める
+    # 画面を消さない許可: タップで頼み、外されたら、画面に戻ったときに取り直す
+    pg.evaluate("window.__wake = 0; window.__sentinel = null; Object.defineProperty(navigator, 'wakeLock', { configurable: true, value: { request: async () => {"
+                " window.__wake++; const w = new EventTarget(); window.__sentinel = w; return w; } } })")
+    pg.evaluate("window.__talk = 0")
+    pg.locator("#face svg").click()  # 録音を始める（作り物のマイク）
+    pg.wait_for_function("window.__wake === 1 && rec && rec.state === 'recording'", timeout=10000)
+    pg.locator("#face svg").click()  # 送る（作り物の音なので短すぎるか、聞き取れない）
+    pg.wait_for_function("rec.state !== 'recording'", timeout=10000)
+    pg.evaluate("window.__sentinel.dispatchEvent(new Event('release')); document.dispatchEvent(new Event('visibilitychange'))")
+    pg.wait_for_function("window.__wake === 2", timeout=5000)
+    check("顔: 外された画面を消さない許可を、画面に戻ったときに取り直す", pg.evaluate("window.__wake"), 2)
+
     pg.evaluate("window.__talk = 0; window.__tap = 0; document.getElementById('tap').addEventListener('click', () => { window.__tap++; }, true);"
                 "queue.push(new ArrayBuffer(8)); showTap(true)")
     pg.locator("#face svg").click()

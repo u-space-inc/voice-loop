@@ -1043,7 +1043,7 @@ function playNext() {
 player.addEventListener('ended', () => { if (nowSilent) { nowSilent = false; if (queue.length && !playing) playNext(); return; } playNext(); });
 player.addEventListener('error', () => { if (nowSilent || !playing) return; clog('audio error code=' + (player.error && player.error.code)); playNext(); });
 $('tap').onclick = () => { showTap(false); playNext(); };
-function stopPlayback() { gen++; queue = []; playing = false; accepting = false; player.pause(); showTap(false); if (speakingEl) speakingEl.classList.remove('speaking'); speakingEl = null; face(rec && rec.state === 'recording' ? 'listen' : 'idle'); } // 止めたら口を閉じる（録音中なら聞いている顔のまま）
+function stopPlayback() { gen++; queue = []; playing = false; accepting = false; player.pause(); showTap(false); if (speakingEl) speakingEl.classList.remove('speaking'); speakingEl = null; face('idle'); } // 止めたら口を閉じる（録音中なら、face が聞いている顔のままにする）
 function finishSpeaking(msg = muted ? '返答が届きました（文字だけ）' : '話し終わりました') { if (speakingEl) speakingEl.classList.remove('speaking'); speakingEl = null; setStatus(msg); face('idle'); }
 
 // ---------- 読み上げの切り替え（🔇） ----------
@@ -2247,17 +2247,22 @@ Promise.race([Promise.allSettled([loadAgents(), ensureSpeakers()]).then(() => tr
 
 // ---------- 顔の表示（/?face） ----------
 // 表情: idle（ふつう）・listen（聞いている）・think（考えている）・speak（話している）・offline（つながっていない）。顔をタップすると「タップして話す」と同じ
-// つながっていない間は、ほかの表情より「つながっていない」を優先する（再生の始まり・終わり・録音の終わり・失敗の知らせが、切断の顔を上書きしないように。codex-review c62083a）
-function face(s) { if (FACE) $('face').dataset.s = linked() ? s : 'offline'; }
+// 表情の優先: つながっていない ＞ 録音中（聞いている）＞ 頼まれた表情。再生の始まり・終わり・停止・失敗の知らせが、
+// 切断や録音中の顔を上書きしないように（顔の表示では録音のボタンが隠れているので、録音中だと分からなくなる。codex-review c62083a・04b0694）
+function face(s) { if (FACE) $('face').dataset.s = !linked() ? 'offline' : rec && rec.state === 'recording' ? 'listen' : s; }
 if (FACE) {
   $('face').hidden = false;
-  let wake = null;
+  let wake = null, wantWake = false;
+  const askWake = () => { // 画面を消さない（一度タップして頼んだあとは、画面に戻るたびに取り直す。ほかのアプリへ移ると、ブラウザが外すため）
+    try { if (!wake && navigator.wakeLock) navigator.wakeLock.request('screen').then(w => { wake = w; w.addEventListener('release', () => { wake = null; }); }).catch(() => {}); } catch {}
+  };
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && wantWake) askWake(); });
   const tapFace = e => {
     if (e.target.closest('#faceBack')) return;
     if ($('tap').style.display === 'inline-block') { $('tap').click(); return; } // 再生にタップが要るとき（自動の再生を断られた）は、録音ではなく再生を始める（codex-review 779f0c2）
     if ($('talk').disabled) { $('faceCap').textContent = 'いまは話せません（' + ($('statusText').textContent || '準備中') + '）'; return; } // 黙って何もしないと、壊れたように見える
     $('talk').click(); // 先に押す（録音と再生の準備は、タップの中で始める必要がある）
-    try { if (!wake && navigator.wakeLock) navigator.wakeLock.request('screen').then(w => { wake = w; w.addEventListener('release', () => { wake = null; }); }).catch(() => {}); } catch {}
+    wantWake = true; askWake();
   };
   $('face').addEventListener('click', tapFace);
   $('face').addEventListener('keydown', e => { if (e.target.closest('#faceBack')) return; if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); if (!e.repeat) tapFace(e); } }); // 戻るリンクの Enter は止めない。長押しの繰り返しでは押さない（codex-review b5a95ff）
