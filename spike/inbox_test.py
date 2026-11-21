@@ -378,7 +378,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     d = get()
     check("一覧は「不要だった」の理由の選び方（key と画面の文）と、空の手本を返す",
           ([o["key"] for o in d["unneeded_options"]], d["unneeded_options"][0]["label"], d["lessons"], d["lessons_more"]),
-          (["notice", "test", "alarm", "notmine", "none"], "周知・お知らせだった", [], 0))
+          (["notice", "test", "alarm", "notmine", "none"], "お知らせ", [], 0))
     check("不要だった: 決めた選び方の key でなければ断る（文字の理由・数・空・null 以外の形）。予約もしない",
           ([post("/api/inbox/done", {"n": 71, "unneeded": v}).status_code for v in ("周知", "rm -rf", "", 1, True, ["notice"], {"k": 1})], ns(get())),
           ([400] * 7, [71, 72, 73]))

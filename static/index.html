@@ -179,6 +179,14 @@
   .ibActs { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
   .ibActs button, .ibActs a, .ibActs select { border:1px solid #6b5a2a; border-radius:8px; background:none; color:var(--fg); font-size:13px; padding:6px 12px; text-decoration:none; }
   .ibActs .go { background:#2f7d58; border-color:transparent; color:#eafff3; font-weight:600; }
+  /* 済ませ方: 理由（任意）は PC の幅では丸印、スマホの幅では選ぶ欄。あとでは時刻のボタン（1 回で隠す） */
+  .ibDone { display:flex; flex-direction:column; gap:6px; margin-top:4px; padding-top:8px; border-top:1px solid #2a2618; }
+  .ibWhy { display:none; flex-wrap:wrap; gap:2px 12px; margin:0; padding:0; border:none; min-width:0; }
+  .ibWhy legend { padding:0; margin-bottom:3px; font-size:11px; color:var(--mute); }
+  .ibWhy label { display:flex; align-items:center; gap:4px; padding:2px 0; font-size:13px; white-space:nowrap; cursor:pointer; }
+  .ibWhy input { margin:0; accent-color:#2f7d58; cursor:pointer; }
+  body.wide .ibWhy { display:flex; } body.wide .ibWhySel, body.wide .ibWhyNote { display:none; }
+  .ibLaterRow { padding-top:8px; border-top:1px solid #2a2618; } .ibLaterRow .ibLabel { font-size:12px; margin-right:2px; }
   .ibNote { font-size:11px; color:var(--mute); overflow-wrap:anywhere; }
   .noteHead { display:flex; align-items:flex-start; gap:6px; } .noteHead b { flex:1; }
   .noteAll { margin-left:8px; font-size:12px; }
@@ -692,6 +700,7 @@ navigator.serviceWorker?.addEventListener('message', e => {
 // 受け箱（💡）の状態: 最後に読んだ一覧・開いている件の番号・通知で開く件・案件の絞り込み・戻せる件・「その他」と畳みの開閉・案内・描いた件の印
 let ibExtra = null, ibWantTok = 0;
 let ibGen = 0;  // 手元で一覧を変えた（済んだ・戻す・あとで）世代。それより前に始まった読み直しの答えでは、一覧を戻さない
+let ibWhy = null;  // 件の中身で選んだ「不要だった」の理由 { n, key }（中身を描き直しても残す。別の件を開くと外す）
 const ibUndos = new Map();  // 戻せる件: 番号 → { n, title, until }（5 秒以内に何件押しても、件ごとに戻せる）  // ibWantTok: 通知で開く予約の世代（閉じる・別の通知で進む）  // 通知・リンクで開いた、一覧に出ていない 1 件（あとでに回した件・数の上限から外れた件）
 let inbox = null, ibSel = null, ibWant = null, ibProj = '', ibOther = false, ibOld = false, ibFyiOpen = false, ibAiOpen = true, ibMsg = null, ibSig = '';
 // 返信先。報告（{ at, about }）か、受け箱の判断待ち（{ item: 番号, about: 題 }）。ハブの会話のときだけ付けて送り、送ったら外す。相手を替えたら外す
@@ -1307,6 +1316,7 @@ const findItem = (d, n) => (d && d !== FAILED && Array.isArray(d.items) ? d.item
 function openItem(n, seq = topicSeq) {
   ibWant = null; ibWantTok++;  // 利用者が選んだ（通知の件を開いた）ら、遅れて届く通知の 1 件の結果で上書きしない
   ibSel = n; ibSig = '';
+  if (ibWhy && ibWhy.n !== n) ibWhy = null;  // 選んだ理由は、その件の中身にだけ残す
   const it = findItem(inbox, n);
   renderSit();
   $('situation').scrollTop = 0;
@@ -1325,9 +1335,9 @@ async function itemReply(it, seq = topicSeq) {
 }
 function closeItem() {
   if (replyTarget && replyTarget.item === ibSel) setReplyTarget(null);  // 件を閉じたら、その件への返信もやめる
-  ibSel = null; ibSig = ''; ibExtra = null; renderSit();
+  ibSel = null; ibSig = ''; ibExtra = null; ibWhy = null; renderSit();
 }
-// unneeded は「不要だった」の理由の key（本体の unneeded_options）。無ければ「済んだ」
+// unneeded は「不要だった」の理由の key（本体の unneeded_options）。無ければ、ふつうの「済んだ」
 async function doneItem(it, unneeded = null) {
   ibGen++;  // 押す前に始まった読み直しの答えでは、一覧を戻さない
   const t0 = performance.now();
@@ -1335,9 +1345,10 @@ async function doneItem(it, unneeded = null) {
   let r; try { r = await postJSON('/api/inbox/done', unneeded ? { n: it.n, unneeded } : { n: it.n }); } catch { ibNote(what + '（本体に届きません）', true); renderSit(); return; }
   if (!r.ok) {
     ibNote({ gone: 'この判断待ちは、もう片づいているか見つかりません', unreadable: '判断待ちの記録を読めません',
-      busy: 'この件は、ほかの画面で「済んだ」か「不要だった」を押したところです（数秒で片づきます。違う方にするなら、その画面で「戻す」を押してください）' }[r.reason] || what, true);
+      busy: 'この件は、ほかの画面で「済んだ」を押したところです（数秒で片づきます。理由を変えるなら、その画面で「戻す」を押してください）' }[r.reason] || what, true);
     loadSituation(); return;
   }
+  if (ibWhy && ibWhy.n === it.n) ibWhy = null;
   if (ibSel === it.n) closeItem();
   // 「戻す」を出すのは、本体が返した残りの秒から、送ってから受け取るまでにかかった時間を引いた分だけ
   // （本体が残りを数えたのは、その間のどこか。応答が遅れても・押し直しても、本体より長く出さない。端末の時計には頼らない）
@@ -1411,27 +1422,53 @@ function itemView(it) {
   }
   if (it.link && LINK_OK.test(it.link.url)) { const a = node('a', null, it.link.label + ' ↗'); a.href = it.link.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; acts.appendChild(a); }
   if (acts.childNodes.length) { v.appendChild(acts); v.appendChild(node('div', 'ibNote', '送るのはご自分です（コピーして、メール・Teams・Slack に貼って送ります）')); }
-  const acts2 = node('div', 'ibActs');
-  const done = node('button', 'go', '済んだ'); done.type = 'button'; done.onclick = () => { done.disabled = true; doneItem(it); }; acts2.appendChild(done);
-  // 不要だった: そもそも判断待ちでなかった。見張りの手本になる（同じ種類の知らせは、次から判断待ちにせず「届いたもの（対応不要）」に入る）
+  // 済ませ方: 「済んだ」は、そのまま押せばふつうの済。理由（任意）を選んでから押すと「不要だった」になり、見張りの手本になる
+  // （同じ種類の知らせは、次から判断待ちにせず「届いたもの（対応不要）」に入る）。理由は PC の幅では丸印、スマホの幅では選ぶ欄（同じ選択を両方に写す）
   const opts = inbox?.unneeded_options || [];
+  const whyKey = () => (ibWhy && ibWhy.n === it.n && opts.some(o => o.key === ibWhy.key) ? ibWhy.key : '');
+  const doneBox = node('div', 'ibDone');
+  const acts2 = node('div', 'ibActs');
+  const done = node('button', 'go', '済んだ'); done.type = 'button';
+  done.onclick = () => { done.disabled = true; doneItem(it, whyKey() || null); };
+  acts2.appendChild(done);
   if (opts.length) {
-    const un = document.createElement('select'); un.className = 'ibUnneeded'; un.setAttribute('aria-label', '不要だった（理由を選ぶ）');
-    un.appendChild(new Option('不要だった ▾', ''));
-    for (const o of opts) un.appendChild(new Option(o.label, o.key));
-    un.onchange = () => { if (un.value) { un.disabled = true; doneItem(it, un.value); } };
-    acts2.appendChild(un);
+    const fs = document.createElement('fieldset'); fs.className = 'ibWhy';
+    fs.appendChild(node('legend', null, '不要だった？（任意。選ぶと見張りの手本になります）'));
+    const radios = [['', 'なし'], ...opts.map(o => [o.key, o.label])].map(([k, l]) => {
+      const lab = node('label'); const r = document.createElement('input');
+      r.type = 'radio'; r.name = `ibWhy${it.n}`; r.value = k; r.onchange = () => setWhy(k);
+      lab.append(r, l); fs.appendChild(lab); return r;
+    });
+    const sel = document.createElement('select'); sel.className = 'ibWhySel'; sel.setAttribute('aria-label', '不要だった（任意。理由を選ぶと見張りの手本になります）');
+    sel.appendChild(new Option('不要だった？（任意）', ''));
+    for (const o of opts) sel.appendChild(new Option(o.label, o.key));
+    sel.onchange = () => setWhy(sel.value);
+    const sync = () => {
+      const k = whyKey();
+      radios.forEach(r => { r.checked = r.value === k; }); sel.value = k;
+      done.textContent = k ? '済んだ（不要だった）' : '済んだ';
+    };
+    const setWhy = k => { ibWhy = k ? { n: it.n, key: k } : null; sync(); };
+    sync();
+    doneBox.appendChild(fs); acts2.appendChild(sel);
   }
-  const later = document.createElement('select'); later.className = 'ibLater'; later.setAttribute('aria-label', 'あとでに回す');
-  later.appendChild(new Option('あとで ▾', ''));
-  for (const o of inbox?.later_options || []) later.appendChild(new Option(o.label, o.key));
-  later.onchange = () => { if (later.value) laterItem(it, later.value); };
-  acts2.appendChild(later);
+  doneBox.appendChild(acts2);
+  if (opts.length) doneBox.appendChild(node('div', 'ibNote ibWhyNote', '理由を選んでから「済んだ」を押すと、見張りの手本になります'));
+  v.appendChild(doneBox);
+  // あとで: 時刻を 1 回押すだけで、その時刻まで隠す
+  const lopts = inbox?.later_options || [];
+  if (lopts.length) {
+    const lr = node('div', 'ibActs ibLaterRow'); lr.appendChild(node('span', 'ibLabel', 'あとで'));
+    for (const o of lopts) {
+      const b = node('button', 'ibLater', o.label); b.type = 'button'; b.dataset.key = o.key;
+      b.onclick = () => { lr.querySelectorAll('button').forEach(x => { x.disabled = true; }); laterItem(it, o.key); };
+      lr.appendChild(b);
+    }
+    v.appendChild(lr);
+  }
   const on = replyTarget && replyTarget.item === it.n;
-  if (!on) { const rb = node('button', null, '↩ この件に返信'); rb.type = 'button'; rb.onclick = () => itemReply(it); acts2.appendChild(rb); }
-  v.appendChild(acts2);
-  if (opts.length) v.appendChild(node('div', 'ibNote', '「不要だった」は、見張りの手本になります。同じ種類の知らせは、次から判断待ちにせず「今日届いたもの（対応不要）」に入ります（手本は「その他」の学んだことで外せます）'));
-  v.appendChild(node('div', 'ibNote', on ? 'いまこの件への「↩ 返信」の状態です。下の欄で、ことばを添えて「送る」か、空のまま「このまま送る」を押すと、ハブが答えます（答えはハブの会話に出ます）。開いただけでは何も送りません'
+  if (!on) { const acts3 = node('div', 'ibActs'); const rb = node('button', null, '↩ この件に返信'); rb.type = 'button'; rb.onclick = () => itemReply(it); acts3.appendChild(rb); v.appendChild(acts3); }
+  v.appendChild(node('div', 'ibNote', on ?'いまこの件への「↩ 返信」の状態です。下の欄で、ことばを添えて「送る」か、空のまま「このまま送る」を押すと、ハブが答えます（答えはハブの会話に出ます）。開いただけでは何も送りません'
     : '「↩ この件に返信」で、この件についてハブに聞けます'));
   return v;
 }

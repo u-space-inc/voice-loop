@@ -7,7 +7,8 @@ Hermes の置き場は一時のフォルダ、Hermes の API とコンテナの�
 - カードを押すと中身が開き、ハブの会話に替わって、その件への「↩ 返信」の状態になる。開いただけでは何も送らない
 - 空のまま「このまま送る」で、件の前置きつきで送る。ことばを添えれば「送る」。送ったら返信先は外れ、「↩ この件に返信」で付け直せる
 - 済んだ: すぐ消えて「戻す」が出る。戻すと何もしない。時間がたつとコンテナの中の道具に付けさせる
-- あとで: 選んだ時刻まで隠す
+- 済んだ: 理由（任意）を選ばずに押せば、ふつうの済。選んでから押せば「不要だった」（PC の幅は丸印、スマホの幅は選ぶ欄。選ぶだけでは片づけない）
+- あとで: 時刻のボタンを 1 回押すと、その時刻まで隠す
 - 通知・リンクの /#i=<番号> でその件、/#inbox で受け箱が開く（無い番号は案内だけ）
 - 知らせが届いても、会話の欄に「📨」の行を出さない（💡 の数だけ変わる）
 - スマホの幅で横にはみ出さない
@@ -262,7 +263,7 @@ def run(page, who):
         return cards(page)
     # あとで: 応答を待つ間に始まった読み直しが最後に届いても、隠した件を戻さない
     page.locator("#sitBody > .ibCard").first.click()
-    got = race("/api/inbox/later", lambda: page.select_option(".ibItem select.ibLater", "morning"),
+    got = race("/api/inbox/later", lambda: page.click('.ibItem button.ibLater[data-key="morning"]'),
                lambda: wait(lambda: cards(page) == ["処理時間のアラーム"], 5))
     check(f"{who} あとでの応答を待つ間に始まった読み直しが最後に届いても、隠した件を戻さない", got, ["処理時間のアラーム"])
     ib.STATE_FILE.unlink(missing_ok=True)  # 次の確かめのために元へ戻す（読み直しを繰り返して、2 枚に戻るまで待つ）
@@ -319,21 +320,33 @@ def run(page, who):
     check(f"{who} 数だけ取り直したあとでも、押したカードはその場で消え、戻すと一覧に戻る",
           (after, wait(lambda: cards(page) == [TITLE1], 6)), (([], 1), True))
     check(f"{who} 「戻す」を押したら、読み直しを待たずにその場で消す", undone, True)
-    # あとで
+    # あとで: 時刻のボタンを 1 回押すだけで隠す
     page.locator("#sitBody > .ibCard").first.click()
-    page.select_option(".ibItem select.ibLater", "morning")
+    later = page.eval_on_selector_all(".ibItem .ibLaterRow button.ibLater", "els => els.map(e => e.dataset.key)")
+    check(f"{who} あとで: 本体が決めた時刻を、ボタンで並べる（選ぶ欄ではない）",
+          (later[-2:], page.locator(".ibItem select.ibLater").count()), (["morning", "week"], 0))
+    page.click('.ibItem button.ibLater[data-key="morning"]')
     page.wait_for_function("!document.querySelector('.ibItem') && document.querySelectorAll('#sitBody > .ibCard').length === 0")
     check(f"{who} あとで: 隠して数を出し、その件への返信もやめる",
           ("あとでに回したもの 1 件" in page.text_content("#sitBody"), page.is_visible("#replyBar")), (True, False))
-    # 不要だった（見張りの手本）: 件の中身で理由を選ぶと、すぐ消えて「戻す」が出る。時間がたつと不要の印。「その他」に手本が並び、「外す」で外せる
+    # 不要だった（見張りの手本）: スマホの幅では、件の中身の選ぶ欄で理由を選んでから「済んだ」を押す（選ぶだけでは片づけない）。
+    # すぐ消えて「戻す」が出る。時間がたつと不要の印。「その他」に手本が並び、「外す」で外せる
     seed()
     page.goto(BASE + "/#i=2")
     page.wait_for_selector(".ibItem h3")
-    opts = page.eval_on_selector_all(".ibItem select.ibUnneeded option", "els => els.map(e => [e.value, e.textContent])")
-    check(f"{who} 件の中身に「不要だった ▾」と、本体が決めた理由の選び方を出す",
-          opts, [["", "不要だった ▾"], ["notice", "周知・お知らせだった"], ["test", "試験・dev の通知だった"], ["alarm", "既知のアラームだった"],
-                 ["notmine", "自分の件ではなかった"], ["none", "理由は選ばない"]])
-    page.select_option(".ibItem select.ibUnneeded", "alarm")
+    opts = page.eval_on_selector_all(".ibItem select.ibWhySel option", "els => els.map(e => [e.value, e.textContent])")
+    check(f"{who} スマホの幅: 件の中身に「不要だった？（任意）」の選ぶ欄と、本体が決めた理由を出す（丸印は出さない）",
+          (opts, page.is_visible(".ibItem .ibWhySel"), page.is_visible(".ibItem .ibWhy"), page.text_content(".ibItem .ibDone button.go")),
+          ([["", "不要だった？（任意）"], ["notice", "お知らせ"], ["test", "試験・dev"], ["alarm", "既知のアラーム"],
+            ["notmine", "自分の件でない"], ["none", "その他"]], True, False, "済んだ"))
+    page.select_option(".ibItem select.ibWhySel", "alarm")
+    time.sleep(ib.UNDO + 0.5)
+    check(f"{who} 理由を選ぶだけでは片づけず、「済んだ」の文が「済んだ（不要だった）」に変わる",
+          (page.locator(".ibItem").count(), page.text_content(".ibItem .ibDone button.go"), CMDS), (1, "済んだ（不要だった）", []))
+    page.evaluate("ibSig = ''; renderSit()")  # 中身を描き直しても、選んだ理由は残る
+    check(f"{who} 中身を描き直しても、選んだ理由は残る",
+          (page.eval_on_selector(".ibItem select.ibWhySel", "e => e.value"), page.text_content(".ibItem .ibDone button.go")), ("alarm", "済んだ（不要だった）"))
+    page.click(".ibItem .ibDone button.go")
     page.wait_for_selector("#sitBody .ibToast")
     check(f"{who} 不要だった: 一覧に戻り、すぐ消えて「不要にしました…（見張りの手本にします）」と「戻す」を出す（まだ道具は動かさない）",
           (page.text_content("#sitBody .ibToast span"), cards(page), CMDS), ("不要にしました「処理時間のアラーム」（見張りの手本にします）", [TITLE1], []))
@@ -581,6 +594,30 @@ def run_wide(page, who):
     page.locator("#sitBody > .ibCard").first.click()
     time.sleep(1.5)
     check(f"{who} 押すと中身が開き、返信の状態になる（まだ送らない）", (page.is_visible(".ibItem h3"), page.text_content("#send"), ASKED), (True, "このまま送る", []))
+    # PC の幅: 理由（任意）は丸印で出す（選ぶ欄は出さない）。最初は「なし」。あとでは時刻のボタン
+    radios = page.eval_on_selector_all(".ibItem .ibWhy input[type=radio]", "els => els.map(e => [e.value, e.checked, e.parentElement.textContent])")
+    check(f"{who} PC の幅: 理由（任意）を丸印で出し、最初は「なし」。選ぶ欄は出さない。あとでは時刻のボタン",
+          (radios[:1], [r[0] for r in radios[1:]], page.is_visible(".ibItem .ibWhy"), page.is_visible(".ibItem .ibWhySel"),
+           page.text_content(".ibItem .ibDone button.go"), page.locator(".ibItem .ibLaterRow button.ibLater").count() >= 2),
+          ([["", True, "なし"]], ["notice", "test", "alarm", "notmine", "none"], True, False, "済んだ", True))
+    page.click('.ibItem .ibWhy input[value="test"]')
+    t1 = page.text_content(".ibItem .ibDone button.go")
+    page.click('.ibItem .ibWhy label:has-text("なし")')
+    t2 = page.text_content(".ibItem .ibDone button.go")
+    check(f"{who} 丸印を選ぶと「済んだ（不要だった）」、「なし」に戻すと「済んだ」。選んだだけでは片づけない",
+          (t1, t2, page.locator(".ibItem").count(), CMDS), ("済んだ（不要だった）", "済んだ", 1, []))
+    page.click(".ibItem .ibDone button.go")  # 選ばずに「済んだ」: ふつうの済（不要の印は付けない）
+    check(f"{who} 選ばずに「済んだ」を押すと、ふつうの済の印を付けさせる",
+          (wait(lambda: len(CMDS) == 1, 6), CMDS[0][-6:] if CMDS else None), (True, ["done", "1", "--by", "user", "--note", ib.DONE_NOTE]))
+    wait(lambda: cards(page) == ["処理時間のアラーム"], 8)
+    page.locator("#sitBody > .ibCard").first.click()
+    page.wait_for_selector(".ibItem .ibWhy")
+    page.click('.ibItem .ibWhy label:has-text("自分の件でない")')  # 丸印の文を押しても選べる
+    page.click(".ibItem .ibDone button.go")
+    page.wait_for_selector("#sitBody .ibToast")
+    check(f"{who} 丸印で理由を選んで「済んだ」を押すと、不要の印と理由を付けさせる",
+          (page.text_content("#sitBody .ibToast span"), wait(lambda: len(CMDS) == 2, 6), CMDS[1][-8:] if len(CMDS) > 1 else None),
+          ("不要にしました「処理時間のアラーム」（見張りの手本にします）", True, ["2", "--by", "user", "--note", ib.UNNEEDED_NOTE, "--unneeded", "--why", "自分の件ではない"]))
 
 
 with sync_playwright() as pw:
