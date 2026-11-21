@@ -427,6 +427,7 @@ const $ = id => document.getElementById(id);
 // 顔の表示（/?face）。スマホを仮のスタックチャンにして、声だけで使う体感を確かめる。録音・再生・接続はこの画面のものをそのまま使う
 const FACE = new URLSearchParams(location.search).has('face');
 let faceOn = FACE; // 顔を閉じたら（通知で件を開いた・「画面に戻る」）、ふだんの画面として名乗り直す
+const FACE_HASH = location.hash; // 開いたときの場所。件・受け箱の処理が場所を消す前に控える（件の場所つきで開いたら、顔を閉じて中身を見せる）
 const setStatus = t => { $('statusText').textContent = t; if (FACE) $('faceCap').textContent = t; };
 let ws, rec, chunks = [], mime = '', ext = 'webm';
 let agents = [], agentsSig = '', threadSource = 'jsonl', loadSeq = 0;
@@ -2255,9 +2256,14 @@ if (FACE) {
   $('face').hidden = false;
   let wake = null, wantWake = false;
   const askWake = () => { // 画面を消さない（一度タップして頼んだあとは、画面に戻るたびに取り直す。ほかのアプリへ移ると、ブラウザが外すため）
-    try { if (!wake && navigator.wakeLock) navigator.wakeLock.request('screen').then(w => { wake = w; w.addEventListener('release', () => { wake = null; }); }).catch(() => {}); } catch {}
+    try {
+      if (!wake && navigator.wakeLock) navigator.wakeLock.request('screen').then(w => {
+        if (!faceOn) { w.release().catch(() => {}); return; } // 頼んでいる間に顔を閉じたら、すぐ手放す
+        wake = w; w.addEventListener('release', () => { wake = null; });
+      }).catch(() => {});
+    } catch {}
   };
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && wantWake) askWake(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && wantWake && faceOn) askWake(); });
   const tapFace = e => {
     if (e.target.closest('#faceBack')) return;
     if (rec && rec.state === 'recording') { $('talk').click(); return; } // 録音中は、まず録音を止めて送る（再生のタップ待ちより先。codex-review dc4b0b9）
@@ -2270,6 +2276,7 @@ if (FACE) {
   const closeFace = () => {
     if (!faceOn) return;
     faceOn = false; $('face').hidden = true;
+    wantWake = false; if (wake) { wake.release().catch(() => {}); wake = null; } // ふだんの画面では眠れるように、許可を手放す（codex-review bc775f6）
     try { history.replaceState(null, '', location.pathname + location.hash); } catch {}
     hello();
   };
@@ -2278,6 +2285,7 @@ if (FACE) {
   // 場所は、変わった先の URL で見る（受け箱の処理が先に動いて、場所を消すことがあるため）
   window.addEventListener('hashchange', e => { let h = ''; try { h = new URL(e.newURL).hash; } catch {} if (/^#(t=|inbox|i=)/.test(h)) closeFace(); });
   $('face').addEventListener('click', tapFace);
+  if (/^#(t=|inbox|i=)/.test(FACE_HASH)) closeFace(); // 件・受け箱・判断待ちの場所つきで開いたときも、顔を閉じて中身を見せる（最初の表示では hashchange が起きない）
   $('face').addEventListener('keydown', e => { if (e.target.closest('#faceBack')) return; if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); if (!e.repeat) tapFace(e); } }); // 戻るリンクの Enter は止めない。長押しの繰り返しでは押さない（codex-review b5a95ff）
   face('idle');
 }

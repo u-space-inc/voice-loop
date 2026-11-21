@@ -11,7 +11,8 @@
   - 通知・リンクで件・受け箱を開いたら、顔を閉じて中身を見せる
   - 録音中は、再生のタップ待ちがあっても、顔のタップで録音を止めて送る
   - 「停止」で再生を止めたら、口を閉じる。録音中は、再生の始まり・終わり・停止でも「聞いている」のまま
-  - タップのときに画面を消さない許可を頼み、外されたら画面に戻ったときに取り直す
+  - タップのときに画面を消さない許可を頼み、外されたら画面に戻ったときに取り直す。顔を閉じたら手放し（頼んでいる途中でも）、取り直さない
+  - 件・受け箱の場所つき（/?face#inbox など）で開いたときも、顔を閉じて中身を見せる
   - 録音中・再生中に接続が切れたら、録音や再生の終わりで「ふつう」に戻さず「つながっていない」のまま
 使い方: uv run spike/face_ui_test.py"""
 import json
@@ -130,8 +131,11 @@ with sync_playwright() as pw:
 
     # 再生にタップが要るとき（iPhone で自動の再生を断られたとき）は、顔を押すと再生を始める
     # 画面を消さない許可: タップで頼み、外されたら、画面に戻ったときに取り直す
-    pg.evaluate("window.__wake = 0; window.__sentinel = null; Object.defineProperty(navigator, 'wakeLock', { configurable: true, value: { request: async () => {"
-                " window.__wake++; const w = new EventTarget(); window.__sentinel = w; return w; } } })")
+    WAKE = ("window.__wake = 0; window.__released = 0; window.__sentinel = null; window.__wakeDelay = 0;"
+            "Object.defineProperty(navigator, 'wakeLock', { configurable: true, value: { request: async () => {"
+            " window.__wake++; if (window.__wakeDelay) await new Promise(r => setTimeout(r, window.__wakeDelay));"
+            " const w = new EventTarget(); w.release = async () => { window.__released++; w.dispatchEvent(new Event('release')); }; window.__sentinel = w; return w; } } })")
+    pg.evaluate(WAKE)
     pg.evaluate("window.__talk = 0")
     pg.locator("#face svg").click()  # 録音を始める（作り物のマイク）
     pg.wait_for_function("window.__wake === 1 && rec && rec.state === 'recording'", timeout=10000)
@@ -189,14 +193,26 @@ with sync_playwright() as pw:
     pg.wait_for_function("document.getElementById('face').hidden", timeout=5000)
     check("顔: 「画面に戻る」に Enter で、読み込み直さずに顔を閉じる（?face も外れる）",
           (pg.locator("#face").is_visible(), pg.evaluate("window.__talk ?? 0"), pg.evaluate("window.__keep"), pg.evaluate("location.search")), (False, 0, 1, ""))
+    w0 = pg.evaluate("window.__wake")
+    pg.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+    pg.wait_for_timeout(200)
+    check("顔: 閉じたら、画面を消さない許可を手放し、画面に戻っても取り直さない", (pg.evaluate("window.__released") >= 1, pg.evaluate("window.__wake") == w0), (True, True))
     pg.wait_for_function("window.__hello.length > 0", timeout=5000)
     check("顔: 閉じたら、名乗りを画面に戻す（kind なし）", pg.evaluate("window.__hello[window.__hello.length - 1].kind ?? null"), None)
     pg.goto(BASE + "/?face")
     pg.wait_for_function("document.getElementById('face').dataset.s === 'idle'", timeout=10000)
-    pg.evaluate("window.__keep = 2")
-    pg.locator("#faceBack").click()
+    pg.evaluate(WAKE + "; window.__wakeDelay = 400; window.__keep = 2")
+    pg.locator("#face svg").click()  # 許可を頼む（届くのは 0.4 秒後）。録音も始まる
+    pg.locator("#faceBack").click()  # 頼んでいる途中で閉じる
     pg.wait_for_function("document.getElementById('face').hidden", timeout=5000)
     check("顔: 「画面に戻る」を押すと、読み込み直さずに顔を閉じる", (pg.locator("#face").is_visible(), pg.evaluate("window.__keep")), (False, 2))
+    pg.wait_for_function("window.__released >= 1", timeout=5000)
+    check("顔: 許可を頼んでいる途中で閉じても、届いたらすぐ手放す", pg.evaluate("window.__released"), 1)
+    pg.evaluate("if (rec && rec.state === 'recording') stopRec()")
+    # 件・受け箱の場所つきで開いたとき（最初の表示では場所の変化が起きない）
+    pg.goto(BASE + "/?face#inbox")
+    pg.wait_for_function("document.getElementById('face').hidden", timeout=10000)
+    check("顔: 受け箱の場所つきで開いたら、顔を閉じる（?face も外れる）", (pg.locator("#face").is_visible(), pg.evaluate("location.search")), (False, ""))
     # 通知で受け箱・件を開いたら、顔を閉じて中身を見せる（通知は開いている画面の場所（#…）を変える）
     pg.goto(BASE + "/?face")
     pg.wait_for_function("document.getElementById('face').dataset.s === 'idle'", timeout=10000)
