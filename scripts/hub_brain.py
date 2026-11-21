@@ -43,6 +43,11 @@ class Brain:
         """本人が発言 turn の直前に聞いたハブの返答（本体が受け取った原文）。分からなければ空（守りは断る側に倒れる）。"""
         raise NotImplementedError
 
+    def via(self, turn: str) -> str:
+        """発言 turn がどこから来たか。機械（スタックチャン）からなら "device"、画面からなら空。
+        承認に答える・閉じるの守りが、機械からの発言を答えに使わないために見る。記録に残らない頭は "device"（断る側）を返す。"""
+        return "device"
+
     def reply_to(self, turn: str) -> str:
         """発言 turn へのハブの返答。"""
         raise NotImplementedError
@@ -102,15 +107,16 @@ class Talker:
         """送ったときの状態の文。"""
         raise NotImplementedError
 
-    async def exchange(self, text: str, reply_at: float | None = None, extra: str = "", item: int | None = None) -> tuple[str, str, bool]:
-        """ユーザーの発言を 1 往復する。(返事, 失敗の理由, 記録に書けたか)。reply_at は、画面の「返信」が指した報告の記録の時刻（無ければ None）。
+    async def exchange(self, text: str, reply_at: float | None = None, extra: str = "", item: int | None = None,
+                       via: str = "") -> tuple[str, str, bool]:
+        """ユーザーの発言を 1 往復する。via は発言の来た所（機械なら "device"。台帳に残し、承認に答える・閉じるの守りが見る）。(返事, 失敗の理由, 記録に書けたか)。reply_at は、画面の「返信」が指した報告の記録の時刻（無ければ None）。
         item は、画面の受け箱（💡）で押した判断待ちの記録の番号（無ければ None。形が違えば -1）。その件への返信として渡し、text は空でもよい。
         返信と同じく、承認に答える・閉じるには使わせない。
         extra は本体が発言の末尾に足す行（添付の場所）。相手に渡す文と記録には付けるが、承認・閉じるの守りが見る発言は利用者の言葉（text）のまま。"""
         raise NotImplementedError
 
-    async def refused(self, text: str, why: str):
-        """利用者の発言 text を、本体が送らずに断った（添付の形・宛先など。理由 why）。断った発言も台帳と記録に載せ、承認・閉じるの文脈を失効させる
+    async def refused(self, text: str, why: str, via: str = ""):
+        """利用者の発言 text を、本体が送らずに断った（via は発言の来た所。機械なら "device"）（添付の形・宛先など。理由 why）。断った発言も台帳と記録に載せ、承認・閉じるの文脈を失効させる
         （利用者が最後に聞いたのは本体の断り。前の問い・確認への答えに、次の発言を使わせない）。"""
         raise NotImplementedError
 

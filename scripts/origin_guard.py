@@ -21,6 +21,7 @@ Origin の無い接続（hubctl、curl、画面そのものの読み込み）は
   Tailscale のネットワーク拡張で見えないが、Tailscale Serve が X-Forwarded-For の最後に付ける接続元が、この Mac 自身の住所になる。
   そうした接続（コンテナか、この Mac の上で Tailscale の名前で開いたもの）もコンテナとして扱う。この Mac の上では 127.0.0.1 で開く。"""
 import asyncio
+import json
 import os
 import re
 import subprocess
@@ -102,6 +103,51 @@ def forwarded_from_self(headers: dict[str, str]) -> bool:
     return addrs is None or last in addrs
 
 
+_TS_CACHE = {"at": 0.0, "raw": "", "peers": None}  # tailscale status の写し（60 秒）
+
+
+def _tailscale_peers() -> list[dict] | None:
+    """tailnet の端末の一覧（tailscale status --json の Peer）。読めなければ None。"""
+    exe = os.environ.get("VL_TAILSCALE") or next((p for p in ("/usr/local/bin/tailscale", "/opt/homebrew/bin/tailscale",
+                                                             "/Applications/Tailscale.app/Contents/MacOS/Tailscale") if os.path.isfile(p)), "")
+    if not exe:
+        return None
+    try:
+        out = subprocess.run([exe, "status", "--json"], capture_output=True, text=True, timeout=5).stdout
+        return list((json.loads(out).get("Peer") or {}).values())
+    except Exception:
+        return None
+
+
+def device_addresses() -> set[str]:
+    """機械（スタックチャン）の tailnet の住所。VL_DEVICE_ADDRS にカンマ区切りで、住所（100.x か fd7a:…）か、機械の名前（tailnet の端末名）を書く。
+    tailnet の端末には IPv4 と IPv6 の住所が 1 つずつあるので、書いた住所・名前に当たる端末の住所を、tailscale の状態から全部足す
+    （IPv4 だけを書いて、IPv6 でつながれると機械と見分けられないため。a2a 356c8a73）。状態が読めないときは、書いたものだけ。"""
+    raw = os.environ.get("VL_DEVICE_ADDRS", "")
+    given = {a.strip().strip("[]").lower() for a in raw.split(",") if a.strip()}
+    if not given:
+        return set()
+    now = time.monotonic()
+    if _TS_CACHE["peers"] is None or _TS_CACHE["raw"] != raw or now - _TS_CACHE["at"] > 60:
+        peers = _tailscale_peers()
+        _TS_CACHE.update(at=now, raw=raw, peers=peers if peers is not None else [])
+    addrs = set(given)
+    for p in _TS_CACHE["peers"] or []:
+        ips = {str(ip).lower() for ip in (p.get("TailscaleIPs") or [])}
+        names = {str(p.get("HostName") or "").lower(), str(p.get("DNSName") or "").lower().split(".")[0]} - {""}
+        if ips & given or names & given:
+            addrs |= ips
+    return addrs - {name for name in given if not (":" in name or name.replace(".", "").isdigit())}  # 名前そのものは住所の一覧に残さない
+
+
+def from_device(headers) -> bool:
+    """中継（Tailscale Serve）が X-Forwarded-For の最後に付けた接続元が、機械の住所か。
+    最後の値は中継が付けるので、機械からは偽れない（前に値を足しても、最後は本当の接続元になる）。headers は小文字の名前で引ける対応表。"""
+    addrs = device_addresses()
+    xff = headers.get("x-forwarded-for", "") or ""
+    return bool(addrs) and bool(xff.strip()) and xff.split(",")[-1].strip().strip("[]").lower() in addrs
+
+
 def is_container(program: str | None) -> bool:
     """もとのプログラムがコンテナの中継か。調べられなかった（None）ときもコンテナとして扱う。"""
     if program is None:
@@ -115,9 +161,10 @@ def _allowed_name(name: str) -> bool:
     return name in LOCAL_NAMES or name.endswith(".ts.net") or name in extra
 
 
-def problem(headers: dict[str, str], method: str = "GET", path: str = "", container: bool = False) -> str | None:
-    """断る理由。通してよければ None。headers の名前は小文字。method と path はコンテナからの接続の判定にだけ使う。
-    container: 接続のもとがコンテナの中継のプログラムだった（Host に関係なく、コンテナからの接続として扱う）。"""
+def problem(headers: dict[str, str], method: str = "GET", path: str = "", container: bool = False, device: bool = False) -> str | None:
+    """断る理由。通してよければ None。headers の名前は小文字。method と path はコンテナと機械からの接続の判定に使う。
+    container: 接続のもとがコンテナの中継のプログラムだった（Host に関係なく、コンテナからの接続として扱う）。
+    device: 機械（VL_DEVICE_ADDRS の住所）からの接続。使えるのは WebSocket（/ws）だけ（画面のボタンの口・記憶・設定は使えない）。"""
     host = headers.get("host", "").strip().lower()
     try:
         name = urllib.parse.urlsplit("//" + host).hostname or ""
@@ -135,6 +182,8 @@ def problem(headers: dict[str, str], method: str = "GET", path: str = "", contai
         return None
     if not _allowed_name(name):
         return f"Host {host!r} はこの Mac の名前ではありません"
+    if device and (path != "/ws" or method):  # WebSocket は method が無い
+        return f"機械からは WebSocket（/ws）だけを使えます（{method or 'websocket'} {path}）"
     site = headers.get("sec-fetch-site", "").strip().lower()
     if site and site not in ("same-origin", "none") and (path.startswith("/api/") or path == "/ws"):
         return f"別のサイトからの {path} は使えません（Sec-Fetch-Site {site}）"
@@ -158,7 +207,8 @@ class SameOriginOnly:
             program = await asyncio.to_thread(peer_program, scope.get("client"), scope.get("server"))  # Host は偽れるので、接続のもとのプログラムも見る
             # もとが見えない接続（root の Tailscale の中継など）は、中継が付けた接続元がこの Mac 自身なら、コンテナとして扱う
             container = is_container(program) or (program == "" and await asyncio.to_thread(forwarded_from_self, headers))
-            why = problem(headers, scope.get("method", ""), scope.get("path", ""), container)  # WebSocket は method 無し → コンテナからは断られる
+            device = not container and await asyncio.to_thread(from_device, headers)  # 機械の住所からの接続は、/ws だけ（tailscale の状態を読むことがあるので別の糸で）
+            why = problem(headers, scope.get("method", ""), scope.get("path", ""), container, device)  # WebSocket は method 無し → コンテナからは断られる
             if why:
                 print(f"[guard] 断りました: {scope['type']} {scope.get('path')} … {why}", flush=True)
                 if scope["type"] == "websocket":  # 受け入れる前に閉じると、サーバーが 403 を返す

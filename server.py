@@ -44,7 +44,7 @@ from fastapi.staticfiles import StaticFiles
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "scripts"))
-from origin_guard import SameOriginOnly  # noqa: E402  接続元の確かめ
+from origin_guard import SameOriginOnly, from_device  # noqa: E402  接続元の確かめ・機械の住所からの接続か
 import consent  # noqa: E402  利用者の発言が、許す・選ぶの答えになっているか（承認に答える・閉じるの守り）
 import ask_form  # noqa: E402  選択肢の問い（AskUserQuestion）に、画面と Slack から答える
 from places import CONFIG_DIR, STATE_DIR  # noqa: E402  端末ごとの設定と状態の置き場
@@ -69,6 +69,11 @@ import hub_hermes as hermes  # noqa: E402  頭の部品。読み込みのとき�
 import slack_report  # noqa: E402  Slack から頼まれた件の報告を、同じスレッドにも返す（config.env の値を読むので、ここで読み込む）
 import topics  # noqa: E402  件（頼んだ件・報告・Slack のスレッド・問いを結ぶ単位）。件の URL（/#t=<件>）で画面を開く
 WHISPER = os.environ.get("VL_WHISPER", "http://127.0.0.1:8080/v1/audio/transcriptions")
+# 聞き取りの言語。毎回 whisper に渡す（自動判定に任せると、短い発言や雑音で日本語以外と取り違える。2026-11 の記録で 283 件中 5 件）。
+# 空（VL_WHISPER_LANG=）にすると渡さず、whisper の起動時の設定に任せる
+WHISPER_LANG = os.environ.get("VL_WHISPER_LANG", "ja").strip()
+# 聞き取りに渡す音声の拡張子。画面の録音（webm・mp4）と、機械の録音（ogg・opus・wav）。ほかは webm として渡す
+AUDIO_EXTS = ("webm", "mp4", "m4a", "ogg", "opus", "wav")
 # 声のエンジン。どちらも同じ形の API（audio_query → synthesis）で、違うのは呼び先と既定の声だけ
 VOICE_ENGINES = {
     "aivis": ("AivisSpeech", "http://127.0.0.1:10101", 888753760),  # まお / ノーマル
@@ -428,11 +433,18 @@ def reply_since(path: Path, offset: int) -> str:
 
 
 # ---------- 音声 ----------
+def audio_name(filename) -> str:
+    """whisper に渡すファイル名。送られてきた名前は使わず、拡張子だけを見て本体が付ける（名前に " や改行があると、multipart の見出しが崩れるため）。"""
+    ext = str(filename or "").rsplit(".", 1)[-1].strip().lower() if "." in str(filename or "") else ""
+    return f"audio.{ext if ext in AUDIO_EXTS else 'webm'}"
+
+
 def _whisper(audio: bytes, filename: str, timeout: float = 120) -> dict:
     boundary = "----vl" + os.urandom(8).hex()
+    lang = f"--{boundary}\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\n{WHISPER_LANG}\r\n" if WHISPER_LANG else ""
     body = (
-        f"--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nwhisper\r\n"
-        f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nwhisper\r\n{lang}"
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{audio_name(filename)}\"\r\n"
         f"Content-Type: application/octet-stream\r\n\r\n"
     ).encode() + audio + f"\r\n--{boundary}--\r\n".encode()
     req = urllib.request.Request(WHISPER, data=body, headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
@@ -458,6 +470,36 @@ def synth(text: str, speaker: int) -> bytes:
         urllib.request.Request(f"{TTS_URL}/synthesis?speaker={speaker}", data=q, headers={"Content-Type": "application/json"}, method="POST"),
         timeout=120,
     ).read()
+
+
+# 機械（スタックチャン）に送る返答の声。hello で audio: "opus" を名乗った接続には、文ごとの WAV を Ogg の Opus に縮めて送る
+# （SIM の細い回線のため。24 kbps で聞き取りは WAV と同じ、2026-11-21 の実測）。縮められないときは WAV のまま送る（機械は頭の 4 バイトで見分ける）
+OPUS_KBPS = max(8, min(64, int(os.environ.get("VL_OPUS_KBPS", "24") or 24)))
+
+
+def ffmpeg_path() -> str | None:
+    """縮めるのに使う ffmpeg。VL_FFMPEG か、PATH か、Homebrew の場所。launchd の PATH には Homebrew が無いことがある。"""
+    for p in (os.environ.get("VL_FFMPEG", ""), shutil.which("ffmpeg") or "", "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"):
+        if p and os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return None
+
+
+def to_opus(wav: bytes) -> bytes | None:
+    """WAV を Ogg の Opus（会話向け、60 ms ごとの区切り）にする。できなければ None。"""
+    exe = ffmpeg_path()
+    if not exe:
+        return None
+    try:
+        p = subprocess.run([exe, "-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-ac", "1", "-c:a", "libopus", "-b:a", f"{OPUS_KBPS}k",
+                            "-application", "voip", "-frame_duration", "60", "-f", "ogg", "pipe:1"], input=wav, capture_output=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"[voice] Opus に縮められませんでした: {e}", flush=True)
+        return None
+    if p.returncode != 0 or not p.stdout.startswith(b"OggS"):
+        print(f"[voice] Opus に縮められませんでした: {p.stderr.decode(errors='ignore')[:200]}", flush=True)
+        return None
+    return p.stdout
 
 
 def narrator_model() -> str:
@@ -645,6 +687,11 @@ def hub_turns(n: int = 1) -> list[tuple[str, str]]:
     return HUB.turns(n)
 
 
+def hub_via(turn: str | None) -> str:
+    """発言 turn の来た所。機械（スタックチャン）からなら "device"。発言が無ければ空。"""
+    return HUB.via(turn) if turn else ""
+
+
 def hub_heard(turn: str | None) -> str:
     """利用者が発言 turn の直前に聞いたハブの返答（本体が受け取った原文）。分からなければ空（守りは断る側に倒れる）。"""
     return HUB.heard(turn) if turn else ""
@@ -761,7 +808,8 @@ def attachments_shape_problem(files: list[str] | None) -> str:
 ACCEPT_LOCKS: dict[str, asyncio.Lock] = {}  # ハブ（herdr の外の話し相手）が受け取った発言の順番（添付を置く間も、前の発言を追い越させない）
 
 
-async def hub_accepted(talker, text: str, pane: str, reply_at: float | None, files: list[str] | None, item: int | None = None) -> tuple[str, str, bool]:
+async def hub_accepted(talker, text: str, pane: str, reply_at: float | None, files: list[str] | None, item: int | None = None,
+                       via: str = "") -> tuple[str, str, bool]:
     """ハブが受け取った発言を、添付を置く → 往復する（置けなければ断る）まで進める。(返事, 失敗・断りの理由, 記録に書けたか)。
     受け取った順に 1 つずつ（ACCEPT_LOCKS）。往復と断りの記録は、さらに頭のやり取りの鍵（自動通知と共有）の順に載る。
     断るときは、ハブに、利用者が最後に聞いたのは本体の断りだと伝える（前の問いへの答えに、次の発言を使わせない）。"""
@@ -771,9 +819,10 @@ async def hub_accepted(talker, text: str, pane: str, reply_at: float | None, fil
         if not why:
             extra, why = await attachment_lines(files, talker, pane)
         if why:
-            await talker.refused(text, why)
+            await talker.refused(text, why, **({"via": via} if via else {}))  # 断った発言も、機械からなら機械の印で台帳に載せる
             return "", why, True
-        return await talker.exchange(text, reply_at, extra, item)
+        # via は機械からの発言のときだけ渡す（画面からの往復は、これまでの頭の約束の形のまま）
+        return await talker.exchange(text, reply_at, extra, item, **({"via": via} if via else {}))
 
 
 def reply_item_of(d: dict) -> int | None:
@@ -1183,6 +1232,13 @@ class Client:
         self.voice = True  # この画面で読み上げるか（画面の 🔇 で切ると、返答は文字だけになる）
         self.visible = False  # この画面がいま見えているか。見えている画面が1つでもあれば、プッシュ通知は送らない（画面に声と文字で届くため）
         self.seen = 0.0  # 画面が最後に様子（hello）を知らせてきた時刻
+        # 機械（スタックチャン）か。VL_DEVICE_ADDRS に書いた tailnet の住所からの接続は、名乗りに関係なく機械（origin_guard の from_device）。
+        # 画面も hello で kind: "stackchan" と名乗れば機械として扱う（守りが強くなる側だけ）。機械は見えている画面に数えず、
+        # 機械からの発言は、承認に答える・閉じるに使わない
+        self.bound = from_device(getattr(sock, "headers", None) or {})
+        self.kind = "device" if self.bound else "screen"
+        self.place = ""  # 機械の置き場所（home・car・desk）。いまは記録だけ
+        self.audio = "wav"  # 返答の声の形。機械が audio: "opus" を名乗れば Ogg の Opus
 
     async def send(self, **msg):
         await self.sock.send_text(json.dumps(msg, ensure_ascii=False))
@@ -1261,9 +1317,12 @@ async def speak_to(clients: list[Client], text: str, cancel: asyncio.Event):
                 if not voice:
                     break
                 wavs = {sp: await asyncio.to_thread(synth, sentence, sp) for sp in set(voice.values())}
+                # Opus を望む接続（機械）があれば、その声だけ縮める。縮められなければ WAV のまま（機械は頭の 4 バイトで見分ける）
+                opus = {sp: await asyncio.to_thread(to_opus, wavs[sp]) for sp in {voice[c] for c in voice if getattr(c, "audio", "wav") == "opus"}}
                 if cancel.is_set() or not alive:
                     break
-                await each(lambda c: c.sock.send_bytes(wavs[voice[c]]) if c in voice and c.voice else asyncio.sleep(0))
+                body = lambda c: (opus.get(voice[c]) or wavs[voice[c]]) if getattr(c, "audio", "wav") == "opus" else wavs[voice[c]]
+                await each(lambda c: c.sock.send_bytes(body(c)) if c in voice and c.voice else asyncio.sleep(0))
                 n += 1
     await each(lambda c: c.send(type="done", sentences=n))
 
@@ -2328,6 +2387,8 @@ async def _hub_answer(body: dict):
     取り消しにくい操作の「はい」は、聞き返してユーザーがもう一度発言してから（どちらの発言も上の確かめを通ること）。「今後は聞かずに許可」は選ばない。"""
     if REPORTING:
         return JSONResponse({"ok": False, "reason": "reporting"})
+    if await asyncio.to_thread(hub_via, hub_human_turn()) == "device":  # 機械（スタックチャン）からの発言は答えに使わない。答えは画面で（README「守り」）。早めに断るだけで、確かめの本番は下の発言の取り直しのあと
+        return JSONResponse({"ok": False, "reason": "device"})
     pane, answer, confirmed = str(body.get("pane", "")), str(body.get("answer", "")).strip().lower(), bool(body.get("confirmed"))
     a = await asyncio.to_thread(_worker, pane)
     if not a:
@@ -2341,6 +2402,8 @@ async def _hub_answer(body: dict):
         return JSONResponse({"ok": False, "reason": "trust"})
     text = await asyncio.to_thread(read_prompt, pane)
     (turn, utter), = (await asyncio.to_thread(hub_turns, 1) or [(None, "")])[:1]
+    if await asyncio.to_thread(hub_via, turn) == "device":  # 答えに使うこの発言そのもので確かめる（入口で見たあとに、機械からの発言が入れ替わりで届いても使わない。a2a 356c8a73）
+        return JSONResponse({"ok": False, "reason": "device"})
     fp, prompt, project = prompt_fp(text), read_ask(text), a["cwd"].rsplit("/", 1)[-1]
     conf = prompt["kind"] == "confirm"  # 番号の無い「Yes / No」の確認（はい・いいえだけで答える）
     if answer in ("no", "n"):
@@ -2778,6 +2841,8 @@ async def hub_close(body: dict):
     pane, confirmed = str(body.get("pane", "")), bool(body.get("confirmed"))
     held = CLOSING.get(pane)
     (now, said), (before, _) = (await asyncio.to_thread(hub_turns, 2) + [(None, "")] * 2)[:2]
+    if confirmed and await asyncio.to_thread(hub_via, now) == "device":  # 機械からの発言では閉じない（閉じていいかは画面で答える）
+        return JSONResponse({"ok": False, "reason": "device"})
     heard = await asyncio.to_thread(hub_reply_to, held[1]) if confirmed and held and held[1] else ""
     rp = await asyncio.to_thread(hub_replying, now) if now else None
     if heard and rp is not None:  # 返信の発言なら、聞いた文は返信先の報告（古い報告への「はい」で、閉じるの問いに答えない）
@@ -3026,7 +3091,7 @@ async def ws(sock: WebSocket):
             # ハブが受け取った発言は、受け取ったその場で（待つものをはさまずに）1 つの仕事にする（hub_accepted: 添付を置く・断る・往復する）。
             # 画面のターン（current）は次の発言で止めるが、この仕事は止めない。受け取った順に作るので、受け取った順に進む
             # （画面のターンの中で作ると、状態の知らせを送る間や、ターンが動き出す前に次の発言が来たとき、前の発言が消える）
-            job = asyncio.create_task(hub_accepted(talker, text, pane, reply_at, files, item))
+            job = asyncio.create_task(hub_accepted(talker, text, pane, reply_at, files, item, via="device" if client.kind == "device" else ""))
             _tasks.add(job)
             job.add_done_callback(_tasks.discard)
         current = asyncio.create_task(turn(text, pane, cancel, key, reply_at, files, job))
@@ -3042,7 +3107,12 @@ async def ws(sock: WebSocket):
                 if d["type"] == "hello":  # 画面が選んでいる声と、読み上げるか（ハブからの報告を、その声で届けるため）。🔇 を押すたび・画面が隠れる／見えるたびにも届く
                     client.speaker = None if d.get("speaker") in (None, "") else int(d["speaker"])
                     client.voice = d.get("voice") is not False  # voice を送らない古い画面は、これまでどおり読み上げる
-                    client.visible = d.get("visible") is True  # visible を送らない古い画面は、見えていないものとして扱う（通知を止めない）
+                    if not client.bound:  # 住所で機械と決まった接続は、画面と名乗っても機械のまま
+                        client.kind = "device" if d.get("kind") in ("stackchan", "device") else "screen"
+                    client.place = d.get("place") if d.get("place") in ("home", "car", "desk") else ""
+                    client.audio = "opus" if d.get("audio") == "opus" else "wav"
+                    # visible を送らない古い画面は、見えていないものとして扱う（通知を止めない）。機械は見えている画面に数えない
+                    client.visible = d.get("visible") is True and client.kind == "screen"
                     client.seen = time.time()
                     continue
                 if d["type"] == "stop":
