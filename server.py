@@ -69,6 +69,11 @@ import hub_hermes as hermes  # noqa: E402  頭の部品。読み込みのとき�
 import slack_report  # noqa: E402  Slack から頼まれた件の報告を、同じスレッドにも返す（config.env の値を読むので、ここで読み込む）
 import topics  # noqa: E402  件（頼んだ件・報告・Slack のスレッド・問いを結ぶ単位）。件の URL（/#t=<件>）で画面を開く
 WHISPER = os.environ.get("VL_WHISPER", "http://127.0.0.1:8080/v1/audio/transcriptions")
+# 聞き取りの言語。毎回 whisper に渡す（自動判定に任せると、短い発言や雑音で日本語以外と取り違える。2026-11 の記録で 283 件中 5 件）。
+# 空（VL_WHISPER_LANG=）にすると渡さず、whisper の起動時の設定に任せる
+WHISPER_LANG = os.environ.get("VL_WHISPER_LANG", "ja").strip()
+# 聞き取りに渡す音声の拡張子。画面の録音（webm・mp4）と、機械の録音（ogg・opus・wav）。ほかは webm として渡す
+AUDIO_EXTS = ("webm", "mp4", "m4a", "ogg", "opus", "wav")
 # 声のエンジン。どちらも同じ形の API（audio_query → synthesis）で、違うのは呼び先と既定の声だけ
 VOICE_ENGINES = {
     "aivis": ("AivisSpeech", "http://127.0.0.1:10101", 888753760),  # まお / ノーマル
@@ -428,11 +433,18 @@ def reply_since(path: Path, offset: int) -> str:
 
 
 # ---------- 音声 ----------
+def audio_name(filename) -> str:
+    """whisper に渡すファイル名。送られてきた名前は使わず、拡張子だけを見て本体が付ける（名前に " や改行があると、multipart の見出しが崩れるため）。"""
+    ext = str(filename or "").rsplit(".", 1)[-1].strip().lower() if "." in str(filename or "") else ""
+    return f"audio.{ext if ext in AUDIO_EXTS else 'webm'}"
+
+
 def _whisper(audio: bytes, filename: str, timeout: float = 120) -> dict:
     boundary = "----vl" + os.urandom(8).hex()
+    lang = f"--{boundary}\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\n{WHISPER_LANG}\r\n" if WHISPER_LANG else ""
     body = (
-        f"--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nwhisper\r\n"
-        f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nwhisper\r\n{lang}"
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{audio_name(filename)}\"\r\n"
         f"Content-Type: application/octet-stream\r\n\r\n"
     ).encode() + audio + f"\r\n--{boundary}--\r\n".encode()
     req = urllib.request.Request(WHISPER, data=body, headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
