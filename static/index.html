@@ -2104,7 +2104,7 @@ function connect() {
       const ai = $('log').querySelectorAll('.msg.ai'); speakingEl = ai[ai.length - 1] || null; if (speakingEl) speakingEl.classList.add('speaking');
     }
     else if (m.type === 'speaking') { accepting = !muted; serverDone = false; } // 切っている間に届いた音声は鳴らさない（本体も送らないが、切った直後の分が届くことがある）
-    else if (m.type === 'error') { face('idle'); sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); setStatus(''); if (m.gone) { agentsSig = ''; loadAgents(); } } // 相手が消えた・入れ替わった → 一覧を取り直す
+    else if (m.type === 'error') { face('idle'); sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); setStatus(''); if (FACE) $('faceCap').textContent = '⚠ ' + m.text; if (m.gone) { agentsSig = ''; loadAgents(); } } // 相手が消えた・入れ替わった → 一覧を取り直す
     else if (m.type === 'notice') { sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); } // ハブから報告を受け取れなかった等（いまの話し相手とは別の知らせ）
     else if (m.type === 'done') { serverDone = true; if (!playing && !queue.length) finishSpeaking(); loadAgents(); }
     else if (m.type === 'stopped') { stopPlayback(); setStatus('止めました'); }
@@ -2146,7 +2146,7 @@ async function startRec() {
   rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
   rec.onstop = async () => {
     stream.getTracks().forEach(t => t.stop());
-    face('idle');
+    face(linked() ? 'idle' : 'offline'); // 録音中に切れたときは、つながっていない顔のまま
     setSession('playback'); // マイクを離したら再生用に戻す（受話口から小さく鳴るのを防ぐ）
     if (!linked()) { setStatus(UNREACHABLE); return; } // 話しているあいだに届かなくなった（短い録音でも、こちらの案内を残す）
     const blob = new Blob(chunks, { type: mime || 'audio/webm' });
@@ -2253,12 +2253,13 @@ if (FACE) {
   let wake = null;
   const tapFace = e => {
     if (e.target.closest('#faceBack')) return;
+    if ($('tap').style.display === 'inline-block') { $('tap').click(); return; } // 再生にタップが要るとき（自動の再生を断られた）は、録音ではなく再生を始める（codex-review 779f0c2）
     if ($('talk').disabled) { $('faceCap').textContent = 'いまは話せません（' + ($('statusText').textContent || '準備中') + '）'; return; } // 黙って何もしないと、壊れたように見える
     $('talk').click(); // 先に押す（録音と再生の準備は、タップの中で始める必要がある）
     try { if (!wake && navigator.wakeLock) navigator.wakeLock.request('screen').then(w => { wake = w; w.addEventListener('release', () => { wake = null; }); }).catch(() => {}); } catch {}
   };
   $('face').addEventListener('click', tapFace);
-  $('face').addEventListener('keydown', e => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); tapFace(e); } });
+  $('face').addEventListener('keydown', e => { if (e.target.closest('#faceBack')) return; if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); tapFace(e); } }); // 戻るリンクの Enter は止めない
   face(linked() ? 'idle' : 'offline');
 }
 </script>

@@ -5,7 +5,10 @@
   - /?face では顔が画面いっぱいに出て、つながると「ふつう」の表情。名乗りに kind: "stackchan"・place: "home" が付く
   - 顔をタップすると「タップして話す」が押される。「画面に戻る」を押したときは押されず、ふだんの画面に戻る
   - 承認・入力待ちがあると縁が光り、無くなると消える
-  - 状態の文が顔の下に出る
+  - 状態の文が顔の下に出る。失敗の理由（聞き取れなかったなど）も顔の下に出る
+  - 再生にタップが要るとき（自動の再生を断られた）に顔を押すと、録音ではなく再生を始める
+  - 「画面に戻る」に Enter を押すと戻る（顔のキー操作で止めない）
+  - 録音中に接続が切れたら、録音の終わりで「ふつう」に戻さず「つながっていない」のまま
 使い方: uv run spike/face_ui_test.py"""
 import json
 import os
@@ -75,7 +78,7 @@ CATCH = """(() => { window.__hello = []; const o = WebSocket.prototype.send;
   }; })()"""
 
 with sync_playwright() as pw:
-    b = pw.chromium.launch()
+    b = pw.chromium.launch(args=["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"])  # 作り物のマイク
     pg = b.new_page(viewport={"width": 390, "height": 844})
     pg.add_init_script(CATCH)
     asks = {"list": []}
@@ -104,6 +107,24 @@ with sync_playwright() as pw:
     pg.wait_for_function("!document.getElementById('talk').disabled", timeout=10000)
     pg.locator("#face svg").click()
     check("顔: タップすると「タップして話す」が押される", pg.evaluate("window.__talk"), 1)
+    pg.wait_for_function("document.getElementById('face').dataset.s === 'listen'", timeout=10000)
+    check("顔: 録音中は「聞いている」", pg.evaluate("document.getElementById('face').dataset.s"), "listen")
+    pg.evaluate("ws.close()")  # 録音中に接続が切れる（画面は録音を止め、2 秒後につなぎ直す）
+    pg.wait_for_timeout(600)
+    check("顔: 録音中に切れたら、録音の終わりでも「つながっていない」のまま", pg.evaluate("document.getElementById('face').dataset.s"), "offline")
+    pg.wait_for_function("document.getElementById('face').dataset.s === 'idle'", timeout=10000)
+
+    # 再生にタップが要るとき（iPhone で自動の再生を断られたとき）は、顔を押すと再生を始める
+    pg.evaluate("window.__talk = 0; window.__tap = 0; document.getElementById('tap').addEventListener('click', () => { window.__tap++; }, true);"
+                "queue.push(new ArrayBuffer(8)); showTap(true)")
+    pg.locator("#face svg").click()
+    check("顔: 再生にタップが要るときは、録音でなく再生を押す", (pg.evaluate("window.__tap"), pg.evaluate("window.__talk")), (1, 0))
+    pg.evaluate("stopPlayback()")
+
+    # 失敗の理由を顔の下に出す
+    pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'error', text: '聞き取れませんでした' }) })")
+    pg.wait_for_function("document.getElementById('faceCap').textContent.includes('聞き取れませんでした')", timeout=5000)
+    check("顔: 失敗の理由が顔の下に出る", pg.evaluate("document.getElementById('faceCap').textContent"), "⚠ 聞き取れませんでした")
 
     asks["list"] = [{"pane": "w1:p1", "fp": "f1", "project": "blog", "title": "記事", "kind": "permission", "text": "Do you want to proceed?\n❯ 1. Yes\n  2. No",
                      "options": ["Yes", "No"], "session": "s1"}]
@@ -126,9 +147,15 @@ with sync_playwright() as pw:
         pg.screenshot(path=f"{shots}/face-attn.png")
         pg.evaluate("document.getElementById('face').classList.remove('attn')")
     pg.evaluate("window.__talk = 0")
+    pg.locator("#faceBack").focus()
+    pg.keyboard.press("Enter")
+    pg.wait_for_url(BASE + "/", timeout=5000)
+    check("顔: 「画面に戻る」に Enter で、ふだんの画面に戻る", (pg.locator("#face").is_visible(), pg.evaluate("window.__talk ?? 0")), (False, 0))
+    pg.goto(BASE + "/?face")
+    pg.wait_for_function("document.getElementById('face').dataset.s === 'idle'", timeout=10000)
     pg.locator("#faceBack").click()
     pg.wait_for_url(BASE + "/", timeout=5000)
-    check("顔: 「画面に戻る」はふだんの画面に戻る", pg.locator("#face").is_visible(), False)
+    check("顔: 「画面に戻る」を押すと、ふだんの画面に戻る", pg.locator("#face").is_visible(), False)
     b.close()
 
 srv.should_exit = True
