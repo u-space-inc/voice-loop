@@ -867,7 +867,7 @@ async function loadAsks() {
   let list; try { list = await (await fetch('/api/prompts')).json(); } catch { list = []; } // 読めないときは、ボタンを出さないほうに倒す
   if (seq !== asksSeq) return;
   applyAsks(list);
-  if (FACE) $('face').classList.toggle('attn', Array.isArray(list) && list.length > 0); // 承認・入力待ちがあれば縁を光らせる
+  faceAsks = Array.isArray(list) ? list.length : 0; faceAttn(); // 承認・入力待ちがあれば縁を光らせる
 }
 // 読んだ問いの一覧を、上の欄に描く（件の URL で開く処理も、自分で読んだ一覧をここで描く。そのとき asksSeq を進め、並んで走る古い読み込みを捨てる）
 function applyAsks(list) {
@@ -1809,8 +1809,9 @@ $('readAsks').onclick = () => {  // 戻って、承認のカードの押せる�
 // 開いている間は、ほかの列（右の列も）を inert にする。スマホの幅に狭めたら閉じる
 let viewer = null;  // { items, cur（いま出している項目）, back（閉じたら戻る所） }。位置は毎回 items から数える（並べたあとで消えるものがあるため）
 function applyInert() {
-  for (const id of ['side', 'asks', 'log', 'bar']) $(id).inert = reading || !!viewer;
-  $('rec').inert = !!viewer;
+  for (const id of ['side', 'asks', 'log', 'bar']) $(id).inert = reading || !!viewer || faceOn;
+  $('rec').inert = !!viewer || faceOn;
+  for (const id of ['tasks', 'situation']) $(id).inert = faceOn; // 顔の表示中は、裏の画面（見えない承認・送信のボタン）をフォーカス・操作できないようにする（codex-review b7a7b3f）
 }
 function openViewer(items, cur, back) {
   if (!items.includes(cur)) return;
@@ -2111,7 +2112,7 @@ function connect() {
     else if (m.type === 'done') { serverDone = true; if (!playing && !queue.length) finishSpeaking(); loadAgents(); }
     else if (m.type === 'stopped') { stopPlayback(); setStatus('止めました'); }
     else if (m.type === 'blocked') loadAsks(); // 話している相手が承認で止まった → すぐ並べる
-    else if (m.type === 'agent_notice') loadSituation(); // 代理からの知らせ。会話の欄には出さず、💡 の数と受け箱を取り直す（閉じていても）
+    else if (m.type === 'agent_notice') { loadSituation(); faceNotice(m); } // 代理からの知らせ。会話の欄には出さず、💡 の数と受け箱を取り直す（閉じていても）。顔の表示では縁と一言で知らせる
   };
 }
 function linked() { return !!ws && ws.readyState === 1; }
@@ -2252,8 +2253,17 @@ Promise.race([Promise.allSettled([loadAgents(), ensureSpeakers()]).then(() => tr
 // 表情の優先: つながっていない ＞ 録音中（聞いている）＞ 頼まれた表情。再生の始まり・終わり・停止・失敗の知らせが、
 // 切断や録音中の顔を上書きしないように（顔の表示では録音のボタンが隠れているので、録音中だと分からなくなる。codex-review c62083a・04b0694）
 function face(s) { if (FACE) $('face').dataset.s = !linked() ? 'offline' : rec && rec.state === 'recording' ? 'listen' : s; }
+// 縁の琥珀色: 承認・入力待ちがあるか、代理（Hermes）からの知らせをまだ聞いていないとき。顔の表示では受け箱が見えず、
+// 画面が見えている扱いでプッシュ通知も止まるので、知らせは顔で示す（codex-review b7a7b3f）。顔をタップしたら聞いたことにする
+let faceAsks = 0, faceUnheard = false;
+function faceAttn() { if (FACE) $('face').classList.toggle('attn', faceOn && (faceAsks > 0 || faceUnheard)); }
+function faceNotice(m) {
+  if (!faceOn) return;
+  faceUnheard = true; faceAttn();
+  $('faceCap').textContent = '💡 ' + ((m && m.title) ? String(m.title).slice(0, 60) : '代理からの知らせが届きました') + '（タップして「何？」と聞いてください）';
+}
 if (FACE) {
-  $('face').hidden = false;
+  $('face').hidden = false; applyInert(); // 裏の画面は、顔を閉じるまで操作できない
   // 画面を消さない許可（Wake Lock）。一度タップしたあとは、画面に戻るたびに取り直す（ほかのアプリへ移ると、ブラウザが外すため）。
   // 頼んでいる途中の分は 1 つだけ（重ねると、閉じたあとにも 1 つ残る。codex-review 0b06aa8）
   let wake = null, wakeAsking = false, wantWake = false;
@@ -2277,13 +2287,14 @@ if (FACE) {
   };
   const tapFace = e => {
     if (e.target.closest('#faceBack')) return;
+    faceUnheard = false; faceAttn(); // 知らせはタップで聞いたことにする（縁は承認・入力待ちがあれば残る）
     tapAct(); // 先に押す（録音と再生の準備は、タップの中で始める必要がある）
     wantWake = true; askWake(); // どの押し方でも頼む（録音せずに報告を聞くだけの使い方でも、画面が消えないように）
   };
   // 顔を閉じる。読み込み直さないので、開いた件・会話・録音はそのまま（URL の ?face だけを外す）。名乗りも画面に戻す
   const closeFace = () => {
     if (!faceOn) return;
-    faceOn = false; $('face').hidden = true;
+    faceOn = false; $('face').hidden = true; applyInert(); faceAttn();
     wantWake = false; if (wake) { const w = wake; wake = null; w.release().catch(() => {}); } // ふだんの画面では眠れるように、許可を手放す（頼んでいる途中の分は、届いたら手放す。codex-review bc775f6）
     try { history.replaceState(null, '', location.pathname + location.hash); } catch {}
     hello();

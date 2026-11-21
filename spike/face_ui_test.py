@@ -13,6 +13,8 @@
   - 「停止」で再生を止めたら、口を閉じる。録音中は、再生の始まり・終わり・停止でも「聞いている」のまま
   - タップのときに画面を消さない許可を頼み、外されたら画面に戻ったときに取り直す。顔を閉じたら手放し（頼んでいる途中でも）、取り直さない
   - 件・受け箱の場所つき（/?face#inbox など）で開いたときも、顔を閉じて中身を見せる
+  - 顔の表示中は、裏の画面をフォーカス・操作できない（閉じたら戻る）
+  - 代理（Hermes）からの知らせは、縁と顔の下の一言で示し、顔をタップしたら聞いたことにする
   - 録音中・再生中に接続が切れたら、録音や再生の終わりで「ふつう」に戻さず「つながっていない」のまま
 使い方: uv run spike/face_ui_test.py"""
 import json
@@ -101,6 +103,10 @@ with sync_playwright() as pw:
     check("顔: つながると「ふつう」の表情", pg.evaluate("document.getElementById('face').dataset.s"), "idle")
     h = pg.evaluate("window.__hello[0]")
     check("顔: 名乗りに stackchan と home が付く", (h.get("kind"), h.get("place")), ("stackchan", "home"))
+    INERT = "['side','rec','asks','tasks','situation','log','bar'].map(id => document.getElementById(id).inert)"
+    check("顔: 表示中は、裏の画面をフォーカス・操作できない", pg.evaluate(INERT), [True] * 7)
+    pg.keyboard.press("Tab"); pg.keyboard.press("Tab"); pg.keyboard.press("Tab")
+    check("顔: Tab で裏のボタンに移らない", pg.evaluate("!!document.activeElement.closest('#bar, #side, #asks, #log, #rec, #tasks, #situation')"), False)
     check("顔: 状態の文が顔の下に出る", pg.evaluate("document.getElementById('faceCap').textContent"), pg.evaluate("document.getElementById('statusText').textContent"))
 
     pg.evaluate("window.__talk = 0; document.getElementById('talk').addEventListener('click', () => { window.__talk++; }, true)")
@@ -162,6 +168,17 @@ with sync_playwright() as pw:
                 "f.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', repeat: true, bubbles: true }))")
     check("顔: キーの長押しの繰り返しでは「話す」を押さない", pg.evaluate("window.__talk"), 0)
 
+    # 代理からの知らせは、縁と一言で示し、タップしたら聞いたことにする（前の「停止」への本体の返事が届き終わってから）
+    pg.wait_for_timeout(500)
+    pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'agent_notice', n: 7, title: '見積もりの返事の催促', sender: 'ハブ' }) })")
+    pg.wait_for_function("document.getElementById('face').classList.contains('attn')", timeout=5000)
+    check("顔: 代理からの知らせで縁が光り、題が顔の下に出る",
+          (pg.evaluate("document.getElementById('face').classList.contains('attn')"), "見積もりの返事の催促" in pg.evaluate("document.getElementById('faceCap').textContent")), (True, True))
+    pg.evaluate("queue.push(new ArrayBuffer(8)); showTap(true)")  # タップは再生に回す（録音を始めない）
+    pg.locator("#face svg").click()
+    check("顔: タップしたら知らせは聞いたことにして、縁を消す", pg.evaluate("document.getElementById('face').classList.contains('attn')"), False)
+    pg.evaluate("stopPlayback()")
+
     # 失敗の理由を顔の下に出す
     pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'error', text: '聞き取れませんでした' }) })")
     pg.wait_for_function("document.getElementById('faceCap').textContent.includes('聞き取れませんでした')", timeout=5000)
@@ -198,6 +215,7 @@ with sync_playwright() as pw:
     pg.wait_for_timeout(200)
     check("顔: 閉じたら、画面を消さない許可を手放し、画面に戻っても取り直さない", (pg.evaluate("window.__released") >= 1, pg.evaluate("window.__wake") == w0), (True, True))
     pg.wait_for_function("window.__hello.length > 0", timeout=5000)
+    check("顔: 閉じたら、裏の画面を操作できるように戻す", pg.evaluate(INERT), [False] * 7)
     check("顔: 閉じたら、名乗りを画面に戻す（kind なし）", pg.evaluate("window.__hello[window.__hello.length - 1].kind ?? null"), None)
     pg.goto(BASE + "/?face")
     pg.wait_for_function("document.getElementById('face').dataset.s === 'idle'", timeout=10000)
