@@ -21,6 +21,7 @@ Origin の無い接続（hubctl、curl、画面そのものの読み込み）は
   Tailscale のネットワーク拡張で見えないが、Tailscale Serve が X-Forwarded-For の最後に付ける接続元が、この Mac 自身の住所になる。
   そうした接続（コンテナか、この Mac の上で Tailscale の名前で開いたもの）もコンテナとして扱う。この Mac の上では 127.0.0.1 で開く。"""
 import asyncio
+import json
 import os
 import re
 import subprocess
@@ -102,9 +103,41 @@ def forwarded_from_self(headers: dict[str, str]) -> bool:
     return addrs is None or last in addrs
 
 
+_TS_CACHE = {"at": 0.0, "raw": "", "peers": None}  # tailscale status の写し（60 秒）
+
+
+def _tailscale_peers() -> list[dict] | None:
+    """tailnet の端末の一覧（tailscale status --json の Peer）。読めなければ None。"""
+    exe = os.environ.get("VL_TAILSCALE") or next((p for p in ("/usr/local/bin/tailscale", "/opt/homebrew/bin/tailscale",
+                                                             "/Applications/Tailscale.app/Contents/MacOS/Tailscale") if os.path.isfile(p)), "")
+    if not exe:
+        return None
+    try:
+        out = subprocess.run([exe, "status", "--json"], capture_output=True, text=True, timeout=5).stdout
+        return list((json.loads(out).get("Peer") or {}).values())
+    except Exception:
+        return None
+
+
 def device_addresses() -> set[str]:
-    """機械（スタックチャン）の tailnet の住所。VL_DEVICE_ADDRS にカンマ区切りで書く（機械に鍵を発行したときに、管理画面に出る 100.x の住所）。"""
-    return {a.strip().strip("[]").lower() for a in os.environ.get("VL_DEVICE_ADDRS", "").split(",") if a.strip()}
+    """機械（スタックチャン）の tailnet の住所。VL_DEVICE_ADDRS にカンマ区切りで、住所（100.x か fd7a:…）か、機械の名前（tailnet の端末名）を書く。
+    tailnet の端末には IPv4 と IPv6 の住所が 1 つずつあるので、書いた住所・名前に当たる端末の住所を、tailscale の状態から全部足す
+    （IPv4 だけを書いて、IPv6 でつながれると機械と見分けられないため。a2a 356c8a73）。状態が読めないときは、書いたものだけ。"""
+    raw = os.environ.get("VL_DEVICE_ADDRS", "")
+    given = {a.strip().strip("[]").lower() for a in raw.split(",") if a.strip()}
+    if not given:
+        return set()
+    now = time.monotonic()
+    if _TS_CACHE["peers"] is None or _TS_CACHE["raw"] != raw or now - _TS_CACHE["at"] > 60:
+        peers = _tailscale_peers()
+        _TS_CACHE.update(at=now, raw=raw, peers=peers if peers is not None else [])
+    addrs = set(given)
+    for p in _TS_CACHE["peers"] or []:
+        ips = {str(ip).lower() for ip in (p.get("TailscaleIPs") or [])}
+        names = {str(p.get("HostName") or "").lower(), str(p.get("DNSName") or "").lower().split(".")[0]} - {""}
+        if ips & given or names & given:
+            addrs |= ips
+    return addrs - {name for name in given if not (":" in name or name.replace(".", "").isdigit())}  # 名前そのものは住所の一覧に残さない
 
 
 def from_device(headers) -> bool:
@@ -174,7 +207,7 @@ class SameOriginOnly:
             program = await asyncio.to_thread(peer_program, scope.get("client"), scope.get("server"))  # Host は偽れるので、接続のもとのプログラムも見る
             # もとが見えない接続（root の Tailscale の中継など）は、中継が付けた接続元がこの Mac 自身なら、コンテナとして扱う
             container = is_container(program) or (program == "" and await asyncio.to_thread(forwarded_from_self, headers))
-            device = not container and from_device(headers)  # 機械の住所からの接続は、/ws だけ
+            device = not container and await asyncio.to_thread(from_device, headers)  # 機械の住所からの接続は、/ws だけ（tailscale の状態を読むことがあるので別の糸で）
             why = problem(headers, scope.get("method", ""), scope.get("path", ""), container, device)  # WebSocket は method 無し → コンテナからは断られる
             if why:
                 print(f"[guard] 断りました: {scope['type']} {scope.get('path')} … {why}", flush=True)

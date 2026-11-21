@@ -140,8 +140,8 @@ class Talker:
         extra は本体が発言の末尾に足す行（添付の場所）。相手に渡す文と記録には付けるが、承認・閉じるの守りが見る発言は利用者の言葉（text）のまま。"""
         raise NotImplementedError
 
-    async def refused(self, text: str, why: str):
-        """利用者の発言 text を、本体が送らずに断った（添付の形・宛先など。理由 why）。断った発言も台帳と記録に載せ、承認・閉じるの文脈を失効させる
+    async def refused(self, text: str, why: str, via: str = ""):
+        """利用者の発言 text を、本体が送らずに断った（via は発言の来た所。機械なら "device"）（添付の形・宛先など。理由 why）。断った発言も台帳と記録に載せ、承認・閉じるの文脈を失効させる
         （利用者が最後に聞いたのは本体の断り。前の問い・確認への答えに、次の発言を使わせない）。"""
         raise NotImplementedError
 
