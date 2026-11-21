@@ -390,6 +390,9 @@
     display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
   #faceBack { position:absolute; top:calc(10px + env(safe-area-inset-top)); right:calc(12px + env(safe-area-inset-right)); color:#8a8a8a; font-size:14px;
     text-decoration:none; padding:6px 10px; border:1px solid #333; border-radius:999px; }
+  #faceSit { position:absolute; top:calc(10px + env(safe-area-inset-top)); left:calc(12px + env(safe-area-inset-left)); color:#f0a500; font-size:15px;
+    padding:6px 10px; border:1px solid #5a4300; border-radius:999px; font-variant-numeric:tabular-nums; }
+  #faceSit[hidden] { display:none; }
   #faceBack:focus-visible, #face:focus-visible { outline:2px solid #3fb6c9; outline-offset:2px; }
   @media (prefers-reduced-motion: reduce) { #face .eye, #face[data-s="speak"] .mouthO, #face[data-s="think"] .eye { animation:none; } }
 </style>
@@ -413,6 +416,7 @@
   <div id="viewer" hidden role="dialog" aria-modal="true" aria-labelledby="vName"><div class="vhead"><span id="vName"></span><span id="vPos"></span><button id="vPrev" aria-label="前の成果物">←</button><button id="vNext" aria-label="次の成果物">→</button><button id="vClose">✕ 閉じる</button></div><div id="vStage"></div><div id="vPath"></div></div>
 <div id="face" hidden role="button" tabindex="0" aria-label="タップして話す（もう一度タップで送る）" data-s="idle">
   <a id="faceBack" href="/">画面に戻る</a>
+  <div id="faceSit" hidden title="判断待ちの数（3 日以内）"></div>
   <svg viewBox="0 0 320 200" aria-hidden="true">
     <circle class="eye" cx="92" cy="80" r="28"/><circle class="eye" cx="228" cy="80" r="28"/>
     <line class="lid" x1="64" y1="82" x2="120" y2="82"/><line class="lid" x1="200" y1="82" x2="256" y2="82"/>
@@ -1350,7 +1354,8 @@ const SRC = { mail: 'メール', slack: 'Slack', teams: 'Teams', plaud: '録音'
 const LINK_OK = /^https:\/\/(mail\.google\.com|teams\.microsoft\.com)\//;  // 元を開くリンク（本体が作る形だけ）
 let sitCache = null;  // 最後に読んだ「その他」の材料（[手順, 知らせ, 学び]）
 const ibCount = d => d && !d.problem ? d.items.filter(x => !x.old).length : 0;
-function paintSitBtn(n) { const b = $('sitBtn'); b.textContent = n ? `💡 ${n}` : '💡'; b.classList.toggle('has', !!n); }
+function paintSitBtn(n) { const b = $('sitBtn'); b.textContent = n ? `💡 ${n}` : '💡'; b.classList.toggle('has', !!n);
+  if (FACE) { const f = $('faceSit'); f.hidden = !n; f.textContent = n ? `💡 ${n}` : ''; } } // 顔の表示でも、判断待ちの数を角に出す（開いたとき・つなぎ直したときも、同じ数がそろう。codex-review 2f91e9c）
 function ibNote(msg, bad) { ibMsg = msg ? [msg, !!bad] : null; }
 function ibStampOf(x) { return stamp(x.when); }
 function srcTag(x) { return node('span', 'ibSrc', SRC[x.source] || '記録'); }
@@ -2253,8 +2258,9 @@ Promise.race([Promise.allSettled([loadAgents(), ensureSpeakers()]).then(() => tr
 // 表情の優先: つながっていない ＞ 録音中（聞いている）＞ 頼まれた表情。再生の始まり・終わり・停止・失敗の知らせが、
 // 切断や録音中の顔を上書きしないように（顔の表示では録音のボタンが隠れているので、録音中だと分からなくなる。codex-review c62083a・04b0694）
 function face(s) { if (FACE) $('face').dataset.s = !linked() ? 'offline' : rec && rec.state === 'recording' ? 'listen' : s; }
-// 縁の琥珀色: 承認・入力待ちがあるか、代理（Hermes）からの知らせをまだ聞いていないとき。顔の表示では受け箱が見えず、
-// 画面が見えている扱いでプッシュ通知も止まるので、知らせは顔で示す（codex-review b7a7b3f）。顔をタップしたら聞いたことにする
+// 縁の琥珀色: 急ぎ。承認・入力待ちがあるか、代理（Hermes）からの新しい知らせをまだ聞いていないとき。顔の表示では受け箱が見えず、
+// 画面が見えている扱いでプッシュ通知も止まるので、知らせは顔で示す（codex-review b7a7b3f）。顔をタップしたら聞いたことにする。
+// たまっている判断待ちの数は、縁ではなく左上の「💡 数」で示す（1 日に何件も届き、片づくまで長いので、縁を光らせ続けると急ぎが分からなくなる）
 let faceAsks = 0, faceUnheard = false;
 function faceAttn() { if (FACE) $('face').classList.toggle('attn', faceOn && (faceAsks > 0 || faceUnheard)); }
 function faceNotice(m) {

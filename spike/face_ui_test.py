@@ -15,6 +15,7 @@
   - 件・受け箱の場所つき（/?face#inbox など）で開いたときも、顔を閉じて中身を見せる
   - 顔の表示中は、裏の画面をフォーカス・操作できない（閉じたら戻る）
   - 代理（Hermes）からの知らせは、縁と顔の下の一言で示し、顔をタップしたら聞いたことにする
+  - たまっている判断待ちの数は、左上の「💡 数」で示す（開いたときから。0 件なら出さない）
   - 録音中・再生中に接続が切れたら、録音や再生の終わりで「ふつう」に戻さず「つながっていない」のまま
 使い方: uv run spike/face_ui_test.py"""
 import json
@@ -90,6 +91,9 @@ with sync_playwright() as pw:
     pg.add_init_script(CATCH)
     asks = {"list": []}
     pg.route("**/api/prompts", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(asks["list"])))
+    ITEM = lambda n: {"n": n, "title": f"件 {n}", "project": "blog", "kind": "judge", "source": "mail", "when": "2026-11-22T03:00:00+09:00", "old": False}
+    inbox = {"items": [ITEM(1), ITEM(2)]}
+    pg.route("**/api/inbox", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(inbox)))
 
     pg.goto(BASE + "/")
     pg.wait_for_function("window.__hello.length > 0", timeout=10000)
@@ -100,6 +104,13 @@ with sync_playwright() as pw:
     pg.wait_for_function("window.__hello.length > 0", timeout=10000)
     check("顔: 画面いっぱいに出る", pg.evaluate("(() => { const r = document.getElementById('face').getBoundingClientRect(); return [r.width >= 380, r.height >= 800]; })()"), [True, True])
     pg.wait_for_function("document.getElementById('face').dataset.s === 'idle'", timeout=10000)
+    pg.wait_for_function("!document.getElementById('faceSit').hidden", timeout=10000)
+    check("顔: 開いたときから、たまっている判断待ちの数を左上に出す", pg.evaluate("document.getElementById('faceSit').textContent"), "💡 2")
+    check("顔: 数は縁を光らせない（急ぎだけが縁）", pg.evaluate("document.getElementById('face').classList.contains('attn')"), False)
+    inbox["items"] = []
+    pg.evaluate("refreshSitCount()")
+    pg.wait_for_function("document.getElementById('faceSit').hidden", timeout=5000)
+    check("顔: 0 件なら数を出さない", pg.evaluate("document.getElementById('faceSit').hidden"), True)
     check("顔: つながると「ふつう」の表情", pg.evaluate("document.getElementById('face').dataset.s"), "idle")
     h = pg.evaluate("window.__hello[0]")
     check("顔: 名乗りに stackchan と home が付く", (h.get("kind"), h.get("place")), ("stackchan", "home"))
