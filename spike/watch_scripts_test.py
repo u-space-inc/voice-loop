@@ -243,6 +243,70 @@ check("main: Slack の結果が崩れたままなら、同じ日の出力は同�
       (o1 == o1b, o1 == o2, SL + " ［11/16］" in o1.splitlines(), SL + " ［11/17］" in o2.splitlines()), (True, False, True, True))
 check("main: 知らせない口の「読めない」（鍵の更新）は、日が変わっても出力を変えない",
       [l for l in o1.splitlines() if l.startswith("plaud")] == [l for l in o2.splitlines() if l.startswith("plaud")], True)
+
+# 見張りの状態のファイル（voice-loop/watch-status.json）: voice-loop の画面が、受け箱の上の帯に出す
+WST = Path(vl_mcp.HOME) / "voice-loop" / "watch-status.json"
+st = lambda: json.loads(WST.read_text())
+slack_ok = lambda: ["slack C0AAA/1.000001 U0AAA"]  # 読めた回（この上の試験が口を差し替えたままなので、ここで決める）
+vl_watch.slack = garble
+o_bad = out_at(D1)
+bad_st = st()
+vl_watch.slack = slack_ok
+o_ok = out_at(D1B)
+check("main: Slack の結果が崩れた回は、状態に slack と時刻を書く・戻った回は空に書き直す（帯が消える）",
+      (bad_st, st()), ({"at": D1, "stopped": ["slack"]}, {"at": D1B, "stopped": []}))
+check("main: 状態に書くのは口の名前と時刻だけ（出力の行・相手の文は入れない）", sorted(bad_st), ["at", "stopped"])
+vl_watch.slack = boom
+out_at(D1)
+vl_watch.slack = slack_ok
+check("main: 知らせない止まり方（取得に失敗）は、状態に書かない", st()["stopped"], [])
+check("main: 別の名前に書いてから置き換える（書きかけの名前を残さない・ほかの名前から指されない）",
+      ((WST.parent / "watch-status.json.tmp").exists(), WST.stat().st_nlink, WST.is_symlink()), (False, 1, False))
+WST.unlink()
+(WST.parent / "watch-status.json.tmp").symlink_to(TMP / "elsewhere.json")
+vl_watch.slack = garble
+o_link = out_at(D1)
+vl_watch.slack = slack_ok
+check("main: 書きかけの名前が symlink にされていても、その先には書かず、名前を外して状態を書く・出力も変えない",
+      ((TMP / "elsewhere.json").exists(), st(), o_link == o_bad, (WST.parent / "watch-status.json.tmp").exists()), (False, {"at": D1, "stopped": ["slack"]}, True, False))
+# 相手（置き場に書ける Hermes）が、書きかけの名前・置き場のフォルダに仕掛けたとき
+vl_watch.slack = garble
+TMPN = WST.parent / "watch-status.json.tmp"
+victim = TMP / "victim.txt"
+victim.write_text("大事な中身")
+WST.unlink()
+os.link(victim, TMPN)
+out_at(D1)
+check("main: 書きかけの名前が、ほかのファイルと同じ実体（ハードリンク）にされていても、そのファイルを書き換えない・状態は別の実体で書く",
+      (victim.read_text(), victim.stat().st_nlink, st(), WST.stat().st_nlink), ("大事な中身", 1, {"at": D1, "stopped": ["slack"]}, 1))
+WST.unlink()
+os.mkfifo(TMPN)
+import threading as _th  # noqa: E402
+got = {}
+t = _th.Thread(target=lambda: got.update(o=out_at(D1)), daemon=True)
+t.start()
+t.join(10)
+check("main: 書きかけの名前が FIFO にされていても、待たされずに終わり、出力は同じ・状態も書く",
+      (t.is_alive(), got.get("o") == o_bad, WST.exists() and st()), (False, True, {"at": D1, "stopped": ["slack"]}))
+WST.unlink()
+TMPN.mkdir()
+(TMPN / "x").write_text("x")
+o_dir = out_at(D1)
+check("main: 書きかけの名前が外せないもの（中身のあるフォルダ）なら、状態は書かずに終わり、出力は変えない", (WST.exists(), o_dir == o_bad, (TMPN / "x").read_text()), (False, True, "x"))
+(TMPN / "x").unlink()
+TMPN.rmdir()
+real = WST.parent
+moved = TMP / "voice-loop-real"
+real.rename(moved)
+outside = TMP / "outside"
+outside.mkdir()
+real.symlink_to(outside)
+o_par = out_at(D1)
+check("main: 置き場の voice-loop が、外のフォルダへの symlink にされていたら、その先には何も書かない・出力は変えない",
+      (sorted(p.name for p in outside.iterdir()), o_par == o_bad), ([], True))
+real.unlink()
+moved.rename(real)
+vl_watch.slack = slack_ok
 check("clip: 長い文は … で切る・改行と | と ESC を入れない",
       (vl_watch.clip("あ" * 60, 50)[-1], len(vl_watch.clip("あ" * 60, 50)), "|" in vl_watch.clip("a|b", 10), "\n" in vl_watch.clip("a\nb", 10),
        "\x1b" in vl_watch.clip("a\x1b[2Kb", 10)),

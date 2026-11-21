@@ -268,8 +268,40 @@ def later_options(now: float | None = None) -> list[dict]:
 
 
 # ---------- 一覧 ----------
+SLACK_STOP = "検索結果に見出しをまねた行があり、読めませんでした"  # 見張りの手順 9 が知らせる文と同じ（ファイルの文は出さない）
+
+
+def _watch_slack() -> list[dict]:
+    """Slack の見張りが、利用者に知らせる止まり方（結果の形が崩れている）をしているか。見張りの台本（vl_watch.write_status）が毎回書く
+    voice-loop/watch-status.json を読む。ファイルが無ければ、台本がまだ書いていない（帯は出さない）。直れば、次の回で台本が書き直して消える。
+    読めない・形が違うときは、読めないと帯で出す（Hermes の側が書けるファイルなので、中の文は出さず、決まった言葉だけを出す）。"""
+    title = "Slack の見張りが止まっています"
+    bad = [{"source": "slack", "title": title, "reason": "見張りの状態を読めません", "fix": ""}]
+    data, why = _read(vl_watch.STATUS, STATUS_MAX)
+    if data is None:
+        return bad
+    if why == "missing":
+        return []
+    try:
+        d = json.loads(data)
+    except (ValueError, RecursionError):
+        return bad
+    if not isinstance(d, dict) or not vl_items._num(d.get("at")) or not isinstance(d.get("stopped"), list):
+        return bad
+    return [{"source": "slack", "title": title, "reason": SLACK_STOP, "fix": ""}] if any(x == "slack" for x in d["stopped"]) else []
+
+
 def _watch(now: float | None = None) -> list[dict]:
-    """見張りが止まっている口（いまは Teams）。見張りの台本（vl_watch.teams）と同じ決まりで読む: 状態の時刻が 2 時間より古ければ止まっている、
+    """見張りが止まっている口（Slack と Teams）。Slack は _watch_slack。Teams は、Mac の側が書く状態を読む。"""
+    try:  # Slack の状態のどんな形でも、Teams の帯は止めない
+        slack = _watch_slack()
+    except Exception:
+        slack = [{"source": "slack", "title": "Slack の見張りが止まっています", "reason": "見張りの状態を読めません", "fix": ""}]
+    return slack + _watch_teams(now)
+
+
+def _watch_teams(now: float | None = None) -> list[dict]:
+    """Teams の見張りが止まっているか。見張りの台本（vl_watch.teams）と同じ決まりで読む: 状態の時刻が 2 時間より古ければ止まっている、
     組織が読めなければその理由（決まった言葉に直す。ファイルの文は出さない）。状態のファイルが無ければ、Teams の見張りを使っていない。"""
     now = time.time() if now is None else now
     data, why = _read("teams-status.json", STATUS_MAX)

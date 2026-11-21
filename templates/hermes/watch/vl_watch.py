@@ -11,6 +11,8 @@
 - 行は出来事の目印（ID と、構造のある時刻）だけ。相手が書ける文（件名・差出人の名前・本文・題）は入れない（Agent の指示に入るため）。
   中身は Agent が道具で読む。
 - 読むだけ。書き込みの道具は呼ばない。鍵の更新もしない（Hermes 本体が持つ）。
+  書くのは、見張りの状態のファイル（voice-loop/watch-status.json）だけ。利用者に知らせる止まり方をした口の名前（いまは slack）と時刻で、
+  voice-loop の画面が、受け箱の上の帯に出す（直れば、次の回で消える）。相手が書ける文は入れない。書けなくても、出力は変えない。
 - 読めなかった口は「<口> 読めない: <理由の種類>」の 1 行にする（理由の種類は変わらない語にする）。
 - 行の 2 つ目の語は、そのまま記録（vl_items.py）の id にする（Agent に組み立てさせない）。
   mail <id> ／ slack <チャンネル>/<ts> <送り手> ／ cal <id>@<開始> ／ plaud <id> | <録音の開始> ／ teams <id>
@@ -25,6 +27,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
 import subprocess
 import sys
@@ -221,8 +224,41 @@ def stamp(rows: list[str], now: float | None = None) -> list[str]:
     return [f"{r} ［{d.month}/{d.day}］" if r.startswith(NOTIFY) else r for r in rows]
 
 
+STATUS = "watch-status.json"
+
+
+def write_status(stopped: list[str], now: float | None = None) -> None:
+    """見張りの状態を voice-loop/watch-status.json に書く（{"at": 時刻, "stopped": [口の名前]}）。
+    置き場の voice-loop/ を symlink をたどらずに開き、その中にだけ書く。書きかけの名前に何か置かれていたら（symlink・ほかのファイルと同じ実体・
+    FIFO など）、開かずに名前だけを外してから、新しいファイルとして作る（置かれたものの先には書かない・待たされない）。作ってから置き換える。
+    書けなくても見張りは止めない（出力が変わると Agent が起きるので、何も出さない）。"""
+    dfd = None
+    try:
+        home = Path(vl_mcp.HOME) / "voice-loop"
+        try:
+            os.mkdir(home, 0o755)
+        except FileExistsError:
+            pass
+        dfd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        tmp = STATUS + ".tmp"
+        try:
+            os.unlink(tmp, dir_fd=dfd)
+        except FileNotFoundError:
+            pass
+        at = dt.datetime.now(JST).timestamp() if now is None else now
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=dfd)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"at": at, "stopped": stopped}, f)
+        os.replace(tmp, STATUS, src_dir_fd=dfd, dst_dir_fd=dfd)
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        if dfd is not None:
+            os.close(dfd)
+
+
 def main(now: float | None = None) -> None:
-    parts = []
+    parts, stopped = [], []
     for name, fn in (("mail", mail), ("cal", calendar), ("slack", slack), ("plaud", plaud), ("teams", teams)):
         try:
             rows = fn()
@@ -232,9 +268,11 @@ def main(now: float | None = None) -> None:
             rows = [f"{name} 読めない: 鍵の更新が要る（{name} の道具を一度使うと直る）"]
         except Garbled:
             rows = [f"{name} 読めない: 結果の形が崩れている（本文に見出しをまねた行がある可能性。利用者に知らせる）"]
+            stopped.append(name)
         except Exception:  # noqa: BLE001
             rows = [f"{name} 読めない: 取得に失敗"]
         parts.append(f"## {name}\n" + "\n".join(sorted(stamp(rows, now))))
+    write_status([n for n in stopped if n == "slack"], now)  # 利用者に知らせる止まり方（NOTIFY）のうち、Slack の分。Teams は Mac の側が teams-status.json に書く
     print("\n".join(parts))
 
 
