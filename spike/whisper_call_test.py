@@ -4,8 +4,9 @@
   - 画面や機械が、名前に " や改行を入れて送っても、whisper への要求の見出しは崩れない（相手の位置: tailnet の中の WebSocket の turn）
   - 言語は毎回渡す（既定は ja）。空にすると渡さない
   - 声の区間だけを聞き取らせる（vad=true。既定は on）。off にすると渡さない
-  - 診断: whisper が VAD のモデルを読み込んでいない（vad=true だけ 500）ときは、そのことを名指しで知らせる
-  - 聞き取りに失敗しても（whisper が止まっている・500）、WebSocket は切らずに「聞き取りに失敗しました」と返し、次の録音を受ける
+  - 診断: whisper が vad=true にだけ答えない（VAD のモデルを読み込んでいないことが多い）ときは、そう知らせる。vad を黙って無視する whisper
+    （声の入っていない雑音を文字にする）にも気づく。いつも 500・つながらないときは VAD のせいにしない
+  - 聞き取りに失敗しても（whisper が止まっている・500・返事の形が違う）、WebSocket は切らずに「聞き取りに失敗しました」と返し、次の録音を受ける
 使い方: uv run spike/whisper_call_test.py"""
 import json
 import os
@@ -50,6 +51,7 @@ class Resp:
 
 
 mode = {"fail": None}  # None: 空の聞き取りを返す / "vad": vad=true のときだけ 500 / "all": いつも 500 / "down": つながらない
+# "ignore": vad を読まない版（雑音を文字にする）/ "list": 返事が [] / "null": 文が null / "noise_down": 雑音の確かめだけつながらない
 
 
 def fake_urlopen(req, timeout=None):
@@ -59,6 +61,15 @@ def fake_urlopen(req, timeout=None):
         raise s.urllib.error.URLError("connection refused")
     if fail == "all" or (fail == "vad" and b'name="vad"' in req.data):
         raise s.urllib.error.HTTPError(req.full_url, 500, "Internal Server Error", {}, None)
+    noise = len(req.data) > 20000  # 点検の雑音（2 秒）。無音の点検（0.3 秒）と録音の作り物は小さい
+    if fail == "noise_down" and noise:
+        raise s.urllib.error.URLError("connection reset")
+    if fail == "ignore" and noise:
+        return Resp(json.dumps({"text": "コミット\n"}).encode())
+    if fail == "list":
+        return Resp(b"[]")
+    if fail == "null":
+        return Resp(json.dumps({"text": None}).encode())
     return Resp(json.dumps({"text": ""}).encode())
 
 
@@ -112,7 +123,7 @@ try:
         check("WebSocket の turn: 声の区間だけを聞き取らせる", VAD in seen[0], True)
 
     # 聞き取りに失敗しても接続は切らない。続けて送った録音も聞き取りに回る
-    for fail in ("all", "down"):
+    for fail in ("all", "down", "list", "null"):
         seen.clear()
         errors = []
         try:
@@ -136,11 +147,23 @@ try:
     # ---------- 診断 ----------
     mode["fail"] = None
     check("診断: 答えれば問題なし", s._whisper_problem(), "")
+    check("診断: 雑音の確かめも送る（vad=true つき）", any(len(b) > 20000 and VAD in b for b in seen), True)
     mode["fail"] = "vad"
     msg = s._whisper_problem()
-    check("診断: vad=true だけ 500 なら、VAD のモデルが無いと名指しする", "VAD" in msg and "-vm" in msg and "VL_WHISPER_VAD=off" in msg, True)
+    check("診断: vad=true だけ答えないなら、VAD のモデルを確かめるよう知らせる", "VAD" in msg and "-vm" in msg and "VL_WHISPER_VAD=off" in msg, True)
+    mode["fail"] = "ignore"
+    msg = s._whisper_problem()
+    check("診断: vad を黙って無視する whisper（雑音を文字にする）に気づく", "効いていません" in msg and "コミット" in msg, True)
+    mode["fail"] = "noise_down"
+    check("診断: 雑音の確かめが失敗したら、問題なしとは言わない", "雑音を渡す確かめに失敗" in s._whisper_problem(), True)
+    for fail in ("list", "null"):
+        mode["fail"] = fail
+        check(f"診断: 返事の形が違う（{fail}）なら、whisper の返事ではないと言う", "whisper の返事ではありません" in s._whisper_problem(), True)
     s.WHISPER_VAD = False
+    mode["fail"] = "vad"
     check("診断: off なら vad を付けずに確かめる（問題なし）", s._whisper_problem(), "")
+    mode["fail"] = "ignore"
+    check("診断: off なら雑音の確かめはしない", s._whisper_problem(), "")
     s.WHISPER_VAD = True
     mode["fail"] = "all"
     msg = s._whisper_problem()
