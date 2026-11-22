@@ -3,6 +3,9 @@
   - ファイル名は本体が付ける。送られてきた名前は拡張子だけを見る（webm・mp4・m4a・ogg・opus・wav。ほかと拡張子の無いものは webm）
   - 画面や機械が、名前に " や改行を入れて送っても、whisper への要求の見出しは崩れない（相手の位置: tailnet の中の WebSocket の turn）
   - 言語は毎回渡す（既定は ja）。空にすると渡さない
+  - 声の区間だけを聞き取らせる（vad=true。既定は on）。off にすると渡さない
+  - 診断: whisper が VAD のモデルを読み込んでいない（vad=true だけ 500）ときは、そのことを名指しで知らせる
+  - 聞き取りに失敗しても（whisper が止まっている・500）、WebSocket は切らずに「聞き取りに失敗しました」と返し、次の録音を受ける
 使い方: uv run spike/whisper_call_test.py"""
 import json
 import os
@@ -12,6 +15,7 @@ from pathlib import Path
 
 TMP = tempfile.mkdtemp()
 os.environ.pop("VL_WHISPER_LANG", None)  # 外の設定を引き継がない（既定の ja を確かめる）
+os.environ.pop("VL_WHISPER_VAD", None)  # 同じく既定の on を確かめる
 os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HERMES_KEY="k1", VL_HERMES_URL="http://127.0.0.1:9")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -45,9 +49,20 @@ class Resp:
     def read(self): return self.body
 
 
+mode = {"fail": None}  # None: 空の聞き取りを返す / "vad": vad=true のときだけ 500 / "all": いつも 500 / "down": つながらない
+
+
 def fake_urlopen(req, timeout=None):
     seen.append(req.data)
+    fail = mode["fail"]
+    if fail == "down":
+        raise s.urllib.error.URLError("connection refused")
+    if fail == "all" or (fail == "vad" and b'name="vad"' in req.data):
+        raise s.urllib.error.HTTPError(req.full_url, 500, "Internal Server Error", {}, None)
     return Resp(json.dumps({"text": ""}).encode())
+
+
+VAD = b'name="vad"\r\n\r\ntrue\r\n'
 
 
 real = s.urllib.request.urlopen
@@ -58,7 +73,15 @@ try:
     check("言語を渡す（既定 ja）", b'name="language"\r\n\r\nja\r\n' in body, True)
     check("名前は本体が付けた audio.webm", b'filename="audio.webm"' in body, True)
     check("送られた名前の断片は要求に入らない", b"evil" in body or b"text/plain" in body, False)
-    check("multipart の区切りは 3 つ（model・language・file）と終わり", body.count(b"\r\n--" + body.split(b"\r\n", 1)[0][2:]) + 1, 4)
+    check("声の区間だけを聞き取らせる（既定 vad=true）", VAD in body, True)
+    check("既定の WHISPER_VAD は on", s.WHISPER_VAD, True)
+    check("multipart の区切りは 4 つ（model・language・vad・file）と終わり", body.count(b"\r\n--" + body.split(b"\r\n", 1)[0][2:]) + 1, 5)
+    s._whisper(b"AUDIO", "rec.wav", vad=False)
+    check("vad=False を指定すると渡さない", b'name="vad"' in seen[-1], False)
+    s.WHISPER_VAD = False
+    s._whisper(b"AUDIO", "rec.wav")
+    check("off にすると vad を渡さない", b'name="vad"' in seen[-1], False)
+    s.WHISPER_VAD = True
 
     s.WHISPER_LANG = ""
     s._whisper(b"AUDIO", "rec.ogg")
@@ -85,6 +108,46 @@ try:
         check("WebSocket の turn: 細工した見出しは入らない", b"X-Evil" in seen[0], False)
         check("WebSocket の turn: 言語を渡す", b'name="language"\r\n\r\nja\r\n' in seen[0], True)
     check("空の聞き取りは「聞き取れませんでした」", "error" in got, True)
+    if seen:
+        check("WebSocket の turn: 声の区間だけを聞き取らせる", VAD in seen[0], True)
+
+    # 聞き取りに失敗しても接続は切らない。続けて送った録音も聞き取りに回る
+    for fail in ("all", "down"):
+        seen.clear()
+        errors = []
+        try:
+            with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+                with c.websocket_connect("ws://127.0.0.1:8790/ws") as ws:
+                    for round_fail in (fail, None):
+                        mode["fail"] = round_fail
+                        ws.send_text(json.dumps({"type": "turn", "pane": "w0:p1", "speaker": "8", "filename": "a.webm"}))
+                        ws.send_bytes(b"AUDIO")
+                        for _ in range(20):
+                            m = ws.receive_json()
+                            if m.get("type") == "error":
+                                errors.append(m.get("text", ""))
+                                break
+        except Exception as e:  # 本体の受け口が例外で落ちた（＝接続が切れた）
+            errors.append(f"例外 {type(e).__name__}")
+        mode["fail"] = None
+        check(f"失敗（{fail}）: 「聞き取りに失敗しました」と返す", bool(errors) and errors[0].startswith("聞き取りに失敗しました"), True)
+        check(f"失敗（{fail}）: 接続は切れず、次の録音も聞き取りに回る", (len(seen), errors[1:]), (2, ["聞き取れませんでした"]))
+
+    # ---------- 診断 ----------
+    mode["fail"] = None
+    check("診断: 答えれば問題なし", s._whisper_problem(), "")
+    mode["fail"] = "vad"
+    msg = s._whisper_problem()
+    check("診断: vad=true だけ 500 なら、VAD のモデルが無いと名指しする", "VAD" in msg and "-vm" in msg and "VL_WHISPER_VAD=off" in msg, True)
+    s.WHISPER_VAD = False
+    check("診断: off なら vad を付けずに確かめる（問題なし）", s._whisper_problem(), "")
+    s.WHISPER_VAD = True
+    mode["fail"] = "all"
+    msg = s._whisper_problem()
+    check("診断: いつも 500 なら、whisper の返事ではないと言う（VAD のせいにしない）", "whisper の返事ではありません" in msg and "VAD" not in msg, True)
+    mode["fail"] = "down"
+    check("診断: つながらなければ、動いていないと言う", "動いていません" in s._whisper_problem(), True)
+    mode["fail"] = None
 finally:
     s.urllib.request.urlopen = real
 

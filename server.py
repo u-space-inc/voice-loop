@@ -72,6 +72,10 @@ WHISPER = os.environ.get("VL_WHISPER", "http://127.0.0.1:8080/v1/audio/transcrip
 # 聞き取りの言語。毎回 whisper に渡す（自動判定に任せると、短い発言や雑音で日本語以外と取り違える。2026-11 の記録で 283 件中 5 件）。
 # 空（VL_WHISPER_LANG=）にすると渡さず、whisper の起動時の設定に任せる
 WHISPER_LANG = os.environ.get("VL_WHISPER_LANG", "ja").strip()
+# 声の区間だけを聞き取らせる（whisper の vad=true）。声の入っていない雑音が「はい」「コミット」と聞き取られ、承認やセッションへの
+# 指示として届くのを防ぐ（2026-11-22 実測。雑音と無音の 8 本は空になり、本物の短い発話は同じ文字）。whisper の起動に VAD のモデル（-vm）が要る。
+# off にすると渡さない
+WHISPER_VAD = os.environ.get("VL_WHISPER_VAD", "on").strip().lower() != "off"
 # 聞き取りに渡す音声の拡張子。画面の録音（webm・mp4）と、機械の録音（ogg・opus・wav）。ほかは webm として渡す
 AUDIO_EXTS = ("webm", "mp4", "m4a", "ogg", "opus", "wav")
 # 声のエンジン。どちらも同じ形の API（audio_query → synthesis）で、違うのは呼び先と既定の声だけ
@@ -439,11 +443,13 @@ def audio_name(filename) -> str:
     return f"audio.{ext if ext in AUDIO_EXTS else 'webm'}"
 
 
-def _whisper(audio: bytes, filename: str, timeout: float = 120) -> dict:
+def _whisper(audio: bytes, filename: str, timeout: float = 120, vad: bool | None = None) -> dict:
     boundary = "----vl" + os.urandom(8).hex()
     lang = f"--{boundary}\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\n{WHISPER_LANG}\r\n" if WHISPER_LANG else ""
+    vad = WHISPER_VAD if vad is None else vad
+    vad_part = f"--{boundary}\r\nContent-Disposition: form-data; name=\"vad\"\r\n\r\ntrue\r\n" if vad else ""
     body = (
-        f"--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nwhisper\r\n{lang}"
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nwhisper\r\n{lang}{vad_part}"
         f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{audio_name(filename)}\"\r\n"
         f"Content-Type: application/octet-stream\r\n\r\n"
     ).encode() + audio + f"\r\n--{boundary}--\r\n".encode()
@@ -1111,6 +1117,14 @@ def _whisper_problem() -> str:
         ok = False
     except OSError as e:
         return f"whisper のサーバーが {WHISPER} で動いていません（{str(e)[:80]}）。起動してください。入れ方は README の「準備」にあります"
+    if not ok and WHISPER_VAD:  # 声の区間（vad）を付けなければ答えるなら、whisper が VAD のモデルを読み込んでいない
+        try:
+            ok_plain = "text" in _whisper(buf.getvalue(), "probe.wav", timeout=30, vad=False)
+        except (OSError, ValueError):
+            ok_plain = False
+        if ok_plain:
+            return ("whisper は動いていますが、声の区間を見分けるモデル（VAD）を読み込んでいません。起動に `-vm <Silero のモデル>` を足してください"
+                    "（README の「準備」）。使わないなら config.env に VL_WHISPER_VAD=off")
     return "" if ok else f"{WHISPER} は応答しますが、whisper の返事ではありません。別のサービスが同じポートを使っていないか確かめ、config.env の VL_WHISPER を合わせてください"
 
 
@@ -3077,7 +3091,12 @@ async def ws(sock: WebSocket):
                 continue
             if msg.get("bytes") is not None and pending.get("type") == "turn":
                 await send(type="status", text="聞き取り中…")
-                text = await asyncio.to_thread(transcribe, msg["bytes"], pending.get("filename", "audio.webm"))
+                try:
+                    text = await asyncio.to_thread(transcribe, msg["bytes"], pending.get("filename", "audio.webm"))
+                except (OSError, ValueError) as e:  # whisper が止まっている・答えの形が違う。接続は切らずに知らせる
+                    print(f"[whisper] 聞き取りに失敗: {str(e)[:200]}", flush=True)
+                    await send(type="error", text="聞き取りに失敗しました（聞き取りのサーバーを確かめてください）")
+                    continue
                 if not text:
                     await send(type="error", text="聞き取れませんでした")
                     continue
