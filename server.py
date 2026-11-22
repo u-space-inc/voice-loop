@@ -461,10 +461,11 @@ def _whisper(audio: bytes, filename: str, timeout: float = 120, vad: bool | None
 
 
 def _text_of(reply) -> str:
-    """whisper の返事の文。形が違えば（dict でない・文が文字でない）ValueError にそろえる（受け口が「聞き取りに失敗しました」と返す）。"""
-    if not isinstance(reply, dict) or not isinstance(reply.get("text", ""), str):
+    """whisper の返事の文。形が違えば（dict でない・text が無い・文が文字でない）ValueError にそろえる（受け口が「聞き取りに失敗しました」と返す。
+    {"error": …} のような返事を、空の聞き取りとして通さない）。"""
+    if not isinstance(reply, dict) or not isinstance(reply.get("text"), str):
         raise ValueError("whisper の返事の形が違います")
-    return reply.get("text", "")
+    return reply["text"]
 
 
 def transcribe(audio: bytes, filename: str) -> str:
@@ -1128,8 +1129,9 @@ def _probe_wav(seconds: float, amp: float = 0.0) -> bytes:
 
 def _whisper_problem() -> str:
     """短い無音を実際に聞き取らせる（同じポートで別のサービスが動いているだけ、を「使える」と数えないため）。
-    声の区間（vad）を使うときは、声の入っていない雑音も聞き取らせて、空になるかを見る（vad を読まない版の whisper は、黙って雑音を文字にする。
-    2026-11-22 に、この雑音は vad なしで「コミット」、vad=true で空になることを実際の whisper で確かめた）。"""
+    声の区間（vad）を使うときは、声の入っていない雑音も聞き取らせて、空になるかを見る（vad を読まない版の whisper は、黙って雑音を文字にすることがある。
+    2026-11-22 に、この雑音は vad なしで「コミット」、vad=true で空になることを実際の whisper で確かめた）。空でも VAD が効いている証明にはならない
+    （vad を読まなくても、この雑音をもともと空にする whisper もありうる）。気づけるのは、この雑音を文字にする場合だけ。"""
     silence = _probe_wav(0.3)
     try:
         reply = _whisper(silence, "probe.wav", timeout=30)

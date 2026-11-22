@@ -52,6 +52,7 @@ class Resp:
 
 mode = {"fail": None}  # None: 空の聞き取りを返す / "vad": vad=true のときだけ 500 / "all": いつも 500 / "down": つながらない
 # "ignore": vad を読まない版（雑音を文字にする）/ "list": 返事が [] / "null": 文が null / "noise_down": 雑音の確かめだけつながらない
+# "missing": 返事に text が無い（{"error": …}）/ "noise_missing": 雑音の確かめだけ text が無い
 
 
 def fake_urlopen(req, timeout=None):
@@ -68,6 +69,8 @@ def fake_urlopen(req, timeout=None):
         return Resp(json.dumps({"text": "コミット\n"}).encode())
     if fail == "list":
         return Resp(b"[]")
+    if fail == "missing" or (fail == "noise_missing" and noise):
+        return Resp(json.dumps({"error": "failed to process audio"}).encode())
     if fail == "null":
         return Resp(json.dumps({"text": None}).encode())
     return Resp(json.dumps({"text": ""}).encode())
@@ -123,7 +126,7 @@ try:
         check("WebSocket の turn: 声の区間だけを聞き取らせる", VAD in seen[0], True)
 
     # 聞き取りに失敗しても接続は切らない。続けて送った録音も聞き取りに回る
-    for fail in ("all", "down", "list", "null"):
+    for fail in ("all", "down", "list", "null", "missing"):
         seen.clear()
         errors = []
         try:
@@ -156,7 +159,9 @@ try:
     check("診断: vad を黙って無視する whisper（雑音を文字にする）に気づく", "効いていません" in msg and "コミット" in msg, True)
     mode["fail"] = "noise_down"
     check("診断: 雑音の確かめが失敗したら、問題なしとは言わない", "雑音を渡す確かめに失敗" in s._whisper_problem(), True)
-    for fail in ("list", "null"):
+    mode["fail"] = "noise_missing"
+    check("診断: 雑音の確かめの返事に text が無ければ、問題なしとは言わない", "雑音を渡す確かめに失敗" in s._whisper_problem(), True)
+    for fail in ("list", "null", "missing"):
         mode["fail"] = fail
         check(f"診断: 返事の形が違う（{fail}）なら、whisper の返事ではないと言う", "whisper の返事ではありません" in s._whisper_problem(), True)
     s.WHISPER_VAD = False
