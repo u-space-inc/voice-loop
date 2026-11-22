@@ -130,6 +130,10 @@ SENTENCE_END = re.compile(r"(?<=[。！？!?\n])")
 
 @asynccontextmanager
 async def lifespan(_app):
+    try:
+        notices_tidy()  # 前の版が残した知らせの題・一言を、記録から取り除く
+    except Exception:
+        traceback.print_exc()
     tasks = [
         asyncio.create_task(boot_ensure_hub()),  # サーバー起動時（= Mac の再起動後）にハブを立て直す
         asyncio.create_task(keep_gateway_token()),
@@ -2896,6 +2900,23 @@ def notices() -> dict:
     sent = [float(t) for t in (d.get("sent") if isinstance(d.get("sent"), list) else []) if _notice_time(t, now) and now - t < 3600]
     nxt = d.get("next")
     return {"next": nxt if _notice_n(nxt) else 1, "sent": sent}
+
+
+def notices_tidy() -> bool:
+    """知らせの記録に、次の番号と受けた時刻のほかのもの（0.35.0 までの版が残した知らせの題・一言など）があれば、取り除いて書き直す。
+    番号と、直近 1 時間に受けた時刻はそのまま残す（1 時間に受ける数の上限を、書き直しで外さない）。書き直したら True。起動のたびに 1 回。"""
+    with _notice_lock:
+        if not NOTICES_FILE.exists():
+            return False
+        try:
+            raw = _read_json(NOTICES_FILE, {}) if NOTICES_FILE.stat().st_size <= NOTICE_FILE_MAX else {}
+        except OSError:
+            raw = {}
+        d = notices()
+        if raw == d:
+            return False
+        write_json(NOTICES_FILE, d)
+        return True
 
 
 @app.post("/api/hub/notice")

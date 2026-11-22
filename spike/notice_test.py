@@ -114,6 +114,42 @@ now = time.time()
 s.write_json(s.NOTICES_FILE, {"next": 200, "rows": [{"n": i, "title": f"t{i}", "text": "", "at": now - 100 + i} for i in range(1, 61)], "sent": ["x", now - 10]})
 check("前の版の記録（知らせの行つき）からも、番号は前の続き・行は書き残さない",
       (post({"title": "続き"}).json().get("n"), sorted(json.loads(s.NOTICES_FILE.read_text())), len(json.loads(s.NOTICES_FILE.read_text())["sent"])), (200, ["next", "sent"], 2))
+# 前の版（0.35.0 まで）が残した題・一言は、起動のときに取り除く（次の知らせを待たない。上限に届いていて受けられないときも）
+old_sent = [now - 60 * i for i in range(1, s.NOTICE_PER_HOUR + 1)]
+s.write_json(s.NOTICES_FILE, {"next": 77, "rows": [{"n": 76, "title": "前の版の題", "text": "前の版の一言", "at": now - 60}], "sent": old_sent + [now - 7200, "x"]})
+refused = post({"title": "上限のあと"}).json().get("reason")
+check("前提: 上限に届いていると受けられず、前の版の題・一言は記録に残ったまま", (refused, "前の版の題" in s.NOTICES_FILE.read_text()), ("too_many", True))
+tidied = s.notices_tidy()
+left = json.loads(s.NOTICES_FILE.read_text())
+check("起動のときの片づけ: 題・一言を取り除き、番号と直近 1 時間の時刻は残す（上限は外れない）",
+      (tidied, sorted(left), left["next"], left["sent"] == old_sent, "前の版" in s.NOTICES_FILE.read_text(), post({"title": "片づけのあと"}).json().get("reason")),
+      (True, ["next", "sent"], 77, True, False, "too_many"))
+check("…片づいた記録は、書き直さない", (s.notices_tidy(), json.loads(s.NOTICES_FILE.read_text()) == left), (False, True))
+s.NOTICES_FILE.unlink()
+check("…記録が無ければ、作らない", (s.notices_tidy(), s.NOTICES_FILE.exists()), (False, False))
+for junk in ("{壊れた", '["rows"]', '{"next": 3, "sent": [], "rows": "題"}', '{"next": 3, "sent": [], "memo": "<b>x</b>"}'):
+    s.NOTICES_FILE.write_text(junk)
+    s.notices_tidy()
+    check(f"…壊れた・余計な項目のある記録 {junk[:20]} も、番号と時刻だけに書き直す", sorted(json.loads(s.NOTICES_FILE.read_text())), ["next", "sent"])
+s.NOTICES_FILE.write_text('{"next": 5, "sent": [], "pad": "' + "x" * (s.NOTICE_FILE_MAX + 10) + '"}')
+check("…大きすぎる記録も、番号と時刻だけに書き直す（落ちない）", (s.notices_tidy(), s.NOTICES_FILE.stat().st_size < 100), (True, True))
+import asyncio as _aio  # noqa: E402
+s.write_json(s.NOTICES_FILE, {"next": 9, "rows": [{"n": 8, "title": "起動の前の題", "text": "", "at": now}], "sent": []})
+
+
+async def _boot():
+    async with s.lifespan(s.app):
+        pass
+
+
+keep = (s.boot_ensure_hub, s.keep_gateway_token, s.watch_blocked, s.HUB.watchers)
+async def _nop():
+    return None
+s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = _nop
+s.HUB.watchers = lambda: []
+_aio.run(_boot())
+s.boot_ensure_hub, s.keep_gateway_token, s.watch_blocked, s.HUB.watchers = keep
+check("本体の起動で、片づけが 1 回動く", ("起動の前の題" in s.NOTICES_FILE.read_text(), json.loads(s.NOTICES_FILE.read_text())["next"]), (False, 9))
 s.NOTICES_FILE.write_text("{壊れた")
 check("記録が壊れていても、受け直せる（番号は 1 から）", post({"title": "直った"}).json().get("n"), 1)
 for bad_doc in ({"rows": None, "sent": 7}, {"rows": "x", "sent": {"a": 1}, "next": "9"}, {"next": True}, {"next": -3}, {"next": 1.5}, [], "文字", None):
