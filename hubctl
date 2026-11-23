@@ -314,16 +314,25 @@ def since_value(text):
     t = text.strip()
     if re.fullmatch(r"\d{1,11}(\.\d+)?", t):
         return float(t)
-    for fmt, has_year in (("%Y-%m-%d %H:%M", True), ("%Y/%m/%d %H:%M", True), ("%m/%d %H:%M", False), ("%m/%d", False), ("%Y-%m-%d", True)):
+    for fmt in ("%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M", "%Y-%m-%d"):
         try:
-            d = dt.datetime.strptime(t, fmt)
+            return dt.datetime.strptime(t, fmt).replace(tzinfo=jst).timestamp()
         except ValueError:
             continue
-        now = dt.datetime.now(jst)
-        d = d.replace(year=d.year if has_year else now.year, tzinfo=jst)
-        if not has_year and d > now:
-            d = d.replace(year=now.year - 1)
-        return d.timestamp()
+    # 年の無い形は strptime で読まない（Python 3.15 は年の無い %d を ValueError にする。3.13・3.14 は警告。
+    # Hermes のコンテナの python3 が上がると、--since が読めなくなるため）。いまの年で作り、未来になるなら去年にする
+    m = re.fullmatch(r"(\d{1,2})/(\d{1,2})(?: (\d{1,2}):(\d{2}))?", t)
+    if not m:
+        return None
+    now = dt.datetime.now(jst)
+    mo, day, hh, mm = int(m.group(1)), int(m.group(2)), int(m.group(3) or 0), int(m.group(4) or 0)
+    for year in (now.year, now.year - 1):
+        try:
+            d = dt.datetime(year, mo, day, hh, mm, tzinfo=jst)
+        except ValueError:  # 無い日付（13 月・2/30）・閏年でない年の 2/29
+            continue
+        if d <= now:
+            return d.timestamp()
     return None
 
 

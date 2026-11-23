@@ -478,6 +478,30 @@ check("守り: コンテナから POST・鍵なし・違う鍵は断る",
        problem({"host": "host.docker.internal:8790"}, "GET", "/api/hub/sent", container=True) is not None,
        problem({"host": "host.docker.internal:8790", "x-vl-key": "k2"}, "GET", "/api/hub/sent", container=True) is not None], [True, True, True])
 
+# ---------- hubctl の --since（年の無い形。Python 3.15 は strptime で年の無い %d を ValueError にする） ----------
+import ast  # noqa: E402
+import re  # noqa: E402
+import datetime as _dt  # noqa: E402
+import warnings  # noqa: E402
+
+_src = (ROOT / "hubctl").read_text(encoding="utf-8")
+_fn = next(n for n in ast.parse(_src).body if isinstance(n, ast.FunctionDef) and n.name == "since_value")
+_fmts = [c.value for c in ast.walk(_fn) if isinstance(c, ast.Constant) and isinstance(c.value, str) and "%" in c.value]
+check("hubctl の --since: strptime に渡す形には、どれも年（%Y）がある（Python 3.15 でも読める）", (bool(_fmts), all("%Y" in f for f in _fmts)), (True, True))
+_g = {"re": re}
+exec(compile(ast.Module([_fn], []), "hubctl", "exec"), _g)
+_jst = _dt.timezone(_dt.timedelta(hours=9))
+_now = _dt.datetime.now(_jst)
+with warnings.catch_warnings():
+    warnings.simplefilter("error")  # 3.13・3.14 の警告も失敗にする
+    _past = (_now - _dt.timedelta(days=3)).replace(second=0, microsecond=0)
+    _future = (_now + _dt.timedelta(days=3)).replace(second=0, microsecond=0)
+    _got = (_g["since_value"](_past.strftime("%m/%d %H:%M")), _g["since_value"](_future.strftime("%m/%d %H:%M")),
+            _g["since_value"]("13/01 00:00"), _g["since_value"]("02/30"), _g["since_value"]("きのう"))
+check("hubctl の --since: 「MM/DD HH:MM」はいまの年、未来になるなら去年。無い日付・読めない文は None（警告を出さない）",
+      (_got[0] == _past.timestamp(), _dt.datetime.fromtimestamp(_got[1], _jst).year == _future.year - 1 if _got[1] else None, _got[2:]),
+      (True, True, (None, None, None)))
+
 # ---------- hubctl sent（127.0.0.1:8792 に本体の写しを立てる） ----------
 import uvicorn  # noqa: E402
 

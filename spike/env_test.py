@@ -29,19 +29,20 @@ dev = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["depe
 missing = [d for d in script_deps(ROOT / "server.py") if d not in dev]
 check("本体（server.py）の依存が pyproject.toml の dev にそろっている", not missing, missing)
 
-CI_RUN, CI_SKIP = [], {}
+CI_RUN, CI_SKIP, CI_SKIP_LINES = [], {}, []
 for line in (ROOT / "spike/ci.txt").read_text(encoding="utf-8").splitlines():
     if not line.strip() or line.startswith("#"):
         continue
     if line.startswith("- "):
         name, _, why = line[2:].partition("  ")
         CI_SKIP[name.strip()] = why.strip()
+        CI_SKIP_LINES.append(name.strip())
     else:
         CI_RUN.append(line.strip())
 names = {p.name for p in (ROOT / "spike").glob("*.py")}
 check("spike/ の .py は、どれも spike/ci.txt に載っている（CI で回すか、回さない理由つきか）", names <= set(CI_RUN) | set(CI_SKIP), sorted(names - set(CI_RUN) - set(CI_SKIP)))
 check("spike/ci.txt に、無いファイル・重なり・二重の行が無い",
-      (set(CI_RUN) | set(CI_SKIP)) <= names and not set(CI_RUN) & set(CI_SKIP) and len(CI_RUN) == len(set(CI_RUN)),
+      (set(CI_RUN) | set(CI_SKIP)) <= names and not set(CI_RUN) & set(CI_SKIP) and len(CI_RUN) == len(set(CI_RUN)) and len(CI_SKIP_LINES) == len(set(CI_SKIP_LINES)),
       (sorted((set(CI_RUN) | set(CI_SKIP)) - names), sorted(set(CI_RUN) & set(CI_SKIP))))
 check("spike/ci.txt の回さないものには、どれも理由がある", all(CI_SKIP.values()), [n for n, w in CI_SKIP.items() if not w])
 MUST_SKIP = {"ui_test.py", "guard_test.py", "report_test.py", "report_queue_test.py", "container_guard_test.py",

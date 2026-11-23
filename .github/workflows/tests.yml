@@ -18,6 +18,20 @@ jobs:
     # 本体は macOS 向け（herdr のプラグインの platforms）。公開リポジトリでは標準の実行環境は無料
     runs-on: macos-15
     timeout-minutes: 60
+    env:
+      # uv は lock と pyproject が食い違えば失敗する（uv run が lock の外で依存を解き直さない。a2a 35d3b740 の指摘）
+      UV_LOCKED: "1"
+      # 本体（常駐）と同じ Python で回す（手元の .venv は 3.12）。指定しないと、実行環境の新しい python3 が選ばれる
+      UV_PYTHON: "3.12"
+      # 二重の守り: 試験が行き先を指定し忘れても、本体の既定の行き先（声のエンジン・聞き取り・Hermes・語り手）は
+      # 何も待ち受けていないポートを指し、設定・状態・Hermes の置き場は一時のフォルダになる（各試験が自分で指定したものが先に効く）
+      VL_VOICE_URL: http://127.0.0.1:9
+      VL_WHISPER: http://127.0.0.1:9/v1/audio/transcriptions
+      VL_HERMES_URL: http://127.0.0.1:9
+      ANTHROPIC_BASE_URL: http://127.0.0.1:9
+      VL_CONFIG_DIR: ${{ runner.temp }}/vl-config
+      VL_STATE_DIR: ${{ runner.temp }}/vl-state
+      VL_HERMES_HOME: ${{ runner.temp }}/vl-hermes
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -25,21 +39,33 @@ jobs:
       - name: uv を入れる（手元と同じ版に固定）
         run: pipx install uv==0.13.4
       - name: 依存を入れる（uv.lock のとおり。作業木の .venv）
-        run: uv sync --frozen
+        run: uv sync --locked
+      - name: ffmpeg を入れる（機械に返す声を Opus に縮める試験が使う）
+        run: brew install ffmpeg
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
       - name: ブラウザを入れる（pyproject.toml の Playwright の版に合わせる）
         run: uv run playwright install chromium webkit
       - name: 試験を 1 本ずつ回す（spike/ci.txt）
         run: |
           set -u
-          failed=()
-          while IFS= read -r line; do
+          # 先に一覧を読み切る（最後の行に改行が無くても読む。試験が標準入力を読んでも、残りの試験を飛ばさない。a2a 35d3b740 の指摘）
+          tests=()
+          while IFS= read -r line || [ -n "$line" ]; do
             case "$line" in ''|'#'*|'- '*) continue ;; esac
-            echo "::group::$line"
-            if uv run "spike/$line"; then echo "→ 通った: $line"; else echo "::error::落ちた: $line"; failed+=("$line"); fi
-            echo "::endgroup::"
+            tests+=("$line")
           done < spike/ci.txt
+          if [ "${#tests[@]}" -eq 0 ]; then echo "::error::spike/ci.txt に回す試験がない"; exit 1; fi
+          echo "回す試験: ${#tests[@]} 本"
+          failed=()
+          for t in "${tests[@]}"; do
+            echo "::group::$t"
+            if uv run "spike/$t" < /dev/null; then echo "→ 通った: $t"; else echo "::error::落ちた: $t"; failed+=("$t"); fi
+            echo "::endgroup::"
+          done
           if [ "${#failed[@]}" -gt 0 ]; then
             printf '落ちた試験: %s\n' "${failed[@]}"
             exit 1
           fi
-          echo "spike/ci.txt の試験はすべて通った"
+          echo "spike/ci.txt の ${#tests[@]} 本はすべて通った"

@@ -1,4 +1,4 @@
-"""画面の 🔔（通知）と 📋（頼んだ件）の通し。本体の写しをこの試験の中で 127.0.0.1:8791 に立て、本物のブラウザで開く（常駐の 8790 には触れない）。
+"""画面の 🔔（通知）と 📋（頼んだ件）の通し。本体の写しをこの試験の中で 127.0.0.1:8791 に立て、本物のブラウザで開く（常駐の 8790・本物の声のエンジン・聞き取り・Hermes には触れない）。
 - Chromium: ブラウザの購読の部品（PushManager）を差し替えて、🔔 の入・切・送り直し・断られたとき、見えているかの知らせ、
   sw.js が通知を出すこと、📋 の一覧。配送サービスには送らない（requests.post を差し替える）
 - WebKit（iPhone の名乗り・ホーム画面の外）: 🔔 がホーム画面への追加を案内すること、📋 の一覧
@@ -13,7 +13,9 @@ import time
 from pathlib import Path
 
 TMP = tempfile.mkdtemp()
-os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state")
+os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HERMES_HOME=f"{TMP}/hermes",
+                  # 本物の声のエンジン・聞き取り・Hermes に届かないよう、何も待ち受けていないポートを指す（a2a 35d3b740 の指摘）
+                  VL_VOICE_URL="http://127.0.0.1:9", VL_WHISPER="http://127.0.0.1:9/v1/audio/transcriptions", VL_HERMES_URL="http://127.0.0.1:9")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import requests  # noqa: E402
