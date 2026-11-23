@@ -4,7 +4,7 @@ still_running）は差し替える。docker にも、常駐の 8790 にも触れ
 確かめること:
   - 手順のフォルダを読む・戻す（コンテナの中の台本に写す関数）: 中身と指紋・symlink のフォルダとファイル・通常でないファイル・hardlink・大きすぎる・
     「..」と絶対の場所・当てた直後から変わっていたら書かない・増えたファイルを消し前の中身を書く・当てて作られた手順はフォルダごと消す（ほかに置かれたら残す）
-  - 自動で当てる: 1 日（日本時間）5 件まで（超えた分は承認待ちに残り、次の日に当たる）・扱えない形・当てた／分からない id・中身を読めない手順は当てない
+  - 自動で当てる: 1 日（日本時間）の上限まで（本物の上限は 20。試験は 5 に置き換えて回す。超えた分は承認待ちに残り、次の日に当たる）・扱えない形・当てた／分からない id・中身を読めない手順は当てない
     （読めない版は試し直さない）・控え（前の中身・当てた直後の指紋）は状態フォルダに 0600 で、Hermes の置き場には書かない・当てたあとの中身を読めなければ戻せない印
   - 戻す: 前の中身と指紋を台本に渡す・戻したら印・二度は戻さない・変わっていたら戻さない・分からないときは戻せない印・前の処理の終わりを確かめられなければ断る
   - 記憶: 初めは跡を残さない・足された・消えた項目を跡に・画面で書いたものは跡にしない・戻すは足された項目を消し消えた項目を足し直す（もう変わった項目は飛ばす）
@@ -33,6 +33,9 @@ sys.path.insert(0, str(ROOT))
 import server as s  # noqa: E402
 import hermes_learn as hl  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
+
+REAL_LIMIT = hl.LIMIT
+hl.LIMIT = 5  # 上限の働きは小さい数で確かめる（本物の数は下で見る）
 
 results = []
 
@@ -71,6 +74,7 @@ SK = Path(TMP) / "skills"
 (SK / "voice-loop" / "hub" / "SKILL.md").write_text("前の手順\n")
 (SK / "voice-loop" / "hub" / "references" / "a.md").write_text("参考\n")
 before = hl.snap_dir(str(SK), "voice-loop/hub")
+check("自動: 本物の上限は 1 日 20 件（本体が見ているのと同じ定数）", (REAL_LIMIT, s.hermes.hermes_learn is hl), (20, True))
 check("読む: フォルダの中のファイルを、場所ごとに base64 で", (before["exists"], sorted(before["files"]), base64.b64decode(before["files"]["SKILL.md"]).decode()),
       (True, ["SKILL.md", "references/a.md"], "前の手順\n"))
 check("読む: 無い手順は exists が False", hl.snap_dir(str(SK), "voice-loop/none"), {"exists": False, "files": {}, "modes": {}})
@@ -228,7 +232,7 @@ for i in range(7):
 record("bbbbbbbb", "del", {"action": "delete", "name": "x"})  # 扱えない形
 n = asyncio.run(s.hermes._learn_skills())
 lr = learned()
-check("自動: 1 日 5 件まで当てる（古い順）。扱えない形は当てない", (n, sorted(p for m, p in SCALLS if m == "approve")), (5, [f"aaaa{i:04d}" for i in range(5)]))
+check("自動: 1 日の上限（試験では 5 件）まで当てる（古い順）。扱えない形は当てない", (n, sorted(p for m, p in SCALLS if m == "approve")), (5, [f"aaaa{i:04d}" for i in range(5)]))
 check("自動: 跡に、今日の数と上限・手順の要約・戻せる印", (lr["today"], lr["limit"], len(lr["entries"]), all(e["can_undo"] and e["kind"] == "skill" for e in lr["entries"])),
       (5, 5, 5, True))
 first = [e for e in lr["entries"] if e["pid"] == "aaaa0000"][0]
