@@ -23,7 +23,7 @@ import subprocess
 import hermes_skills
 from hermes_skills import CHECK_MARK, HOST_WAIT, MARK, PY, RUN_LIMIT, USER, WORKDIR, docker_bin
 
-LIMIT = 5  # 1 日（日本時間）に自動で当てる手順の書き足しの数
+LIMIT = 20  # 1 日（日本時間）に自動で当てる手順の書き足しの数（0.35.3 で 5 から 20 に。1 日に 31 件届いて、たまったため）
 SNAP_FILE_MAX = 256 * 1024  # 手順のフォルダの中の 1 ファイルの上限
 SNAP_TOTAL_MAX = 1024 * 1024  # 1 つの手順のフォルダの合計の上限
 SNAP_FILES_MAX = 200

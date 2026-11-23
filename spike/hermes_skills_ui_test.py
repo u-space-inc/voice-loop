@@ -230,7 +230,7 @@ def run_learned(page, who):
     cards = page.locator("#sitBody .learn")
     texts = cards.evaluate_all("els => els.map(e => e.querySelector('.text').textContent)")
     check(f"{who} 学んだことの欄に、手順と記憶の跡を出す（文字として。今日の数と上限）",
-          (any(h.startswith("学んだこと（Hermes。今日自動で当てた手順 2/5）") for h in heads(page)), sorted(texts),
+          (any(h.startswith("学んだこと（Hermes。今日自動で当てた手順 2/20）") for h in heads(page)), sorted(texts),
            page.locator("#sitBody .learn b").count()),
           (True, sorted(["手順｜<b>返事</b>を短くする手順", "記憶（あなたについて）｜足した 1・消した 0：朝は 7 時に起きる", "手順｜戻せない手順", "手順｜分からない手順", "手順｜当てられなかった手順"]), 0))
     meta = lambda t: cards.filter(has_text=t).first.locator(".sitMeta").text_content() or ""
