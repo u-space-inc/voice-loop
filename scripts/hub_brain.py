@@ -14,12 +14,20 @@ voice-loop（herdr の拡張）は、声・画面・通知・セッションの�
 import os
 
 
+def _name_char(ch: str) -> bool:
+    """呼び名に使える 1 字: ひらがな・カタカナ・漢字（々）・英数字（全角も）・「・ー」。ほかの文字（記号・空白・制御、ハングルの埋め字のような
+    見えない文字、ほかの文字体系の似た形の字）は受け付けない。"""
+    o = ord(ch)
+    return (ch.isascii() and ch.isalnum()) or 0x3041 <= o <= 0x3096 or 0x309D <= o <= 0x309F or 0x30A1 <= o <= 0x30FA or 0x30FC <= o <= 0x30FF \
+        or 0x4E00 <= o <= 0x9FFF or ch in "々・" or 0xFF10 <= o <= 0xFF19 or 0xFF21 <= o <= 0xFF3A or 0xFF41 <= o <= 0xFF5A
+
+
 def _agent_name(raw: str) -> tuple[str, str]:
-    """(呼び名, 使えなかった値)。画面の文字・通知・Slack の文にそのまま入れるので、文字（かな・漢字・英数字）と「・ー」だけ、16 字まで。"""
+    """(呼び名, 使えなかった値)。画面の文字・通知・Slack の文にそのまま入れるので、使える字（_name_char）だけ、16 字まで。"""
     v = (raw or "").strip()
     if not v:
         return "", ""
-    return (v, "") if len(v) <= 16 and all(ch.isalnum() or ch in "・ー" for ch in v) else ("", v)
+    return (v, "") if len(v) <= 16 and all(_name_char(ch) for ch in v) else ("", v)
 
 
 # 利用者が話しかける相手の呼び名（config.env の VL_AGENT_NAME）。画面・通知・Slack に出す。書かなければ、これまでの表示のまま

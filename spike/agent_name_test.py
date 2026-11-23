@@ -68,7 +68,10 @@ check("ヴィカ: 一覧に呼び名を載せる・診断で知らせない", (d
 check("前後の空白は除く", child("  ヴィカ ")["agent"], "ヴィカ")
 check("英字の名前も使える", child("Vika")["agent_h"], "Vika")
 check("「・ー」は使える", child("ヴィー・カ")["agent"], "ヴィー・カ")
-for bad in ("ヴィ<カ>", "a'b", 'a"b', "x" * 17, "${x}", "$&", "ヴィ カ", "a\\b", "ヴィカ`"):
+check("全角の英数字は使える", child("ｖｉｋａ２")["agent"], "ｖｉｋａ２")
+# 見えない文字（ハングルの埋め字・幅の無い空白）や、ほかの文字体系の似た形の字は受け付けない（a2a c9d927a6 の指摘）
+for bad in ("ヴィ<カ>", "a'b", 'a"b', "x" * 17, "${x}", "$&", "ヴィ カ", "a\\b", "ヴィカ`", "\u115f", "\u1160", "\u3164", "\uffa0",
+            "ヴィカ\u200b", "\u200bヴィカ", "Вика", "ヴィカ\u202e", "ヴィカ\u3000カ", "ヴィカ\ufe0f"):
     d = child(bad)
     check(f"使えない名前 {bad!r}: これまでの表示のまま", (d["agent"], d["agent_h"], d["entry"]), ("ハブ", "Hermes", ""))
     check(f"使えない名前 {bad!r}: 診断で知らせる", (len(d["doctor"]), d["doctor"][0][1] if d["doctor"] else None), (1, False))
@@ -143,6 +146,29 @@ with sync_playwright() as pw:
     check("画面（ヴィカ）: 「Hermes の」は「ヴィカの」", (v["memo"], v["quote"]), ("ヴィカの記憶と手順書は残ります", "ヴィカから"))
     v = screen(pg, "Vika")
     check("画面（Vika）: 英字の名前は「Vika の」と空けたまま", (v["memo"], v["sit"]), ("Vika の記憶と手順書は残ります", "判断待ち（Vika から）"))
+
+    # 開いたままの画面で、入れ替えで名前が変わる・消える（a2a c9d927a6 の指摘）。名前を受け取る前に描いた問いの見出しも描き直す
+    ASK = {"pane": "w1:p1", "name": "ハブの記事", "kind": "question", "text": "どれにしますか？", "fp": "f1", "status": "blocked"}
+    pg.unroute("**/api/prompts")
+    pg.route("**/api/prompts", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps([ASK])))
+    screen(pg, None)
+    pg.wait_for_selector(".ask .head", timeout=10000)
+    head = lambda: pg.text_content(".ask .head")
+    check("問いの見出し（名前なし）", head(), "ハブの記事｜質問で止まっています。端末かハブで答えてください")
+
+    def relist(name):
+        entry = dict(HUB, agent_name=name) if name is not None else dict(HUB)
+        pg.unroute("**/api/agents")
+        pg.route("**/api/agents", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps([entry, WORKER])))
+        pg.evaluate("loadAgents()")
+        pg.wait_for_timeout(300)
+        return pg.evaluate("[...document.querySelectorAll('#agent option')].filter(o => o.value).map(o => o.textContent)[0]")
+
+    check("開いたまま、名前を受け取る: 一覧", relist("ヴィカ"), "ヴィカ｜全セッションを統括 [idle]")
+    check("開いたまま、名前を受け取る: 先に描いた問いの見出しも替わる（セッションの名前の「ハブ」は替えない）", head(), "ハブの記事｜質問で止まっています。端末かヴィカで答えてください")
+    check("開いたまま、名前が変わる", (relist("ミカ"), pg.text_content("#hubStart")), ("ミカ｜全セッションを統括 [idle]", "ミカを起動"))
+    check("開いたまま、名前を消す: これまでの表示に戻る", (relist(""), pg.text_content("#hubStart"), head()),
+          ("ハブ（Hermes）｜全セッションを統括 [idle]", "ハブを起動", "ハブの記事｜質問で止まっています。端末かハブで答えてください"))
     b.close()
 
 srv.should_exit = True

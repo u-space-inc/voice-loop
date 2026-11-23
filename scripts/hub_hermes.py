@@ -1626,7 +1626,7 @@ class Hermes(Brain, Talker):
         problem = hermes_problem()
         add("ハブ（Hermes）", not problem, problem)
         if AGENT_NAME_BAD:
-            add("呼び名", False, f"config.env の VL_AGENT_NAME「{AGENT_NAME_BAD[:20]}」は使えません。文字（かな・漢字・英数字）と「・ー」だけ、16 字までにします"
+            add("呼び名", False, f"config.env の VL_AGENT_NAME「{AGENT_NAME_BAD[:20]}」は使えません。ひらがな・カタカナ・漢字・英数字と「・ー」だけ、16 字までにします"
                 "。いまは、これまでの表示（ハブ・Hermes）のままです", optional=True)
         if HERMES_EFFORT_BAD:
             add("Hermes の考える強さ", False, f"config.env の VL_HERMES_EFFORT「{HERMES_EFFORT_BAD[:20]}」は使えません。{'・'.join(HERMES_EFFORTS)} のどれかにします"
