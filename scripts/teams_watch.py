@@ -69,8 +69,10 @@ INDEX, CHUNK, PAGE_AGE_MS = 20, 600, 20000
 # 左で「メンション」以外が選ばれていたら（手で Teams を見たあと・ほかのセッションがチャネルを開いたまま閉じたあと）、左の「メンション」を 1 回だけ
 # 押して戻し、選ばれるのを待つ（最大 10 秒）（2026-11-19 にチャネルを選んだまま残され、読めなくなった。11/23 本人「推奨で」＝A）。
 # 押すのは、Teams のページ（teams.microsoft.com）で、その印（Teams が左の「メンション」に付ける data-testid）の要素が画面にちょうど 1 つあり、
-# リンク・本文（role=main）・投稿の部品の中に無いときだけ（本物とまねた要素が両方あれば押さない。押さなければ、これまでどおり「形」で読まない）。
-# 本物が描かれていないときに、それらの外にまねた要素が 1 つだけあれば、それを押す（Teams の投稿の HTML にこの印を残せるかは確かめていない）。
+# それが左の欄（app-layout-area--mid-nav。画面にちょうど 1 つで、一覧の投稿を含まない）の、チャットとチャネルの木（simple-collab-dnd-rail）の
+# 「クイック ビュー」の段（quick-views、1 段目）の中の項目（slice、2 段目）そのものの位置にあり、リンク・本文（role=main）・投稿の部品の中に無いときだけ
+# （2026-11-23 に、本物の Teams の 2 つの組織で、この位置にちょうど 1 つあることを、押さずに属性だけ読んで確かめた。a2a 849f8464 の指摘への A）。
+# 本物とまねた要素が両方ある・本物が描かれていない・左の欄の作りが変わったときは押さない（これまでどおり「形」で読まない）。
 # 投稿は開かない（ビューの切り替え）。戻した回は一覧を写さない（押した直後の一覧は、空か前の写しのままのことがあり、届いたかを確かめられない）。
 # 次の回に、いつもどおり読む
 JS_TEMPLATE = (r"""await (async()=>{const K='__vlT___NONCE__';const k=__K__;if(k===0){const w=20000-performance.now();"""
@@ -79,7 +81,10 @@ JS_TEMPLATE = (r"""await (async()=>{const K='__vlT___NONCE__';const k=__K__;if(k
                r"""const b=[...document.querySelectorAll('[data-tid="me-control-avatar-trigger"] span')].find(e=>!e.children.length&&e.textContent.trim());"""
                r"""const M='slice-list-item-slice-activities-mentions';"""
                r"""const cur=()=>[...document.querySelectorAll('[data-tabster*="LeftRailSelectedItem"]')].map(e=>e.getAttribute('data-testid')||'').join(',');"""
-               r"""let sw=0;if(cur()!==M&&location.host==='teams.microsoft.com'){const C=[...document.querySelectorAll('[data-testid="'+M+'"]')];const e=C.length===1?C[0]:null;"""
+               r"""const N='[data-tid="app-layout-area--mid-nav"] [role="tree"][data-testid="simple-collab-dnd-rail"]>[role="treeitem"][data-item-type="quick-views"][aria-level="1"]>[role="group"]>[role="treeitem"][data-item-type="slice"][aria-level="2"][data-testid="'+M+'"]';"""
+               r"""let sw=0;if(cur()!==M&&location.host==='teams.microsoft.com'){const C=[...document.querySelectorAll('[data-testid="'+M+'"]')];"""
+               r"""const R=[...document.querySelectorAll(N)];const V=[...document.querySelectorAll('[data-tid="app-layout-area--mid-nav"]')];"""
+               r"""const e=C.length===1&&R.length===1&&R[0]===C[0]&&V.length===1&&!V[0].querySelector('[data-testid="message-slice-card-item"]')?C[0]:null;"""
                r"""if(e&&!e.closest('a[href],[role="main"],[data-tid*="message"],[data-testid*="message"]')){e.click();sw=1;"""
                r"""for(let i=0;i<40&&cur()!==M;i++)await new Promise(r=>setTimeout(r,250));}}"""
                r"""const s=cur();"""

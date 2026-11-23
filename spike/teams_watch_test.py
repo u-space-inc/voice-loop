@@ -154,10 +154,16 @@ for nonce, known in (("'+fetch(1)+'", set()), ("a1b2c3d4e5f6", {"1'];fetch(1);//
 check("相手の位置: 形の合わない印・ID はスクリプトに埋めない", bad_vals, [True, True])
 check("スクリプト: 押すのは、Teams のページで、左で「メンション」が選ばれていないときに 1 回だけ（2026-11-23 本人「推奨で」＝A）",
       (tw.JS_TEMPLATE.count("click"), "const M='slice-list-item-slice-activities-mentions';" in tw.JS_TEMPLATE,
-       "if(cur()!==M&&location.host==='teams.microsoft.com'){const C=[...document.querySelectorAll('[data-testid=\"'+M+'\"]')];const e=C.length===1?C[0]:null;" in tw.JS_TEMPLATE
+       "if(cur()!==M&&location.host==='teams.microsoft.com'){const C=[...document.querySelectorAll('[data-testid=\"'+M+'\"]')];" in tw.JS_TEMPLATE
+       and "const e=C.length===1&&R.length===1&&R[0]===C[0]&&V.length===1&&!V[0].querySelector('[data-testid=\"message-slice-card-item\"]')?C[0]:null;" in tw.JS_TEMPLATE
        and "if(e&&!e.closest('a[href],[role=\"main\"],[data-tid*=\"message\"],[data-testid*=\"message\"]')){e.click();" in tw.JS_TEMPLATE,
        tw.SELECTED == "slice-list-item-slice-activities-mentions"),
       (1, True, True, True))
+check("スクリプト: 押す相手の位置は、本物の Teams で確かめた左の欄の作り（左の欄→チャットとチャネルの木→クイック ビューの段→その項目。親子は > でつなぐ）",
+      ("const N='[data-tid=\"app-layout-area--mid-nav\"] [role=\"tree\"][data-testid=\"simple-collab-dnd-rail\"]>[role=\"treeitem\"][data-item-type=\"quick-views\"][aria-level=\"1\"]>"
+       "[role=\"group\"]>[role=\"treeitem\"][data-item-type=\"slice\"][aria-level=\"2\"][data-testid=\"'+M+'\"]';" in tw.JS_TEMPLATE,
+       "const R=[...document.querySelectorAll(N)];const V=[...document.querySelectorAll('[data-tid=\"app-layout-area--mid-nav\"]')];" in tw.JS_TEMPLATE),
+      (True, True))
 check("スクリプト: ほかは読むだけ（入力・外への送信・ページの見た目の書き換えの書き方が無い）",
       [w for w in ("fetch", "XMLHttpRequest", "sendBeacon", "innerHTML", "outerHTML", "location.href=", "location=", ".value=", "submit",
                    "dispatchEvent", "open(", "eval", "appendChild", "remove(", "setAttribute", "localStorage", "cookie") if w in tw.JS_TEMPLATE], [])
@@ -178,17 +184,20 @@ globalThis.location={host:'teams.microsoft.com'};
 const row=(m,f)=>({id:'message-slice-card-MentionsSliceCardItem|'+m,querySelector:s=>{const k=(/message-slice-card-([a-z-]+)"/.exec(s)||[])[1];return k in f?{textContent:f[k]}:null}});
 const ROWS=[row('1794529244269',{title:'General',['threads-secondary-title']:'題',preview:'送り手: 本文',timestamp:'9:20'}),row('1794451771109',{title:'General'})];
 globalThis.__sel='SEL';globalThis.__clicks=[];
-const item=(name,inside)=>({closest:q=>inside&&inside.some(x=>q.includes(x))?{}:null,click:()=>{__clicks.push(name);if(CLICK_WORKS&&name==='real')__sel='slice-list-item-slice-activities-mentions';}});
-const CANDS=ITEMS;
-globalThis.document={querySelectorAll:s=>s.includes('avatar')?[{children:[],textContent:'組織A'}]:s.includes('LeftRail')?[{getAttribute:()=>__sel}]:s.includes('slice-card-item')?ROWS:
+const item=(name,inside,rail)=>({rail:rail===undefined?name==='real':rail,closest:q=>inside&&inside.some(x=>q.includes(x))?{}:null,click:()=>{__clicks.push(name);if(CLICK_WORKS&&name==='real')__sel='slice-list-item-slice-activities-mentions';}});
+const CANDS=ITEMS;const nav=(cards)=>({querySelector:s=>cards&&s==='[data-testid="message-slice-card-item"]'?{}:null});const NAVS=NAVLIST;
+globalThis.document={querySelectorAll:s=>s.includes('avatar')?[{children:[],textContent:'組織A'}]:s.includes('LeftRail')?[{getAttribute:()=>__sel}]:
+  s.includes('simple-collab-dnd-rail')?(s.endsWith('>[role="treeitem"][data-item-type="slice"][aria-level="2"][data-testid="slice-list-item-slice-activities-mentions"]')?CANDS.filter(c=>c.rail):[]):
+  s==='[data-tid="app-layout-area--mid-nav"]'?NAVS:s.includes('slice-card-item')?ROWS:
   s==='[data-testid="slice-list-item-slice-activities-mentions"]'?CANDS:[]};
 """
 
 
-def node_run(age, known=(), base=False, ks=(0,), sel=tw.SELECTED, items="[item('real',null)]", click_works=True, host="teams.microsoft.com"):
-    """items: 左の「メンション」の印を持つ要素（JS の式）。item(名前, 中にいる部品の書き方の一部の並び)。"""
+def node_run(age, known=(), base=False, ks=(0,), sel=tw.SELECTED, items="[item('real',null)]", click_works=True, host="teams.microsoft.com", navs="[nav(false)]"):
+    """items: 左の「メンション」の印を持つ要素（JS の式）。item(名前, 中にいる部品の書き方の一部の並び, 左の欄の確かめた位置にあるか（既定は real だけ）)。
+    navs: 左の欄（app-layout-area--mid-nav）の並び。nav(一覧の投稿を含むか)。"""
     js_text = tw.js_for("a1b2c3d4e5f6", set(known), base)
-    page = (FAKE_PAGE.replace("AGE", str(age)).replace("'SEL'", json.dumps(sel)).replace("ITEMS", items)
+    page = (FAKE_PAGE.replace("AGE", str(age)).replace("'SEL'", json.dumps(sel)).replace("ITEMS", items).replace("NAVLIST", navs)
             .replace("CLICK_WORKS", "true" if click_works else "false").replace("globalThis.location={host:'teams.microsoft.com'}", "globalThis.location={host:" + json.dumps(host) + "}"))
     body = (page + "const res=[];" + "".join(f"res.push(String({js_text.replace('__K__', str(k))}));" for k in ks)
             + "console.log(JSON.stringify({res,waits,clicks:__clicks}));")
@@ -222,14 +231,24 @@ if NODE:
     check("node: 押しても選ばれなければ、読まない", unreadable(lambda: read("\n".join(node_run(25000, sel=other, click_works=False).get("res", [])))), "parse")
     # 相手の位置: 投稿などに同じ印をまねた要素を置かれても、押さない（a2a 849f8464 の指摘）
     for name, items in [("見つからない", "[]"), ("2 つある（まねた要素と本物）", "[item('fake',null),item('real',null)]"),
-                        ("リンクの中", "[item('fake',['a[href]'])]"), ("本文（role=main）の中", "[item('fake',['[role=\"main\"]'])]"),
-                        ("投稿の部品の中", "[item('fake',['[data-tid*=\"message\"]'])]"), ("投稿の部品（testid）の中", "[item('fake',['[data-testid*=\"message\"]'])]")]:
+                        ("リンクの中", "[item('fake',['a[href]'],true)]"), ("本文（role=main）の中", "[item('fake',['[role=\"main\"]'],true)]"),
+                        ("投稿の部品の中", "[item('fake',['[data-tid*=\"message\"]'],true)]"), ("投稿の部品（testid）の中", "[item('fake',['[data-testid*=\"message\"]'],true)]")]:
         r = node_run(25000, sel=other, items=items)
         check(f"node: 左の「メンション」の要素が{name}なら押さず、「形」で読まない", (r.get("clicks"), unreadable(lambda: read("\n".join(r.get("res", []))))), ([], "parse"))
     r = node_run(25000)
     check("node: 選ばれていた回は「戻した」にしない", read("\n".join(r.get("res", [])))["switched"], False)
-    r = node_run(25000, sel=other, items="[item('fake',null)]")
-    check("node: 本物が描かれていないときに、まねた要素が 1 つだけ外にあれば、それを押す（README の約束に書いた残りの穴）", r.get("clicks"), ["fake"])
+    # 相手の位置: 本物が描かれていないときに、まねた要素が 1 つだけあっても、左の欄の確かめた位置に無ければ押さない（a2a 849f8464 の 3 回目の残り。11/23 本人 A）
+    for name, items, navs in [("本物が無く、まねた要素が 1 つだけ（左の欄の外）", "[item('fake',null)]", "[nav(false)]"),
+                              ("本物が無く、まねた要素が 1 つだけ（左の欄の外）で、左の欄も無い", "[item('fake',null)]", "[]"),
+                              ("左の欄が 2 つある", "[item('real',null)]", "[nav(false),nav(false)]"),
+                              ("左の欄が無い", "[item('real',null)]", "[]"),
+                              ("左の欄が一覧の投稿を含む（作りが変わった）", "[item('real',null)]", "[nav(true)]"),
+                              ("確かめた位置に本物、左の欄の外にまねた要素", "[item('real',null),item('fake',null)]", "[nav(false)]"),
+                              ("確かめた位置に 2 つ", "[item('real',null),item('fake',null,true)]", "[nav(false)]")]:
+        r = node_run(25000, sel=other, items=items, navs=navs)
+        check(f"node: {name}なら押さず、「形」で読まない", (r.get("clicks"), unreadable(lambda: read("\n".join(r.get("res", []))))), ([], "parse"))
+    r = node_run(25000, sel=other, items="[item('fake',null,true)]")
+    check("node: 押すのは、左の欄の確かめた位置にある 1 つだけ（そこにまねた要素を置けるのは、Teams 自身の左の欄の作りを変えられる者だけ。README の約束の残り）", r.get("clicks"), ["fake"])
     r = node_run(25000, sel=other, host="evil.example")
     check("node: Teams のページでなければ押さない", r.get("clicks"), [])
     check("node: 番号 1 から呼ばれても写しを作らず err（待ちもしない）",
