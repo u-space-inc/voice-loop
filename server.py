@@ -54,6 +54,7 @@ import ask_form  # noqa: E402  選択肢の問い（AskUserQuestion）に、画�
 from places import CONFIG_DIR, STATE_DIR  # noqa: E402  端末ごとの設定と状態の置き場
 import attach  # noqa: E402  画面から添付したファイル
 import sent_log  # noqa: E402  出ていく側の記録（案件の Teams の控えの、当方の投稿）
+import quick  # noqa: E402  本体がその場で答える決まった問い（次は・どうなってる・待ってるのある。LLM・頭を通さない）
 
 
 def _load_config_env():
@@ -303,8 +304,15 @@ def pane_shows_trust(pane: str) -> bool | None:
 
 def list_agents() -> list[dict]:
     """herdr のセッションの一覧。ハブ（Hermes）は herdr の外なので、ここには入らない（TALKERS）。"""
+    return list_agents_checked()[0]
+
+
+def list_agents_checked() -> tuple[list[dict], bool]:
+    """セッションの一覧と、その呼び出しで一覧を取れたか（herdr に届かない・形が違うと空の一覧になる。決まった問いの答えが「無い」と言い切らないように。
+    取れたかは呼び出しごとに返す。全体で 1 つ持つと、ほかの呼び出しの結果で上書きされる。a2a 8f05ef33）。"""
     r = herdr("agent", "list")
-    agents = r.get("result", {}).get("agents", [])
+    ok = isinstance(r.get("result"), dict) and isinstance(r["result"].get("agents"), list)
+    agents = r.get("result", {}).get("agents", []) if ok else []
     return [
         {
             "pane": a["pane_id"],
@@ -317,7 +325,7 @@ def list_agents() -> list[dict]:
             "hub": False,  # 画面と本体の形をそろえるための印。ハブは Hermes の項目だけ（hermes_agent）
         }
         for a in agents
-    ]
+    ], ok
 
 
 def agent_key(a: dict) -> str:
@@ -1362,6 +1370,9 @@ def hub_start():
 
 
 # ---------- 画面との接続・セッションとの一往復・読み上げ（1対1でも、ハブからの報告でも使う） ----------
+_CONN_SEQ = __import__("itertools").count(1)
+
+
 class Client:
     """接続中の画面ひとつ。"""
 
@@ -1378,6 +1389,10 @@ class Client:
         self.bound = bool(self.place)
         self.kind = "device" if self.bound else "screen"
         self.audio = "wav"  # 返答の声の形。機械が audio: "opus" を名乗れば Ogg の Opus
+        self.win = ""  # 窓の印（画面はタブごとに hello で名乗る。つなぎ直しても同じ窓として、最後に話しかけた窓を覚える）
+        self.connected = time.time()
+        self.last_turn = 0.0  # この接続が最後に話しかけた時刻（同じ窓の印の接続が複数あるとき、話しかけた接続を選ぶ）
+        self.cid = f"conn:{next(_CONN_SEQ)}"  # 窓の印を名乗らない接続の印（id() は解放後に使い回されるので使わない。a2a 8f05ef33）
 
     async def send(self, **msg):
         await self.sock.send_text(json.dumps(msg, ensure_ascii=False))
@@ -1432,9 +1447,19 @@ async def ask(agent: dict, text: str) -> tuple[str, str]:
     return "done", reply or read_screen(pane, 40)[-2000:]
 
 
-async def speak_to(clients: list[Client], text: str, cancel: asyncio.Event):
+async def plain_sentences(text: str, cancel: asyncio.Event):
+    """語り手を通さず、文のまま区切って返す（本体がその場で答えた決まった問いの答え。もう話し言葉になっている）。"""
+    for part in re.split(r"(?<=[。！？!?])\s*", text):
+        if cancel.is_set():
+            return
+        if part.strip():
+            yield part.strip()
+
+
+async def speak_to(clients: list[Client], text: str, cancel: asyncio.Event, plain: bool = False):
     """話し言葉に直し、文ごとに合成して画面へ送る。声は画面ごとの選択に従う。切れた画面は飛ばす。
-    読み上げを切った画面には音声を送らない（文字は先に reply で届いている）。聞く画面が無ければ、語り手も合成も呼ばない。"""
+    読み上げを切った画面には音声を送らない（文字は先に reply で届いている）。聞く画面が無ければ、語り手も合成も呼ばない。
+    plain なら語り手を通さず、文のまま合成する（本体の決まった答え。語り手の待ち・失敗に左右されない）。"""
     alive = list(clients)
 
     async def each(fn):
@@ -1449,7 +1474,7 @@ async def speak_to(clients: list[Client], text: str, cancel: asyncio.Event):
     await each(lambda c: c.send(type="speaking"))  # これ以降の音声がこのターンのもの（止めた後に届く古い音声と区別する）
     n = 0
     if any(c.voice for c in alive):
-        async with aclosing(narrate(text, cancel)) as sentences:  # 途中で抜けたら、語り手の生成もすぐ止める
+        async with aclosing(plain_sentences(text, cancel) if plain else narrate(text, cancel)) as sentences:  # 途中で抜けたら、語り手の生成もすぐ止める
             async for sentence in sentences:
                 # 読み上げの途中で切った画面は、次の文から外す。聞く画面が無くなれば、そこで止める
                 voice = {c: DEFAULT_SPEAKER if c.speaker is None else c.speaker for c in alive if c.voice}  # VOICEVOX では 0 も声の ID
@@ -1464,6 +1489,82 @@ async def speak_to(clients: list[Client], text: str, cancel: asyncio.Event):
                 await each(lambda c: c.sock.send_bytes(body(c)) if c in voice and c.voice else asyncio.sleep(0))
                 n += 1
     await each(lambda c: c.send(type="done", sentences=n))
+
+
+# 報告の声を鳴らすのは 1 か所（設計書 R1・課題 K9。2026-11-23 本人「推奨で」）。文字はすべての画面に出し、声は最後に話しかけた窓だけで鳴らす。
+# 車の機械（機械の口で car と決まった接続）がつながったら、つながった時刻を「話しかけた」と同じに数える（車に乗っている間は車）。
+# 起動のあと、まだどの窓も話しかけていなければ、これまでどおりすべての窓で鳴らす（取りこぼさない）。VL_RING=all で、いつもすべての窓
+RING = "all" if os.environ.get("VL_RING", "one").strip().lower() == "all" else "one"
+WIN_RE = re.compile(r"[A-Za-z0-9_-]{8,64}")
+WIN_SPOKE: dict[str, float] = {}  # 窓の印 → 最後に話しかけた時刻（画面・声の発言。ボタンは数えない）
+
+
+def win_of(c) -> str:
+    """窓の印。口で決まった機械は置き場所（家と車で 1 つずつ）、画面は名乗った印、名乗らない古い画面は接続ごと。"""
+    if getattr(c, "bound", False):
+        return "device:" + str(getattr(c, "place", ""))
+    return getattr(c, "win", "") or getattr(c, "cid", "") or f"conn:{id(c)}"
+
+
+def ring_targets(clients: list) -> list:
+    """報告の声を鳴らす窓（1 つ）。最後に話しかけた窓（車の機械はつながった時刻も数える）の、いちばん新しい接続。
+    どの窓も話しかけていなければ、渡されたすべて。🔇 の窓が選ばれたら、声はどこにも鳴らさない（その窓で文字を読む）。"""
+    if RING == "all" or not clients:
+        return list(clients)
+
+    def act(c) -> float:
+        t = WIN_SPOKE.get(win_of(c), 0.0)
+        if getattr(c, "bound", False) and getattr(c, "place", "") == "car":
+            t = max(t, getattr(c, "connected", 0.0))
+        return t
+    best = max(clients, key=lambda c: (act(c), getattr(c, "last_turn", 0.0), getattr(c, "seen", 0.0), getattr(c, "connected", 0.0)))
+    return [best] if act(best) > 0 else list(clients)
+
+
+# 本体がその場で答える決まった問い（設計書 R4・R11 の段 0、S2。2026-11-23 本人「推奨で」）。発言の全体が決まった形のときだけで、ほかは頭へ（迷ったら頭）。
+# 答えたやり取りも頭の台帳と記録に載せ、利用者が聞いた文を空にする（その前の頭の問いへの「はい」に使わせない）。VL_QUICK=off で使わない
+QUICK = os.environ.get("VL_QUICK", "on").strip().lower() != "off"
+QUICK_CURSOR: dict = {}  # 「次」をどこまで読んだか（quick.answer が書き換える）
+
+
+def quick_snapshot() -> dict:
+    """決まった問いに答えるための、本体の状態の写し（セッションの一覧・承認待ちの種類・頼んだ件の見張り・判断待ち）。"""
+    rows = []
+    agents, agents_ok = list_agents_checked()
+    for a in agents:
+        st, ask = str(a["status"]), ""
+        if a["status"] == "blocked" or stepping(a):  # 画面で 1 問ずつ答えている途中（stepping）は、問いが残っているときだけ待ち（/api/prompts と同じ。codex-review）
+            ask = _ask_of(a)["kind"]
+            if a["status"] == "blocked" or ask != "none":
+                st = "blocked"
+        r = {"pane": a["pane"], "name": f"{a['cwd'].rsplit('/', 1)[-1]}（{a['title']}）" if a.get("title") else a["cwd"].rsplit("/", 1)[-1], "status": st}
+        if st == "blocked":
+            r["ask"] = ask
+        rows.append(r)
+    try:
+        box = HUB.open_items()
+    except Exception:
+        box = {"items": [], "problem": True}
+    return {"sessions": rows, "sessions_problem": not agents_ok,
+            "watching": sum(1 for t in TASKS.values() if t["status"] in TASK_ACTIVE), "inbox": box.get("items", []),
+            "inbox_problem": bool(box.get("problem")), "inbox_partial": bool(box.get("partial"))}
+
+
+async def hub_quick(talker, kind: str, text: str, pane: str, said: str | None = None, via: str = "") -> tuple[str, str, bool]:
+    """決まった問いに本体が答える（頭に送らない）。受け取った順（ACCEPT_LOCKS）に、発言と答えを頭の台帳と記録に載せる。(答え, 理由, 記録に書けたか)。"""
+    async with ACCEPT_LOCKS.setdefault(pane, asyncio.Lock()):
+        kw = {"said": said} if said is not None else {}
+        try:
+            snap = await asyncio.to_thread(quick_snapshot)
+            answer = quick.answer(kind, snap, QUICK_CURSOR, time.time())
+        except Exception as e:  # 状態を読めなかった。断りとして台帳に載せ、前の確認を失効させる（失敗の知らせのあとの発言を、古い確認への答えにしない。codex-review）
+            traceback.print_exc()
+            why = f"いまの状態を読めませんでした（{type(e).__name__}）。少しおいて、もう一度聞いてください"
+            await talker.refused(text, why, **kw, **({"via": via} if via else {}))
+            return "", why, True
+        saved = await talker.answered_here(text, answer, **kw, **({"via": via} if via else {}))
+        hlog(f"すぐ答えた（{kind}）: {len(answer)}字", flush=True)
+        return answer, "", saved
 
 
 # 頼んでから返事が来るまでの、本体の一言（ハブとの往復だけ）。Hermes の返事は中央値 14 秒かかり、その間黙っていると、聞こえたのか分からない
@@ -2146,13 +2247,28 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
         if kind in ("done", "more", "gone"):
             d["_slack_done"] = True  # 完了の報告を送った。このあとの見張りの失敗は重ねて知らせない（途中経過のあとの失敗は知らせる）
         clients = list(CLIENTS)
-        for c in clients:
+        msg = dict(type="reply", pane=hub["pane"], text=reply, report=True, about=label, saved=saved, topic=str(d.get("topic") or ""))
+        ring: list = []
+        while clients and not ring:  # 声は 1 か所（最後に話しかけた窓）。その窓に送れなければ（切れていた）、残りから選び直す（codex-review）
+            for c in ring_targets(clients):
+                try:
+                    await c.send(**msg)
+                    ring.append(c)
+                except Exception:
+                    clients.remove(c)
+        for c in [c for c in clients if c not in ring]:  # ほかの窓には文字だけ（quiet: 読み上げの印を付けない）
             try:
-                await c.send(type="reply", pane=hub["pane"], text=reply, report=True, about=label, saved=saved, topic=str(d.get("topic") or ""))
+                await c.send(**msg, quiet=True)
             except Exception:
                 clients.remove(c)
-        if clients:
-            await speak_to(clients, reply, asyncio.Event())
+        if ring:
+            # 読み上げの途中で鳴らす窓が切れても（1 対 1 の speak_to は失敗を投げる）、見張りには伝えない（codex-review）。別の窓では読み直さない:
+            # 文字はすべての窓に届いている。読み直すと、文字だけで届けた窓に読み上げの印が付かず（a2a 8f05ef33）、
+            # 語り手・合成そのものの失敗では窓の数だけ作り直して、ハブの順番を長く止める（codex-review）
+            try:
+                await speak_to(ring, reply, asyncio.Event())
+            except Exception as e:
+                hlog(f"報告の声を送り終えられませんでした（{type(e).__name__}）。文字はすべての窓に届いています", flush=True)
         return "ok"
 
 
@@ -3176,11 +3292,11 @@ async def ws(sock: WebSocket):
     send = client.send
 
     async def turn(text: str, pane: str, cancel: asyncio.Event, key: str | None, reply_at: float | None = None, files: list[str] | None = None,
-                   job: asyncio.Task | None = None):
+                   job: asyncio.Task | None = None, plain: bool = False):
         try:
             talker = TALKERS.get(pane)
             if talker:  # herdr のセッションではなく、本体の外の話し相手（ハブ）。job は受け取ったその場で作った仕事（start_turn）
-                await talk_turn(talker, job, pane, cancel)
+                await talk_turn(talker, job, pane, cancel, plain)
                 return
             why = attachments_shape_problem(files)
             extra = ""
@@ -3196,7 +3312,8 @@ async def ws(sock: WebSocket):
             traceback.print_exc()
             await send(type="error", text=f"{type(e).__name__}: {e}"[:300])
 
-    async def talk_turn(talker, job: asyncio.Task | None, pane: str, cancel: asyncio.Event):
+    async def talk_turn(talker, job: asyncio.Task | None, pane: str, cancel: asyncio.Event, plain: bool = False):
+        # plain: 本体がその場で答えた決まった問い。読み上げは語り手を通さない
         if job is None:  # 受け取ったときに相手が使えなかった
             await send(type="error", gone=True, text=talker.off_text)
             return
@@ -3239,7 +3356,7 @@ async def ws(sock: WebSocket):
         if cancel.is_set():
             return
         await send(type="reply", pane=pane, text=reply, saved=saved)  # saved=False なら、画面は記録から描き直さずに足す
-        await speak_to([client], reply, cancel)
+        await speak_to([client], reply, cancel, **({"plain": True} if plain else {}))  # 本体の答えのときだけ渡す（これまでの呼び方は変えない）
 
     async def run_turn(text: str, pane: str, cancel: asyncio.Event, key: str | None, extra: str = ""):
         # extra: 本体が足す添付の行（セッションに渡す文の末尾に付ける）
@@ -3276,20 +3393,26 @@ async def ws(sock: WebSocket):
         # said: 辞書で直す前の聞き取り（直したときだけ。ハブの守りの台帳に載せる）
         nonlocal cancel, current
         client.speaker = speaker
+        WIN_SPOKE[win_of(client)] = client.last_turn = time.time()  # この窓に最後に話しかけた（報告の声はここで鳴らす）
         cancel.set()  # 前のターンの読み上げが残っていれば止める
         if current and not current.done():
             current.cancel()
         cancel = asyncio.Event()
         job = None
+        quick_kind = None
         talker = TALKERS.get(pane)
         if talker and talker.on():
             # ハブが受け取った発言は、受け取ったその場で（待つものをはさまずに）1 つの仕事にする（hub_accepted: 添付を置く・断る・往復する）。
             # 画面のターン（current）は次の発言で止めるが、この仕事は止めない。受け取った順に作るので、受け取った順に進む
             # （画面のターンの中で作ると、状態の知らせを送る間や、ターンが動き出す前に次の発言が来たとき、前の発言が消える）
-            job = asyncio.create_task(hub_accepted(talker, text, pane, reply_at, files, item, said, via="device" if client.kind == "device" else ""))
+            # 添付が無い（空の一覧）ときだけ。形の壊れた添付（None）は、ふつうの道で断る（a2a 8f05ef33）
+            kind = quick_kind = quick.match(text, AGENT) if QUICK and isinstance(files, list) and not files and reply_at is None and item is None else None
+            via = "device" if client.kind == "device" else ""
+            # 決まった問いは本体が答える（返信・添付つき・受け箱の件への返信は、いつも頭へ）
+            job = asyncio.create_task(hub_quick(talker, kind, text, pane, said, via) if kind else hub_accepted(talker, text, pane, reply_at, files, item, said, via=via))
             _tasks.add(job)
             job.add_done_callback(_tasks.discard)
-        current = asyncio.create_task(turn(text, pane, cancel, key, reply_at, files, job))
+        current = asyncio.create_task(turn(text, pane, cancel, key, reply_at, files, job, plain=bool(quick_kind)))
 
     pending: dict = {}
     try:
@@ -3306,6 +3429,9 @@ async def ws(sock: WebSocket):
                         client.kind = "device" if d.get("kind") in ("stackchan", "device") else "screen"
                         client.place = d.get("place") if d.get("place") in ("home", "car", "desk") else ""
                     client.audio = "opus" if d.get("audio") == "opus" else "wav"
+                    w = d.get("win")
+                    if isinstance(w, str) and WIN_RE.fullmatch(w):
+                        client.win = w
                     # visible を送らない古い画面は、見えていないものとして扱う（通知を止めない）。機械は見えている画面に数えない
                     client.visible = d.get("visible") is True and client.kind == "screen"
                     client.seen = time.time()
@@ -3342,6 +3468,8 @@ async def ws(sock: WebSocket):
         pass
     finally:
         CLIENTS.discard(client)
+        if win_of(client) == client.cid:  # 印を名乗らなかった接続の「話しかけた時刻」は、切れたら消す（ほかの接続に引き継がない）
+            WIN_SPOKE.pop(client.cid, None)
         cancel.set()
         if current:
             current.cancel()

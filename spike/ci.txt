@@ -43,7 +43,9 @@ progress_ui_test.py
 push_test.py
 push_ui_test.py
 question_ui_test.py
+quick_test.py
 reply_html_test.py
+ring_ui_test.py
 sent_log_test.py
 slack_merge_test.py
 slack_report_test.py

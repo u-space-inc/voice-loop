@@ -211,8 +211,12 @@ def run(page, who):
     # 試験の「戻す」の窓（2 秒）では、遅い実行環境の WebKit だと 2 枚目を押し終える前に 1 枚目の窓が切れることがある（CI で 1 回あった）。この場面だけ広げる
     keep_undo3, ib.UNDO = ib.UNDO, 8.0
     page.locator("#sitBody > .ibCard").nth(0).locator("button.done").click()
-    page.wait_for_function("ibUndos.size === 1")
-    page.locator("#sitBody > .ibCard").nth(0).locator("button.done").click()
+    page.wait_for_function("ibUndos.size === 1 && document.querySelectorAll('#sitBody > .ibCard').length === 1")  # 1 枚目が消えて描き直しが済むまで
+    # 描き直しの途中に押すと、押下が古いカードに当たって消えることがある（CI の WebKit で 2 回）。増えなければ押し直す（3 回とも増えなければ落ちる）
+    for _ in range(3):
+        page.locator("#sitBody > .ibCard").nth(0).locator("button.done").click()
+        if wait(lambda: page.evaluate("ibUndos.size") == 2, 4.0):
+            break
     page.wait_for_function("ibUndos.size === 2")
     toasts = page.eval_on_selector_all("#sitBody .ibToast", "els => els.map(e => e.dataset.n)")
     page.click('#sitBody .ibToast[data-n="1"] button')

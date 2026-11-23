@@ -108,6 +108,11 @@ class Brain:
         """件の一番新しい報告（{"at": 記録の時刻, "about": 名前}）。画面が件を開くとき、返信先にする。無ければ None。"""
         return None
 
+    def open_items(self) -> dict:
+        """あなたの判断を待っている件。{"items": [{"n", "title", "project"}]（新しい順）, "problem": 読めなかったか, "partial": 一部だけ読んだか}。
+        本体が決まった問い（「次は？」）に答えるときに読む。頭が判断待ちを持たなければ items は空。"""
+        return {"items": [], "problem": False, "partial": False}
+
 
 class Talker:
     """herdr の外にいる話し相手。本体は pane の名前で見分ける（herdr の pane ではない）。"""
@@ -143,6 +148,13 @@ class Talker:
     async def refused(self, text: str, why: str, via: str = ""):
         """利用者の発言 text を、本体が送らずに断った（via は発言の来た所。機械なら "device"）（添付の形・宛先など。理由 why）。断った発言も台帳と記録に載せ、承認・閉じるの文脈を失効させる
         （利用者が最後に聞いたのは本体の断り。前の問い・確認への答えに、次の発言を使わせない）。"""
+        raise NotImplementedError
+
+    async def answered_here(self, text: str, answer: str, via: str = "") -> bool:
+        """利用者の発言 text に、本体が決まった問いとしてその場で答えた（answer。LLM・頭を通していない。scripts/quick.py）。
+        発言と答えを台帳と記録に載せる（「すぐ次の発言」を進める）。利用者が最後に聞いたのは本体の答えなので、次の発言の「聞いた文」は空にする
+        （本体の答えのあとの「はい」を、その前に聞いた頭の問いへの答えに使わせない）。頭が次に受け取る発言には、本体が答えたことを添えて文脈を保つ。
+        記録に書けたかを返す。"""
         raise NotImplementedError
 
     def put_attachment(self, name: str, data: bytes) -> str:

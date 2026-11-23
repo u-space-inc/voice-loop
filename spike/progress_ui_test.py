@@ -126,7 +126,7 @@ with sync_playwright() as pw:
     # 1) 一言の再生を止められたあと、往復が失敗する
     pg.evaluate("window.__block = true")
     mode["fail"] = True
-    send_text(pg, "いまどうなってる？")
+    send_text(pg, "ブログの件どうなってる？")  # 決まった問い（scripts/quick.py）に当たらない、ハブに渡る問い
     pg.wait_for_function("document.getElementById('tap').style.display === 'inline-block'", timeout=10000)
     check("止められた一言はタップ待ち", pg.evaluate("queue.length"), 1)
     pg.wait_for_function("[...document.querySelectorAll('#log .sys')].some(e => e.textContent.includes('Hermes に届きませんでした'))", timeout=10000)
@@ -138,7 +138,7 @@ with sync_playwright() as pw:
     # 2) 一言のあとに返事が来る
     pg.evaluate("window.__block = false; window.__played = []")
     mode["fail"] = False
-    send_text(pg, "次は？")
+    send_text(pg, "ブログの次は？")
     pg.wait_for_function("window.__played.filter(x => x === 'blob').length === 1", timeout=10000)  # 一言が鳴った
     time.sleep(0.2)  # 一言は 30 ミリ秒で鳴り終わる。返事は 0.8 秒あと
     check("一言が鳴り終わって返事がまだ: 待つ表示（「確認しています…」）に戻す", pg.text_content("#statusText"), "確認しています…")

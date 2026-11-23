@@ -103,11 +103,11 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     # ---- 開いたまま待つ: 返事が画面に届いた時点で、記録にも載っている（画面は記録から描き直す）
     plan.append((0.2, "3つ開いています"))
     with c.websocket_connect(WS) as w:
-        say(w, "全体どうなってる？")
+        say(w, "ブログの件どうなってる？")  # 決まった問い（scripts/quick.py）に当たらない、Hermes に渡る問い
         got = until(w, "reply")
         at_reply = history()["messages"][-2:]
     check("返事は画面に届く", got[-1]["text"], "3つ開いています")
-    check("届いた時点で、発言と返事が記録にある", at_reply, [{"role": "me", "text": "全体どうなってる？"}, {"role": "ai", "text": "3つ開いています"}])
+    check("届いた時点で、発言と返事が記録にある", at_reply, [{"role": "me", "text": "ブログの件どうなってる？"}, {"role": "ai", "text": "3つ開いています"}])
     t1 = s.hub_human_turn()
     check("守りの台帳にも返事", s.hub_reply_to(t1), "3つ開いています")
 
@@ -178,10 +178,10 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     # ---- 発言が Hermes に届かなかった・返事が無かった
     plan.append((0, RuntimeError("Hermes が 500 を返しました: oops")))
     with c.websocket_connect(WS) as w:
-        say(w, "状況は？")
+        say(w, "ブログの状況は？")  # 決まった問い（scripts/quick.py）に当たらない、Hermes に渡る問い
         m = until(w, "error")[-1]
     check("画面に失敗が届く", m["text"], "Hermes が 500 を返しました: oops")
-    check("記録にも発言と失敗", records()[-2:], [("me", "状況は？"), ("error", "Hermes が 500 を返しました: oops")])
+    check("記録にも発言と失敗", records()[-2:], [("me", "ブログの状況は？"), ("error", "Hermes が 500 を返しました: oops")])
     plan.append((0.5, TimeoutError("timed out")))
     with c.websocket_connect(WS) as w:
         say(w, "まだ？")

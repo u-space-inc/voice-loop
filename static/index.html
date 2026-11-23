@@ -601,6 +601,7 @@ function renderThread(msgs) {
 const TOPIC_RE = /^t[0-9a-f]{10}$/; // 件の id（scripts/topics.py の ID_RE と同じ形）
 // ハブの会話の吹き出しに、どの件の報告か（report・about）と「↩ 返信」、報告への返信として送った発言には返信先（reply_to）を出す。文字としてだけ入れる
 function decorate(el, m) {
+  if (m.role === 'ai' && m.quick) el.prepend(node('div', 'rep', '本体がすぐ答えました')); // 決まった問いに、本体がその場で答えた（頭は通していない）
   if (m.role === 'ai' && m.report) {
     const h = node('div', 'rep'); h.appendChild(node('span', 'about', '報告｜' + (m.about || '')));
     if (typeof m.at === 'number') {
@@ -1013,7 +1014,18 @@ async function loadSpeakers() {
 }
 // ハブからの報告を、選んでいる声で届けてもらう。読み上げを切っていれば、音声を送らないでもらう
 // 画面が見えているかも知らせる（見えている画面があれば、本体はプッシュ通知を送らない）
-const hello = (visible = !document.hidden) => { try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'hello', speaker: $('speaker').value, voice: !muted, visible, ...(faceOn ? { kind: 'stackchan', place: 'home' } : {}) })); } catch {} };
+// 窓の印（タブごと。つなぎ直しても同じ窓。本体は、最後に話しかけた窓でだけ報告の声を鳴らす）
+const makeWin = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), b => b.toString(16).padStart(2, '0')).join('');
+let WIN = (() => { try { let w = sessionStorage.getItem('vl.win'); if (!/^[0-9a-f]{24}$/.test(w || '')) { w = makeWin(); sessionStorage.setItem('vl.win', w); } return w; } catch { return makeWin(); } })();
+// タブを複製すると sessionStorage も写るので、同じ印のタブが開いていないかを聞き、あれば作り直す（読み込み直しでは同じ印のまま）
+try {
+  const winBC = new BroadcastChannel('vl.win');
+  winBC.onmessage = e => { const d = e.data || {};
+    if (d.q && d.q === WIN) winBC.postMessage({ dup: WIN }); // 先に開いていたタブが、同じ印だと知らせる
+    else if (d.dup && d.dup === WIN) { WIN = makeWin(); try { sessionStorage.setItem('vl.win', WIN); } catch {} hello(); } };
+  winBC.postMessage({ q: WIN });
+} catch {}
+const hello = (visible = !document.hidden) => { try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'hello', speaker: $('speaker').value, voice: !muted, visible, win: WIN, ...(faceOn ? { kind: 'stackchan', place: 'home' } : {}) })); } catch {} };
 $('speaker').onchange = e => { localStorage.setItem('vl.speaker', e.target.value); hello(); };
 
 // ---------- 再生 ----------
@@ -2104,7 +2116,7 @@ function connect() {
         await loadThread(); // 記録から描き直す（新しいセッションは、この時点で初めて記録ができている）
         if (threadSource === 'none') { bubble('ai', m.text); localPush('ai', m.text); }
       }
-      if (muted) return; // 読み上げないので、読んでいる印はつけない
+      if (muted || m.quiet) return; // 読み上げないので、読んでいる印はつけない（quiet: 報告の声は、最後に話しかけた別の窓で鳴らした）
       const ai = $('log').querySelectorAll('.msg.ai'); speakingEl = ai[ai.length - 1] || null; if (speakingEl) speakingEl.classList.add('speaking');
     }
     else if (m.type === 'cue') { if (!here || recPending || (rec && rec.state === 'recording')) return; setStatus(m.text); if (!muted && typeof m.audio === 'string') { try { enqueueCue(Uint8Array.from(atob(m.audio), c => c.charCodeAt(0)).buffer, m.text); } catch {} } }  // 返事を待つ間の本体の一言
