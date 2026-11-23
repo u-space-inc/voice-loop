@@ -2107,7 +2107,7 @@ function connect() {
       if (muted) return; // 読み上げないので、読んでいる印はつけない
       const ai = $('log').querySelectorAll('.msg.ai'); speakingEl = ai[ai.length - 1] || null; if (speakingEl) speakingEl.classList.add('speaking');
     }
-    else if (m.type === 'cue') { if (!here) return; setStatus(m.text); if (!muted && typeof m.audio === 'string') { try { enqueueCue(Uint8Array.from(atob(m.audio), c => c.charCodeAt(0)).buffer, m.text); } catch {} } }  // 返事を待つ間の本体の一言
+    else if (m.type === 'cue') { if (!here || recPending || (rec && rec.state === 'recording')) return; setStatus(m.text); if (!muted && typeof m.audio === 'string') { try { enqueueCue(Uint8Array.from(atob(m.audio), c => c.charCodeAt(0)).buffer, m.text); } catch {} } }  // 返事を待つ間の本体の一言
     else if (m.type === 'speaking') { accepting = !muted; serverDone = false; } // 切っている間に届いた音声は鳴らさない（本体も送らないが、切った直後の分が届くことがある）
     else if (m.type === 'error') { stopPlayback(); face('idle'); sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); setStatus(''); if (FACE) $('faceCap').textContent = '⚠ ' + m.text; if (m.gone) { agentsSig = ''; loadAgents(); } } // 相手が消えた・入れ替わった → 一覧を取り直す
     else if (m.type === 'notice') { sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); } // ハブから報告を受け取れなかった等（いまの話し相手とは別の知らせ）
@@ -2136,7 +2136,9 @@ async function ensureSpeakers() {
 function sendTurnStart() { stopPlayback(); serverDone = true; turnDone = false; }
 
 // ---------- 録音（タップ→話す→タップ） ----------
-async function startRec() {
+let recPending = false;  // 録音を始めている途中（マイクの許可を待つ間など）。この間と録音中に届いた一言は鳴らさない
+async function startRec() { recPending = true; try { return await startRecInner(); } finally { recPending = false; } }
+async function startRecInner() {
   if (playing || queue.length) { ws.send(JSON.stringify({ type: 'stop' })); stopPlayback(); } // 話し始めたら相手の声は止める
   prime();
   setSession('play-and-record');

@@ -7,6 +7,7 @@
   - 一言が鳴り終わって返事がまだなら、「話しています」のままにせず、待つ表示（「確認しています…」）に戻す（codex-review の指摘）
   - 一言を受けても、返事の声を受け付ける状態にしない（止めた報告の続きの声が届いても鳴らさない。codex-review の指摘）
   - 一言が鳴っている間に、返事が声なしで終わったら（読み上げる文が無い）、一言が鳴り終わったときに話し終わりにする（待つ表示に残さない。codex-review の指摘）
+  - 返事を待つ間に次の録音を始めていたら、そのあとに届いた一言は鳴らさない（話している声に重ねず、聞き取りに混ぜない。codex-review の指摘）
 使い方: uv run spike/progress_ui_test.py"""
 import asyncio
 import json
@@ -156,6 +157,16 @@ with sync_playwright() as pw:
     check("一言の間に声なしの返事が終わった: 一言のあとは話し終わり（待つ表示に残さない）", "話し終わりました" in pg.text_content("#statusText"), True)
     mode["silent_reply"] = False
     pg.evaluate("window.__dur = 30")
+
+    # 4) 返事を待つ間に、次の録音を始めている（録音中・録音を始めている途中）
+    for label, js in (("録音中", "rec = { state: 'recording', stop() {} }"), ("録音を始めている途中", "recPending = true")):
+        pg.evaluate("window.__played = []")
+        send_text(pg, "もう一つ")
+        pg.evaluate(js)  # 一言（0.1 秒あと）より先に
+        time.sleep(0.5)
+        check(f"{label}に届いた一言は鳴らさず、並べもしない", pg.evaluate("[window.__played.filter(x => x === 'blob').length, queue.length]"), [0, 0])
+        pg.evaluate("rec = null; recPending = false")
+        pg.wait_for_function("document.getElementById('statusText').textContent.includes('話し終わりました')", timeout=10000)
     b.close()
 
 srv.should_exit = True
