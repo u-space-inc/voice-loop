@@ -24,15 +24,19 @@ jobs:
       # 本体（常駐）と同じ Python で回す（手元の .venv は 3.12）。指定しないと、実行環境の新しい python3 が選ばれる
       UV_PYTHON: "3.12"
       # 二重の守り: 試験が行き先を指定し忘れても、本体の既定の行き先（声のエンジン・聞き取り・Hermes・語り手）は
-      # 何も待ち受けていないポートを指し、設定・状態・Hermes の置き場は一時のフォルダになる（各試験が自分で指定したものが先に効く）
+      # 何も待ち受けていないポートを指し、設定・状態・Hermes の置き場は一時のフォルダになる（最初の段で設定。各試験が自分で指定したものが先に効く）
       VL_VOICE_URL: http://127.0.0.1:9
       VL_WHISPER: http://127.0.0.1:9/v1/audio/transcriptions
       VL_HERMES_URL: http://127.0.0.1:9
       ANTHROPIC_BASE_URL: http://127.0.0.1:9
-      VL_CONFIG_DIR: ${{ runner.temp }}/vl-config
-      VL_STATE_DIR: ${{ runner.temp }}/vl-state
-      VL_HERMES_HOME: ${{ runner.temp }}/vl-hermes
     steps:
+      - name: 設定・状態・Hermes の置き場を一時のフォルダにする（runner.temp はジョブの env では使えない）
+        run: |
+          {
+            echo "VL_CONFIG_DIR=$RUNNER_TEMP/vl-config"
+            echo "VL_STATE_DIR=$RUNNER_TEMP/vl-state"
+            echo "VL_HERMES_HOME=$RUNNER_TEMP/vl-hermes"
+          } >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
