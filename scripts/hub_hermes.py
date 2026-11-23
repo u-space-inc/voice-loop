@@ -1150,9 +1150,11 @@ async def _learn_skills() -> int:
                 traceback.print_exc()
                 out = {"result": "error", "why": f"本体の問題（{type(e).__name__}）"}
             dropped = False
-            if out.get("result") == "failed" and await asyncio.to_thread(_hlearn_unchanged, payload, before["skills"]):
+            if (out.get("result") == "failed" and await asyncio.to_thread(_hlearn_unchanged, payload, before["skills"])
+                    and await asyncio.to_thread(_hsk_mark_failed, pid, str(out.get("why") or ""))):
                 # Hermes がはっきり失敗と返し、手順も当てる前のまま（直す行がもう無い、など）: 当たっていないと分かるので、承認待ちから外す。
-                # 外せなければ、これまでどおり「分からない」に残す（時間切れなら、終わりを確かめるまで次を当てない）
+                # 外せなければ、これまでどおり「分からない」に残す（時間切れなら、終わりを確かめるまで次を当てない）。
+                # 記録を消す前に、二度試さない印（failed）を書いておく（消したあとに本体が止まる・状態を書けなくても、印が残る。書けなければ消さない）
                 drop = await asyncio.to_thread(hermes_skills.run_script, HERMES_CONTAINER, "reject", pid, raw)
                 dropped = drop.get("result") == "rejected" and drop.get("discarded") is True  # 消したと答えたときだけ
                 if drop.get("result") == "timeout":
@@ -1179,6 +1181,22 @@ async def _learn_skills() -> int:
             applied += 1
             core.hlog(f"Hermes の書き足し {pid} を自動で当てました（今日 {await asyncio.to_thread(_hlearn_today)}/{hermes_learn.LIMIT}）", flush=True)
     return applied
+
+
+def _hsk_mark_failed(pid: str, why: str) -> bool:
+    """当てている途中の id を、二度試さない印（failed）に書き換える。承認待ちの記録を消す前に呼ぶ。書けたら True。"""
+    with _hsk_lock:
+        d = hsk_state()
+        st = d["items"].get(pid) if d else None
+        if not st or st["state"] != "applying":
+            return False
+        st.update(state="failed", at=time.time(), note=why[:200])
+        try:
+            core.write_json(HSK_FILE, d)
+        except OSError:
+            traceback.print_exc()
+            return False
+    return True
 
 
 def _hlearn_unchanged(payload: dict, before: dict) -> bool:

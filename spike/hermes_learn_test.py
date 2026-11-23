@@ -445,6 +445,40 @@ for pid, out, want_verify, label in (("99990061", {"result": "timeout", "why": "
     (PEND / f"{pid}.json").unlink()
     RUNNING["v"] = False
     asyncio.run(s.hermes._learn_skills())  # 終わりを確かめる（時間切れのあと）
+real_finish, real_wj = s.hermes._hsk_finish, s.hermes.core.write_json
+seen = {}
+
+
+def reject_then_die(c, mode, pid, raw, wait=90, env=None, script=None):
+    if mode == "reject" and pid == "99990071":
+        seen["at_reject"] = hsk_of(pid)[0]  # 記録を消す台本が動く時点の、状態のファイルの印
+    return failing_run(c, mode, pid, raw, wait, env, script)
+
+
+s.hermes.hermes_skills.run_script = reject_then_die
+s.hermes._hsk_finish = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("記録を消した直後に本体が止まった"))
+record("99990071", "g1", at=time.time())
+fresh_day()
+try:
+    asyncio.run(s.hermes._learn_skills())
+except RuntimeError:
+    pass
+s.hermes._hsk_finish = real_finish
+s.hermes._recover_hermes_skills()
+check("自動: 記録を消す前に、二度試さない印を書いてある（消した直後に本体が止まっても、起動し直したあとに failed の印が残る）",
+      (seen.get("at_reject"), hsk_of("99990071")[0], (PEND / "99990071.json").exists()), ("failed", "failed", False))
+s.hermes.core.write_json = lambda path, data: (_ for _ in ()).throw(OSError("書けない")) if str(path) == str(s.hermes.HSK_FILE) and any(
+    v.get("state") == "failed" and k == "99990072" for k, v in data.get("items", {}).items()) else real_wj(path, data)
+record("99990072", "g1", at=time.time())
+SCALLS.clear()
+asyncio.run(s.hermes._learn_skills())
+s.hermes.core.write_json = real_wj
+check("自動: 二度試さない印を書けなければ、記録を消さず「分からない」に残す", (acts(), hsk_of("99990072")[0], (PEND / "99990072.json").exists()),
+      ([("approve", "99990072")], "unknown", True))
+(PEND / "99990072.json").unlink()
+s.hermes.hermes_skills.run_script = failing_run
+RUNNING["v"] = False
+asyncio.run(s.hermes._learn_skills())
 rec9 = {"summary": "台本の答え"}
 check("台本が「dropped」のような答えを返しても、外した扱いにはしない（外したと決めるのは本体だけ。画面の「採る」の failed も「分からない」のまま）",
       (s.hermes._hsk_finish("99999998", "v", rec9, b"{}", {"result": "dropped", "dropped": True})["reason"],
