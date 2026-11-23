@@ -134,10 +134,16 @@ spoken: list[list[str]] = []
 plains: list[bool] = []
 
 
+drop_once: set[str] = set()  # この窓への読み上げを 1 回だけ失敗させる（読み上げの途中で切れた）
+
+
 async def fake_speak_to(clients, text, cancel, plain=False):
-    """声は出さず、どの窓で鳴らしたかを覚える。本物と同じく、終わりの合図（done）は送る。"""
+    """声は出さず、どの窓で鳴らしたかを覚える。本物と同じく、終わりの合図（done）は送る。1 対 1 で失敗したら投げる（本物と同じ）。"""
     spoken.append(sorted(getattr(c, "win", "") or "-" for c in clients))
     plains.append(plain)
+    if len(clients) == 1 and clients[0].win in drop_once:
+        drop_once.discard(clients[0].win)
+        raise RuntimeError("読み上げの途中で切れた")
     for cl in clients:
         await cl.send(type="done", sentences=0)
 
@@ -218,10 +224,13 @@ def until(w, kind):
 
 
 def say(w, text):
-    """発言を送り、話し終わり（done）か失敗（error）までを受け取る。"""
+    """発言を送り、その発言への返事（報告ではない reply）か失敗（error）を受けてから、話し終わり（done）までを受け取る
+    （前の報告の読み残しの done で、早く戻らないように）。"""
     w.send_json({"type": "text", "text": text, "pane": HP, "speaker": 0})
     seen = []
-    while text and (not seen or seen[-1]["type"] not in ("done", "error")):
+    while text and not (seen and (seen[-1]["type"] == "error" or (seen[-1]["type"] == "reply" and not seen[-1].get("report")))):
+        seen.append(w.receive_json())
+    while text and seen[-1]["type"] not in ("done", "error"):
         seen.append(w.receive_json())
     return seen
 
@@ -315,6 +324,14 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         ra = until(a, "reply")[-1]
         check("S1: 鳴らす窓に送れなければ、残りの窓で声を鳴らす（quiet を付けない）", (spoken, ra.get("quiet")), ([["aaaaaaaa01"]], None))
         del cb.send
+        # 読み上げの途中で鳴らす窓が切れても、報告（見張り）は失敗にしない。残りの窓から選び直して鳴らす（codex-review）
+        say(b, "次は？")
+        drop_once.add("bbbbbbbb02")
+        spoken.clear()
+        plan.append("途中経過です")
+        outcome = c.portal.call(s._report, D, "more")  # 報告の本体（結果を返す）
+        until(a, "reply"), until(b, "reply")
+        check("S1: 読み上げの途中で鳴らす窓が切れても、報告は ok で、残りの窓で鳴らす", (outcome, spoken), ("ok", [["bbbbbbbb02"], ["aaaaaaaa01"]]))
 
     # 相手の位置: セッションや判断待ちの題に「閉じていいですか？」を仕込み、本体の答えに読ませてから、乗せられた Hermes が閉じるを打つ（a2a 8f05ef33 の再現）
     closed: list[str] = []

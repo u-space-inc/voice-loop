@@ -2261,8 +2261,14 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
                 await c.send(**msg, quiet=True)
             except Exception:
                 clients.remove(c)
-        if ring:
-            await speak_to(ring, reply, asyncio.Event())
+        while ring:  # 読み上げの途中で鳴らす窓が切れても、見張りには伝えない（1 対 1 の speak_to は失敗を投げる）。残りの窓から選び直す（codex-review）
+            try:
+                await speak_to(ring, reply, asyncio.Event())
+                break
+            except Exception as e:
+                hlog(f"報告の声を送れませんでした（{type(e).__name__}）。ほかの窓から選び直します", flush=True)
+                clients = [c for c in clients if c not in ring]
+                ring = ring_targets(clients) if clients else []
         return "ok"
 
 
