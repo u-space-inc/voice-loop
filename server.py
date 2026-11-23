@@ -3152,6 +3152,16 @@ async def ws(sock: WebSocket):
             return
         await send(type="status", text=talker.sending_text())
         cue, cue_task, dropped = None, None, False
+
+        async def settle_cue():
+            """返事（か失敗）が決まった。一言の声を送っている途中なら、送り終わるのを待つ（声の順が入れ替わらないように。短い）。
+            それ以外（状態の文を送っている・合成している・まだ始まっていない）なら、一言をまるごと取り消す（返事のあとに届かないように）。"""
+            if cue.get("settled"):  # 失敗の道と finally の両方から呼ばれる。一度だけ
+                return
+            cue["stop"] = cue["settled"] = True
+            if not cue["sending"]:
+                cue_task.cancel()
+            await asyncio.gather(cue_task, return_exceptions=True)
         if PROGRESS_AFTER > 0:  # しばらく返事が無ければ、本体の一言（返事の中身・記録・守りには関わらない）
             finished, _ = await asyncio.wait({job}, timeout=PROGRESS_AFTER)  # 期限切れと、job 自身の例外を取り違えない（例外は下で job から受ける）
             if not finished and not cancel.is_set():
@@ -3168,18 +3178,14 @@ async def ws(sock: WebSocket):
             raise
         except Exception:  # 往復が例外で終わった（呼び出し側が画面に知らせる）。一言の声を送っていたら、終わりの合図で話し終わりに戻す
             if cue:
-                cue["stop"] = True
-                if cue["sending"]:
-                    await asyncio.gather(cue_task, return_exceptions=True)
+                await settle_cue()
                 if cue["sent"]:
                     with contextlib.suppress(Exception):
                         await send(type="done", sentences=0)
             raise
         finally:
             if cue and not dropped:
-                cue["stop"] = True  # まだ送っていない一言の声は捨てる
-                if cue["sending"]:  # 送っている途中なら、送り終わるのを待ってから返事を送る（順が入れ替わらないように）
-                    await asyncio.gather(cue_task, return_exceptions=True)
+                await settle_cue()
         if why:
             if cue and cue["sent"]:  # 一言の声のあとに返事の声が来ないので、終わりの合図で画面を話し終わりに戻す
                 await send(type="done", sentences=0)

@@ -70,7 +70,7 @@ s.synth = fake_synth
 s.narrate = fake_narrate
 
 
-def turn(text="ねえ、いまどうなってる？", mute=False, mute_after=None):
+def turn(text="ねえ、いまどうなってる？", mute=False, mute_after=None, linger=0.0):
     """ハブに打った文を送り、終わり（done か error）までに届いたものを順に返す。文の通知は (種類, 文)、声は ("wav", 中身)。"""
     got = []
     with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
@@ -93,6 +93,7 @@ def turn(text="ねえ、いまどうなってる？", mute=False, mute_after=Non
                     got.append(("at", round(time.monotonic() - t0, 2)))
                 if d["type"] == "error" or (d["type"] == "done" and mode["fail"] not in ("why", "raise")):  # 失敗の試しでは、done のあとのエラーまで読む
                     break
+            time.sleep(linger)  # 遅れて送られるものを待つ（つないだまま。試験の本体を閉じると、本体の仕事も止まる）
     return got
 
 
@@ -207,6 +208,27 @@ try:
     nxt = sent_log.index("status", stopped)  # 次のターンの「送りました」
     check("止めたターンの一言の合図（speaking）は、止めたあとに送られない", sent_log[stopped + 1:nxt].count("speaking"), 0)
     check("次のターンの返事は届く", ("reply", "わかりました。") in got, True)
+
+    # 一言の状態の文の送りが遅れても、返事・失敗のあとに届かない（a2a f2bb8b69 の 3 回目）
+    for fail in (None, "why"):
+        real_send = s.Client.send
+        log2 = []
+
+        async def slow_status(self, **msg):
+            if msg.get("type") == "status" and msg.get("text") == "確認しています…":
+                await asyncio.sleep(0.4)
+            log2.append((msg.get("type"), msg.get("text", "")))
+            return await real_send(self, **msg)
+
+        s.Client.send = slow_status
+        s.PROGRESS_AFTER, mode["delay"], mode["fail"] = 0.05, 0.15, fail
+        try:
+            turn(linger=0.6)
+        finally:
+            s.Client.send = real_send
+            mode["fail"] = None
+        end = max(i for i, (k, _) in enumerate(log2) if k in ("done", "error"))
+        check(f"状態の文の送りが遅れる（{fail or '返事'}）: 終わりのあとに「確認しています…」が届かない", ("status", "確認しています…") in log2[end + 1:], False)
 
     # 設定の読み方
     for raw, want in [("3", 3.0), ("1.5", 1.5), ("0", 0.0), ("-1", 0.0), ("abc", 3.0), ("", 3.0)]:
