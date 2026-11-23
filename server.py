@@ -1418,6 +1418,37 @@ async def speak_to(clients: list[Client], text: str, cancel: asyncio.Event):
     await each(lambda c: c.send(type="done", sentences=n))
 
 
+# 頼んでから返事が来るまでの、本体の一言（ハブとの往復だけ）。Hermes の返事は中央値 14 秒かかり、その間黙っていると、聞こえたのか分からない
+# （2026-11-23 に測ると、Hermes の道具の知らせは頼んでから 2 秒前後で届く）。PROGRESS_AFTER 秒たっても返事が無ければ、決まった一言を話す。
+# Hermes への頼み方は変えない（守りが「利用者が聞いた返事」として見る文は、Hermes の返事のまま。この一言は記録にも台帳にも載せない）。0 で使わない
+PROGRESS_TEXT = "確認しています"
+_progress = os.environ.get("VL_PROGRESS_AFTER", "3").strip()
+try:
+    PROGRESS_AFTER = max(0.0, float(_progress))
+except ValueError:
+    PROGRESS_AFTER = 3.0
+_progress_wav: dict[int, bytes] = {}  # 声ごとに一度だけ合成して取っておく（決まった一言なので）
+
+
+async def speak_progress(clients: list[Client], cancel: asyncio.Event):
+    """返事を待つ間の一言。状態の文を出し、読み上げる画面には声も送る。終わりの合図（done）は送らない
+    （画面は、続けて届く返事の声をこの一言の後ろに並べ、話し終わったとは出さない）。語り手は通さない（決まった文なので）。"""
+    for c in list(clients):
+        try:
+            await c.send(type="status", text=PROGRESS_TEXT + "…")
+            if not c.voice or cancel.is_set():
+                continue
+            sp = DEFAULT_SPEAKER if c.speaker is None else c.speaker
+            if sp not in _progress_wav:
+                _progress_wav[sp] = await asyncio.to_thread(synth, PROGRESS_TEXT, sp)
+            if cancel.is_set():
+                continue
+            await c.send(type="speaking")
+            await c.sock.send_bytes(_progress_wav[sp])
+        except Exception as e:  # 一言は添え物。声が作れない・画面が切れても、返事を待つのは続ける
+            print(f"[progress] 一言を送れませんでした: {type(e).__name__}: {str(e)[:120]}", flush=True)
+
+
 def write_json(path: Path, data):
     """書きかけを残さないよう、一時ファイルに書いてから置き換える。中身は利用者だけが読める（0600）。"""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -3110,6 +3141,12 @@ async def ws(sock: WebSocket):
             await send(type="error", gone=True, text=talker.off_text)
             return
         await send(type="status", text=talker.sending_text())
+        if PROGRESS_AFTER > 0:  # しばらく返事が無ければ、本体の一言（返事の中身・記録・守りには関わらない）
+            try:
+                await asyncio.wait_for(asyncio.shield(job), PROGRESS_AFTER)
+            except asyncio.TimeoutError:
+                if not cancel.is_set():
+                    await speak_progress([client], cancel)
         # 画面が閉じても、止めても、返事は最後まで待って記録する（相手は答えて覚えているので、記録が欠けると画面と食い違う）
         reply, why, saved = await asyncio.shield(job)
         if why:
