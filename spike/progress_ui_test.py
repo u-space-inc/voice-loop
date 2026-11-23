@@ -74,7 +74,8 @@ s.narrate = fake_narrate
 s.synth = lambda text, sp: b"RIFF" + text.encode()  # 鳴らない中身（再生は試験の中で差し替える）
 s.PROGRESS_AFTER = 0.1
 srv = uvicorn.Server(uvicorn.Config(s.app, host="127.0.0.1", port=PORT, log_level="warning"))
-threading.Thread(target=srv.run, daemon=True).start()
+th = threading.Thread(target=srv.run, daemon=True)
+th.start()
 for _ in range(200):
     if srv.started:
         break
@@ -126,6 +127,7 @@ with sync_playwright() as pw:
     b.close()
 
 srv.should_exit = True
+th.join(10)  # 本体の写しが止まるのを待ってから終える（止まる前に終えると、本体のログの書き込みと重なって落ちることがある）
 bad = [r for r in results if not r[1]]
 for name, ok, got, want in results:
     print(("ok  " if ok else "NG  ") + name + ("" if ok else f"  got={got!r} want={want!r}"))
