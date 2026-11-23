@@ -4,6 +4,8 @@
   - 一言の声の再生をブラウザに止められ（タップ待ち）、そのあと往復が失敗したら、再生待ちの一言を捨てる。タップのボタンは消え、
     「話し終わりました」に上書きされず、エラーの文が残る（a2a f2bb8b69 の指摘）
   - 一言のあとに返事が来たら、一言・返事の順に鳴り、終わったら「話し終わりました」
+  - 一言が鳴り終わって返事がまだなら、「話しています」のままにせず、待つ表示（「確認しています…」）に戻す（codex-review の指摘）
+  - 一言を受けても、返事の声を受け付ける状態にしない（止めた報告の続きの声が届いても鳴らさない。codex-review の指摘）
 使い方: uv run spike/progress_ui_test.py"""
 import asyncio
 import json
@@ -71,7 +73,19 @@ s.list_agents = lambda: []
 s.jsonl_path = lambda a: None
 s.hub_accepted = fake_accepted
 s.narrate = fake_narrate
-s.synth = lambda text, sp: b"RIFF" + text.encode()  # 鳴らない中身（再生は試験の中で差し替える）
+def tiny_wav(text: str) -> bytes:  # 本物の WAV（0.05 秒の無音）。中身が壊れていると、ブラウザが再生の失敗（error）を出して次へ進むので
+    import io
+    import wave
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(b"\x00\x00" * 800)
+    return buf.getvalue()
+
+
+s.synth = lambda text, sp: tiny_wav(text)
 s.PROGRESS_AFTER = 0.1
 srv = uvicorn.Server(uvicorn.Config(s.app, host="127.0.0.1", port=PORT, log_level="warning"))
 th = threading.Thread(target=srv.run, daemon=True)
@@ -86,7 +100,7 @@ PLAY = """(() => { window.__played = []; window.__block = false;
   HTMLMediaElement.prototype.play = function () {
     if (window.__block) { const e = new Error('blocked'); e.name = 'NotAllowedError'; return Promise.reject(e); }
     const src = this.src; window.__played.push(src === SILENT_URL ? 'silent' : 'blob');
-    setTimeout(() => this.dispatchEvent(new Event('ended')), 30); return Promise.resolve();
+    setTimeout(() => { if (this.src === src) this.dispatchEvent(new Event('ended')); }, 30); return Promise.resolve();  // 本物と同じく、差し替えた前の音の終わりは出さない
   }; })()"""
 
 
@@ -121,6 +135,11 @@ with sync_playwright() as pw:
     pg.evaluate("window.__block = false; window.__played = []")
     mode["fail"] = False
     send_text(pg, "次は？")
+    pg.wait_for_function("window.__played.filter(x => x === 'blob').length === 1", timeout=10000)  # 一言が鳴った
+    time.sleep(0.2)  # 一言は 30 ミリ秒で鳴り終わる。返事は 0.8 秒あと
+    check("一言が鳴り終わって返事がまだ: 待つ表示（「確認しています…」）に戻す", pg.text_content("#statusText"), "確認しています…")
+    pg.evaluate("enqueue(new ArrayBuffer(4))")  # 止めた報告の続きの声が、遅れて届いたとき
+    check("一言を受けても、返事の声を受け付ける状態にしない（遅れて届いた声を並べない）", pg.evaluate("[accepting, queue.length]"), [False, 0])
     pg.wait_for_function("document.getElementById('statusText').textContent.includes('話し終わりました')", timeout=10000)
     check("一言のあとに返事: 一言と返事の 2 つを鳴らす", pg.evaluate("window.__played.filter(x => x === 'blob').length"), 2)
     check("一言のあとに返事: 最後は「話し終わりました」", "話し終わりました" in pg.text_content("#statusText"), True)

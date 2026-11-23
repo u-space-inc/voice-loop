@@ -1,19 +1,21 @@
 """ハブの返事を待つ間の本体の一言（「確認しています」。config.env の VL_PROGRESS_AFTER）の試験。Hermes との往復・声の合成・語り手は差し替える。
 常駐の 8790・本物の Hermes・声のエンジンには触れない。
 確かめること:
-  - 返事が PROGRESS_AFTER 秒より遅いと、状態の文「確認しています…」と、一言の声を 1 つ送る。そのあとに返事の文と声が続く（一言のあとに終わりの合図は送らない）
+  - 返事が PROGRESS_AFTER 秒より遅いと、状態の文「確認しています…」と、声を中に入れた一言の通知（cue）を 1 つ送る。そのあとに返事の文と声が続く。
+    一言には返事の声の合図（speaking）も音声のかたまりも使わない（画面の受け付けを変えず、止めた報告の続きを鳴らさない。codex-review の指摘）
   - 返事が早ければ、一言は出さない
   - 読み上げを切った画面（🔇）には、状態の文だけ（声は送らない）
   - 0 にすると使わない
   - 一言は記録にも、守りの台帳（利用者が聞いた返事）にも載せない。Hermes への頼みの中身も変えない
   - 声が作れなくても、返事は届く
   - 一言の声の合成が遅くても、返事を遅らせない。返事が先に来たら、まだ送っていない一言は捨てる（返事のあとに一言が届かない）
-  - 一言の声を送ったあと往復が失敗・例外で終わったら、終わりの合図（done）を送って画面を話し終わりに戻す
+  - 一言の声を送ったあと往復が失敗・例外で終わったら、エラーだけを送る（画面はエラーで、鳴らしている・待っている声を捨てる）
   - 往復そのものが期限より前に TimeoutError で終わっても、一言は出さない（待つ期限と取り違えない）
   - 合成の間に読み上げを切った画面には、一言の声を送らない
   - 一言を送っている途中でターンが取り消された（止めて次の発言）ら、一言は取り消す（次のターンの返事のあとに届かない）
 使い方: uv run spike/progress_test.py"""
 import asyncio
+import base64
 import json
 import os
 import sys
@@ -88,10 +90,13 @@ def turn(text="ねえ、いまどうなってる？", mute=False, mute_after=Non
                     got.append(("wav", m["bytes"].decode()))
                     continue
                 d = json.loads(m["text"])
+                if d["type"] == "cue":  # 一言: 中の声を取り出す
+                    got.append(("cue", base64.b64decode(d["audio"]).decode() if "audio" in d else ""))
+                    continue
                 got.append((d["type"], d.get("text", "")))
                 if d["type"] == "reply":
                     got.append(("at", round(time.monotonic() - t0, 2)))
-                if d["type"] == "error" or (d["type"] == "done" and mode["fail"] not in ("why", "raise")):  # 失敗の試しでは、done のあとのエラーまで読む
+                if d["type"] in ("done", "error"):
                     break
             time.sleep(linger)  # 遅れて送られるものを待つ（つないだまま。試験の本体を閉じると、本体の仕事も止まる）
     return got
@@ -104,9 +109,11 @@ try:
     kinds = [k for k, _ in got]
     cue = ("status", "確認しています…")
     check("遅い返事: 状態の文「確認しています…」を出す", cue in got, True)
-    check("遅い返事: 一言の声を 1 つ送る", got.count(("wav", "WAV:確認しています")), 1)
+    check("遅い返事: 一言の声を 1 つ（cue の中に）送る", got.count(("cue", "WAV:確認しています")), 1)
     check("遅い返事: 一言のあとに返事の文と声が続く（一言の声が先）",
-          (got.index(("wav", "WAV:確認しています")) < got.index(("reply", "わかりました。")) < got.index(("wav", "WAV:わかりました。"))), True)
+          (got.index(("cue", "WAV:確認しています")) < got.index(("reply", "わかりました。")) < got.index(("wav", "WAV:わかりました。"))), True)
+    check("遅い返事: 一言は返事の声の合図（speaking）も音声のかたまりも使わない（合図は返事の 1 回だけ・かたまりは返事の声だけ）",
+          (kinds.count("speaking"), [w for k, w in got if k == "wav"], kinds.index("speaking") > kinds.index("reply")), (1, ["WAV:わかりました。"], True))
     check("遅い返事: 終わりの合図は 1 回だけ（返事の声のあと）", (kinds.count("done"), kinds[-1]), (1, "done"))
     check("遅い返事: Hermes への頼みの中身は変えない", asked[-1], "ねえ、いまどうなってる？")
     log = s.hermes.HERMES_LOG.read_text() if s.hermes.HERMES_LOG.exists() else ""
@@ -115,12 +122,12 @@ try:
 
     mode["delay"] = 0.0
     got = turn()
-    check("早い返事: 一言は出さない", (("status", "確認しています…") in got, any(w == "WAV:確認しています" for k, w in got if k == "wav")), (False, False))
+    check("早い返事: 一言は出さない", (("status", "確認しています…") in got, any(k == "cue" for k, _ in got)), (False, False))
     check("早い返事: 返事は届く", ("reply", "わかりました。") in got, True)
 
     mode["delay"] = 0.6
     got = turn(mute=True)
-    check("読み上げを切った画面: 状態の文だけ（声は送らない）", (("status", "確認しています…") in got, [w for k, w in got if k == "wav"]), (True, []))
+    check("読み上げを切った画面: 状態の文だけ（声は送らない）", (("status", "確認しています…") in got, [w for k, w in got if k in ("wav", "cue")]), (True, []))
 
     s.PROGRESS_AFTER = 0
     got = turn()
@@ -139,7 +146,7 @@ try:
     got = turn()
     at = next(v for k, v in got if k == "at")
     check("合成が遅い: 返事は合成を待たずに届く（1 秒より前）", at < 0.6, True)
-    check("合成が遅い: 返事のあとに一言の声は届かない", any(k == "wav" and w == "WAV:確認しています" for k, w in got), False)
+    check("合成が遅い: 返事のあとに一言の声は届かない", any(k == "cue" for k, _ in got), False)
     check("合成が遅い: 終わりの合図は返事の声のあとの 1 回", ([k for k, _ in got].count("done"), got[-1][0]), (1, "done"))
     mode["synth_delay"] = 0.0
 
@@ -150,7 +157,7 @@ try:
         mode["fail"] = fail
         got = turn()
         kinds = [k for k, _ in got]
-        check(f"一言のあと失敗（{fail}）: 一言の声を送り、終わりの合図のあとにエラー", (("wav", "WAV:確認しています") in got, kinds[-2:]), (True, ["done", "error"]))
+        check(f"一言のあと失敗（{fail}）: 一言の声を送り、そのあとはエラーだけ（終わりの合図は送らない）", (("cue", "WAV:確認しています") in got, kinds[-1], "done" in kinds), (True, "error", False))
     mode["fail"] = None
 
     # 往復が期限より前に TimeoutError で終わる
@@ -163,7 +170,7 @@ try:
     s._progress_wav.clear()
     s.PROGRESS_AFTER, mode["delay"], mode["synth_delay"] = 0.05, 0.8, 0.5
     got = turn(mute_after=0.2)
-    check("合成の間に読み上げを切った: 一言の声は送らない", any(k == "wav" and w == "WAV:確認しています" for k, w in got), False)
+    check("合成の間に読み上げを切った: 一言の声は送らない", any(k == "cue" for k, _ in got), False)
     mode["synth_delay"] = 0.0
 
     # 一言を送っている途中（合図の送り）で、止めて次の発言をする
@@ -172,8 +179,8 @@ try:
     hold = {"n": 0}
     sent_log = []  # 本体が画面に送った文の通知の種類（送った順）
 
-    async def slow_send(self, **msg):  # 一言の合図（speaking）の最初の 1 回だけ、送りを 2.5 秒止める（次のターンが終わるより長く）
-        if msg.get("type") == "speaking" and hold["n"] == 0:
+    async def slow_send(self, **msg):  # 一言（cue）の最初の 1 回だけ、送りを 2.5 秒止める（次のターンが終わるより長く）
+        if msg.get("type") == "cue" and hold["n"] == 0:
             hold["n"] += 1
             await asyncio.sleep(2.5)
         sent_log.append(msg.get("type"))
@@ -203,10 +210,10 @@ try:
                 ws.send_text(json.dumps({"type": "clientlog", "msg": "end"}))
     finally:
         s.Client.send = real_send
-    check("取り消したターンの一言の声は届かない（次のターンの返事の前にも後にも）", [w for k, w in got if k == "wav"], ["WAV:わかりました。"])
+    check("取り消したターンの一言の声は届かない（次のターンの返事の前にも後にも）", ([w for k, w in got if k == "wav"], any(k == "cue" for k, _ in got)), (["WAV:わかりました。"], False))
     stopped = sent_log.index("stopped")
     nxt = sent_log.index("status", stopped)  # 次のターンの「送りました」
-    check("止めたターンの一言の合図（speaking）は、止めたあとに送られない", sent_log[stopped + 1:nxt].count("speaking"), 0)
+    check("止めたターンの一言（cue）は、止めたあとに送られない", sent_log[stopped + 1:nxt].count("cue"), 0)
     check("次のターンの返事は届く", ("reply", "わかりました。") in got, True)
 
     # 一言の状態の文の送りが遅れても、返事・失敗のあとに届かない（a2a f2bb8b69 の 3 回目）

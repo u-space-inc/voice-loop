@@ -1039,28 +1039,33 @@ function prime() { // ユーザーのタップの中で呼ぶ
     .catch(e => { if (e.name !== 'AbortError') clog('prime failed: ' + e.name); });
 }
 function enqueue(buf) { if (!accepting) return; queue.push(buf); if (!playing) playNext(); }
+// 返事を待つ間の本体の一言（cue）。返事の声の合図（speaking）を使わずに、この一言だけを鳴らす（止めた報告の続きを受け付けない）。
+// 鳴り終わって次が無ければ、話し終わりにせず、返事を待つ表示に戻す
+let cueing = false, cueText = '';
+function enqueueCue(buf, text) { cueText = text; queue.push({ cue: true, buf }); if (!playing) playNext(); }
 function playNext() {
-  if (!queue.length) { playing = false; if (serverDone) finishSpeaking(); return; }
+  if (!queue.length) { playing = false; if (cueing) { cueing = false; setStatus(cueText); face('think'); return; } if (serverDone) finishSpeaking(); return; }
   playing = true; nowSilent = false;
-  const g = gen, buf = queue.shift();
+  const g = gen, item = queue.shift(), isCue = !!(item && item.cue), buf = isCue ? item.buf : item;
+  cueing = isCue;
   if (curUrl) URL.revokeObjectURL(curUrl);
   curUrl = URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
   player.src = curUrl;
   player.play().then(() => {
     if (g !== gen) return;
-    setStatus('話しています'); showTap(false); face('speak');
+    setStatus(isCue ? cueText : '話しています'); showTap(false); face('speak');
     if (!playLogged) { clog('first audio playing'); playLogged = true; }
   }).catch(e => {
     if (g !== gen || e.name === 'AbortError') return;
     clog('play rejected: ' + e.name + ' ' + e.message);
-    if (e.name === 'NotAllowedError') { queue.unshift(buf); playing = false; showTap(true); setStatus('音声の再生にはタップが必要です'); }
+    if (e.name === 'NotAllowedError') { queue.unshift(item); playing = false; showTap(true); setStatus('音声の再生にはタップが必要です'); }
     else playNext();
   });
 }
 player.addEventListener('ended', () => { if (nowSilent) { nowSilent = false; if (queue.length && !playing) playNext(); return; } playNext(); });
 player.addEventListener('error', () => { if (nowSilent || !playing) return; clog('audio error code=' + (player.error && player.error.code)); playNext(); });
 $('tap').onclick = () => { showTap(false); playNext(); };
-function stopPlayback() { gen++; queue = []; playing = false; accepting = false; player.pause(); showTap(false); if (speakingEl) speakingEl.classList.remove('speaking'); speakingEl = null; face('idle'); } // 止めたら口を閉じる（録音中なら、face が聞いている顔のままにする）
+function stopPlayback() { gen++; queue = []; playing = false; accepting = false; cueing = false; player.pause(); showTap(false); if (speakingEl) speakingEl.classList.remove('speaking'); speakingEl = null; face('idle'); } // 止めたら口を閉じる（録音中なら、face が聞いている顔のままにする）
 function finishSpeaking(msg = muted ? '返答が届きました（文字だけ）' : '話し終わりました') { if (speakingEl) speakingEl.classList.remove('speaking'); speakingEl = null; setStatus(msg); face('idle'); }
 
 // ---------- 読み上げの切り替え（🔇） ----------
@@ -2102,6 +2107,7 @@ function connect() {
       if (muted) return; // 読み上げないので、読んでいる印はつけない
       const ai = $('log').querySelectorAll('.msg.ai'); speakingEl = ai[ai.length - 1] || null; if (speakingEl) speakingEl.classList.add('speaking');
     }
+    else if (m.type === 'cue') { if (!here) return; setStatus(m.text); if (!muted && typeof m.audio === 'string') { try { enqueueCue(Uint8Array.from(atob(m.audio), c => c.charCodeAt(0)).buffer, m.text); } catch {} } }  // 返事を待つ間の本体の一言
     else if (m.type === 'speaking') { accepting = !muted; serverDone = false; } // 切っている間に届いた音声は鳴らさない（本体も送らないが、切った直後の分が届くことがある）
     else if (m.type === 'error') { stopPlayback(); face('idle'); sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); setStatus(''); if (FACE) $('faceCap').textContent = '⚠ ' + m.text; if (m.gone) { agentsSig = ''; loadAgents(); } } // 相手が消えた・入れ替わった → 一覧を取り直す
     else if (m.type === 'notice') { sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); } // ハブから報告を受け取れなかった等（いまの話し相手とは別の知らせ）
