@@ -7,12 +7,17 @@
   - 0 にすると使わない
   - 一言は記録にも、守りの台帳（利用者が聞いた返事）にも載せない。Hermes への頼みの中身も変えない
   - 声が作れなくても、返事は届く
+  - 一言の声の合成が遅くても、返事を遅らせない。返事が先に来たら、まだ送っていない一言は捨てる（返事のあとに一言が届かない）
+  - 一言の声を送ったあと往復が失敗・例外で終わったら、終わりの合図（done）を送って画面を話し終わりに戻す
+  - 往復そのものが期限より前に TimeoutError で終わっても、一言は出さない（待つ期限と取り違えない）
+  - 合成の間に読み上げを切った画面には、一言の声を送らない
 使い方: uv run spike/progress_test.py"""
 import asyncio
 import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 TMP = tempfile.mkdtemp()
@@ -31,19 +36,27 @@ def check(name, got, want):
 
 
 HUB = s.hermes.HERMES_PANE
-mode = {"delay": 0.0, "synth_fail": False}
+mode = {"delay": 0.0, "synth_fail": False, "synth_delay": 0.0, "fail": None}
 asked = []
 
 
 async def fake_accepted(talker, text, pane, *a, **k):  # Hermes との往復の代わり。返事までの時間だけを決める
     asked.append(text)
     await asyncio.sleep(mode["delay"])
+    if mode["fail"] == "why":
+        return "", "Hermes に届きませんでした", True
+    if mode["fail"] == "raise":
+        raise RuntimeError("往復の途中で落ちました")
+    if mode["fail"] == "timeout":
+        raise asyncio.TimeoutError()
     return "わかりました。", "", True
 
 
 def fake_synth(text, speaker):
     if mode["synth_fail"] and text == s.PROGRESS_TEXT:
         raise OSError("声のエンジンが止まっています")
+    if text == s.PROGRESS_TEXT and mode["synth_delay"]:
+        time.sleep(mode["synth_delay"])
     return f"WAV:{text}".encode()
 
 
@@ -56,7 +69,7 @@ s.synth = fake_synth
 s.narrate = fake_narrate
 
 
-def turn(text="ねえ、いまどうなってる？", mute=False):
+def turn(text="ねえ、いまどうなってる？", mute=False, mute_after=None):
     """ハブに打った文を送り、終わり（done か error）までに届いたものを順に返す。文の通知は (種類, 文)、声は ("wav", 中身)。"""
     got = []
     with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
@@ -64,6 +77,10 @@ def turn(text="ねえ、いまどうなってる？", mute=False):
             if mute:
                 ws.send_text(json.dumps({"type": "hello", "voice": False}))
             ws.send_text(json.dumps({"type": "text", "text": text, "pane": HUB, "speaker": "8"}))
+            t0 = time.monotonic()
+            if mute_after is not None:  # 合成の間に、読み上げを切る
+                time.sleep(mute_after)
+                ws.send_text(json.dumps({"type": "hello", "voice": False}))
             for _ in range(40):
                 m = ws.receive()
                 if m.get("bytes") is not None:
@@ -71,7 +88,9 @@ def turn(text="ねえ、いまどうなってる？", mute=False):
                     continue
                 d = json.loads(m["text"])
                 got.append((d["type"], d.get("text", "")))
-                if d["type"] in ("done", "error"):
+                if d["type"] == "reply":
+                    got.append(("at", round(time.monotonic() - t0, 2)))
+                if d["type"] == "error" or (d["type"] == "done" and mode["fail"] not in ("why", "raise")):  # 失敗の試しでは、done のあとのエラーまで読む
                     break
     return got
 
@@ -111,6 +130,39 @@ try:
     got = turn()
     check("声が作れなくても、返事は届く", (("reply", "わかりました。") in got, [k for k, _ in got][-1]), (True, "done"))
     mode["synth_fail"] = False
+
+    # 合成が遅い: 返事を遅らせず、返事のあとに一言を送らない
+    s._progress_wav.clear()
+    s.PROGRESS_AFTER, mode["delay"], mode["synth_delay"] = 0.05, 0.15, 0.8
+    got = turn()
+    at = next(v for k, v in got if k == "at")
+    check("合成が遅い: 返事は合成を待たずに届く（1 秒より前）", at < 0.6, True)
+    check("合成が遅い: 返事のあとに一言の声は届かない", any(k == "wav" and w == "WAV:確認しています" for k, w in got), False)
+    check("合成が遅い: 終わりの合図は返事の声のあとの 1 回", ([k for k, _ in got].count("done"), got[-1][0]), (1, "done"))
+    mode["synth_delay"] = 0.0
+
+    # 一言の声のあと、往復が失敗（理由つき）・例外で終わる
+    s._progress_wav.clear()
+    s.PROGRESS_AFTER, mode["delay"] = 0.05, 0.3
+    for fail in ("why", "raise"):
+        mode["fail"] = fail
+        got = turn()
+        kinds = [k for k, _ in got]
+        check(f"一言のあと失敗（{fail}）: 一言の声を送り、終わりの合図のあとにエラー", (("wav", "WAV:確認しています") in got, kinds[-2:]), (True, ["done", "error"]))
+    mode["fail"] = None
+
+    # 往復が期限より前に TimeoutError で終わる
+    s.PROGRESS_AFTER, mode["delay"], mode["fail"] = 0.3, 0.01, "timeout"
+    got = turn()
+    check("往復が期限前に TimeoutError: 一言は出さずにエラー", (("status", "確認しています…") in got, [k for k, _ in got][-1]), (False, "error"))
+    mode["fail"] = None
+
+    # 合成の間に読み上げを切る
+    s._progress_wav.clear()
+    s.PROGRESS_AFTER, mode["delay"], mode["synth_delay"] = 0.05, 0.8, 0.5
+    got = turn(mute_after=0.2)
+    check("合成の間に読み上げを切った: 一言の声は送らない", any(k == "wav" and w == "WAV:確認しています" for k, w in got), False)
+    mode["synth_delay"] = 0.0
 
     # 設定の読み方
     for raw, want in [("3", 3.0), ("1.5", 1.5), ("0", 0.0), ("-1", 0.0), ("abc", 3.0), ("", 3.0)]:
