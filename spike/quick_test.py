@@ -64,6 +64,10 @@ check("答え: 時間がたって（3 分）から「次」と言えば、最初
 EMPTY = {"sessions": [], "watching": 0, "inbox": [], "inbox_problem": True}
 check("答え: 何も無いとき", (quick.answer("waiting", EMPTY), quick.answer("status", EMPTY), quick.answer("next", EMPTY, {}, 1.0)),
       ("承認・入力待ちのセッションはありません。", "いま作業中のセッションはありません。", "承認・入力待ちのセッションはありません。判断待ちの記録は読めませんでした。"))
+PROB = {"sessions": SNAP["sessions"], "inbox": [], "inbox_problem": True}
+cur = {}
+check("答え: 判断待ちを読めないときは、承認待ちを読み終えても「ほかにない」と言い切らない",
+      [quick.answer("next", PROB, cur, 1.0 + i) for i in range(3)][-1], "ほかの承認・入力待ちはありません（2 件でした）。判断待ちの記録は読めませんでした。")
 PART = {**SNAP, "inbox_partial": True}
 check("答え: 判断待ちを一部しか読めていなければ、「ない」と言い切らない",
       (quick.answer("next", PART, {"key": "i:31", "at": 1.0}, 2.0), quick.answer("next", {"sessions": [], "inbox": [], "inbox_partial": True}, {}, 1.0)),
@@ -108,7 +112,10 @@ plan: list = []
 
 def fake_ask_hermes(text):
     calls.append(text)
-    return plan.pop(0) if plan else "わかりました"
+    out = plan.pop(0) if plan else "わかりました"
+    if isinstance(out, BaseException):
+        raise out
+    return out
 
 
 async def nothing(*a, **k):
@@ -176,8 +183,12 @@ def until(w, kind):
 
 
 def say(w, text):
+    """発言を送り、話し終わり（done）か失敗（error）までを受け取る。"""
     w.send_json({"type": "text", "text": text, "pane": HP, "speaker": 0})
-    return until(w, "done") if text else []
+    seen = []
+    while text and (not seen or seen[-1]["type"] not in ("done", "error")):
+        seen.append(w.receive_json())
+    return seen
 
 
 def wait_until(fn, limit=5.0):
@@ -231,6 +242,13 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         plan.append("了解です")
         say(a, "ブログを公開して")
         check("文脈: 添えるのは 1 回だけ", calls[-1], "ブログを公開して")
+        say(a, "次は？")
+        plan.append(RuntimeError("Hermes に接続できません"))
+        say(a, "その件、詳しく")
+        plan.append("詳しくはこうです")
+        say(a, "その件、詳しく")
+        check("文脈: Hermes に届かなかったときは控えを残し、言い直したときにまた添える（codex-review）",
+              ("「次は？」→" in calls[-2], "「次は？」→" in calls[-1], s.hermes.QUICK_NOTES), (True, True, []))
         keep_q = s.QUICK
         s.QUICK = False
         say(a, "次は？")
@@ -292,6 +310,15 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             got_msgs.append(w.receive_json())
         check("相手の位置: 形の壊れた添付つきの「次は？」は、本体が答えずに断る（Hermes にも送らない）",
               (got_msgs[-1]["type"], len(calls) - n_calls, any(m["type"] == "reply" for m in got_msgs)), ("error", 0, False))
+
+    # 判断待ちが受け箱の上限（LIST_MAX）まであれば、その先にもあるかもしれない（一部）
+    keep_inbox = s.hermes.hermes_inbox.inbox
+    s.hermes.hermes_inbox.inbox = lambda: {"items": [{"n": i, "title": f"件{i}", "project": "p"} for i in range(1, s.hermes.hermes_inbox.LIST_MAX + 1)]}
+    full = type(s.HUB).open_items(s.HUB)
+    s.hermes.hermes_inbox.inbox = lambda: {"items": [{"n": 1, "title": "件1", "project": "p"}]}
+    one = type(s.HUB).open_items(s.HUB)
+    s.hermes.hermes_inbox.inbox = keep_inbox
+    check("判断待ち: 受け箱の上限まであれば一部（言い切らない）。少なければ一部ではない", (full["partial"], one["partial"]), (True, False))
 
     # 画面で 1 問ずつ答えている途中（stepping）のセッション: 問いが残っていれば待ち、消えていれば元の状態（codex-review）
     keep_step, keep_ask = s.stepping, s._ask_of

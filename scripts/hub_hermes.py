@@ -400,9 +400,9 @@ async def hermes_exchange(text: str, reply_at: float | None = None, extra: str =
         if QUICK_NOTES:  # 本体がその場で答えたやり取りを、Hermes に送る文の前にだけ添える（守りの台帳と記録の発言は利用者の言葉のまま）
             pre = quick_preface()
             sent = f"{pre}\n{sent}" if pre else sent
-            QUICK_NOTES.clear()
         try:
             reply = await asyncio.to_thread(ask_hermes, sent + extra)
+            QUICK_NOTES.clear()  # Hermes に届いてから消す（届かなかったら、言い直したときにまた添える。codex-review）
         except Exception as e:
             why = str(e) if isinstance(e, RuntimeError) else f"{type(e).__name__}: {e}"
             if not isinstance(e, RuntimeError):
@@ -1713,7 +1713,8 @@ class Hermes(Brain, Talker):
         記録が大きくて新しい側だけを読んだ（受け箱の note）ときは partial（古い側の判断待ちが残っているかもしれない）。"""
         box = hermes_inbox.inbox()
         rows = [{"n": it["n"], "title": str(it.get("title") or "")[:80], "project": str(it.get("project") or "")[:40]} for it in box.get("items", [])]
-        return {"items": rows, "problem": bool(box.get("problem")), "partial": bool(box.get("note"))}
+        # 一覧は受け箱の上限（LIST_MAX）で切られる。上限まであれば、その先にもあるかもしれない（codex-review）
+        return {"items": rows, "problem": bool(box.get("problem")), "partial": bool(box.get("note")) or len(rows) >= hermes_inbox.LIST_MAX}
 
     def report_begin(self, headline: str, about: str) -> bool:
         """Hermes の会話は本体が記録する（画面が無くても、あとで履歴に出る）。"""

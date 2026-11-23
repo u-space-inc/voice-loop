@@ -104,6 +104,8 @@ def answer(kind: str, snap: dict, cursor: dict | None = None, now: float = 0.0) 
             return f"見た範囲では、あなたを待っているものはありません{partial}。" if partial else "いま、あなたを待っているものはありません。"
         if start >= len(items):
             cur.update(key="", at=now)
+            if snap.get("inbox_problem"):  # 承認・入力待ちは読み終えたが、判断待ちは確かめられていない（codex-review）
+                return f"ほかの承認・入力待ちはありません（{len(items)} 件でした）。判断待ちの記録は読めませんでした。"
             return f"見た範囲では、ほかに待っているものはありません{partial}。" if partial else f"ほかに待っているものはありません（全部で {len(items)} 件でした）。"
         it = items[start]
         cur.update(key=it["key"], at=now)
