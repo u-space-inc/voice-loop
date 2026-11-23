@@ -22,7 +22,7 @@ from pathlib import Path
 TMP = tempfile.mkdtemp()
 TTS_PORT, PORT = 8795, 8791
 DM = "D0ABCDEF12"
-os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HERMES_KEY="k1", VL_HERMES_URL="http://127.0.0.1:9",
+os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HERMES_HOME=f"{TMP}/hermes", VL_HERMES_KEY="k1", VL_HERMES_URL="http://127.0.0.1:9",
                   VL_VOICE_URL=f"http://127.0.0.1:{TTS_PORT}", VL_SLACK_REPORT_CHAT=DM)
 os.environ.pop("VL_PUBLIC_URL", None)
 ROOT = Path(__file__).resolve().parent.parent

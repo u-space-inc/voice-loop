@@ -1,6 +1,8 @@
 """試験の環境の試験。spike/ のファイルに「# /// script」のブロックが無いこと（先頭でなくても uv は読み、ファイルの置き場ごとに環境を作って共有のキャッシュに残す）、
 本体（server.py の先頭）の依存が pyproject.toml の dev にそろっていること、この試験自体が作業木の .venv で動いていること、
-spike/ の .py がどれも spike/ci.txt（CI で回す一覧と、回さないものとその理由）に載っていること。
+spike/ の .py がどれも spike/ci.txt（CI で回す一覧と、回さないものとその理由）に載っていること、
+本体を読み込む試験が、Hermes の置き場（VL_HERMES_HOME）を一時のフォルダに切り替えていること
+（切り替えないと、試験の中で起動した本体の裏の仕事が、本物の ~/.hermes とコンテナに手順の書き足しを当てる。2026-11-23 に hermes_log_test で起きた）。
 使い方: uv run spike/env_test.py"""
 import re
 import sys
@@ -48,6 +50,15 @@ check("spike/ci.txt の回さないものには、どれも理由がある", all
 MUST_SKIP = {"ui_test.py", "guard_test.py", "report_test.py", "report_queue_test.py", "container_guard_test.py",
              "hermes_memory_container_test.py", "hermes_skills_container_test.py"}  # 常駐・本物の herdr・コンテナに触れる
 check("本物の常駐・herdr・コンテナに触れる試験は、CI で回さない側にある", MUST_SKIP <= set(CI_SKIP) and not MUST_SKIP & set(CI_RUN), sorted(MUST_SKIP - set(CI_SKIP)))
+def _loads_server(src: str) -> bool:
+    """本体（server.py）を import する試験か（文字列ではなく、構文で見る）。"""
+    import ast
+    return any(isinstance(n, ast.Import) and any(a.name == "server" for a in n.names) for n in ast.walk(ast.parse(src)))
+
+
+_unhomed = [p.name for p in sorted((ROOT / "spike").glob("*.py"))
+            if _loads_server(p.read_text(encoding="utf-8")) and not re.search(r"VL_HERMES_HOME\s*=", p.read_text(encoding="utf-8"))]
+check("本体を読み込む試験は、Hermes の置き場（VL_HERMES_HOME）を一時のフォルダに切り替えている（本物の ~/.hermes とコンテナに触れない）", not _unhomed, _unhomed)
 check("この試験は作業木の .venv で動いている", Path(sys.prefix).resolve() == (ROOT / ".venv").resolve(), sys.prefix)
 
 print(f"\n{sum(results)}/{len(results)} 件が期待どおり")

@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 TMP = tempfile.mkdtemp()
-os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state")
+os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_HERMES_HOME=f"{TMP}/hermes")
 os.environ.pop("VL_PUSH_SUBJECT", None)
 os.environ.pop("VL_PUSH_HOSTS", None)
 ROOT = Path(__file__).resolve().parent.parent
