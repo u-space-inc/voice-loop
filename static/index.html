@@ -577,6 +577,15 @@ function unmountMedia(el) {  // サムネイルを外す（動画の読み込み
   for (const [fig, ref] of el._figs || []) { fig.querySelectorAll('video').forEach(stopVideo); fig.querySelectorAll('img').forEach(stopImage); fig.remove(); ref.classList.remove('inl'); }
   el._figs = null;
 }
+// 話しかける相手の呼び名（config.env の VL_AGENT_NAME）。話し相手の一覧を読むときに本体から受け取る。設定が無ければ、これまでの表示のまま
+let AGENT = 'ハブ', AGENT_H = 'Hermes', AGENT_SET = false;
+const A = s => AGENT_SET ? s.replaceAll('ハブ', () => AGENT) : s;  // 役の名前（ハブ）を出していた文
+const H = s => AGENT_SET ? s.replace(/Hermes( ?)/g, (_, sp) => AGENT_H + (/[A-Za-z0-9]$/.test(AGENT_H) ? sp : '')) : s;  // 話す相手として部品の名前（Hermes）を出していた文（「Hermes の」は「ヴィカの」）
+function applyAgentName() {  // HTML に書いてある文（読み込みのときに一度だけ）
+  $('hubStart').textContent = A('ハブを起動');
+  document.querySelector('#tasks .top span').textContent = A('頼んだ件（ハブ経由で送った指示と、その見張り）');
+  document.querySelector('#situation .top span').textContent = H('判断待ち（Hermes から）');
+}
 function sys(text) { const el = document.createElement('div'); el.className = 'sys'; el.textContent = text; $('log').appendChild(el); $('log').scrollTop = $('log').scrollHeight; }
 const curAgent = () => agents.find(a => a.pane === $('agent').value);
 const curKey = () => { const a = curAgent(); return a ? a.key : ''; }; // ハブは "hub"、ほかはセッション ID（サーバーが決める）
@@ -709,7 +718,7 @@ async function openTopic() {
   if (seq !== topicSeq) return;
   if (!agents.length) { later(); return; } // 話し相手の一覧を読めなかった（ハブが居ないのとは違う）
   const hub = agents.find(a => a.hub);
-  if (!hub) { topicNote(seq, `${t.project}｜${t.title}: 報告はハブの会話にありますが、ハブが居ません`); return; }
+  if (!hub) { topicNote(seq, `${t.project}｜${t.title}: ` + A('報告はハブの会話にありますが、ハブが居ません')); return; }
   if ($('agent').value !== hub.pane) { $('agent').value = hub.pane; setReplyTarget(null); localStorage.setItem(WANT, 'hub'); shownPane = hub.pane; applyTarget(); renderSessions(); } // PC の左の一覧の印も替える
   // 返信先にするのは、本体が記録から探したその件の一番新しい報告（画面の履歴に出ていない古い報告でも）。会話の読み込みを待たずに付ける
   const r = t.report;
@@ -793,6 +802,8 @@ function applyTarget() {
 const byUpdated = list => list.map((a, i) => [a, i]).sort((x, y) => (y[0].hub - x[0].hub) || ((y[0].updated ?? -1) - (x[0].updated ?? -1)) || x[1] - y[1]).map(x => x[0]);
 async function loadAgents() {
   let list; try { list = await (await fetch('/api/agents')).json(); } catch { return; }
+  const named = (list.find(a => a.hub) || {}).agent_name;
+  if (typeof named === 'string' && named && !AGENT_SET) { AGENT = AGENT_H = named; AGENT_SET = true; agentsSig = null; applyAgentName(); }
   // 相手を選ぶ欄（スマホではこれだけ）は更新順。herdr の順（PC の一覧の「herdr の順」・状態順の中の並び）か更新順の並びが変わったときだけ
   // 作り直す（時刻だけ動いても作り直さない）。Hermes は会話の名前が変わる（💡 に出す）
   const sig = JSON.stringify([list.map(a => [a.pane, a.key, a.title, a.status, a.hermes ? a.session : '']), byUpdated(list).map(a => a.pane)]);
@@ -805,7 +816,7 @@ async function loadAgents() {
   const ph = document.createElement('option'); ph.value = ''; ph.disabled = true; ph.textContent = '話し相手を選んでください'; sel.appendChild(ph);
   for (const a of byUpdated(list)) {
     const o = document.createElement('option'); o.value = a.pane;
-    o.textContent = a.hub ? `ハブ${a.hermes ? '（Hermes）' : ''}｜全セッションを統括 [${a.status}]` : a.hermes ? 'Hermes｜話し相手（試験中）' : `${a.cwd.split('/').pop()}｜${a.title} [${a.status}]`;
+    o.textContent = a.hub ? A(`ハブ${a.hermes && !AGENT_SET ? '（Hermes）' : ''}｜全セッションを統括 `) + `[${a.status}]` : a.hermes ? H('Hermes｜話し相手（試験中）') : `${a.cwd.split('/').pop()}｜${a.title} [${a.status}]`;
     sel.appendChild(o);
   }
   const keep = list.find(a => a.key === want);
@@ -821,7 +832,7 @@ async function loadAgents() {
     return;
   }
   loadSeq++; clearLog();
-  sys(want === 'hub' ? 'ハブが起動していません。「ハブを起動」を押すか、話し相手を選んでください。'
+  sys(want === 'hub' ? A('ハブが起動していません。「ハブを起動」を押すか、話し相手を選んでください。')
                      : '選んでいた話し相手が見つかりません（閉じられたか、Mac が再起動されました）。選び直してください。');
   if (want === 'hub') { setupChecked = true; showSetup(loadSeq); }
 }
@@ -891,7 +902,7 @@ function renderAsk(q) {
   const stepping = q.kind === 'question' && q.step && (q.step.stage === 'question' || q.step.stage === 'review');
   el.className = 'ask'; el.dataset.pane = q.pane; head.className = 'head';
   head.textContent = `${q.name}｜` + ((q.kind === 'permission' || stepping) && q.risky ? '⚠ 取り消しにくい操作かもしれません。' : '') +
-    (stepping ? ASK_HEAD[q.step.stage === 'review' ? 'review' : 'step'] : (ASK_HEAD[q.kind] || ASK_HEAD.unknown));
+    A(stepping ? ASK_HEAD[q.step.stage === 'review' ? 'review' : 'step'] : (ASK_HEAD[q.kind] || ASK_HEAD.unknown));
   el.appendChild(head);
   if (stepping) renderStep(q, el);
   else if (q.text) {
@@ -980,12 +991,12 @@ async function answer(pane, choice, n) {
   setTimeout(loadAsks, 1500); // 出し直す（問いが変わっていれば、新しい中身で）
 }
 $('hubStart').onclick = async () => {
-  $('hubStart').disabled = true; setStatus('ハブを起動しています…（20秒ほど）');
+  $('hubStart').disabled = true; setStatus(A('ハブを起動しています…（20秒ほど）'));
   try {
     const r = await (await fetch('/api/hub/start', { method: 'POST' })).json();
     if (!r.ok) throw new Error(r.detail || r.reason || '起動できませんでした');
     localStorage.setItem(WANT, 'hub'); agentsSig = ''; await loadAgents(); setStatus('準備できました');
-  } catch (e) { sys('⚠ ハブを起動できませんでした: ' + e.message); setStatus(''); }
+  } catch (e) { sys(A('⚠ ハブを起動できませんでした: ') + e.message); setStatus(''); }
   $('hubStart').disabled = false;
 };
 async function loadSpeakers() {
@@ -1153,7 +1164,7 @@ const TASK_LANE = { blocked: 'wait', watching: 'run', background: 'run', done: '
 function drawTasksWide(list, rows) {
   const h = node('div', 'tgh', '頼んだ件'); h.appendChild(node('span', 'n', rows.length ? `${rows.length} 件` : ''));
   list.appendChild(h);
-  if (!rows.length) { list.appendChild(node('div', 'tgs', 'まだありません。ハブに頼むとここに出ます')); return; }
+  if (!rows.length) { list.appendChild(node('div', 'tgs', A('まだありません。ハブに頼むとここに出ます'))); return; }
   const active = rows.filter(t => (TASK_STATUS[t.status] || [])[1] === 'active'), ended = rows.filter(t => !active.includes(t));
   for (const [title, group] of [['動いている', active], ['終わった（3日で一覧から消えます）', ended]]) {
     if (!group.length) continue;
@@ -1324,10 +1335,10 @@ function learnCard(e) {
 function hubSessionRow(a, hold = v => { sitHold = v; }, done = (msg, bad) => { sitNote = [msg, bad]; loadSituation(); }) {
   const row = node('div', 'sitHead');
   const when = a.reset_hour == null ? '日ごとには変わりません' : `毎朝${a.reset_hour}時に新しくなります`;
-  row.appendChild(node('span', null, `ハブの会話: ${a.session}（${when}）`));
-  const b = node('button', null, 'ハブの会話を新しくする');
+  row.appendChild(node('span', null, A('ハブの会話: ') + `${a.session}（${when}）`));
+  const b = node('button', null, A('ハブの会話を新しくする'));
   let timer = null;
-  const reset = () => { clearTimeout(timer); hold(false); b.className = ''; b.textContent = 'ハブの会話を新しくする'; };
+  const reset = () => { clearTimeout(timer); hold(false); b.className = ''; b.textContent = A('ハブの会話を新しくする'); };
   b.onclick = async () => {
     if (!b.classList.contains('sure')) {  // 1段目: 確かめを出す。10 秒で戻る
       hold(true); b.className = 'sure'; b.textContent = '前の会話を持ち越さずに始める';
@@ -1335,7 +1346,7 @@ function hubSessionRow(a, hold = v => { sitHold = v; }, done = (msg, bad) => { s
     }
     clearTimeout(timer); b.disabled = true; b.textContent = '新しくしています…';
     let r; try { r = await postJSON('/api/hermes/session/new', {}); } catch { r = { ok: false, reason: '本体に届きません' }; }
-    const note = r.ok ? [`ハブの会話を新しくしました（${r.session}）。Hermes の記憶と手順書は残ります`, false]
+    const note = r.ok ? [A('ハブの会話を新しくしました（') + `${r.session}）。` + H('Hermes の記憶と手順書は残ります'), false]
       : ['新しくできませんでした: ' + ({ off: 'Hermes がつながっていません', state: '状態を書けません' }[r.reason] || r.reason), true];
     sys(note[0]); hold(false); await loadAgents(); done(...note);  // 一覧の会話の名前を取り直してから描く
   };
@@ -1375,7 +1386,7 @@ async function itemReply(it, seq = topicSeq) {
   if (!agents.length) await Promise.race([loadAgents(), new Promise(res => setTimeout(res, TOPIC_WAIT))]);
   if (ibSel !== it.n || seq !== topicSeq) return;  // 待つ間に別の件を開いた・閉じた・利用者が選び直した
   const hub = agents.find(a => a.hub);
-  if (!hub) { ibNote(agents.length ? 'ハブが居ないので、この件への返信はできません（中身は読めます）' : '話し相手の一覧を読めないので、まだ返信の状態にできません。「↩ この件に返信」で付け直してください', true); renderSit(); return; }
+  if (!hub) { ibNote(agents.length ? A('ハブが居ないので、この件への返信はできません（中身は読めます）') : '話し相手の一覧を読めないので、まだ返信の状態にできません。「↩ この件に返信」で付け直してください', true); renderSit(); return; }
   if ($('agent').value !== hub.pane) { $('agent').value = hub.pane; $('agent').dispatchEvent(new Event('change')); }  // ハブの会話に替える（返信先は外れる）
   cancelTopic();
   setReplyTarget({ item: it.n, about: it.title });
@@ -1423,7 +1434,7 @@ async function undoItem(n) {
   ibUndos.delete(n);
   document.querySelectorAll(`#sitBody .ibToast[data-n="${n}"]`).forEach(e => e.remove());  // 押したらその場で消す（読み直しが止まっても、押せない「戻す」を残さない）
   let r; try { r = await postJSON('/api/inbox/undo', { n: u.n }); } catch { r = { ok: false, reason: 'net' }; }
-  if (!r.ok) ibNote(r.reason === 'late' ? `「${u.title}」は、もう${u.unneeded ? '不要' : '済み'}の印を付け始めていたので戻せませんでした。ハブに「[${u.n}] はまだだった」と言えば戻せます` : '戻せませんでした（本体に届きません）', true);
+  if (!r.ok) ibNote(r.reason === 'late' ? `「${u.title}」は、もう${u.unneeded ? '不要' : '済み'}の印を付け始めていたので戻せませんでした。` + A('ハブに「') + `[${u.n}] はまだだった」と言えば戻せます` : '戻せませんでした（本体に届きません）', true);
   ibGen++;  // 応答を待つ間に始まった読み直しの答えは使わない（このあとの読み直しが描く）
   loadSituation();
 }
@@ -1458,10 +1469,10 @@ function itemView(it) {
   if (!it) { v.appendChild(node('div', 'sitMeta', 'この判断待ちは、片づいたか見つかりませんでした')); return v; }
   const meta = node('div', 'meta'); meta.append(srcTag(it), `${it.project} ・ ${ibStampOf(it)} ・ 記録 [${it.n}]`); v.appendChild(meta);
   v.appendChild(node('h3', null, it.title));
-  if (it.note) { v.appendChild(node('div', 'ibLabel', '要ること（Hermes の要約。未確認）')); v.appendChild(node('div', 'ibBox', it.note)); }
-  if (it.prepared) { v.appendChild(node('div', 'ibLabel', '準備したこと（返信案など。Hermes が書いたもの）')); v.appendChild(node('div', 'ibBox', it.prepared)); }
+  if (it.note) { v.appendChild(node('div', 'ibLabel', H('要ること（Hermes の要約。未確認）'))); v.appendChild(node('div', 'ibBox', it.note)); }
+  if (it.prepared) { v.appendChild(node('div', 'ibLabel', H('準備したこと（返信案など。Hermes が書いたもの）'))); v.appendChild(node('div', 'ibBox', it.prepared)); }
   if (it.checked) {  // 本体が新しい会話で確かめた結果（まだ・確かめきれない）
-    v.appendChild(node('div', 'ibLabel', `確かめた（${stamp(it.checked.at)}・Hermes の答え。未確認）`));
+    v.appendChild(node('div', 'ibLabel', `確かめた（${stamp(it.checked.at)}・` + H('Hermes の答え。未確認）')));
     v.appendChild(node('div', 'ibBox', it.checked.label + (it.checked.note ? '：' + it.checked.note : '')));
   }
   const acts = node('div', 'ibActs');
@@ -1518,8 +1529,8 @@ function itemView(it) {
   }
   const on = replyTarget && replyTarget.item === it.n;
   if (!on) { const acts3 = node('div', 'ibActs'); const rb = node('button', null, '↩ この件に返信'); rb.type = 'button'; rb.onclick = () => itemReply(it); acts3.appendChild(rb); v.appendChild(acts3); }
-  v.appendChild(node('div', 'ibNote', on ?'いまこの件への「↩ 返信」の状態です。下の欄で、ことばを添えて「送る」か、空のまま「このまま送る」を押すと、ハブが答えます（答えはハブの会話に出ます）。開いただけでは何も送りません'
-    : '「↩ この件に返信」で、この件についてハブに聞けます'));
+  v.appendChild(node('div', 'ibNote', on ? A('いまこの件への「↩ 返信」の状態です。下の欄で、ことばを添えて「送る」か、空のまま「このまま送る」を押すと、ハブが答えます（答えはハブの会話に出ます）。開いただけでは何も送りません')
+    : A('「↩ この件に返信」で、この件についてハブに聞けます')));
   return v;
 }
 // 戻せる件の「戻す」（一覧でも、件の中身を開いている間でも出す。5 秒の間に別の件を開いても戻せるように）
@@ -1602,11 +1613,11 @@ function inboxView(d) {
 // 見張りの手本: 「不要だった」とした記録。見張りの回は、同じ種類の知らせを判断待ちにせず「届いたもの（対応不要）」にする。「外す」で手本から外す（済の印はそのまま）
 function lessonList(ls, more, partial = false) {
   const f = document.createDocumentFragment();
-  f.appendChild(node('h4', null, `見張りの手本（不要だった ${ls.length} 件）— 同じ種類の知らせは、判断待ちにせず「今日届いたもの（対応不要）」に入れます。違えば「外す」。この画面で押していないもの（ハブに言ったもの）には「ハブから」と出ます`));
+  f.appendChild(node('h4', null, A(`見張りの手本（不要だった ${ls.length} 件）— 同じ種類の知らせは、判断待ちにせず「今日届いたもの（対応不要）」に入れます。違えば「外す」。この画面で押していないもの（ハブに言ったもの）には「ハブから」と出ます`)));
   for (const x of ls) {
     const r = node('div', 'ibFyi lesson');
     const meta = node('div', 'meta'); meta.append(srcTag(x), `${x.project} ・ ${stamp(x.at)}`, node('span', 'ibNo', `[${x.n}]`));
-    if (!x.ui) meta.appendChild(node('span', 'ibTag', 'ハブから'));
+    if (!x.ui) meta.appendChild(node('span', 'ibTag', A('ハブから')));
     const out = node('button', 'lessonOut', '外す'); out.type = 'button'; out.setAttribute('aria-label', `手本 ${x.n} を外す`);
     out.onclick = async () => {
       out.disabled = true; out.textContent = '外しています…';
@@ -1623,7 +1634,7 @@ function lessonList(ls, more, partial = false) {
     f.appendChild(r);
   }
   if (more) f.appendChild(node('div', 'sitMeta', `ほかに古い手本が ${more} 件あります（見張りは新しい ${ls.length} 件だけを使います）`));
-  if (partial) f.appendChild(node('div', 'sitMeta bad', '記録が大きいので、新しい側だけから手本を並べています。見張りは、ここに出ていない手本も使っていることがあります（ハブに「手本を見せて」と言えば全部を読み、「[番号] の手本を外して」で外せます）'));
+  if (partial) f.appendChild(node('div', 'sitMeta bad', A('記録が大きいので、新しい側だけから手本を並べています。見張りは、ここに出ていない手本も使っていることがあります（ハブに「手本を見せて」と言えば全部を読み、「[番号] の手本を外して」で外せます）')));
   return f;
 }
 // 受け箱と「その他」（学んだこと・手順の書き足し・会話を新しく）を描く。代理からの知らせは鳴らすだけで、一覧にはしない（判断待ちは受け箱、見張りが止まった口は受け箱の帯に出る）。読み直しは loadSituation
@@ -1894,7 +1905,7 @@ function renderSessions() {
     const b = node('button', `sess ${a.status || ''}${cur ? ' on' : ''}${a.hub ? ' hub' : ''}${hit ? '' : ' outside'}`);
     if (!hit) b.title = '絞り込みの外ですが、いま話している相手なので出しています';
     const nm = node('span', 'nm');  // 1 行目に場所（フォルダ）、2 行目に題。文字としては今までどおり「場所｜題」
-    if (a.hub || a.hermes) nm.appendChild(node('span', 'pj', a.hub ? `ハブ${a.hermes ? '（Hermes）' : ''}` : 'Hermes（話し相手）'));
+    if (a.hub || a.hermes) nm.appendChild(node('span', 'pj', a.hub ? A(`ハブ${a.hermes && !AGENT_SET ? '（Hermes）' : ''}`) : H('Hermes（話し相手）')));
     else nm.append(node('span', 'pj', a.cwd.split('/').pop()), node('span', 'sep', '｜'), node('span', 'tt', a.title));
     b.appendChild(nm);
     b.appendChild(node('span', 'st', SESS_ST[a.status] || a.status || ''));
@@ -1937,7 +1948,7 @@ function drawMemory() {
   if (!d || memBusy || memHubHold || memTyping()) return;  // 打っている途中・書いている最中は描き直さない（中身は状態に残っている）
   const box = $('memPanel'); box.innerHTML = '';
   if (!d.on) { box.appendChild(node('div', 'sitMeta', 'Hermes がハブでないか、置き場がありません')); return; }
-  box.appendChild(node('div', 'sitMeta', 'ハブ（Hermes）の記憶です。直した記憶は、次に会話が新しくなったとき（毎朝の切り替えか、下の「ハブの会話を新しくする」）からハブに効きます。'));
+  box.appendChild(node('div', 'sitMeta', A('ハブ（Hermes）の記憶です。直した記憶は、次に会話が新しくなったとき（毎朝の切り替えか、下の「ハブの会話を新しくする」）からハブに効きます。')));
   const hub = agents.find(a => a.hermes && a.hub);
   if (hub) box.appendChild(hubSessionRow(hub, v => { memHubHold = v; if (!v) drawMemory(); }, (msg, bad) => { memNote = [msg, bad]; loadMemory(); }));
   if (memNote) { const n = node('div', memNote[1] ? 'bad' : null, memNote[0]); n.id = 'memNote'; box.appendChild(n); }
@@ -1980,7 +1991,7 @@ async function memWrite(op, body, okText, onOk = () => {}) {
   memBusy = true;
   let r; try { r = await postJSON('/api/hermes/memory/' + op, body); } catch { r = { ok: false, reason: 'unknown', why: '本体から答えが届きませんでした' }; }
   if (r.ok) onOk();  // 描き直す前に（足す欄を空にする・直す途中を閉じる など）
-  memNote = r.ok ? [okText + '。ハブの前提には、次に会話が新しくなったときから入ります' + (r.shape ? `（書いたあとの確かめ: ${r.shape}）` : ''), !!r.shape]
+  memNote = r.ok ? [okText + A('。ハブの前提には、次に会話が新しくなったときから入ります') + (r.shape ? `（書いたあとの確かめ: ${r.shape}）` : ''), !!r.shape]
     : [(MEM_FAIL[r.reason] || `書けませんでした: ${r.reason}`) + (r.why ? `（${r.why}）` : ''), true];
   memBusy = false;
   if (document.activeElement && $('memPanel').contains(document.activeElement)) document.activeElement.blur();  // 結果を描けるように
@@ -2078,7 +2089,7 @@ function connect() {
     if (m.type === 'status') setStatus(m.text);
     else if (m.type === 'transcript') { if (here) { bubble('me', m.text, 'pending'); localPush('me', m.text); } setStatus('エージェントに送りました。考え中…'); }
     else if (m.type === 'reply') {
-      if (!here) { if (m.report) sys('ハブから報告が届きました: ' + m.about + (m.saved === false ? '（記録に書けなかったので、ハブの履歴には出ません）' : '（ハブを選ぶと読めます）')); return; } // report = 頼んだ件についての、ハブからの自発的な報告
+      if (!here) { if (m.report) sys(A('ハブから報告が届きました: ') + m.about + (m.saved === false ? A('（記録に書けなかったので、ハブの履歴には出ません）') : A('（ハブを選ぶと読めます）'))); return; } // report = 頼んだ件についての、ハブからの自発的な報告
       if (m.saved === false) { bubble('ai', m.text); sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); } // 描き直すと消えるので、そのまま足す
       else {
         await loadThread(); // 記録から描き直す（新しいセッションは、この時点で初めて記録ができている）

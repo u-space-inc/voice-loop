@@ -37,6 +37,7 @@ from fastapi.responses import JSONResponse
 
 import hermes_skills  # 置き場を安全に読む部品と、コンテナで動かすときの決まり（docker の場所・利用者・python）
 from places import STATE_DIR
+from hub_brain import AGENT  # 話しかける相手の呼び名（無ければ「ハブ」）
 
 def _template(name: str):
     """見張りの台本（templates/hermes/watch/<name>.py）を、そのまま読み込む（読み方の決まりを 1 か所にする）。"""
@@ -348,7 +349,7 @@ def inbox(now: float | None = None) -> dict:
         return out
     items, done = got
     if read.get("trunc"):
-        out["note"] = "判断待ちの記録が大きいので、新しい側だけを読んでいます（それより前に記録した判断待ちは、ここには出ていません。ハブに聞けば全部を確かめます）"
+        out["note"] = f"判断待ちの記録が大きいので、新しい側だけを読んでいます（それより前に記録した判断待ちは、ここには出ていません。{AGENT}に聞けば全部を確かめます）"
     today = dt.datetime.fromtimestamp(now, JST).date()
     rows = []
     for r in items.values():

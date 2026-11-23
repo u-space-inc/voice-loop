@@ -442,6 +442,8 @@ docker exec -it hermes hermes --resume voice-loop-20261026-a1b2c3
 | `heard.txt` | 声の聞き取りの表記の直し（`聞き取りの表記=直す表記`）。呼びかけの名前のように、音は合っているのに表記がずれる語に使います（「ウィカ=ヴィカ」）。行頭に `^` を付けた語は、文の頭の呼びかけ（「ねえ〇〇、」「〇〇、」）のときだけ直します。直すのは声で入った文だけで、打った文は直しません。承認に答える・閉じるの守りは、直す前の言葉で確かめます。次の発言から効きます |
 | `push/vapid_private.pem` | プッシュ通知の鍵。初めて 🔔 を押したときに本体が作ります。消すと、登録した端末に届かなくなります（もう一度 🔔 を押し直します） |
 
+話しかける相手（ハブ）に名前を付けるときは、`config.env` の `VL_AGENT_NAME` に書きます（例: `VL_AGENT_NAME=ヴィカ`）。画面・通知・Slack の文の「ハブ」と、話す相手として「Hermes」と出していたところが、その名前になります（診断と、Hermes の手順・記憶を扱う欄は、部品の名前の Hermes のまま）。Hermes 自身の名乗りは、指示文（`hermes/hub.md`）に書きます。声で呼んだ名前が別の表記に聞き取られるなら、`heard.txt` で直します。
+
 ハブに新しいセッションを立てさせるには、`config.env` の `VL_PROJECTS_DIR` にプロジェクトの置き場所を書きます。立てられるのは、その直下にある既存のフォルダだけです。
 
 ログは `~/.local/state/herdr/plugins/u-space.voice-loop/server.log` です。同じフォルダに、通知の届け先（`push-subscriptions.json`）と頼んだ件の台帳（`delegations.json`）、代理からの知らせ（`notices.json`）、Hermes の書き足しの状態と控え（`hermes-skills/`・`hermes-skill-log.jsonl`）を置きます。

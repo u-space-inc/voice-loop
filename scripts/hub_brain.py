@@ -11,6 +11,23 @@ voice-loop（herdr の拡張）は、声・画面・通知・セッションの�
 
 頭の専用の部品は、本体の道具を core だけで呼ぶ。使ってよい名前は CORE_TOOLS で、spike/brain_boundary_test.py が確かめる。
 """
+import os
+
+
+def _agent_name(raw: str) -> tuple[str, str]:
+    """(呼び名, 使えなかった値)。画面の文字・通知・Slack の文にそのまま入れるので、文字（かな・漢字・英数字）と「・ー」だけ、16 字まで。"""
+    v = (raw or "").strip()
+    if not v:
+        return "", ""
+    return (v, "") if len(v) <= 16 and all(ch.isalnum() or ch in "・ー" for ch in v) else ("", v)
+
+
+# 利用者が話しかける相手の呼び名（config.env の VL_AGENT_NAME）。画面・通知・Slack に出す。書かなければ、これまでの表示のまま
+# （役の名前を出していたところは「ハブ」、話す相手として部品の名前を出していたところは「Hermes」）。コードの名前・記録の印は変えない
+AGENT_NAME, AGENT_NAME_BAD = _agent_name(os.environ.get("VL_AGENT_NAME", ""))
+AGENT = AGENT_NAME or "ハブ"
+AGENT_H = AGENT_NAME or "Hermes"
+AGENT_H_SP = AGENT_H + (" " if AGENT_H[-1].isascii() and AGENT_H[-1].isalnum() else "")  # 「Hermes の」と「ヴィカの」の書き分け
 
 # 頭の部品が使ってよい本体の道具（本体のモジュールの名前）
 CORE_TOOLS = {"CLIENTS", "_clip", "_probe", "_probes", "hlog", "pane_lock", "push_all", "read_lines", "read_sent", "write_json"}
@@ -19,7 +36,7 @@ CORE_TOOLS = {"CLIENTS", "_clip", "_probe", "_probes", "hlog", "pane_lock", "pus
 class Brain:
     """ハブの頭。既定は「持っていない」の動きで、頭ごとに必要なものだけ書く。"""
 
-    label = "ハブ"  # 画面と通知で、知らせの送り手として出す名前
+    label = AGENT  # 画面と通知で、知らせの送り手として出す名前
 
     def ensure(self) -> dict:
         """使える状態にする。{"ok": True, "pane": …, "started": bool} か、{"ok": False, "reason": …, "detail": …}。"""
