@@ -324,6 +324,103 @@ asyncio.run(s.hermes._learn_skills())
 check("自動: 控えを取るのが一時的に失敗した（時間切れ）書き足しは、飛ばす印を付けず、次の回に試し直して当てる",
       (skipped_now, [p for m, p in SCALLS if m == "approve"]), (False, ["eeeeeee3"]))
 
+# 当てて「failed」と返った書き足し: 手順が当てる前のままと確かめられたときだけ、承認待ちから外す
+FAIL = {"partial": False, "reject": None}  # 失敗の前に手順の一部を書いた（偽）／捨てる台本の答えの差し替え
+MATCH = "operations[0] (patch on 'x') failed: Could not find a match for old"
+
+
+def failing_run(c, mode, pid, raw, wait=90, env=None, script=None):
+    if mode == "approve" and pid.startswith("9999"):
+        SCALLS.append((mode, pid))
+        if FAIL["partial"]:
+            place = json.loads(raw)["payload"]["operations"][0]["name"]
+            SNAPS[place] = {"exists": True, "files": {"SKILL.md": base64.b64encode("途中まで書いた".encode()).decode()}}
+        return {"result": "failed", "why": MATCH}
+    if mode == "reject" and pid.startswith("9999"):
+        SCALLS.append((mode, pid))
+        if FAIL["reject"]:
+            return dict(FAIL["reject"])
+        (PEND / f"{pid}.json").unlink()
+        return {"result": "rejected", "discarded": True}
+    return real_skills_run(c, mode, pid, raw, wait, env, script)
+
+
+def acts():
+    return [(m, p) for m, p in SCALLS if m in ("approve", "reject")]
+
+
+def fresh_day():
+    d = json.loads(s.hermes.HLEARN_FILE.read_text())
+    d["days"] = {}
+    s.hermes.HLEARN_FILE.write_text(json.dumps(d))
+
+
+def entry_of(pid):
+    return [(e["state"], e["can_undo"], e["note"]) for e in learned()["entries"] if e.get("pid") == pid]
+
+
+def hsk_of(pid):
+    d = json.loads(s.hermes.HSK_FILE.read_text())
+    return (d["items"].get(pid) or {}).get("state"), d["verify"]
+
+
+s.hermes.hermes_skills.run_script = failing_run
+for n in ("g1", "g2", "g3", "g4", "g5", "g6"):
+    SNAPS[n] = {"exists": True, "files": {"SKILL.md": base64.b64encode("前".encode()).decode()}}
+fresh_day()
+record("99990001", "g1", at=time.time())
+record("gggggg02", "g2", at=time.time() + 1)
+SCALLS.clear()
+n = asyncio.run(s.hermes._learn_skills())
+arch = json.loads((s.hermes.HSK_DIR / "approved" / "99990001.json").read_text())
+check("自動: failed で手順が当てる前のままなら、承認待ちから外し、跡は「当てられませんでした」。同じ回で次の書き足しを当てる",
+      (n, acts(), entry_of("99990001"), hsk_of("99990001"), (PEND / "99990001.json").exists(), (arch["result"], "payload" in arch["record"]),
+       base64.b64decode(SNAPS["g1"]["files"]["SKILL.md"]).decode()),
+      (1, [("approve", "99990001"), ("reject", "99990001"), ("approve", "gggggg02")],
+       [("failed", False, f"当てられませんでした（{MATCH}）。手順は変わっていないので、承認待ちから外しました")], ("rejected", False), False, ("failed", True), "前"))
+check("自動: 外した書き足しは、日の数に数える（当てようとした数）", learned()["today"], 2)
+FAIL["partial"] = True
+record("99990003", "g3", at=time.time())
+record("gggggg04", "g4", at=time.time() + 1)
+SCALLS.clear()
+asyncio.run(s.hermes._learn_skills())
+FAIL["partial"] = False
+check("自動: failed でも手順が変わっていたら（途中まで書いた）、外さず「分からない」に残し、その回はもう当てない",
+      (acts(), [(st, u, note.startswith("当たったか分かりません")) for st, u, note in entry_of("99990003")], hsk_of("99990003"), (PEND / "99990003.json").exists()),
+      ([("approve", "99990003")], [("unknown", False, True)], ("unknown", False), True))
+asyncio.run(s.hermes._learn_skills())  # gggggg04 を当てて片づける
+record("99990005", "g5", at=time.time())
+fresh_day()
+LOUT["snap"] = lambda req: {"result": "timeout", "why": "時間切れ"} if any(m == "approve" and p == "99990005" for m, p in SCALLS) else \
+    {"result": "snap", "skills": {op["name"]: SNAPS[op["name"]] for op in req["payload"]["operations"]}}
+SCALLS.clear()
+asyncio.run(s.hermes._learn_skills())
+del LOUT["snap"]
+check("自動: failed のあと手順を読み直せなければ、外さず「分からない」に残す", (acts(), hsk_of("99990005"), (PEND / "99990005.json").exists()),
+      ([("approve", "99990005")], ("unknown", False), True))
+for pid, out, want_verify, label in (("99990061", {"result": "timeout", "why": "時間切れ"}, True, "時間切れ（終わりを確かめるまで次を当てない）"),
+                                     ("99990062", {"result": "changed", "why": "承認待ちの記録が変わっていました"}, False, "記録が変わっていた"),
+                                     ("99990063", {"result": "error", "why": "docker を動かせません"}, False, "動かせない")):
+    record(pid, "g6", at=time.time())
+    fresh_day()
+    FAIL["reject"] = out
+    SCALLS.clear()
+    asyncio.run(s.hermes._learn_skills())
+    FAIL["reject"] = None
+    check(f"自動: 外す台本が {label} なら、「分からない」に残す", (acts(), [st for st, u, note in entry_of(pid)], hsk_of(pid), (PEND / f"{pid}.json").exists()),
+          ([("approve", pid), ("reject", pid)], ["unknown"], ("unknown", want_verify), True))
+    (PEND / f"{pid}.json").unlink()
+    RUNNING["v"] = False
+    asyncio.run(s.hermes._learn_skills())  # 終わりを確かめる（時間切れのあと）
+rec9 = {"summary": "台本の答え"}
+check("台本が「dropped」のような答えを返しても、外した扱いにはしない（外したと決めるのは本体だけ。画面の「採る」の failed も「分からない」のまま）",
+      (s.hermes._hsk_finish("99999998", "v", rec9, b"{}", {"result": "dropped", "dropped": True})["reason"],
+       s.hermes._hsk_finish("99999997", "v", rec9, b"{}", {"result": "failed", "why": MATCH})["reason"],
+       s.hermes._hsk_finish("99999996", "v", rec9, b"{}", {"result": "applied"}, True)["ok"], hsk_of("99999996")[0]),
+      ("unknown", "unknown", True, "applied"))
+s.hermes.hermes_skills.run_script = real_skills_run
+fresh_day()
+
 # ---------- 2b. コンテナの中の台本の入口（Hermes の部品を偽物にして、台本そのものを動かす） ----------
 import subprocess  # noqa: E402
 FAKE = Path(TMP) / "fake-hermes"
