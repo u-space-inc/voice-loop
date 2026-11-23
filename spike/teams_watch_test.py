@@ -248,7 +248,7 @@ if NODE:
         r = node_run(25000, sel=other, items=items, navs=navs)
         check(f"node: {name}なら押さず、「形」で読まない", (r.get("clicks"), unreadable(lambda: read("\n".join(r.get("res", []))))), ([], "parse"))
     r = node_run(25000, sel=other, items="[item('fake',null,true)]")
-    check("node: 押すのは、左の欄の確かめた位置にある 1 つだけ（そこにまねた要素を置けるのは、Teams 自身の左の欄の作りを変えられる者だけ。README の約束の残り）", r.get("clicks"), ["fake"])
+    check("node: 押すのは、左の欄の確かめた位置にある 1 つだけ（まねた要素をその位置に置けたときは押す。左の欄の中に投稿の HTML から要素を作れるかは確かめていない。README の約束の残り）", r.get("clicks"), ["fake"])
     r = node_run(25000, sel=other, host="evil.example")
     check("node: Teams のページでなければ押さない", r.get("clicks"), [])
     check("node: 番号 1 から呼ばれても写しを作らず err（待ちもしない）",
