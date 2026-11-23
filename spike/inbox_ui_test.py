@@ -477,7 +477,9 @@ def run(page, who):
           (page.text_content(".ibItem h3"), page.input_value("#agent"), page.is_visible("#replyBar")), (TITLE1, "w1:p1", False))
     page.goto(BASE + "/#i=999")
     page.wait_for_selector("#sitBody .ibCard")
-    check(f"{who} 無い番号は案内だけ出し、一覧を開く", "判断待ち [999] は、片づいたか見つかりませんでした" in page.text_content("#sitBody"), True)
+    # 案内は、一覧を出したあとに本体へ 1 件だけ聞いて、無かったときに出る（一覧のカードが先に見える。WebKit では聞く前に確かめて落ちていた）
+    noted = wait(lambda: "判断待ち [999] は、片づいたか見つかりませんでした" in page.text_content("#sitBody"), 5)
+    check(f"{who} 無い番号は案内だけ出し、一覧を開く", bool(noted), True)
     page.goto(BASE + "/")
     page.wait_for_function("document.getElementById('conn').classList.contains('on')")
     page.evaluate("location.hash = '#inbox'")

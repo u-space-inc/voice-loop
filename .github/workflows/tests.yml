@@ -1,0 +1,45 @@
+name: tests
+# spike/ の試験のうち、spike/ci.txt で CI に載せたもの（常駐の 8790・本物の herdr・コンテナ・Hermes・外のサービスに触れないもの）を、
+# 上から 1 本ずつ順に回す。どれかが落ちたら、最後に落ちた試験の名前を並べて失敗にする（途中で止めず、全部の結果を残す）。
+# 鍵（secrets）は使わない。権限は読むだけ。actions は commit SHA で固定する（版の札は書き換えられうる）
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+# 同じ PR・同じ枝で続いたら、前の run を取り消して後の run を回す
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  spike:
+    # 本体は macOS 向け（herdr のプラグインの platforms）。公開リポジトリでは標準の実行環境は無料
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: uv を入れる（手元と同じ版に固定）
+        run: pipx install uv==0.13.4
+      - name: 依存を入れる（uv.lock のとおり。作業木の .venv）
+        run: uv sync --frozen
+      - name: ブラウザを入れる（pyproject.toml の Playwright の版に合わせる）
+        run: uv run playwright install chromium webkit
+      - name: 試験を 1 本ずつ回す（spike/ci.txt）
+        run: |
+          set -u
+          failed=()
+          while IFS= read -r line; do
+            case "$line" in ''|'#'*|'- '*) continue ;; esac
+            echo "::group::$line"
+            if uv run "spike/$line"; then echo "→ 通った: $line"; else echo "::error::落ちた: $line"; failed+=("$line"); fi
+            echo "::endgroup::"
+          done < spike/ci.txt
+          if [ "${#failed[@]}" -gt 0 ]; then
+            printf '落ちた試験: %s\n' "${failed[@]}"
+            exit 1
+          fi
+          echo "spike/ci.txt の試験はすべて通った"
