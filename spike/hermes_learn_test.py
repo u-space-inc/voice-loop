@@ -390,6 +390,18 @@ check("自動: 外した書き足しと同じ記録を置き直されても、�
       (acts(), learned()["today"] - before_today, again["state"], again["can_apply"], manual["ok"], manual["reason"], acts()),
       ([], 0, "failed", False, False, "failed", []))
 (PEND / "99990001.json").unlink()
+old = json.loads(s.hermes.HSK_FILE.read_text())
+old["items"]["99990001"]["at"] = time.time() - s.hermes.HSK_KEEP - 86400  # 外してから 31 日たった
+old["items"]["oldunknown"] = {"state": "unknown", "at": time.time() - s.hermes.HSK_KEEP - 86400, "v": "v", "summary": "", "note": ""}
+s.hermes.HSK_FILE.write_text(json.dumps(old))
+s.hermes._hsk_tidy(set())
+record("99990001", "g1", at=time.time())
+SCALLS.clear()
+asyncio.run(s.hermes._learn_skills())
+kept = json.loads(s.hermes.HSK_FILE.read_text())["items"]
+check("自動: 外した id の印は 30 日を過ぎても消さない（置き直されても試し直さない）。ほかの古い印は、これまでどおり片づける",
+      (acts(), kept.get("99990001", {}).get("state"), "oldunknown" in kept), ([], "failed", False))
+(PEND / "99990001.json").unlink()
 FAIL["reject"] = {"result": "rejected", "discarded": False}
 record("99990007", "g1", at=time.time())
 SCALLS.clear()

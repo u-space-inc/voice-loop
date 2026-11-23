@@ -918,7 +918,9 @@ async def api_hermes_memory_remove(body: dict):
 
 
 def _hsk_tidy(ids: set[str]) -> list[str]:
-    """まだ知らせていない承認待ちの id を、知らせた印にして返す。古い状態と印（30 日。承認待ちに残っている id のものは残す）と控えを片づける。"""
+    """まだ知らせていない承認待ちの id を、知らせた印にして返す。古い状態と印（30 日。承認待ちに残っている id のものは残す）と控えを片づける。
+    自動で外した id の印（failed）は、日が経っても消さない（承認待ちに実体が無いので、消すと、同じ記録を置き直されたときに試し直してしまう。
+    増えるのは多くて 1 日の上限の数まで）。"""
     now = time.time()
     with _hsk_lock:
         d = hsk_state()
@@ -926,7 +928,7 @@ def _hsk_tidy(ids: set[str]) -> list[str]:
             return []
         new = sorted(ids - set(d["told"]))
         told = {k: t for k, t in d["told"].items() if now - t < HSK_KEEP or k in ids} | {k: now for k in new}
-        items = {k: v for k, v in d["items"].items() if now - v["at"] < HSK_KEEP or k in ids or v["state"] == "applying"}
+        items = {k: v for k, v in d["items"].items() if now - v["at"] < HSK_KEEP or k in ids or v["state"] in ("applying", "failed")}
         if told != d["told"] or items != d["items"]:
             core.write_json(HSK_FILE, {**d, "told": told, "items": items})
     for p in (HSK_DIR / "approved").glob("*.json"):
