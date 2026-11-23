@@ -83,7 +83,8 @@ def wins():
 
 with sync_playwright() as pw:
     b = pw.chromium.launch()
-    pg = b.new_page(viewport={"width": 1280, "height": 800})
+    ctx = b.new_context(viewport={"width": 1280, "height": 800})  # 1 つのブラウザの文脈（タブの複製を試すため、2 つ目のタブも同じ文脈に開く）
+    pg = ctx.new_page()
     pg.route("**/api/prompts", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
     pg.goto(BASE + "/")
     pg.wait_for_function("[...document.getElementById('agent').options].some(o => o.value === 'hermes')", timeout=10000)
@@ -100,6 +101,17 @@ with sync_playwright() as pw:
     while first and first[0] not in wins() and time.time() < end:
         time.sleep(0.05)
     check("窓: 読み込み直しても、同じタブは同じ印", first[0] in wins() if first else False, True)
+    # タブの複製（sessionStorage が写る）: 同じ印で開いたタブは、先に開いていたタブに聞いて、印を作り直す（codex-review）
+    pg2 = ctx.new_page()  # 同じ文脈（同じブラウザのタブ）。browser.new_page は文脈ごと別になり、タブ同士の知らせが届かない
+    pg2.add_init_script(f"try {{ sessionStorage.setItem('vl.win', '{first[0]}'); }} catch {{}}" if first else "")
+    pg2.route("**/api/prompts", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+    pg2.goto(BASE + "/")
+    pg2.wait_for_function("[...document.getElementById('agent').options].some(o => o.value === 'hermes')", timeout=10000)
+    end = time.time() + 10
+    while len({w for w in wins() if len(w) == 24}) < 2 and time.time() < end:
+        time.sleep(0.05)
+    check("窓: 複製したタブは別の印を名乗り、先のタブは同じ印のまま", (len({w for w in wins() if len(w) == 24}), first[0] in wins() if first else False, pg2.evaluate("WIN") != (first[0] if first else "")), (2, True, True))
+    pg2.close()
 
     # S2: 決まった問いに本体が答え、吹き出しに印
     pg.wait_for_function("!document.getElementById('send').disabled", timeout=10000)

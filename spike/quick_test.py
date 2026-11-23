@@ -63,16 +63,22 @@ check("答え: 時間がたって（3 分）から「次」と言えば、最初
       "次は、shop（受注）が承認待ちです。このあと 2 件あります。")
 EMPTY = {"sessions": [], "watching": 0, "inbox": [], "inbox_problem": True}
 check("答え: 何も無いとき", (quick.answer("waiting", EMPTY), quick.answer("status", EMPTY), quick.answer("next", EMPTY, {}, 1.0)),
-      ("承認・入力待ちのセッションはありません。", "いま作業中のセッションはありません。", "承認・入力待ちのセッションはありません。判断待ちの記録は読めませんでした。"))
+      ("承認・入力待ちのセッションはありません。", "いま作業中のセッションはありません。", "見えた範囲では、あなたを待っているものはありません。判断待ちの記録は読めませんでした。"))
+NOSES = {"sessions": [], "sessions_problem": True, "watching": 1, "inbox": [{"n": 5, "title": "請求", "project": "shop"}]}
+cur = {}
+check("答え: セッションの一覧を取れないときは、待ち・状況を言い切らない。「次」は判断待ちを読み、終わりも言い切らない",
+      (quick.answer("waiting", NOSES), quick.answer("status", NOSES), quick.answer("next", NOSES, cur, 1.0), quick.answer("next", NOSES, cur, 2.0)),
+      ("セッションの一覧を読めませんでした（herdr に届いていません）。", "セッションの一覧を読めませんでした（herdr に届いていません）。",
+       "次は、判断待ちの「請求」（shop）です。", "見えた範囲では、ほかに待っているものはありません（1 件でした）。セッションの一覧は読めませんでした。"))
 PROB = {"sessions": SNAP["sessions"], "inbox": [], "inbox_problem": True}
 cur = {}
 check("答え: 判断待ちを読めないときは、承認待ちを読み終えても「ほかにない」と言い切らない",
-      [quick.answer("next", PROB, cur, 1.0 + i) for i in range(3)][-1], "ほかの承認・入力待ちはありません（2 件でした）。判断待ちの記録は読めませんでした。")
+      [quick.answer("next", PROB, cur, 1.0 + i) for i in range(3)][-1], "見えた範囲では、ほかに待っているものはありません（2 件でした）。判断待ちの記録は読めませんでした。")
 PART = {**SNAP, "inbox_partial": True}
 check("答え: 判断待ちを一部しか読めていなければ、「ない」と言い切らない",
       (quick.answer("next", PART, {"key": "i:31", "at": 1.0}, 2.0), quick.answer("next", {"sessions": [], "inbox": [], "inbox_partial": True}, {}, 1.0)),
-      ("見た範囲では、ほかに待っているものはありません（判断待ちの記録が大きいので、新しい側だけを見ています）。",
-       "見た範囲では、あなたを待っているものはありません（判断待ちの記録が大きいので、新しい側だけを見ています）。"))
+      ("見えた範囲では、ほかに待っているものはありません（3 件でした）。判断待ちの記録が大きいので、新しい側だけを見ています。",
+       "見えた範囲では、あなたを待っているものはありません。判断待ちの記録が大きいので、新しい側だけを見ています。"))
 MANY = {"sessions": [{"pane": f"w:{i}", "name": f"s{i}", "status": "working"} for i in range(5)]}
 check("答え: 名前は 3 つまで、残りは数", quick.answer("status", MANY), "作業中は 5 件です。s0、s1、s2、ほか 2 件。")
 outs = [quick.answer(k, SNAP, {}, 1.0) for k in quick.KINDS] + [quick.answer(k, EMPTY, {}, 1.0) for k in quick.KINDS]
@@ -99,6 +105,8 @@ s.WIN_SPOKE[s.win_of(phone)] = 40.0
 check("窓: そのあと別の窓に話しかけたら、その窓", s.ring_targets([pc, phone, home, car]), [phone])
 again = C("phonewin01", seen=9)
 check("窓: 同じ窓の印でつなぎ直した接続が複数あれば、いちばん新しく様子を知らせた接続", s.ring_targets([phone, again, pc]), [again])
+phone.last_turn = 40.0
+check("窓: 同じ窓の印の接続が複数（タブの複製など）なら、その接続が最後に話しかけたほう（あとから様子を知らせたほうではない）", s.ring_targets([phone, again, pc]), [phone])
 check("窓: 画面が家の機械と名乗っても、口で決まった機械の窓の印にはならない", s.win_of(C("dev:home", bound=False, place="home")), "dev:home")
 keep = s.RING
 s.RING = "all"
@@ -136,7 +144,13 @@ async def fake_speak_to(clients, text, cancel, plain=False):
 
 AGENTS = [{"pane": "w1:p2", "cwd": "/x/shop", "title": "受注", "status": "blocked", "kind": "claude", "session": "s2", "name": "", "hub": False},
           {"pane": "w1:p1", "cwd": "/x/blog", "title": "記事", "status": "working", "kind": "claude", "session": "s1", "name": "", "hub": False}]
-REAL_SPEAK, REAL_NARRATE, REAL_SYNTH = s.speak_to, s.narrate, s.synth
+REAL_SPEAK, REAL_NARRATE, REAL_SYNTH, REAL_LIST = s.speak_to, s.narrate, s.synth, s.list_agents
+keep_herdr = s.herdr
+s.herdr = lambda *a, **k: {"raw": "herdr: connection refused", "code": -1}
+check("一覧: herdr に届かなければ、取れなかった印（空の一覧と区別する）", (REAL_LIST(), s.AGENTS_READ["ok"]), ([], False))
+s.herdr = lambda *a, **k: {"result": {"agents": []}}
+check("一覧: 届けば取れた印（空でも）", (REAL_LIST(), s.AGENTS_READ["ok"]), ([], True))
+s.herdr = keep_herdr
 
 
 class Sink:  # 声を受け取る画面の代わり
@@ -319,6 +333,20 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     one = type(s.HUB).open_items(s.HUB)
     s.hermes.hermes_inbox.inbox = keep_inbox
     check("判断待ち: 受け箱の上限まであれば一部（言い切らない）。少なければ一部ではない", (full["partial"], one["partial"]), (True, False))
+
+    # 状態を読む途中で失敗したら、断りとして台帳に載せ、前に聞いた問いを失効させる（codex-review）
+    keep_snap = s.quick_snapshot
+    s.hermes.HERMES_HEARD["text"] = "shop の承認、許可しますか？"
+    n_rows = len(s.hermes.HERMES_TURNS)
+
+    def broken():
+        raise TimeoutError("画面の読み取りが時間切れ")
+    s.quick_snapshot = broken
+    out = c.portal.call(s.hub_quick, s.HUB, "waiting", "待ってるのある？", HP)
+    s.quick_snapshot = keep_snap
+    check("失敗: 状態を読めなければ断り、発言は台帳に載り（空の発言として）、前に聞いた問いは失効",
+          (out[0], out[1].startswith("いまの状態を読めませんでした"), len(s.hermes.HERMES_TURNS) - n_rows, list(s.hermes.HERMES_TURNS)[-1][1], s.hermes.HERMES_HEARD["text"]),
+          ("", True, 1, "", ""))
 
     # 画面で 1 問ずつ答えている途中（stepping）のセッション: 問いが残っていれば待ち、消えていれば元の状態（codex-review）
     keep_step, keep_ask = s.stepping, s._ask_of

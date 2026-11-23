@@ -1015,8 +1015,16 @@ async function loadSpeakers() {
 // ハブからの報告を、選んでいる声で届けてもらう。読み上げを切っていれば、音声を送らないでもらう
 // 画面が見えているかも知らせる（見えている画面があれば、本体はプッシュ通知を送らない）
 // 窓の印（タブごと。つなぎ直しても同じ窓。本体は、最後に話しかけた窓でだけ報告の声を鳴らす）
-const WIN = (() => { const make = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), b => b.toString(16).padStart(2, '0')).join('');
-  try { let w = sessionStorage.getItem('vl.win'); if (!/^[0-9a-f]{24}$/.test(w || '')) { w = make(); sessionStorage.setItem('vl.win', w); } return w; } catch { return make(); } })();
+const makeWin = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), b => b.toString(16).padStart(2, '0')).join('');
+let WIN = (() => { try { let w = sessionStorage.getItem('vl.win'); if (!/^[0-9a-f]{24}$/.test(w || '')) { w = makeWin(); sessionStorage.setItem('vl.win', w); } return w; } catch { return makeWin(); } })();
+// タブを複製すると sessionStorage も写るので、同じ印のタブが開いていないかを聞き、あれば作り直す（読み込み直しでは同じ印のまま）
+try {
+  const winBC = new BroadcastChannel('vl.win');
+  winBC.onmessage = e => { const d = e.data || {};
+    if (d.q && d.q === WIN) winBC.postMessage({ dup: WIN }); // 先に開いていたタブが、同じ印だと知らせる
+    else if (d.dup && d.dup === WIN) { WIN = makeWin(); try { sessionStorage.setItem('vl.win', WIN); } catch {} hello(); } };
+  winBC.postMessage({ q: WIN });
+} catch {}
 const hello = (visible = !document.hidden) => { try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'hello', speaker: $('speaker').value, voice: !muted, visible, win: WIN, ...(faceOn ? { kind: 'stackchan', place: 'home' } : {}) })); } catch {} };
 $('speaker').onchange = e => { localStorage.setItem('vl.speaker', e.target.value); hello(); };
 

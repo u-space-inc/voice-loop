@@ -302,9 +302,13 @@ def pane_shows_trust(pane: str) -> bool | None:
     return None if screen is None else bool(TRUST_PROMPT.search(screen))
 
 
+AGENTS_READ = {"ok": True}  # 最後に一覧を取れたか（herdr に届かない・形が違うと空の一覧になるので、決まった問いの答えが「無い」と言い切らないように）
+
+
 def list_agents() -> list[dict]:
     """herdr のセッションの一覧。ハブ（Hermes）は herdr の外なので、ここには入らない（TALKERS）。"""
     r = herdr("agent", "list")
+    AGENTS_READ["ok"] = isinstance(r.get("result"), dict) and isinstance(r["result"].get("agents"), list)
     agents = r.get("result", {}).get("agents", [])
     return [
         {
@@ -1381,6 +1385,7 @@ class Client:
         self.audio = "wav"  # 返答の声の形。機械が audio: "opus" を名乗れば Ogg の Opus
         self.win = ""  # 窓の印（画面はタブごとに hello で名乗る。つなぎ直しても同じ窓として、最後に話しかけた窓を覚える）
         self.connected = time.time()
+        self.last_turn = 0.0  # この接続が最後に話しかけた時刻（同じ窓の印の接続が複数あるとき、話しかけた接続を選ぶ）
 
     async def send(self, **msg):
         await self.sock.send_text(json.dumps(msg, ensure_ascii=False))
@@ -1505,7 +1510,7 @@ def ring_targets(clients: list) -> list:
         if getattr(c, "bound", False) and getattr(c, "place", "") == "car":
             t = max(t, getattr(c, "connected", 0.0))
         return t
-    best = max(clients, key=lambda c: (act(c), getattr(c, "seen", 0.0), getattr(c, "connected", 0.0)))
+    best = max(clients, key=lambda c: (act(c), getattr(c, "last_turn", 0.0), getattr(c, "seen", 0.0), getattr(c, "connected", 0.0)))
     return [best] if act(best) > 0 else list(clients)
 
 
@@ -1532,16 +1537,23 @@ def quick_snapshot() -> dict:
         box = HUB.open_items()
     except Exception:
         box = {"items": [], "problem": True}
-    return {"sessions": rows, "watching": sum(1 for t in TASKS.values() if t["status"] in TASK_ACTIVE), "inbox": box.get("items", []),
+    return {"sessions": rows, "sessions_problem": not AGENTS_READ["ok"],
+            "watching": sum(1 for t in TASKS.values() if t["status"] in TASK_ACTIVE), "inbox": box.get("items", []),
             "inbox_problem": bool(box.get("problem")), "inbox_partial": bool(box.get("partial"))}
 
 
 async def hub_quick(talker, kind: str, text: str, pane: str, said: str | None = None, via: str = "") -> tuple[str, str, bool]:
     """決まった問いに本体が答える（頭に送らない）。受け取った順（ACCEPT_LOCKS）に、発言と答えを頭の台帳と記録に載せる。(答え, 理由, 記録に書けたか)。"""
     async with ACCEPT_LOCKS.setdefault(pane, asyncio.Lock()):
-        snap = await asyncio.to_thread(quick_snapshot)
-        answer = quick.answer(kind, snap, QUICK_CURSOR, time.time())
         kw = {"said": said} if said is not None else {}
+        try:
+            snap = await asyncio.to_thread(quick_snapshot)
+            answer = quick.answer(kind, snap, QUICK_CURSOR, time.time())
+        except Exception as e:  # 状態を読めなかった。断りとして台帳に載せ、前の確認を失効させる（失敗の知らせのあとの発言を、古い確認への答えにしない。codex-review）
+            traceback.print_exc()
+            why = f"いまの状態を読めませんでした（{type(e).__name__}）。少しおいて、もう一度聞いてください"
+            await talker.refused(text, why, **kw, **({"via": via} if via else {}))
+            return "", why, True
         saved = await talker.answered_here(text, answer, **kw, **({"via": via} if via else {}))
         hlog(f"すぐ答えた（{kind}）: {len(answer)}字", flush=True)
         return answer, "", saved
@@ -3361,7 +3373,7 @@ async def ws(sock: WebSocket):
         # said: 辞書で直す前の聞き取り（直したときだけ。ハブの守りの台帳に載せる）
         nonlocal cancel, current
         client.speaker = speaker
-        WIN_SPOKE[win_of(client)] = time.time()  # この窓に最後に話しかけた（報告の声はここで鳴らす）
+        WIN_SPOKE[win_of(client)] = client.last_turn = time.time()  # この窓に最後に話しかけた（報告の声はここで鳴らす）
         cancel.set()  # 前のターンの読み上げが残っていれば止める
         if current and not current.done():
             current.cancel()

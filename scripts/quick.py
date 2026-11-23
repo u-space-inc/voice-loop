@@ -77,6 +77,8 @@ def answer(kind: str, snap: dict, cursor: dict | None = None, now: float = 0.0) 
     sessions = snap.get("sessions", [])
     working = [r for r in sessions if r.get("status") == "working"]
     blocked = [r for r in sessions if r.get("status") == "blocked"]
+    if snap.get("sessions_problem") and kind in ("waiting", "status"):
+        return "セッションの一覧を読めませんでした（herdr に届いていません）。"
     if kind == "waiting":
         if not blocked:
             return "承認・入力待ちのセッションはありません。"
@@ -96,17 +98,17 @@ def answer(kind: str, snap: dict, cursor: dict | None = None, now: float = 0.0) 
             keys = [x["key"] for x in items]
             if cur["key"] in keys:
                 start = keys.index(cur["key"]) + 1
-        partial = "（判断待ちの記録が大きいので、新しい側だけを見ています）" if snap.get("inbox_partial") else ""
-        if not items:
+        # 確かめられなかったもの（ある・ないを言い切らない）
+        unsure = (["セッションの一覧は読めませんでした"] if snap.get("sessions_problem") else []) + (
+            ["判断待ちの記録は読めませんでした"] if snap.get("inbox_problem") else
+            ["判断待ちの記録が大きいので、新しい側だけを見ています"] if snap.get("inbox_partial") else [])
+        note = "".join(u + "。" for u in unsure)
+        if not items or start >= len(items):
             cur.update(key="", at=now)
-            if snap.get("inbox_problem"):
-                return "承認・入力待ちのセッションはありません。判断待ちの記録は読めませんでした。"
-            return f"見た範囲では、あなたを待っているものはありません{partial}。" if partial else "いま、あなたを待っているものはありません。"
-        if start >= len(items):
-            cur.update(key="", at=now)
-            if snap.get("inbox_problem"):  # 承認・入力待ちは読み終えたが、判断待ちは確かめられていない（codex-review）
-                return f"ほかの承認・入力待ちはありません（{len(items)} 件でした）。判断待ちの記録は読めませんでした。"
-            return f"見た範囲では、ほかに待っているものはありません{partial}。" if partial else f"ほかに待っているものはありません（全部で {len(items)} 件でした）。"
+            if not items:
+                return ("見えた範囲では、あなたを待っているものはありません。" + note) if unsure else "いま、あなたを待っているものはありません。"
+            return (f"見えた範囲では、ほかに待っているものはありません（{len(items)} 件でした）。" + note) if unsure else \
+                f"ほかに待っているものはありません（全部で {len(items)} 件でした）。"
         it = items[start]
         cur.update(key=it["key"], at=now)
         rest = len(items) - start - 1
