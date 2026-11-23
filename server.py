@@ -12,6 +12,7 @@
 """
 import asyncio
 import concurrent.futures
+import contextlib
 import base64
 import hashlib
 import io
@@ -1416,6 +1417,43 @@ async def speak_to(clients: list[Client], text: str, cancel: asyncio.Event):
                 await each(lambda c: c.sock.send_bytes(wavs[voice[c]]) if c in voice and c.voice else asyncio.sleep(0))
                 n += 1
     await each(lambda c: c.send(type="done", sentences=n))
+
+
+# 頼んでから返事が来るまでの、本体の一言（ハブとの往復だけ）。Hermes の返事は中央値 14 秒かかり、その間黙っていると、聞こえたのか分からない
+# （2026-11-23 に測ると、Hermes の道具の知らせは頼んでから 2 秒前後で届く）。PROGRESS_AFTER 秒たっても返事が無ければ、決まった一言を話す。
+# Hermes への頼み方は変えない（守りが「利用者が聞いた返事」として見る文は、Hermes の返事のまま。この一言は記録にも台帳にも載せない）。0 で使わない
+PROGRESS_TEXT = "確認しています"
+_progress = os.environ.get("VL_PROGRESS_AFTER", "3").strip()
+try:
+    PROGRESS_AFTER = max(0.0, float(_progress))
+except ValueError:
+    PROGRESS_AFTER = 3.0
+_progress_wav: dict[int, bytes] = {}  # 声ごとに一度だけ合成して取っておく（決まった一言なので）
+
+
+async def speak_progress(clients: list[Client], pane: str, cancel: asyncio.Event, state: dict):
+    """返事を待つ間の一言。状態の文を出し、読み上げる画面には、声を中に入れた 1 つの通知（cue）を送る。語り手は通さない（決まった文なので）。
+    返事の声の合図（speaking・done）と音声のかたまりは使わない（画面が受け付ける状態を変えず、止めた報告の続きを鳴らさない。画面は一言だけを鳴らし、
+    鳴り終わったら返事を待つ表示に戻す）。返事を待つのと並べて動かす（声の合成が遅くても、返事を遅らせない）。state["stop"] が立ったら、
+    まだ送っていない声は捨てる（返事のあとに一言が届かないように）。声を送り始めたら state["sending"]、送ったら state["sent"]。"""
+    for c in list(clients):
+        try:
+            await c.send(type="status", text=PROGRESS_TEXT + "…")
+            if not c.voice or cancel.is_set() or state["stop"]:
+                continue
+            sp = DEFAULT_SPEAKER if c.speaker is None else c.speaker
+            if sp not in _progress_wav:
+                _progress_wav[sp] = await asyncio.to_thread(synth, PROGRESS_TEXT, sp)
+            if not c.voice or cancel.is_set() or state["stop"]:  # 合成の間に、読み上げを切った・止めた・返事が来た
+                continue
+            state["sending"] = True  # ここから送り終わるまで、返事の側は待つ（短い）
+            try:
+                await c.send(type="cue", pane=pane, text=PROGRESS_TEXT + "…", audio=base64.b64encode(_progress_wav[sp]).decode())
+                state["sent"] = True
+            finally:
+                state["sending"] = False
+        except Exception as e:  # 一言は添え物。声が作れない・画面が切れても、返事を待つのは続ける
+            print(f"[progress] 一言を送れませんでした: {type(e).__name__}: {str(e)[:120]}", flush=True)
 
 
 def write_json(path: Path, data):
@@ -3110,8 +3148,38 @@ async def ws(sock: WebSocket):
             await send(type="error", gone=True, text=talker.off_text)
             return
         await send(type="status", text=talker.sending_text())
-        # 画面が閉じても、止めても、返事は最後まで待って記録する（相手は答えて覚えているので、記録が欠けると画面と食い違う）
-        reply, why, saved = await asyncio.shield(job)
+        cue, cue_task, dropped = None, None, False
+
+        async def settle_cue():
+            """返事（か失敗）が決まった。一言の声を送っている途中なら、送り終わるのを待つ（声の順が入れ替わらないように。短い）。
+            それ以外（状態の文を送っている・合成している・まだ始まっていない）なら、一言をまるごと取り消す（返事のあとに届かないように）。"""
+            if cue.get("settled"):  # 失敗の道と finally の両方から呼ばれる。一度だけ
+                return
+            cue["stop"] = cue["settled"] = True
+            if not cue["sending"]:
+                cue_task.cancel()
+            await asyncio.gather(cue_task, return_exceptions=True)
+        if PROGRESS_AFTER > 0:  # しばらく返事が無ければ、本体の一言（返事の中身・記録・守りには関わらない）
+            finished, _ = await asyncio.wait({job}, timeout=PROGRESS_AFTER)  # 期限切れと、job 自身の例外を取り違えない（例外は下で job から受ける）
+            if not finished and not cancel.is_set():
+                cue = {"stop": False, "sending": False, "sent": False}
+                cue_task = asyncio.create_task(speak_progress([client], pane, cancel, cue))
+        try:
+            # 画面が閉じても、止めても、返事は最後まで待って記録する（相手は答えて覚えているので、記録が欠けると画面と食い違う）
+            reply, why, saved = await asyncio.shield(job)
+        except asyncio.CancelledError:  # このターンが取り消された（止めて次の発言など）。一言は待たずに取り消す（次のターンの返事のあとに届かないように）
+            if cue:
+                cue["stop"] = True
+                cue_task.cancel()
+                dropped = True
+            raise
+        except Exception:  # 往復が例外で終わった（呼び出し側が画面に知らせる。画面はエラーで、鳴らしている・待っている声を捨てる）
+            if cue:
+                await settle_cue()
+            raise
+        finally:
+            if cue and not dropped:
+                await settle_cue()
         if why:
             await send(type="error", text=why[:300], saved=saved)
             return

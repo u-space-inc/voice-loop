@@ -444,6 +444,8 @@ docker exec -it hermes hermes --resume voice-loop-20261026-a1b2c3
 
 話しかける相手（ハブ）に名前を付けるときは、`config.env` の `VL_AGENT_NAME` に書きます（例: `VL_AGENT_NAME=ヴィカ`）。画面・通知・Slack の文の「ハブ」と、話す相手として「Hermes」と出していたところが、その名前になります（診断と、Hermes の手順・記憶を扱う欄は、部品の名前の Hermes のまま）。Hermes 自身の名乗りは、指示文（`hermes/hub.md`）に書きます。声で呼んだ名前が別の表記に聞き取られるなら、`heard.txt` で直します。
 
+ハブ（Hermes）の返事は、道具を使うと十数秒かかります。頼んでから 3 秒たっても返事が無ければ、本体が「確認しています」と一言話します（返事の中身・記録・承認の守りには関わりません。鳴り終わったら、返事を待つ表示に戻ります）。秒数は `config.env` の `VL_PROGRESS_AFTER` で変えられ、0 で使いません。
+
 ハブに新しいセッションを立てさせるには、`config.env` の `VL_PROJECTS_DIR` にプロジェクトの置き場所を書きます。立てられるのは、その直下にある既存のフォルダだけです。
 
 ログは `~/.local/state/herdr/plugins/u-space.voice-loop/server.log` です。同じフォルダに、通知の届け先（`push-subscriptions.json`）と頼んだ件の台帳（`delegations.json`）、代理からの知らせ（`notices.json`）、Hermes の書き足しの状態と控え（`hermes-skills/`・`hermes-skill-log.jsonl`）を置きます。
