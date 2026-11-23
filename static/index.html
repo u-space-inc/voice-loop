@@ -789,6 +789,11 @@ async function loadThread() {
 // 選んでいた相手が居なくなっても、別のセッションへ自動では切り替えない。
 // 目を離して声だけで使うので、気づかないまま別の（顧客案件の）セッションに指示が飛ぶのを防ぐ。
 const WANT = 'vl.agentKey3';
+// 顔の表示（/?face）で開いたタブは、保存された選択を見ずにハブと話し、選択を書き換えない（同じブラウザのほかの画面の選択はそのまま）。
+// 顔には話し相手が出ないので、前に PC の画面で選んだセッションを引き継ぐと、声の頼みがそのセッションにそのまま届く（2026-11-24 に起きた）。
+// 顔を閉じても、利用者が相手を選び直すまではハブのまま（黙って替えない）
+let pinHub = FACE;
+const noHubText = () => A('ハブが起動していません') + (faceOn ? '（「画面に戻る」から起動できます）' : '');
 let shownPane = null; // いま履歴を出している相手
 let setupChecked = false; // 開いてから一度は、準備の残りを確かめたか
 function applyTarget() {
@@ -797,8 +802,8 @@ function applyTarget() {
   // Mac に届かない間と、声がまだ決まっていない間は送れない（打ちかけの文は残る）
   $('talk').disabled = $('send').disabled = !ok || !linked() || !$('speaker').value;
   const shown = $('statusText').textContent;
-  if (!ok && linked()) setStatus('話し相手を選んでください');
-  else if (ok && linked() && (shown === '話し相手を選んでください' || shown === UNREACHABLE)) setStatus('準備できました'); // つながったあとで一覧が届いたとき
+  if (!ok && linked()) setStatus(pinHub ? noHubText() : '話し相手を選んでください');
+  else if (ok && linked() && (shown === '話し相手を選んでください' || shown.startsWith(A('ハブが起動していません')) || shown === UNREACHABLE)) setStatus('準備できました'); // つながったあとで一覧が届いたとき
 }
 // 更新順: ハブを先頭に、ほかは最後に動いた時刻（本体が返す updated。会話の記録が最後に書き込まれた時刻）の新しい順。記録の無いものは後ろ、同じなら herdr の順
 const byUpdated = list => list.map((a, i) => [a, i]).sort((x, y) => (y[0].hub - x[0].hub) || ((y[0].updated ?? -1) - (x[0].updated ?? -1)) || x[1] - y[1]).map(x => x[0]);
@@ -815,7 +820,7 @@ async function loadAgents() {
   agents = list; agentsSig = sig;
   setTimeout(renderSessions);  // PC の左の一覧（select を作ったあとで、選んでいるものに印を付ける）
   const saved = localStorage.getItem(WANT);
-  const want = saved === null ? 'hub' : saved; // 初めて開いたときはハブ
+  const want = pinHub || saved === null ? 'hub' : saved; // 初めて開いたとき・顔の表示はハブ
   const sel = $('agent'); sel.innerHTML = '';
   const ph = document.createElement('option'); ph.value = ''; ph.disabled = true; ph.textContent = '話し相手を選んでください'; sel.appendChild(ph);
   for (const a of byUpdated(list)) {
@@ -851,7 +856,7 @@ async function showSetup(seq) {
 $('replyClear').onclick = () => { cancelTopic(); setReplyTarget(null); };
 $('attachBtn').onclick = () => $('attachInput').click();
 $('attachInput').onchange = () => { addAttach([...$('attachInput').files]); $('attachInput').value = ''; };
-$('agent').onchange = () => { cancelTopic(); setReplyTarget(null);
+$('agent').onchange = () => { pinHub = false; cancelTopic(); setReplyTarget(null); // 選び直したら、顔で開いたタブも選んだ相手を覚える
   localStorage.setItem(WANT, curKey()); shownPane = $('agent').value; applyTarget(); setStatus(linked() ? '準備できました' : UNREACHABLE); loadThread(); };
 
 // ---------- 承認で止まっているセッションへの返答（ボタン） ----------
@@ -2314,7 +2319,7 @@ if (FACE) {
     faceOn = false; $('face').hidden = true; applyInert(); faceAttn();
     wantWake = false; if (wake) { const w = wake; wake = null; w.release().catch(() => {}); } // ふだんの画面では眠れるように、許可を手放す（頼んでいる途中の分は、届いたら手放す。codex-review bc775f6）
     try { history.replaceState(null, '', location.pathname + location.hash); } catch {}
-    hello();
+    hello(); applyTarget(); // ハブが居ないときの案内から「画面に戻る」を外す
   };
   $('faceBack').addEventListener('click', e => { e.preventDefault(); closeFace(); });
   // 通知・リンクで件・受け箱・判断待ちを開いたら、顔を閉じて中身を見せる（顔の裏に隠れないように。codex-review dc4b0b9）
