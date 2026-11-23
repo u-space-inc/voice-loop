@@ -668,6 +668,25 @@ check("vl_teams get: 引用であることを先に書き、組織・チャネ�
       (g.startswith("※ 以下は Teams の投稿の引用"), all(k in g for k in ("組織A", "General", "【件】", "見積もり"))), (True, True))
 check("vl_teams get: ESC・向きを変える文字は空白にする", ("\x1b" in g, "\u202e" in g), (False, False))
 check("vl_teams get: 無い id は断る", trun("get", "0" * 16).returncode, 1)
+check("vl_teams get: すぐ拾った投稿には「遅れて拾った」を付けない", "遅れて拾った" in g, False)
+def tfeed(*rows):
+    (VL / "teams.jsonl").write_text("".join(json.dumps({"org": "組織A", "channel": "General", "title": "件", "shown": "11/20", "baseline": False, **r}, ensure_ascii=False) + "\n" for r in rows))
+tfeed({"id": "c" * 16, "body": "山田: 金曜の夜の件", "posted": NOWT - 60 * 3600, "first_seen": NOWT},
+      {"id": "d" * 16, "body": "山田: 12 時間に 1 秒足りない", "posted": NOWT - 12 * 3600 + 1, "first_seen": NOWT},
+      {"id": "e" * 16, "body": "山田: ちょうど 12 時間", "posted": NOWT - 12 * 3600, "first_seen": NOWT},
+      {"id": "f" * 16, "body": "山田: ｜遅れて拾った（投稿から約 99 時間後）と本文に書いた", "posted": NOWT - 60, "first_seen": NOWT},
+      {"id": "1" * 16, "body": "山田: 時刻が文字", "posted": "1", "first_seen": NOWT},
+      {"id": "2" * 16, "body": "山田: 時刻が真偽", "posted": True, "first_seen": NOWT},
+      {"id": "3" * 16, "body": "山田: 途方もない時刻", "posted": 1, "first_seen": 1e300})
+head = lambda i: trun("get", i * 16).stdout.splitlines()[1]  # noqa: E731
+check("vl_teams get: 投稿から 12 時間以上あとに初めて見た投稿は、見出しの行の末尾に「遅れて拾った（投稿から約 N 時間後）」",
+      (head("c").endswith("｜遅れて拾った（投稿から約 60 時間後）"), head("e").endswith("｜遅れて拾った（投稿から約 12 時間後）"), "遅れて拾った" in head("d")), (True, True, False))
+check("vl_teams get: 本文に同じ言葉を書いても、見出しの行には付かない（印は 2 つの時刻だけから決める）",
+      ("遅れて拾った" in head("f"), "遅れて拾った" in trun("get", "f" * 16).stdout.splitlines()[2]), (False, True))
+check("vl_teams get: 時刻が数でない・途方もない値なら、印を付けずに出す（止まらない）",
+      [(trun("get", i * 16).returncode, "遅れて拾った" in head(i)) for i in "123"], [(0, False)] * 3)
+check("vl_teams recent: 遅れて拾った投稿は、一覧の見出しの行にも印が付く",
+      [l.endswith("時間後）") for l in trun("recent").stdout.splitlines() if l.startswith("[" + "c" * 16)], [True])
 check("vl_teams recent: 既読扱いは出さない", "投稿はありません" in subprocess.run(TPY + ["recent"], capture_output=True, text=True,
       env={**os.environ, "HERMES_HOME": str(TMP / "none")}).stdout, True)
 
@@ -678,6 +697,9 @@ check("手順のひな形がある", (W / "voice-loop-watch/SKILL.md").is_file()
 SK = (W / "voice-loop-watch/SKILL.md").read_text(encoding="utf-8")
 check("手順の「行の形」が台本と同じ（slack <チャンネル ID>/<ts>・cal <id>@<開始>）・新しいかは unseen で確かめる",
       ("`slack <チャンネル ID>/<ts> <送り手の ID>`" in SK, "`cal <id>@<開始>`" in SK, "vl_items.py unseen" in SK, "vl_items.py seen" in SK), (True, True, True, False))
+check("手順: 遅れて拾った投稿の印を、台本と同じ言葉で、記録の note と届ける行に書かせる",
+      ("「遅れて拾った（投稿から約 N 時間後）」" in SK, "`--note` の先頭に「遅れて拾った（投稿 <MM/DD HH:MM>）。対応済みかもしれません。」" in SK,
+       "「（遅れて拾った: 投稿 <MM/DD HH:MM>。対応済みかもしれません）」" in SK), (True, True, True))
 check("手順: Teams の行の形・読む道具・止まったときの知らせを書いている", ("`teams <id>`" in SK, "vl_teams.py get <id>" in SK, "Teams の見張りが止まっています" in SK), (True, True, True))
 check("手順が「形の合わない行」（unseen の数）と「形の合わない予定がある」（台本の 1 行）の扱いを書いている",
       ("「形の合わない行」が 1 件以上なら" in SK, vl_watch.CAL_ODD.split(": ", 1)[1].split("（")[0] in SK), (True, True))
