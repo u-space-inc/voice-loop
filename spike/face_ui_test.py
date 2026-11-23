@@ -17,6 +17,8 @@
   - 代理（Hermes）からの知らせは、縁と顔の下の一言で示し、顔をタップしたら聞いたことにする
   - たまっている判断待ちの数は、左上の「💡 数」で示す（開いたときから。0 件なら出さない）
   - 録音中・再生中に接続が切れたら、録音や再生の終わりで「ふつう」に戻さず「つながっていない」のまま
+  - 顔の表示は、保存された話し相手（前に別の画面で選んだセッション）を見ずにハブと話し、保存は書き換えない（ふだんの画面は保存どおり）
+  - ハブが居なければ、ほかのセッションに替えず、顔の下にそう出す。顔を閉じても黙って替えず、選び直したらその相手を覚える
 使い方: uv run spike/face_ui_test.py"""
 import json
 import os
@@ -262,6 +264,40 @@ with sync_playwright() as pw:
     pg.evaluate("location.hash = '#inbox'")
     pg.wait_for_function("document.getElementById('face').hidden", timeout=5000)
     check("顔: 通知で受け箱を開いたら、顔を閉じる（?face も外れる）", (pg.locator("#face").is_visible(), pg.evaluate("location.search")), (False, ""))
+
+    # 顔の表示は、いつもハブと話す（2026-11-24: 前に PC の画面で選んだセッションを顔が引き継ぎ、声の頼みがそのセッションにそのまま届いた）
+    HUB_PANE = s.hermes.HERMES_PANE
+    s.HUB.on = lambda: True  # この試験の中だけ、ハブ（Hermes）を一覧に載せる（本物の Hermes には届かない。VL_HERMES_URL は何も待ち受けていないポート）
+    pg.evaluate("localStorage.setItem('vl.agentKey3', 's1')")  # 前に別の画面で、ハブでないセッションを選んでいた
+    pg.goto(BASE + "/")
+    pg.wait_for_function("document.getElementById('agent').value !== ''", timeout=10000)
+    check("ふだん: 保存された話し相手（前に選んだセッション）を開く", pg.evaluate("document.getElementById('agent').value"), "w1:p1")
+    pg.goto(BASE + "/?face")
+    pg.wait_for_function("document.getElementById('agent').value !== '' && linked()", timeout=10000)
+    check("顔: 保存された話し相手がほかのセッションでも、ハブと話す", (pg.evaluate("document.getElementById('agent').value"), pg.evaluate("curKey()")), (HUB_PANE, "hub"))
+    check("顔: 保存された話し相手は書き換えない（ほかの画面の選択はそのまま）", pg.evaluate("localStorage.getItem('vl.agentKey3')"), "s1")
+    pg.locator("#faceBack").click()
+    pg.wait_for_function("document.getElementById('face').hidden", timeout=5000)
+    pg.evaluate("agentsSig = ''; loadAgents()")  # 一覧が変わって作り直しても
+    pg.wait_for_timeout(500)
+    check("顔を閉じても、黙ってほかの相手に替えない", pg.evaluate("document.getElementById('agent').value"), HUB_PANE)
+    pg.evaluate("localStorage.setItem('vl.agentKey3', 'x9')")  # 選び直したら書くことを見分けるため
+    pg.select_option("#agent", "w1:p1")
+    pg.evaluate("agentsSig = ''; loadAgents()")
+    pg.wait_for_timeout(500)
+    check("顔を閉じたあとで選び直したら、その相手を覚える", (pg.evaluate("document.getElementById('agent').value"), pg.evaluate("localStorage.getItem('vl.agentKey3')")), ("w1:p1", "s1"))
+    s.HUB.on = lambda: False  # ハブが居ない
+    pg.goto(BASE + "/?face")
+    pg.wait_for_function("linked() && agents.length > 0", timeout=10000)
+    pg.wait_for_timeout(300)  # 一覧を受けて、状態の文を出し終えるまで
+    check("顔: ハブが居なければ、ほかのセッションに替えず、顔の下にそう出す",
+          (pg.evaluate("document.getElementById('agent').value"), pg.evaluate("document.getElementById('talk').disabled"), pg.evaluate("document.getElementById('faceCap').textContent")),
+          ("", True, "ハブが起動していません（「画面に戻る」から起動できます）"))
+    check("顔: ハブが居なくても、保存された話し相手は書き換えない", pg.evaluate("localStorage.getItem('vl.agentKey3')"), "s1")
+    pg.locator("#faceBack").click()
+    pg.wait_for_function("document.getElementById('face').hidden", timeout=5000)
+    check("顔を閉じたら、案内から「画面に戻る」を外す", pg.evaluate("document.getElementById('statusText').textContent"), "ハブが起動していません")
+    del s.HUB.on
     b.close()
 
 srv.should_exit = True
