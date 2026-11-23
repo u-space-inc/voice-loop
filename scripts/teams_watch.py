@@ -68,20 +68,22 @@ LIMITS = {"org": 60, "channel": 120, "title": 200, "body": 1200, "shown": 20}
 INDEX, CHUNK, PAGE_AGE_MS = 20, 600, 20000
 # 左で「メンション」以外が選ばれていたら（手で Teams を見たあと・ほかのセッションがチャネルを開いたまま閉じたあと）、左の「メンション」を 1 回だけ
 # 押して戻し、選ばれるのを待つ（最大 10 秒）（2026-11-19 にチャネルを選んだまま残され、読めなくなった。11/23 本人「推奨で」＝A）。
-# 押すのは、その印（data-testid）の要素が画面にちょうど 1 つあり、リンク・本文（role=main）・投稿の部品の中に無いときだけ
-# （投稿の中に同じ印をまねた要素を置かれても押さない。押さなければ、これまでどおり「形」で読まない）。投稿は開かない（ビューの切り替え）。
-# 戻した回は一覧を読まない（押した直後の一覧は、空か前の写しのままのことがあり、届いたかを確かめられない）。次の回に、いつもどおり読む
+# 押すのは、Teams のページ（teams.microsoft.com）で、その印（Teams が左の「メンション」に付ける data-testid）の要素が画面にちょうど 1 つあり、
+# リンク・本文（role=main）・投稿の部品の中に無いときだけ（本物とまねた要素が両方あれば押さない。押さなければ、これまでどおり「形」で読まない）。
+# 本物が描かれていないときに、それらの外にまねた要素が 1 つだけあれば、それを押す（Teams の投稿の HTML にこの印を残せるかは確かめていない）。
+# 投稿は開かない（ビューの切り替え）。戻した回は一覧を写さない（押した直後の一覧は、空か前の写しのままのことがあり、届いたかを確かめられない）。
+# 次の回に、いつもどおり読む
 JS_TEMPLATE = (r"""await (async()=>{const K='__vlT___NONCE__';const k=__K__;if(k===0){const w=20000-performance.now();"""
                r"""if(w>0)await new Promise(r=>setTimeout(r,Math.min(w,20000)));const known=new Set(__KNOWN__);const base=__BASE__;"""
                r"""const q=(r,k)=>((r.querySelector('[data-tid="message-slice-card-'+k+'"]')||{}).textContent||'').trim();"""
                r"""const b=[...document.querySelectorAll('[data-tid="me-control-avatar-trigger"] span')].find(e=>!e.children.length&&e.textContent.trim());"""
                r"""const M='slice-list-item-slice-activities-mentions';"""
                r"""const cur=()=>[...document.querySelectorAll('[data-tabster*="LeftRailSelectedItem"]')].map(e=>e.getAttribute('data-testid')||'').join(',');"""
-               r"""let sw=0;if(cur()!==M){const C=[...document.querySelectorAll('[data-testid="'+M+'"]')];const e=C.length===1?C[0]:null;"""
+               r"""let sw=0;if(cur()!==M&&location.host==='teams.microsoft.com'){const C=[...document.querySelectorAll('[data-testid="'+M+'"]')];const e=C.length===1?C[0]:null;"""
                r"""if(e&&!e.closest('a[href],[role="main"],[data-tid*="message"],[data-testid*="message"]')){e.click();sw=1;"""
                r"""for(let i=0;i<40&&cur()!==M;i++)await new Promise(r=>setTimeout(r,250));}}"""
                r"""const s=cur();"""
-               r"""const rows=[...document.querySelectorAll('[data-testid="message-slice-card-item"]')];"""
+               r"""const rows=sw?[]:[...document.querySelectorAll('[data-testid="message-slice-card-item"]')];"""
                r"""const items=rows.slice(0,20).map(r=>{const m=/^message-slice-card-MentionsSliceCardItem\|(\d{10,16})$/.exec(r.id);"""
                r"""const id=m?Number(m[1]).toString(36):'x';return base||known.has(id)?[id]:[id,q(r,'title').slice(0,120),"""
                r"""q(r,'threads-secondary-title').slice(0,200),q(r,'preview').slice(0,1200),q(r,'timestamp').slice(0,20)]});"""
@@ -195,7 +197,13 @@ def parse_snapshot(whole: str, org_name: str, known: set, base: bool) -> dict:
     if data.get("org") != org_name:
         raise Unreadable("org")
     n, items = data.get("n"), data.get("items")
-    if data.get("sel") != SELECTED or not isinstance(n, int) or not isinstance(items, list) or len(items) != min(n, INDEX):
+    if data.get("sel") != SELECTED:
+        raise Unreadable("parse")
+    if data.get("sw") == 1:  # 左を「メンション」に戻しただけの回。スクリプトは一覧を写さない（届いたかを確かめられない）。次の回に読む
+        if n != 0 or items != []:
+            raise Unreadable("parse")
+        return {"n": 0, "items": [], "switched": True}
+    if not isinstance(n, int) or not isinstance(items, list) or len(items) != min(n, INDEX):
         raise Unreadable("parse")
     known36 = {b36(m) for m in known}
     out, seen = [], set()
@@ -212,7 +220,7 @@ def parse_snapshot(whole: str, org_name: str, known: set, base: bool) -> dict:
             out.append({"msg": msg, "fields": {"channel": it[1], "title": it[2], "body": it[3], "shown": it[4]}})
         else:
             raise Unreadable("parse")  # 新しい投稿なのに中身が無い・初めての回なのに中身がある
-    return {"n": n, "items": out, "switched": data.get("sw") == 1}
+    return {"n": n, "items": out, "switched": False}
 
 
 def item_id(tenant: str, msg: str) -> str:

@@ -112,6 +112,10 @@ check("写し: 初めての回なのに中身があれば「形」", unreadable(
 check("写し: 組織の名前が違えば「組織」", unreadable(lambda: read(chunks(snap(org="組織B", items=[(IDS[0], F1)])))), "org")
 check("写し: サインインの画面（login の host）なら「サインイン」", unreadable(lambda: read(chunks(snap(host="login.microsoftonline.com")))), "signin")
 check("写し: 左で「メンション」以外を選んでいたら「形」", unreadable(lambda: read(chunks(snap(sel="slice-list-item-slice-followed-threads")))), "parse")
+check("写し: 戻した回（sw=1）は一覧が空なら読めた・戻した", read(chunks(snap(items=[], sw=1))), {"n": 0, "items": [], "switched": True})
+check("写し: 戻した回（sw=1）に一覧が付いていたら「形」（スクリプトは写さない）",
+      unreadable(lambda: read(chunks(snap(items=[("1794529244269", None)], sw=1)))), "parse")
+check("写し: 戻した回（sw=1）でも、選ばれていなければ「形」", unreadable(lambda: read(chunks(snap(items=[], sw=1, sel="slice-list-item-slice-followed-threads")))), "parse")
 check("写し: 投稿の数と項目の数が合わなければ「形」", unreadable(lambda: read(chunks(snap(items=[(IDS[0], F1)], n=9)))), "parse")
 check("写し: メンションの一覧の行でない ID（スクリプトが x にする）は「形」",
       unreadable(lambda: read(chunks(snap(items=[(IDS[0], F1)]).replace(f'"{tw.b36(IDS[0])}"', '"x"')))), "parse")
@@ -148,9 +152,9 @@ for nonce, known in (("'+fetch(1)+'", set()), ("a1b2c3d4e5f6", {"1'];fetch(1);//
     except ValueError:
         bad_vals.append(True)
 check("相手の位置: 形の合わない印・ID はスクリプトに埋めない", bad_vals, [True, True])
-check("スクリプト: 押すのは、左で「メンション」が選ばれていないときの、左の「メンション」の 1 つだけ（2026-11-23 本人「推奨で」＝A）",
+check("スクリプト: 押すのは、Teams のページで、左で「メンション」が選ばれていないときに 1 回だけ（2026-11-23 本人「推奨で」＝A）",
       (tw.JS_TEMPLATE.count("click"), "const M='slice-list-item-slice-activities-mentions';" in tw.JS_TEMPLATE,
-       "if(cur()!==M){const C=[...document.querySelectorAll('[data-testid=\"'+M+'\"]')];const e=C.length===1?C[0]:null;" in tw.JS_TEMPLATE
+       "if(cur()!==M&&location.host==='teams.microsoft.com'){const C=[...document.querySelectorAll('[data-testid=\"'+M+'\"]')];const e=C.length===1?C[0]:null;" in tw.JS_TEMPLATE
        and "if(e&&!e.closest('a[href],[role=\"main\"],[data-tid*=\"message\"],[data-testid*=\"message\"]')){e.click();" in tw.JS_TEMPLATE,
        tw.SELECTED == "slice-list-item-slice-activities-mentions"),
       (1, True, True, True))
@@ -181,11 +185,11 @@ globalThis.document={querySelectorAll:s=>s.includes('avatar')?[{children:[],text
 """
 
 
-def node_run(age, known=(), base=False, ks=(0,), sel=tw.SELECTED, items="[item('real',null)]", click_works=True):
+def node_run(age, known=(), base=False, ks=(0,), sel=tw.SELECTED, items="[item('real',null)]", click_works=True, host="teams.microsoft.com"):
     """items: 左の「メンション」の印を持つ要素（JS の式）。item(名前, 中にいる部品の書き方の一部の並び)。"""
     js_text = tw.js_for("a1b2c3d4e5f6", set(known), base)
     page = (FAKE_PAGE.replace("AGE", str(age)).replace("'SEL'", json.dumps(sel)).replace("ITEMS", items)
-            .replace("CLICK_WORKS", "true" if click_works else "false"))
+            .replace("CLICK_WORKS", "true" if click_works else "false").replace("globalThis.location={host:'teams.microsoft.com'}", "globalThis.location={host:" + json.dumps(host) + "}"))
     body = (page + "const res=[];" + "".join(f"res.push(String({js_text.replace('__K__', str(k))}));" for k in ks)
             + "console.log(JSON.stringify({res,waits,clicks:__clicks}));")
     p = subprocess.run([NODE, "--input-type=module", "-e", body], capture_output=True, text=True, timeout=30)
@@ -210,19 +214,24 @@ if NODE:
         snap_ = read("\n".join(r.get("res", [])), known={"1794451771109"})
     except tw.Unreadable as e:
         snap_ = f"読めない: {e.args[0]}"
-    check("node: ほかが選ばれていたら、左の「メンション」を 1 回押し、選ばれたら（待たずに）戻したと返す",
-          (r.get("clicks"), r.get("waits"), snap_["switched"] if isinstance(snap_, dict) else snap_), (["real"], [], True))
+    check("node: ほかが選ばれていたら、左の「メンション」を 1 回押し、選ばれたら（待たずに）戻したと返す。その回は一覧を写さない",
+          (r.get("clicks"), r.get("waits"), snap_["switched"] if isinstance(snap_, dict) else snap_, snap_["items"] if isinstance(snap_, dict) else None),
+          (["real"], [], True, []))
     r = node_run(25000, sel=other, click_works=False)
     check("node: 押しても選ばれなければ、10 秒（0.25 秒 × 40）まで待つ", (r.get("clicks"), len(r.get("waits", [])), sum(r.get("waits", []))), (["real"], 40, 10000))
     check("node: 押しても選ばれなければ、読まない", unreadable(lambda: read("\n".join(node_run(25000, sel=other, click_works=False).get("res", [])))), "parse")
     # 相手の位置: 投稿などに同じ印をまねた要素を置かれても、押さない（a2a 849f8464 の指摘）
     for name, items in [("見つからない", "[]"), ("2 つある（まねた要素と本物）", "[item('fake',null),item('real',null)]"),
                         ("リンクの中", "[item('fake',['a[href]'])]"), ("本文（role=main）の中", "[item('fake',['[role=\"main\"]'])]"),
-                        ("投稿の部品の中", "[item('fake',['[data-tid*=\"message\"]'])]")]:
+                        ("投稿の部品の中", "[item('fake',['[data-tid*=\"message\"]'])]"), ("投稿の部品（testid）の中", "[item('fake',['[data-testid*=\"message\"]'])]")]:
         r = node_run(25000, sel=other, items=items)
         check(f"node: 左の「メンション」の要素が{name}なら押さず、「形」で読まない", (r.get("clicks"), unreadable(lambda: read("\n".join(r.get("res", []))))), ([], "parse"))
     r = node_run(25000)
     check("node: 選ばれていた回は「戻した」にしない", read("\n".join(r.get("res", [])))["switched"], False)
+    r = node_run(25000, sel=other, items="[item('fake',null)]")
+    check("node: 本物が描かれていないときに、まねた要素が 1 つだけ外にあれば、それを押す（README の約束に書いた残りの穴）", r.get("clicks"), ["fake"])
+    r = node_run(25000, sel=other, host="evil.example")
+    check("node: Teams のページでなければ押さない", r.get("clicks"), [])
     check("node: 番号 1 から呼ばれても写しを作らず err（待ちもしない）",
           ((node_run(5000, ks=(1,)).get("res", [""])[0].split("|") + [""] * 4)[3], node_run(5000, ks=(1,)).get("waits")), ("err", []))
 else:
@@ -378,7 +387,7 @@ check("1 回: 初回が空だった組織に、写せる件数を超える投稿
       (json.loads(STATUS.read_text())["orgs"][ORG_C["tenant"]]["new"], json.loads(STATUS.read_text())["orgs"][ORG_C["tenant"]]["gap"]), (tw.INDEX, True))
 check("1 回: 既に見た投稿の ID をスクリプトに渡す（その本文は返させない）", tw.b36("1795000000000") in js_seen[-1], True)
 n_rows = len(rows())
-feed_for[ORG_C["tenant"]] = chunks(snap(org="組織C", items=[("1795200000000", ("General", "【件】", "山田: 戻した回の一覧", "13:00"))], sw=1))
+feed_for[ORG_C["tenant"]] = chunks(snap(org="組織C", items=[], sw=1))
 tw.run(noon + 3000, reader)
 o = json.loads(STATUS.read_text())["orgs"][ORG_C["tenant"]]
 check("1 回: 左を「メンション」に戻した回は一覧を読まず（足さない）、読めた・戻した印を書く（次の回に読む）",
