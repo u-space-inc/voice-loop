@@ -193,6 +193,8 @@ def hermes_history(limit: int = 40) -> list[dict]:
             m.update(report=True, about=str(d.get("about") or ""), at=d.get("at"))
             if isinstance(d.get("topic"), str) and topics.ID_RE.fullmatch(d["topic"]):  # どの件の報告か（画面が件の URL で開くときに探す）
                 m["topic"] = d["topic"]
+        if d["role"] == "ai" and d.get("by") == "body":  # 本体がその場で答えた決まった問い（頭は通していない）
+            m["quick"] = True
         if d["role"] == "me" and d.get("reply_to"):  # 報告への返信として送った発言
             m["reply_to"] = str(d["reply_to"])
         if item:  # 受け箱の判断待ちへの返信として送った発言
@@ -275,6 +277,11 @@ HERMES_TURNS: deque = deque(maxlen=50)  # (発言の ID, ユーザーの文, Her
 # ハブ（Hermes）の最後の出力（発言への返答か、自動通知への報告）。利用者の発言が始まるときに台帳の行へ写す（承認に答えるの守りの heard）。
 # 記録（hermes-log.jsonl）からは取らない（書けなかった報告で、古い問いを拾わないため）。Hermes とのやり取りの鍵（pane_lock）の中で置き換え・写す
 HERMES_HEARD = {"text": ""}
+# 本体がその場で答えた決まった問い（scripts/quick.py）。Hermes はこのやり取りを見ていないので、次に Hermes に送る発言の前に添える
+# （新しい 3 件まで・30 分以内のものだけ。送ったら空にする）。(発言, 本体の答え, 時刻)
+QUICK_NOTES: list[tuple[str, str, float]] = []
+QUICK_NOTES_MAX = 3
+QUICK_NOTES_TTL = 1800.0
 _unsaved: set[str] = set()  # 記録に書けなかった発言の ID（画面に「記録に残っていない」と知らせるため）
 
 
@@ -295,6 +302,32 @@ def hermes_turn_begin(text: str, reply_to: str = "", heard: str | None = None, r
                       **({"reply_item": item} if item else {}), **({"said": said} if said is not None and said != text else {}), **({"via": via} if via else {})):
         _unsaved.add(turn)
     return turn
+
+
+def quick_preface() -> str:
+    """本体がその場で答えたやり取りを、Hermes に伝える前置き（Hermes が「それ」「その件」を読めるように）。文は 1 行にして字数で切る。"""
+    one = lambda v, n: " ".join(_REF_DROP.sub(" ", str(v or "")).split())[:n]  # noqa: E731
+    now = time.time()
+    lines = [f"「{one(q, 80)}」→「{one(a, 300)}」" for q, a, at in QUICK_NOTES[-QUICK_NOTES_MAX:] if now - at < QUICK_NOTES_TTL]
+    return ("〔このあいだ、本体（voice-loop）が決まった問いにその場で答えました（あなたは通していません）: " + " ／ ".join(lines) + "〕") if lines else ""
+
+
+async def hermes_answered_here(text: str, answer: str, said: str | None = None, via: str = "") -> bool:
+    """本体がその場で答えた発言を、台帳と記録に載せる（Hermes には送らない）。往復と同じ鍵の中で: 前の往復がまだ返事を待っていれば、
+    それが最後に聞いた文を書いたあとで空にする（鍵の外で空にすると、あとから終わった往復が古い返事で書き戻す。断りと同じ）。"""
+    async with core.pane_lock(HERMES_PANE):
+        turn = hermes_turn_begin(text, said=said, via=via)  # 守りの台帳に載せる（「すぐ次の発言」を進め、保留中の確認を失効させる）
+        for row in HERMES_TURNS:
+            if row[0] == turn:
+                row[2] = answer
+        HERMES_HEARD["text"] = ""  # 利用者が最後に聞いたのは本体の答え（頭の問いではない）。次の発言を、前に聞いた問いへの答えに使わせない
+        if not await asyncio.to_thread(hermes_log, "ai", answer, turn=turn, by="body"):
+            _unsaved.add(turn)
+        QUICK_NOTES.append((text, answer, time.time()))
+        del QUICK_NOTES[:-QUICK_NOTES_MAX]
+        saved = turn not in _unsaved
+        _unsaved.discard(turn)
+        return saved
 
 
 def hermes_turn_end(turn: str, reply: str):
@@ -365,6 +398,10 @@ async def hermes_exchange(text: str, reply_at: float | None = None, extra: str =
             turn = hermes_turn_begin(text, ref, ref_text if ref else None, ref_pane, extra, reply_ask=ask, said=said, via=via)  # 発言の台帳。承認に答える・閉じるの守りが「見たあとの発言か」を見る
             REPLY_TOPIC["topic"] = await asyncio.to_thread(report_topic, reply_at) if ref else ""
             sent = f"〔返信: {ref} の報告〕\n{text}" if ref else text
+        if QUICK_NOTES:  # 本体がその場で答えたやり取りを、Hermes に送る文の前にだけ添える（守りの台帳と記録の発言は利用者の言葉のまま）
+            pre = quick_preface()
+            sent = f"{pre}\n{sent}" if pre else sent
+            QUICK_NOTES.clear()
         try:
             reply = await asyncio.to_thread(ask_hermes, sent + extra)
         except Exception as e:
@@ -1598,6 +1635,9 @@ class Hermes(Brain, Talker):
     def ask(self, text: str) -> str:
         return ask_hermes(text)
 
+    async def answered_here(self, text: str, answer: str, said: str | None = None, via: str = "") -> bool:
+        return await hermes_answered_here(text, answer, said=said, via=via)
+
     async def refused(self, text: str, why: str, said: str | None = None, via: str = ""):
         # 往復と同じ鍵の中で載せる: 前の往復（画面が止めても裏で続く）がまだ返事を待っていれば、それが終わって最後に聞いた文を書いたあとで
         # 空にする（鍵の外で空にすると、あとから終わった往復が古い返事で書き戻し、利用者に届いていない問いが次の発言の「聞いた文」になる）
@@ -1668,6 +1708,12 @@ class Hermes(Brain, Talker):
 
     def topic_report(self, tid: str) -> dict | None:
         return topic_report(tid)
+
+    def open_items(self) -> tuple[list[dict], bool]:
+        """受け箱（💡）と同じ一覧（あとでに回した件・済んだを押して戻せる間の件は入れない）。題と案件は記録の文を 1 行にして字数で切ったもの。"""
+        box = hermes_inbox.inbox()
+        rows = [{"n": it["n"], "title": str(it.get("title") or "")[:80], "project": str(it.get("project") or "")[:40]} for it in box.get("items", [])]
+        return rows, bool(box.get("problem"))
 
     def report_begin(self, headline: str, about: str) -> bool:
         """Hermes の会話は本体が記録する（画面が無くても、あとで履歴に出る）。"""

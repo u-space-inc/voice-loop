@@ -54,6 +54,7 @@ import ask_form  # noqa: E402  選択肢の問い（AskUserQuestion）に、画�
 from places import CONFIG_DIR, STATE_DIR  # noqa: E402  端末ごとの設定と状態の置き場
 import attach  # noqa: E402  画面から添付したファイル
 import sent_log  # noqa: E402  出ていく側の記録（案件の Teams の控えの、当方の投稿）
+import quick  # noqa: E402  本体がその場で答える決まった問い（次は・どうなってる・待ってるのある。LLM・頭を通さない）
 
 
 def _load_config_env():
@@ -1378,6 +1379,8 @@ class Client:
         self.bound = bool(self.place)
         self.kind = "device" if self.bound else "screen"
         self.audio = "wav"  # 返答の声の形。機械が audio: "opus" を名乗れば Ogg の Opus
+        self.win = ""  # 窓の印（画面はタブごとに hello で名乗る。つなぎ直しても同じ窓として、最後に話しかけた窓を覚える）
+        self.connected = time.time()
 
     async def send(self, **msg):
         await self.sock.send_text(json.dumps(msg, ensure_ascii=False))
@@ -1464,6 +1467,69 @@ async def speak_to(clients: list[Client], text: str, cancel: asyncio.Event):
                 await each(lambda c: c.sock.send_bytes(body(c)) if c in voice and c.voice else asyncio.sleep(0))
                 n += 1
     await each(lambda c: c.send(type="done", sentences=n))
+
+
+# 報告の声を鳴らすのは 1 か所（設計書 R1・課題 K9。2026-11-23 本人「推奨で」）。文字はすべての画面に出し、声は最後に話しかけた窓だけで鳴らす。
+# 車の機械（機械の口で car と決まった接続）がつながったら、つながった時刻を「話しかけた」と同じに数える（車に乗っている間は車）。
+# 起動のあと、まだどの窓も話しかけていなければ、これまでどおりすべての窓で鳴らす（取りこぼさない）。VL_RING=all で、いつもすべての窓
+RING = "all" if os.environ.get("VL_RING", "one").strip().lower() == "all" else "one"
+WIN_RE = re.compile(r"[A-Za-z0-9_-]{8,64}")
+WIN_SPOKE: dict[str, float] = {}  # 窓の印 → 最後に話しかけた時刻（画面・声の発言。ボタンは数えない）
+
+
+def win_of(c) -> str:
+    """窓の印。口で決まった機械は置き場所（家と車で 1 つずつ）、画面は名乗った印、名乗らない古い画面は接続ごと。"""
+    if getattr(c, "bound", False):
+        return "device:" + str(getattr(c, "place", ""))
+    return getattr(c, "win", "") or f"conn:{id(c)}"
+
+
+def ring_targets(clients: list) -> list:
+    """報告の声を鳴らす窓（1 つ）。最後に話しかけた窓（車の機械はつながった時刻も数える）の、いちばん新しい接続。
+    どの窓も話しかけていなければ、渡されたすべて。🔇 の窓が選ばれたら、声はどこにも鳴らさない（その窓で文字を読む）。"""
+    if RING == "all" or not clients:
+        return list(clients)
+
+    def act(c) -> float:
+        t = WIN_SPOKE.get(win_of(c), 0.0)
+        if getattr(c, "bound", False) and getattr(c, "place", "") == "car":
+            t = max(t, getattr(c, "connected", 0.0))
+        return t
+    best = max(clients, key=lambda c: (act(c), getattr(c, "seen", 0.0), getattr(c, "connected", 0.0)))
+    return [best] if act(best) > 0 else list(clients)
+
+
+# 本体がその場で答える決まった問い（設計書 R4・R11 の段 0、S2。2026-11-23 本人「推奨で」）。発言の全体が決まった形のときだけで、ほかは頭へ（迷ったら頭）。
+# 答えたやり取りも頭の台帳と記録に載せ、利用者が聞いた文を空にする（その前の頭の問いへの「はい」に使わせない）。VL_QUICK=off で使わない
+QUICK = os.environ.get("VL_QUICK", "on").strip().lower() != "off"
+QUICK_CURSOR: dict = {}  # 「次」をどこまで読んだか（quick.answer が書き換える）
+
+
+def quick_snapshot() -> dict:
+    """決まった問いに答えるための、本体の状態の写し（セッションの一覧・承認待ちの種類・頼んだ件の見張り・判断待ち）。"""
+    rows = []
+    for a in list_agents():
+        st = "blocked" if a["status"] == "blocked" or stepping(a) else str(a["status"])
+        r = {"pane": a["pane"], "name": f"{a['cwd'].rsplit('/', 1)[-1]}（{a['title']}）" if a.get("title") else a["cwd"].rsplit("/", 1)[-1], "status": st}
+        if st == "blocked":
+            r["ask"] = _ask_of(a)["kind"]
+        rows.append(r)
+    try:
+        items, problem = HUB.open_items()
+    except Exception:
+        items, problem = [], True
+    return {"sessions": rows, "watching": sum(1 for t in TASKS.values() if t["status"] in TASK_ACTIVE), "inbox": items, "inbox_problem": problem}
+
+
+async def hub_quick(talker, kind: str, text: str, pane: str, said: str | None = None, via: str = "") -> tuple[str, str, bool]:
+    """決まった問いに本体が答える（頭に送らない）。受け取った順（ACCEPT_LOCKS）に、発言と答えを頭の台帳と記録に載せる。(答え, 理由, 記録に書けたか)。"""
+    async with ACCEPT_LOCKS.setdefault(pane, asyncio.Lock()):
+        snap = await asyncio.to_thread(quick_snapshot)
+        answer = quick.answer(kind, snap, QUICK_CURSOR, time.time())
+        kw = {"said": said} if said is not None else {}
+        saved = await talker.answered_here(text, answer, **kw, **({"via": via} if via else {}))
+        hlog(f"すぐ答えた（{kind}）: {len(answer)}字", flush=True)
+        return answer, "", saved
 
 
 # 頼んでから返事が来るまでの、本体の一言（ハブとの往復だけ）。Hermes の返事は中央値 14 秒かかり、その間黙っていると、聞こえたのか分からない
@@ -2146,13 +2212,16 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
         if kind in ("done", "more", "gone"):
             d["_slack_done"] = True  # 完了の報告を送った。このあとの見張りの失敗は重ねて知らせない（途中経過のあとの失敗は知らせる）
         clients = list(CLIENTS)
-        for c in clients:
+        ring = ring_targets(clients)  # 声は 1 か所（最後に話しかけた窓）。ほかの窓には文字だけ（quiet: 読み上げの印を付けない）
+        for c in list(clients):
             try:
-                await c.send(type="reply", pane=hub["pane"], text=reply, report=True, about=label, saved=saved, topic=str(d.get("topic") or ""))
+                await c.send(type="reply", pane=hub["pane"], text=reply, report=True, about=label, saved=saved, topic=str(d.get("topic") or ""),
+                             **({} if c in ring else {"quiet": True}))
             except Exception:
                 clients.remove(c)
-        if clients:
-            await speak_to(clients, reply, asyncio.Event())
+        ring = [c for c in ring if c in clients]
+        if ring:
+            await speak_to(ring, reply, asyncio.Event())
         return "ok"
 
 
@@ -3276,6 +3345,7 @@ async def ws(sock: WebSocket):
         # said: 辞書で直す前の聞き取り（直したときだけ。ハブの守りの台帳に載せる）
         nonlocal cancel, current
         client.speaker = speaker
+        WIN_SPOKE[win_of(client)] = time.time()  # この窓に最後に話しかけた（報告の声はここで鳴らす）
         cancel.set()  # 前のターンの読み上げが残っていれば止める
         if current and not current.done():
             current.cancel()
@@ -3286,7 +3356,10 @@ async def ws(sock: WebSocket):
             # ハブが受け取った発言は、受け取ったその場で（待つものをはさまずに）1 つの仕事にする（hub_accepted: 添付を置く・断る・往復する）。
             # 画面のターン（current）は次の発言で止めるが、この仕事は止めない。受け取った順に作るので、受け取った順に進む
             # （画面のターンの中で作ると、状態の知らせを送る間や、ターンが動き出す前に次の発言が来たとき、前の発言が消える）
-            job = asyncio.create_task(hub_accepted(talker, text, pane, reply_at, files, item, said, via="device" if client.kind == "device" else ""))
+            kind = quick.match(text, AGENT) if QUICK and not files and reply_at is None and item is None else None
+            via = "device" if client.kind == "device" else ""
+            # 決まった問いは本体が答える（返信・添付つき・受け箱の件への返信は、いつも頭へ）
+            job = asyncio.create_task(hub_quick(talker, kind, text, pane, said, via) if kind else hub_accepted(talker, text, pane, reply_at, files, item, said, via=via))
             _tasks.add(job)
             job.add_done_callback(_tasks.discard)
         current = asyncio.create_task(turn(text, pane, cancel, key, reply_at, files, job))
@@ -3306,6 +3379,9 @@ async def ws(sock: WebSocket):
                         client.kind = "device" if d.get("kind") in ("stackchan", "device") else "screen"
                         client.place = d.get("place") if d.get("place") in ("home", "car", "desk") else ""
                     client.audio = "opus" if d.get("audio") == "opus" else "wav"
+                    w = d.get("win")
+                    if isinstance(w, str) and WIN_RE.fullmatch(w):
+                        client.win = w
                     # visible を送らない古い画面は、見えていないものとして扱う（通知を止めない）。機械は見えている画面に数えない
                     client.visible = d.get("visible") is True and client.kind == "screen"
                     client.seen = time.time()

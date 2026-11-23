@@ -72,7 +72,8 @@ s.synth = fake_synth
 s.narrate = fake_narrate
 
 
-def turn(text="ねえ、いまどうなってる？", mute=False, mute_after=None, linger=0.0):
+def turn(text="ねえ、ブログの件どうなってる？",  # 決まった問い（scripts/quick.py）に当たらない、Hermes に渡る問い
+          mute=False, mute_after=None, linger=0.0):
     """ハブに打った文を送り、終わり（done か error）までに届いたものを順に返す。文の通知は (種類, 文)、声は ("wav", 中身)。"""
     got = []
     with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
@@ -115,7 +116,7 @@ try:
     check("遅い返事: 一言は返事の声の合図（speaking）も音声のかたまりも使わない（合図は返事の 1 回だけ・かたまりは返事の声だけ）",
           (kinds.count("speaking"), [w for k, w in got if k == "wav"], kinds.index("speaking") > kinds.index("reply")), (1, ["WAV:わかりました。"], True))
     check("遅い返事: 終わりの合図は 1 回だけ（返事の声のあと）", (kinds.count("done"), kinds[-1]), (1, "done"))
-    check("遅い返事: Hermes への頼みの中身は変えない", asked[-1], "ねえ、いまどうなってる？")
+    check("遅い返事: Hermes への頼みの中身は変えない", asked[-1], "ねえ、ブログの件どうなってる？")
     log = s.hermes.HERMES_LOG.read_text() if s.hermes.HERMES_LOG.exists() else ""
     check("一言は記録にも、守りの台帳の「聞いた返事」にも載せない", (s.PROGRESS_TEXT in log, s.hermes.HERMES_HEARD["text"] == s.PROGRESS_TEXT,
                                                          any(s.PROGRESS_TEXT in str(r) for r in s.hermes.HERMES_TURNS)), (False, False, False))
