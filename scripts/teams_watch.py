@@ -12,7 +12,7 @@ Hermes の見張りの回（templates/hermes/watch/vl_watch.py の teams の口�
 読み方と守り:
 - 組織ごとに、決めた URL（https://teams.microsoft.com/v2/?tenantId=<組織の ID>）を開いたときに出る一覧だけを読む。スレッドは開かない
   （開くと既読になる）。Teams の Web 版は、左で最後に選んだ項目を覚えて開く。「メンション」以外が選ばれていたら、決まったスクリプトが左の
-  「メンション」を 1 回だけ押して戻す（ほかは押さない。ビューの切り替えで、既読にはならない）。
+  「メンション」を 1 回だけ押して戻し、その回は一覧を読まずに次の回に読む（押すのはその項目だけ。投稿は開かない）。
 - claude -p --chrome を、利用者の設定を読まず（--setting-sources ""。利用者のフック・許可・CLAUDE.md・プラグインを持ち込まない）、
   組み込みの道具なし（--tools ""）、ほかの MCP なしで動かす。PreToolUse のフック（teams_hook.py guard）が、決めた道具・その回の URL・
   待つことと、一覧を写して切り出す決まったスクリプト（JS。LLM が渡した文は使わずに差し替える）だけを通す。
@@ -67,17 +67,19 @@ LIMITS = {"org": 60, "channel": 120, "title": 200, "body": 1200, "shown": 20}
 # （11/13、09:53 の回が 9:20 の投稿を写しそこねた）。道具は返った Promise を待たないので、先頭に await を付ける（11/13 に Chrome で確かめた）。
 INDEX, CHUNK, PAGE_AGE_MS = 20, 600, 20000
 # 左で「メンション」以外が選ばれていたら（手で Teams を見たあと・ほかのセッションがチャネルを開いたまま閉じたあと）、左の「メンション」を 1 回だけ
-# 押して戻し、選ばれるのを待ってから（最大 10 秒）、一覧が届くまで SWITCH_WAIT_MS 待って写す（2026-11-19 にチャネルを選んだまま残され、
-# 読めなくなった。11/23 本人「推奨で」＝A）。押すのはこの 1 つの項目だけで、ビューの切り替えなので既読にはならない
-SWITCH_WAIT_MS = 6000
+# 押して戻し、選ばれるのを待つ（最大 10 秒）（2026-11-19 にチャネルを選んだまま残され、読めなくなった。11/23 本人「推奨で」＝A）。
+# 押すのは、その印（data-testid）の要素が画面にちょうど 1 つあり、リンク・本文（role=main）・投稿の部品の中に無いときだけ
+# （投稿の中に同じ印をまねた要素を置かれても押さない。押さなければ、これまでどおり「形」で読まない）。投稿は開かない（ビューの切り替え）。
+# 戻した回は一覧を読まない（押した直後の一覧は、空か前の写しのままのことがあり、届いたかを確かめられない）。次の回に、いつもどおり読む
 JS_TEMPLATE = (r"""await (async()=>{const K='__vlT___NONCE__';const k=__K__;if(k===0){const w=20000-performance.now();"""
                r"""if(w>0)await new Promise(r=>setTimeout(r,Math.min(w,20000)));const known=new Set(__KNOWN__);const base=__BASE__;"""
                r"""const q=(r,k)=>((r.querySelector('[data-tid="message-slice-card-'+k+'"]')||{}).textContent||'').trim();"""
                r"""const b=[...document.querySelectorAll('[data-tid="me-control-avatar-trigger"] span')].find(e=>!e.children.length&&e.textContent.trim());"""
                r"""const M='slice-list-item-slice-activities-mentions';"""
                r"""const cur=()=>[...document.querySelectorAll('[data-tabster*="LeftRailSelectedItem"]')].map(e=>e.getAttribute('data-testid')||'').join(',');"""
-               r"""let sw=0;if(cur()!==M){const e=document.querySelector('[data-testid="'+M+'"]');if(e){e.click();sw=1;"""
-               r"""for(let i=0;i<40&&cur()!==M;i++)await new Promise(r=>setTimeout(r,250));await new Promise(r=>setTimeout(r,__SWITCH_WAIT__));}}"""
+               r"""let sw=0;if(cur()!==M){const C=[...document.querySelectorAll('[data-testid="'+M+'"]')];const e=C.length===1?C[0]:null;"""
+               r"""if(e&&!e.closest('a[href],[role="main"],[data-tid*="message"],[data-testid*="message"]')){e.click();sw=1;"""
+               r"""for(let i=0;i<40&&cur()!==M;i++)await new Promise(r=>setTimeout(r,250));}}"""
                r"""const s=cur();"""
                r"""const rows=[...document.querySelectorAll('[data-testid="message-slice-card-item"]')];"""
                r"""const items=rows.slice(0,20).map(r=>{const m=/^message-slice-card-MentionsSliceCardItem\|(\d{10,16})$/.exec(r.id);"""
@@ -145,7 +147,7 @@ def js_for(nonce: str, known: set, base: bool) -> str:
     if not re.fullmatch(r"[0-9a-f]{12}", nonce) or not all(re.fullmatch(r"\d{10,16}", m) for m in known):
         raise ValueError("js")
     return (JS_TEMPLATE.replace("__NONCE__", nonce).replace("__KNOWN__", json.dumps(sorted(b36(m) for m in known)))
-            .replace("__BASE__", "true" if base else "false").replace("__SWITCH_WAIT__", str(SWITCH_WAIT_MS)))
+            .replace("__BASE__", "true" if base else "false"))
 
 
 def assemble(text: str) -> str:
@@ -380,10 +382,12 @@ def run(now: float | None = None, reader=read_org) -> int:
                 try:
                     known = known_msgs(org["tenant"])
                     snap = parse_snapshot(assemble(reader(cfg, org, js_for(secrets.token_hex(6), known, base=not init))), org["name"], known, base=not init)
+                    if snap["switched"]:  # 左を「メンション」に戻しただけの回。一覧は読まず、次の回に読む（届いたかを確かめられないため）
+                        status["orgs"][org["tenant"]] = {**prev, "ok": True, "reason": "", "at": now, "switched": True, "init": init}
+                        continue
                     items = snap["items"]
                     n, gap = merge(org, items, now, first=not init, more=snap["n"] > len(items))
-                    status["orgs"][org["tenant"]] = {"ok": True, "reason": "", "at": now, "items": len(items), "new": n, "gap": gap, "init": True,
-                                                     **({"switched": True} if snap["switched"] else {})}  # 左を「メンション」に戻した回
+                    status["orgs"][org["tenant"]] = {"ok": True, "reason": "", "at": now, "items": len(items), "new": n, "gap": gap, "init": True}
                 except Unreadable as e:
                     status["orgs"][org["tenant"]] = {"ok": False, "reason": e.args[0], "at": now, "init": init}
         status["at"] = now  # 時間の外でも、動いている印は書く（Hermes の見張りが「止まっている」を見分ける）
