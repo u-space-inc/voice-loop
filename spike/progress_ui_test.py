@@ -6,6 +6,7 @@
   - 一言のあとに返事が来たら、一言・返事の順に鳴り、終わったら「話し終わりました」
   - 一言が鳴り終わって返事がまだなら、「話しています」のままにせず、待つ表示（「確認しています…」）に戻す（codex-review の指摘）
   - 一言を受けても、返事の声を受け付ける状態にしない（止めた報告の続きの声が届いても鳴らさない。codex-review の指摘）
+  - 一言が鳴っている間に、返事が声なしで終わったら（読み上げる文が無い）、一言が鳴り終わったときに話し終わりにする（待つ表示に残さない。codex-review の指摘）
 使い方: uv run spike/progress_ui_test.py"""
 import asyncio
 import json
@@ -56,7 +57,7 @@ async def nothing(*a, **k):
     return None
 
 
-mode = {"fail": True}
+mode = {"fail": True, "silent_reply": False}
 
 
 async def fake_accepted(talker, text, pane, *a, **k):
@@ -65,6 +66,8 @@ async def fake_accepted(talker, text, pane, *a, **k):
 
 
 async def fake_narrate(text, cancel):
+    if mode["silent_reply"]:  # 読み上げる文が無い（語り手が空を返した）
+        return
     yield text
 
 
@@ -100,7 +103,7 @@ PLAY = """(() => { window.__played = []; window.__block = false;
   HTMLMediaElement.prototype.play = function () {
     if (window.__block) { const e = new Error('blocked'); e.name = 'NotAllowedError'; return Promise.reject(e); }
     const src = this.src; window.__played.push(src === SILENT_URL ? 'silent' : 'blob');
-    setTimeout(() => { if (this.src === src) this.dispatchEvent(new Event('ended')); }, 30); return Promise.resolve();  // 本物と同じく、差し替えた前の音の終わりは出さない
+    setTimeout(() => { if (this.src === src) this.dispatchEvent(new Event('ended')); }, window.__dur || 30); return Promise.resolve();  // 本物と同じく、差し替えた前の音の終わりは出さない
   }; })()"""
 
 
@@ -143,6 +146,16 @@ with sync_playwright() as pw:
     pg.wait_for_function("document.getElementById('statusText').textContent.includes('話し終わりました')", timeout=10000)
     check("一言のあとに返事: 一言と返事の 2 つを鳴らす", pg.evaluate("window.__played.filter(x => x === 'blob').length"), 2)
     check("一言のあとに返事: 最後は「話し終わりました」", "話し終わりました" in pg.text_content("#statusText"), True)
+
+    # 3) 一言が鳴っている間に、返事が声なしで終わる
+    pg.evaluate("window.__played = []; window.__dur = 1500")  # 一言は 1.5 秒鳴る。返事（声なし）は 0.8 秒あと
+    mode["silent_reply"] = True
+    send_text(pg, "それで？")
+    pg.wait_for_function("window.__played.filter(x => x === 'blob').length === 1", timeout=10000)
+    time.sleep(2.2)
+    check("一言の間に声なしの返事が終わった: 一言のあとは話し終わり（待つ表示に残さない）", "話し終わりました" in pg.text_content("#statusText"), True)
+    mode["silent_reply"] = False
+    pg.evaluate("window.__dur = 30")
     b.close()
 
 srv.should_exit = True
