@@ -431,7 +431,8 @@ HSK_DIR = STATE_DIR / "hermes-skills"
 HSK_FILE = HSK_DIR / "state.json"
 HSK_LOG = STATE_DIR / "hermes-skill-log.jsonl"
 HSK_KEEP = 30 * 86400
-HSK_BLOCK = ("applying", "applied", "unknown")  # この id はもう採らない（同じ書き足しを二度当てない。捨てても、この印は消さない）
+HSK_BLOCK = ("applying", "applied", "unknown", "failed")  # この id はもう採らない（同じ書き足しを二度当てない。捨てても、この印は消さない。
+# failed は、自動で当てて当てられず、本体が承認待ちから外した id。同じ記録を置き直されても、試し直さない）
 HSK_SHOWN: dict[tuple[str, str], bytes] = {}  # 画面に出した記録の中身（id, 指紋）。採る・捨てるは、画面の指紋がここにあるときだけ
 HSK_DIFFS: dict[str, str] = {}  # 指紋 → 差分（見たときの、対象の中身に対するもの）
 HSK_LOCK = asyncio.Lock()  # 採る・捨てるは一度にひとつ
@@ -440,6 +441,7 @@ HSK_NOTE = {
     "applying": "当てている途中です（台本の終わりを確かめるまで、採る・捨てるは断ります）",
     "applied": "当てました。承認待ちの記録を消せなかったので残っています（捨てるで消せます）",
     "unknown": "当たったか分かりません。手順のファイルか Hermes の対話画面で確かめてください。この書き足しはもう採れません（捨てるはできます）",
+    "failed": "自動で当てようとして、当てられませんでした。この書き足しはもう採れません（捨てるはできます）",
 }
 
 
@@ -619,19 +621,27 @@ def _hsk_begin(pid: str, v: str, rec: dict, raw: bytes) -> str:
     return ""
 
 
-def _hsk_finish(pid: str, v: str, rec: dict, raw: bytes, out: dict) -> dict:
+def _hsk_finish(pid: str, v: str, rec: dict, raw: bytes, out: dict, dropped: bool = False) -> dict:
     """台本の結果で状態を決める。changed・unsupported は当てていない（承認待ちに戻す）。applied は当てた。
-    failed・例外・形の違い・時間切れは、当たったか分からない（その id はもう採らない）。"""
+    failed・例外・形の違い・時間切れは、当たったか分からない（その id はもう採らない）。
+    dropped は、自動で当てて failed になり、手順が当てる前のままと本体が確かめて、承認待ちの記録を捨て終えたとき（_learn_skills だけが渡す。
+    台本の答えからは決めない）。当てていないと分かっているが、同じ記録を置き直されても試し直さないよう、二度当てない印（failed）を残す。当てようとした記録は控えに残す。"""
     res, why = out.get("result"), str(out.get("why") or "")
-    state = None if res in ("changed", "unsupported") else "applied" if res == "applied" else "unknown"
+    dropped = dropped and res == "failed"
+    state = "failed" if dropped else None if res in ("changed", "unsupported") else "applied" if res == "applied" else "unknown"
     with _hsk_lock:
         d = hsk_state()
         if d is not None:
             if state is None:
                 d["items"].pop(pid, None)
             else:
+                keep = dropped or (d["items"].get(pid) or {}).get("keep") is True  # 消さない印（_hsk_mark_failed）は、結果が何であっても引き継ぐ
                 d["items"][pid] = {"state": state, "at": time.time(), "v": v, "summary": rec["summary"][:120],
-                                   "note": "" if state == "applied" else why[:200], "discarded": out.get("discarded") is True}
+                                   "note": "" if state == "applied" else why[:200], "discarded": dropped or out.get("discarded") is True}
+                if keep:
+                    d["items"][pid]["keep"] = True
+                if dropped:
+                    d["items"][pid]["dropped"] = time.time()
             d["verify"] = res == "timeout"  # 時間切れなら、台本がまだ動いているかもしれない
             try:
                 core.write_json(HSK_FILE, d)
@@ -642,12 +652,16 @@ def _hsk_finish(pid: str, v: str, rec: dict, raw: bytes, out: dict) -> dict:
                                                      "why": why, "record": raw.decode("utf-8", "replace")})
     except OSError:
         traceback.print_exc()
-    if res in ("changed", "unsupported"):
+    if res in ("changed", "unsupported") or dropped:
         HSK_SHOWN.pop((pid, v), None)
     hsk_log(id=pid, act="approve", summary=rec["summary"][:120], result=res, why=why[:200])
     core.hlog(f"Hermes の書き足し {pid} を採る: {res}" + (f"（{why[:80]}）" if why else ""), flush=True)
     if res == "applied":
         return {"ok": True, "discarded": out.get("discarded") is True}
+    if dropped:
+        hsk_log(id=pid, act="reject", summary=rec["summary"][:120], result="rejected", why="当てられず、手順は変わっていないので、承認待ちから外しました")
+        core.hlog(f"Hermes の書き足し {pid} は当てられず、手順は変わっていないので、承認待ちから外しました", flush=True)
+        return {"ok": False, "reason": "failed", "why": why[:200]}
     return {"ok": False, "reason": res if res in ("changed", "unsupported") else "unknown", "why": why[:200]}
 
 
@@ -907,7 +921,9 @@ async def api_hermes_memory_remove(body: dict):
 
 
 def _hsk_tidy(ids: set[str]) -> list[str]:
-    """まだ知らせていない承認待ちの id を、知らせた印にして返す。古い状態と印（30 日。承認待ちに残っている id のものは残す）と控えを片づける。"""
+    """まだ知らせていない承認待ちの id を、知らせた印にして返す。古い状態と印（30 日。承認待ちに残っている id のものは残す）と控えを片づける。
+    本体が承認待ちから外そうとした id の印（keep つき。_hsk_mark_failed）は、日が経っても消さない（承認待ちに実体が無いかもしれず、
+    消すと、同じ記録を置き直されたときに試し直してしまう。増えるのは多くて 1 日の上限の数まで）。"""
     now = time.time()
     with _hsk_lock:
         d = hsk_state()
@@ -915,7 +931,7 @@ def _hsk_tidy(ids: set[str]) -> list[str]:
             return []
         new = sorted(ids - set(d["told"]))
         told = {k: t for k, t in d["told"].items() if now - t < HSK_KEEP or k in ids} | {k: now for k in new}
-        items = {k: v for k, v in d["items"].items() if now - v["at"] < HSK_KEEP or k in ids or v["state"] == "applying"}
+        items = {k: v for k, v in d["items"].items() if now - v["at"] < HSK_KEEP or k in ids or v["state"] == "applying" or v.get("keep") is True}
         if told != d["told"] or items != d["items"]:
             core.write_json(HSK_FILE, {**d, "told": told, "items": items})
     for p in (HSK_DIR / "approved").glob("*.json"):
@@ -1136,9 +1152,22 @@ async def _learn_skills() -> int:
             except Exception as e:
                 traceback.print_exc()
                 out = {"result": "error", "why": f"本体の問題（{type(e).__name__}）"}
-            res = await asyncio.to_thread(_hsk_finish, pid, v, rec, raw, out)
+            dropped = False
+            if (out.get("result") == "failed" and _hlearn_unchanged(out.get("after"), before["skills"])
+                    and await asyncio.to_thread(_hsk_mark_failed, pid, str(out.get("why") or ""))):
+                # Hermes がはっきり失敗と返し、手順も当てる前のまま（直す行がもう無い、など）: 当たっていないと分かるので、承認待ちから外す。
+                # 外せなければ、これまでどおり「分からない」に残す（時間切れなら、終わりを確かめるまで次を当てない）。
+                # 記録を消す前に、二度試さない印（failed）を書いておく（消したあとに本体が止まる・状態を書けなくても、印が残る。書けなければ消さない）
+                drop = await asyncio.to_thread(hermes_skills.run_script, HERMES_CONTAINER, "reject", pid, raw)
+                dropped = drop.get("result") == "rejected" and drop.get("discarded") is True  # 消したと答えたときだけ
+                if drop.get("result") == "timeout":
+                    out = {"result": "timeout", "why": f"当てられなかった書き足しを、承認待ちから外せませんでした（{core._clip(str(out.get('why') or ''), 120)}）"}
+            res = await asyncio.to_thread(_hsk_finish, pid, v, rec, raw, out, dropped)
             if not res.get("ok"):
                 why = core._clip(str(out.get("why") or out.get("result")), 120)
+                if dropped:
+                    await asyncio.to_thread(_hlearn_set, entry["id"], state="failed", note=f"当てられませんでした（{why}）。手順は変わっていないので、承認待ちから外しました")
+                    continue
                 if out.get("result") in ("changed", "unsupported"):
                     await asyncio.to_thread(_hlearn_set, entry["id"], state="failed", note=f"当てられませんでした（{why}）")
                 else:
@@ -1155,6 +1184,35 @@ async def _learn_skills() -> int:
             applied += 1
             core.hlog(f"Hermes の書き足し {pid} を自動で当てました（今日 {await asyncio.to_thread(_hlearn_today)}/{hermes_learn.LIMIT}）", flush=True)
     return applied
+
+
+def _hsk_mark_failed(pid: str, why: str) -> bool:
+    """当てている途中の id を、二度試さない印（failed）に書き換える。承認待ちの記録を消す前に呼ぶ。書けたら True。
+    消さない印（keep）も付ける。このあと記録を消す台本の結果が分からなくても（時間切れで「分からない」になっても）、印は日が経っても残る。"""
+    with _hsk_lock:
+        d = hsk_state()
+        st = d["items"].get(pid) if d else None
+        if not st or st["state"] != "applying":
+            return False
+        st.update(state="failed", at=time.time(), note=why[:200], keep=True)  # keep: 日が経っても片づけない（_hsk_tidy）
+        try:
+            core.write_json(HSK_FILE, d)
+        except OSError:
+            traceback.print_exc()
+            return False
+    return True
+
+
+def _hlearn_unchanged(after, before: dict) -> bool:
+    """失敗した台本が返した指紋（after。Hermes の手順の鍵を持ったまま、失敗の直後に読んだもの）が、当てる前に取った控えと同じか
+    （同じ場所の組で、どの場所も指紋が同じ）。指紋が無い・形が違うときは False。読むのを当てる処理と同じ鍵の中にするのは、
+    鍵の外で読み直すと、ほかの書き込みと重なって、別々の時点の中身を混ぜて「同じ」と見てしまうため。"""
+    try:
+        return (isinstance(after, dict) and bool(before) and set(after) == set(before)
+                and all(isinstance(after[k], str) and after[k] == hermes_learn.digest(before[k]) for k in before))
+    except Exception:
+        traceback.print_exc()
+        return False
 
 
 HMEM_MINE_FILE = HLEARN_DIR / "memory-mine.json"  # _HMEM_MINE の控え（取り込む前に本体を起動し直しても失わない）

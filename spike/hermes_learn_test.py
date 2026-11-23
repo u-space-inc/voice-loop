@@ -324,6 +324,197 @@ asyncio.run(s.hermes._learn_skills())
 check("自動: 控えを取るのが一時的に失敗した（時間切れ）書き足しは、飛ばす印を付けず、次の回に試し直して当てる",
       (skipped_now, [p for m, p in SCALLS if m == "approve"]), (False, ["eeeeeee3"]))
 
+# 当てて「failed」と返った書き足し: 手順が当てる前のままと確かめられたときだけ、承認待ちから外す
+FAIL = {"partial": False, "reject": None, "noafter": False}  # 失敗の前に手順の一部を書いた（偽）／捨てる台本の答えの差し替え
+MATCH = "operations[0] (patch on 'x') failed: Could not find a match for old"
+
+
+def failing_run(c, mode, pid, raw, wait=90, env=None, script=None):
+    if mode == "approve" and pid.startswith("9999"):
+        SCALLS.append((mode, pid))
+        place = json.loads(raw)["payload"]["operations"][0]["name"]
+        if FAIL["partial"]:
+            SNAPS[place] = {"exists": True, "files": {"SKILL.md": base64.b64encode("途中まで書いた".encode()).decode()}}
+        # 自動の台本は、鍵を持ったまま読んだ失敗の直後の指紋を返す（読めなければ None）
+        return {"result": "failed", "why": MATCH, **({"after": None if FAIL["noafter"] else {place: hl.digest(SNAPS[place])}} if script is not None else {})}
+    if mode == "reject" and pid.startswith("9999"):
+        SCALLS.append((mode, pid))
+        if FAIL["reject"]:
+            return dict(FAIL["reject"])
+        (PEND / f"{pid}.json").unlink()
+        return {"result": "rejected", "discarded": True}
+    return real_skills_run(c, mode, pid, raw, wait, env, script)
+
+
+def acts():
+    return [(m, p) for m, p in SCALLS if m in ("approve", "reject")]
+
+
+def fresh_day():
+    d = json.loads(s.hermes.HLEARN_FILE.read_text())
+    d["days"] = {}
+    s.hermes.HLEARN_FILE.write_text(json.dumps(d))
+
+
+def entry_of(pid):
+    return [(e["state"], e["can_undo"], e["note"]) for e in learned()["entries"] if e.get("pid") == pid]
+
+
+def hsk_of(pid):
+    d = json.loads(s.hermes.HSK_FILE.read_text())
+    return (d["items"].get(pid) or {}).get("state"), d["verify"]
+
+
+s.hermes.hermes_skills.run_script = failing_run
+for n in ("g1", "g2", "g3", "g4", "g5", "g6"):
+    SNAPS[n] = {"exists": True, "files": {"SKILL.md": base64.b64encode("前".encode()).decode()}}
+fresh_day()
+record("99990001", "g1", at=time.time())
+record("gggggg02", "g2", at=time.time() + 1)
+SCALLS.clear()
+n = asyncio.run(s.hermes._learn_skills())
+arch = json.loads((s.hermes.HSK_DIR / "approved" / "99990001.json").read_text())
+check("自動: failed で手順が当てる前のままなら、承認待ちから外し、跡は「当てられませんでした」。同じ回で次の書き足しを当てる",
+      (n, acts(), entry_of("99990001"), hsk_of("99990001"), (PEND / "99990001.json").exists(), (arch["result"], "payload" in arch["record"]),
+       base64.b64decode(SNAPS["g1"]["files"]["SKILL.md"]).decode()),
+      (1, [("approve", "99990001"), ("reject", "99990001"), ("approve", "gggggg02")],
+       [("failed", False, f"当てられませんでした（{MATCH}）。手順は変わっていないので、承認待ちから外しました")], ("failed", False), False, ("failed", True), "前"))
+check("自動: 外した書き足しは、日の数に数える（当てようとした数）", learned()["today"], 2)
+record("99990001", "g1", at=time.time())  # 相手が、外された記録と同じものを置き直す
+SCALLS.clear()
+before_today = learned()["today"]
+asyncio.run(s.hermes._learn_skills())
+with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+    again = [i for i in c.get("/api/hermes/skills").json()["items"] if i["id"] == "99990001"][0]
+    manual = c.post("/api/hermes/skills/approve", json={"id": again["id"], "v": again["v"]}).json()
+check("自動: 外した書き足しと同じ記録を置き直されても、試し直さない（日の数も増えない）。画面でも採れず、捨てるだけ",
+      (acts(), learned()["today"] - before_today, again["state"], again["can_apply"], manual["ok"], manual["reason"], acts()),
+      ([], 0, "failed", False, False, "failed", []))
+(PEND / "99990001.json").unlink()
+old = json.loads(s.hermes.HSK_FILE.read_text())
+old["items"]["99990001"]["at"] = time.time() - s.hermes.HSK_KEEP - 86400  # 外してから 31 日たった
+old["items"]["oldunknown"] = {"state": "unknown", "at": time.time() - s.hermes.HSK_KEEP - 86400, "v": "v", "summary": "", "note": ""}
+s.hermes.HSK_FILE.write_text(json.dumps(old))
+s.hermes._hsk_tidy(set())
+record("99990001", "g1", at=time.time())
+SCALLS.clear()
+asyncio.run(s.hermes._learn_skills())
+kept = json.loads(s.hermes.HSK_FILE.read_text())["items"]
+check("自動: 外した id の印は 30 日を過ぎても消さない（置き直されても試し直さない）。ほかの古い印は、これまでどおり片づける",
+      (acts(), kept.get("99990001", {}).get("state"), "oldunknown" in kept), ([], "failed", False))
+(PEND / "99990001.json").unlink()
+FAIL["reject"] = {"result": "rejected", "discarded": False}
+record("99990007", "g1", at=time.time())
+SCALLS.clear()
+asyncio.run(s.hermes._learn_skills())
+FAIL["reject"] = None
+check("自動: 外す台本が「消せなかった」と答えたら、外した扱いにせず「分からない」に残す（試し直さない）",
+      (acts(), [st for st, u, note in entry_of("99990007")], hsk_of("99990007"), (PEND / "99990007.json").exists(), asyncio.run(s.hermes._learn_skills()), acts()[2:]),
+      ([("approve", "99990007"), ("reject", "99990007")], ["unknown"], ("unknown", False), True, 0, []))
+(PEND / "99990007.json").unlink()
+fresh_day()
+FAIL["partial"] = True
+record("99990003", "g3", at=time.time())
+record("gggggg04", "g4", at=time.time() + 1)
+SCALLS.clear()
+asyncio.run(s.hermes._learn_skills())
+FAIL["partial"] = False
+check("自動: failed でも手順が変わっていたら（途中まで書いた）、外さず「分からない」に残し、その回はもう当てない",
+      (acts(), [(st, u, note.startswith("当たったか分かりません")) for st, u, note in entry_of("99990003")], hsk_of("99990003"), (PEND / "99990003.json").exists()),
+      ([("approve", "99990003")], [("unknown", False, True)], ("unknown", False), True))
+asyncio.run(s.hermes._learn_skills())  # gggggg04 を当てて片づける
+record("99990005", "g5", at=time.time())
+fresh_day()
+FAIL["noafter"] = True
+SCALLS.clear()
+LCALLS.clear()
+asyncio.run(s.hermes._learn_skills())
+FAIL["noafter"] = False
+check("自動: 確かめに使うのは、失敗した台本が鍵を持ったまま読んだ指紋だけ（鍵の外で読み直さない）", [m for m, r in LCALLS], ["snap"])
+check("自動: failed の台本が指紋を返さなければ、外さず「分からない」に残す", (acts(), hsk_of("99990005"), (PEND / "99990005.json").exists()),
+      ([("approve", "99990005")], ("unknown", False), True))
+for pid, out, want_verify, label in (("99990061", {"result": "timeout", "why": "時間切れ"}, True, "時間切れ（終わりを確かめるまで次を当てない）"),
+                                     ("99990062", {"result": "changed", "why": "承認待ちの記録が変わっていました"}, False, "記録が変わっていた"),
+                                     ("99990063", {"result": "error", "why": "docker を動かせません"}, False, "動かせない")):
+    record(pid, "g6", at=time.time())
+    fresh_day()
+    FAIL["reject"] = out
+    SCALLS.clear()
+    asyncio.run(s.hermes._learn_skills())
+    FAIL["reject"] = None
+    check(f"自動: 外す台本が {label} なら、「分からない」に残す", (acts(), [st for st, u, note in entry_of(pid)], hsk_of(pid), (PEND / f"{pid}.json").exists()),
+          ([("approve", pid), ("reject", pid)], ["unknown"], ("unknown", want_verify), True))
+    (PEND / f"{pid}.json").unlink()
+    RUNNING["v"] = False
+    asyncio.run(s.hermes._learn_skills())  # 終わりを確かめる（時間切れのあと）
+real_finish, real_wj = s.hermes._hsk_finish, s.hermes.core.write_json
+seen = {}
+
+
+def reject_then_die(c, mode, pid, raw, wait=90, env=None, script=None):
+    if mode == "reject" and pid == "99990071":
+        seen["at_reject"] = hsk_of(pid)[0]  # 記録を消す台本が動く時点の、状態のファイルの印
+    return failing_run(c, mode, pid, raw, wait, env, script)
+
+
+s.hermes.hermes_skills.run_script = reject_then_die
+s.hermes._hsk_finish = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("記録を消した直後に本体が止まった"))
+record("99990071", "g1", at=time.time())
+fresh_day()
+try:
+    asyncio.run(s.hermes._learn_skills())
+except RuntimeError:
+    pass
+s.hermes._hsk_finish = real_finish
+s.hermes._recover_hermes_skills()
+check("自動: 記録を消す前に、二度試さない印を書いてある（消した直後に本体が止まっても、起動し直したあとに failed の印が残る）",
+      (seen.get("at_reject"), hsk_of("99990071")[0], (PEND / "99990071.json").exists()), ("failed", "failed", False))
+s.hermes.core.write_json = lambda path, data: (_ for _ in ()).throw(OSError("書けない")) if str(path) == str(s.hermes.HSK_FILE) and any(
+    v.get("state") == "failed" and k == "99990072" for k, v in data.get("items", {}).items()) else real_wj(path, data)
+record("99990072", "g1", at=time.time())
+SCALLS.clear()
+asyncio.run(s.hermes._learn_skills())
+s.hermes.core.write_json = real_wj
+check("自動: 二度試さない印を書けなければ、記録を消さず「分からない」に残す", (acts(), hsk_of("99990072")[0], (PEND / "99990072.json").exists()),
+      ([("approve", "99990072")], "unknown", True))
+(PEND / "99990072.json").unlink()
+s.hermes.hermes_skills.run_script = failing_run
+RUNNING["v"] = False
+asyncio.run(s.hermes._learn_skills())
+def reject_lost(c, mode, pid, raw, wait=90, env=None, script=None):  # 記録は消えたが、答えは届かなかった（時間切れ）
+    if mode == "reject" and pid == "99990073":
+        SCALLS.append((mode, pid))
+        (PEND / f"{pid}.json").unlink()
+        return {"result": "timeout", "why": "時間切れ"}
+    return failing_run(c, mode, pid, raw, wait, env, script)
+
+
+s.hermes.hermes_skills.run_script = reject_lost
+record("99990073", "g1", at=time.time())
+asyncio.run(s.hermes._learn_skills())
+RUNNING["v"] = False
+asyncio.run(s.hermes._learn_skills())  # 終わりを確かめる
+old = json.loads(s.hermes.HSK_FILE.read_text())
+lost_state = old["items"]["99990073"]["state"]
+old["items"]["99990073"]["at"] = time.time() - s.hermes.HSK_KEEP - 86400
+s.hermes.HSK_FILE.write_text(json.dumps(old))
+s.hermes._hsk_tidy(set())
+record("99990073", "g1", at=time.time())
+SCALLS.clear()
+asyncio.run(s.hermes._learn_skills())
+check("自動: 記録を消す台本の答えが届かず「分からない」になった id も、印は 30 日を過ぎても残る（置き直されても試し直さない）",
+      (lost_state, hsk_of("99990073")[0], acts()), ("unknown", "unknown", []))
+(PEND / "99990073.json").unlink()
+s.hermes.hermes_skills.run_script = failing_run
+rec9 = {"summary": "台本の答え"}
+check("台本が「dropped」のような答えを返しても、外した扱いにはしない（外したと決めるのは本体だけ。画面の「採る」の failed も「分からない」のまま）",
+      (s.hermes._hsk_finish("99999998", "v", rec9, b"{}", {"result": "dropped", "dropped": True})["reason"],
+       s.hermes._hsk_finish("99999997", "v", rec9, b"{}", {"result": "failed", "why": MATCH})["reason"],
+       s.hermes._hsk_finish("99999996", "v", rec9, b"{}", {"result": "applied"}, True)["ok"], hsk_of("99999996")[0]),
+      ("unknown", "unknown", True, "applied"))
+s.hermes.hermes_skills.run_script = real_skills_run
+fresh_day()
+
 # ---------- 2b. コンテナの中の台本の入口（Hermes の部品を偽物にして、台本そのものを動かす） ----------
 import subprocess  # noqa: E402
 FAKE = Path(TMP) / "fake-hermes"
@@ -381,6 +572,8 @@ def apply_skill_pending(payload):
         for op in ops:
             f = _find_skill(op["name"])
             d = f["path"] if f else _resolve_skill_dir(op["name"], op.get("category"))
+            if os.environ.get("VL_TEST_FAIL") == "nomatch" or (os.environ.get("VL_TEST_FAIL") == "partial" and op is not ops[0]):
+                return json.dumps({"success": False, "error": "operations[%d] failed: Could not find a match for old" % ops.index(op)})
             Path(d).mkdir(parents=True, exist_ok=True)
             ns = op.get("new_string", "")
             (Path(d) / "SKILL.md").write_text(ns if ns.startswith("---") else "当てた: " + ns)
@@ -508,6 +701,23 @@ a1 = apply_script("apapap01", pa, e0)
 check("自動で当てる台本: 控えの指紋と同じなら当て、承認待ちから消し、鍵を持ったまま読んだ当てた直後の指紋を返す",
       (a1.get("result"), a1.get("after") == {"voice-loop/ap": hl.digest(hl.snap_dir(str(SK2), "voice-loop/ap"))}, (SK2 / "voice-loop" / "ap" / "SKILL.md").read_text(),
        (PEND2 / "apapap01.json").exists()), ("applied", True, "当てた: 後", False))
+(SK2 / "voice-loop" / "ap" / "SKILL.md").write_text("前\n")
+(SK2 / "voice-loop" / "ap2").mkdir(parents=True, exist_ok=True)
+(SK2 / "voice-loop" / "ap2" / "SKILL.md").write_text("前\n")
+pa2 = {"action": "batch", "operations": [{"action": "patch", "name": "ap", "old_string": "前", "new_string": "後"},
+                                         {"action": "patch", "name": "ap2", "old_string": "無い行", "new_string": "後"}]}
+e2 = {k: hl.digest(hl.snap_dir(str(SK2), k)) for k in ("voice-loop/ap", "voice-loop/ap2")}
+f1 = apply_script("apapap02", pa2, e2, extra={"VL_TEST_FAIL": "nomatch"})
+check("自動で当てる台本: 当てられなかったら failed と、鍵を持ったまま読んだ指紋を返す（何も書かれていなければ、控えと同じ）。記録は消さない",
+      (f1.get("result"), f1.get("after") == e2, s.hermes._hlearn_unchanged(f1.get("after"), {k: hl.snap_dir(str(SK2), k) for k in e2}), (PEND2 / "apapap02.json").exists()),
+      ("failed", True, True, True))
+before2 = {k: hl.snap_dir(str(SK2), k) for k in e2}
+f2 = apply_script("apapap03", pa2, e2, extra={"VL_TEST_FAIL": "partial"})
+check("自動で当てる台本: 途中まで書いて失敗したら、指紋が控えと違う（本体は「変わっていない」と見ない）",
+      (f2.get("result"), (SK2 / "voice-loop" / "ap" / "SKILL.md").read_text(), s.hermes._hlearn_unchanged(f2.get("after"), before2)), ("failed", "当てた: 後", False))
+check("確かめ: 場所が足りない・多い・指紋が字でない・控えが空なら「変わっていない」と見ない",
+      [s.hermes._hlearn_unchanged(a, b) for a, b in (({"voice-loop/ap": e2["voice-loop/ap"]}, before2), ({**e2, "x": "0" * 64}, before2),
+                                                      ({k: before2[k] for k in e2}, before2), ({}, {}), (None, before2))], [False] * 5)
 (SK2 / "voice-loop" / "ap" / "SKILL.md").write_text("前\n")
 a2 = apply_script("apapap02", pa, {"voice-loop/ap": "0" * 64})
 check("自動で当てる台本: 控えの指紋と違えば当てない（承認待ちに残す）", (a2.get("result"), (SK2 / "voice-loop" / "ap" / "SKILL.md").read_text(), (PEND2 / "apapap02.json").exists()),

@@ -224,16 +224,18 @@ from tools.skill_manager_tool import apply_skill_pending
 # 自動で当てるとき（hermes_learn.APPLY_SCRIPT）は、Hermes の手順の鍵を取り、控えを取ったときから変わっていないかを確かめてから当て、
 # 当てたあとの指紋を取り終えるまで鍵を持つ（台本の終わりで離す）。画面の「採る」のときは、この台本には無い
 learn_after = globals()["LEARN_HOLD"](rec["payload"]) if "LEARN_HOLD" in globals() else None
+# 自動で当てて失敗したときは、鍵を持ったまま読んだ、失敗の直後の指紋も返す（本体が、控えと同じ＝何も書かれていないかを比べる）
+failed_after = lambda: {"after": learn_after()} if learn_after else {}
 try:
     res = apply_skill_pending(rec["payload"])
 except Exception as e:
-    done(result="failed", why=type(e).__name__ + ": " + str(e)[:200])
+    done(result="failed", why=type(e).__name__ + ": " + str(e)[:200], **failed_after())
 try:
     data = json.loads(res)
 except Exception:
     data = None
 if not isinstance(data, dict) or data.get("success") is not True or data.get("staged"):
-    done(result="failed", why=str(data.get("error") if isinstance(data, dict) and data.get("error") else res)[:300])
+    done(result="failed", why=str(data.get("error") if isinstance(data, dict) and data.get("error") else res)[:300], **failed_after())
 done(result="applied", discarded=bool(wa.discard_pending(wa.SKILLS, pid)), **({"after": learn_after()} if learn_after else {}))
 '''
 SCRIPT = ("import re\n" + inspect.getsource(shape_problem)
