@@ -492,20 +492,21 @@ check("hubctl の --since: strptime に渡す形（% を含む文字列）には
       (bool(_calls), bool(_fmts), all("%Y" in f for f in _fmts)), (True, True, True))
 _g = {"re": re}
 exec(compile(ast.Module([_fn], []), "hubctl", "exec"), _g)
+_sv = _g["since_value"]
 _jst = _dt.timezone(_dt.timedelta(hours=9))
-_now = _dt.datetime.now(_jst)
+_at = lambda *a: _dt.datetime(*a, tzinfo=_jst)  # noqa: E731
+_ts = lambda *a: _at(*a).timestamp()  # noqa: E731
+_NOW = _at(2026, 11, 23, 12, 0)  # 「いま」を固定する（実行した日で結果が変わらないように。codex-review の指摘）
 with warnings.catch_warnings():
     warnings.simplefilter("error")  # 3.13・3.14 の警告も失敗にする
-    _past = (_now - _dt.timedelta(days=3)).replace(second=0, microsecond=0)
-    _future = (_now + _dt.timedelta(days=3)).replace(second=0, microsecond=0)
-    _got = (_g["since_value"](_past.strftime("%m/%d %H:%M")), _g["since_value"](_future.strftime("%m/%d %H:%M")),
-            _g["since_value"]("13/01 00:00"), _g["since_value"]("02/30"), _g["since_value"]("きのう"))
-    _p = _past.strftime("%m/%d")
-    _same = [_g["since_value"](x) for x in (f"{_p}  {_past:%H:%M}", f"{_p}\t{_past:%H:%M}", f"{_p} {_past.hour}:{_past.minute}")]
-check("hubctl の --since: 「MM/DD HH:MM」はいまの年、未来になるなら去年。無い日付・読めない文は None（警告を出さない）",
-      (_got[0] == _past.timestamp(), _dt.datetime.fromtimestamp(_got[1], _jst).year == _future.year - 1 if _got[1] else None, _got[2:]),
-      (True, True, (None, None, None)))
-check("hubctl の --since: 前と同じく、空白 2 つ・タブ・0 を付けない時刻（11/18 0:0）も読む（a2a 35d3b740 の指摘）", _same, [_past.timestamp()] * 3)
+    _got = [_sv(x, _NOW) for x in ("11/20 09:00", "11/26 09:00", "11/20", "13/01 00:00", "02/30", "きのう")]
+    _same = [_sv(x, _NOW) for x in ("11/20  09:00", "11/20\t09:00", "11/20 9:0")]
+    _leap = [_sv("02/29 10:00", _at(2028, 3, 1)), _sv("02/29", _at(2029, 3, 1)), _sv("02/29", _at(2028, 2, 26)), _sv("02/29", _at(2027, 3, 1))]
+check("hubctl の --since: 「MM/DD HH:MM」はいまの年、未来になるなら去年。日付だけも読む。無い日付・読めない文は None（警告を出さない）",
+      _got, [_ts(2026, 11, 20, 9, 0), _ts(2025, 11, 26, 9, 0), _ts(2026, 11, 20), None, None, None])
+check("hubctl の --since: 前と同じく、空白 2 つ・タブ・0 を付けない時刻（11/20 9:0）も読む（a2a 35d3b740 の指摘）", _same, [_ts(2026, 11, 20, 9, 0)] * 3)
+check("hubctl の --since: 閏日 02/29 は、いまより前の最も近い閏年の日。今年がまだ来ていなくて去年に無ければ None",
+      _leap, [_ts(2028, 2, 29, 10, 0), _ts(2028, 2, 29), None, None])
 
 # ---------- hubctl sent（127.0.0.1:8792 に本体の写しを立てる） ----------
 import uvicorn  # noqa: E402
