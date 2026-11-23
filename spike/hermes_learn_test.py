@@ -377,8 +377,29 @@ check("自動: failed で手順が当てる前のままなら、承認待ちか�
       (n, acts(), entry_of("99990001"), hsk_of("99990001"), (PEND / "99990001.json").exists(), (arch["result"], "payload" in arch["record"]),
        base64.b64decode(SNAPS["g1"]["files"]["SKILL.md"]).decode()),
       (1, [("approve", "99990001"), ("reject", "99990001"), ("approve", "gggggg02")],
-       [("failed", False, f"当てられませんでした（{MATCH}）。手順は変わっていないので、承認待ちから外しました")], ("rejected", False), False, ("failed", True), "前"))
+       [("failed", False, f"当てられませんでした（{MATCH}）。手順は変わっていないので、承認待ちから外しました")], ("failed", False), False, ("failed", True), "前"))
 check("自動: 外した書き足しは、日の数に数える（当てようとした数）", learned()["today"], 2)
+record("99990001", "g1", at=time.time())  # 相手が、外された記録と同じものを置き直す
+SCALLS.clear()
+before_today = learned()["today"]
+asyncio.run(s.hermes._learn_skills())
+with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+    again = [i for i in c.get("/api/hermes/skills").json()["items"] if i["id"] == "99990001"][0]
+    manual = c.post("/api/hermes/skills/approve", json={"id": again["id"], "v": again["v"]}).json()
+check("自動: 外した書き足しと同じ記録を置き直されても、試し直さない（日の数も増えない）。画面でも採れず、捨てるだけ",
+      (acts(), learned()["today"] - before_today, again["state"], again["can_apply"], manual["ok"], manual["reason"], acts()),
+      ([], 0, "failed", False, False, "failed", []))
+(PEND / "99990001.json").unlink()
+FAIL["reject"] = {"result": "rejected", "discarded": False}
+record("99990007", "g1", at=time.time())
+SCALLS.clear()
+asyncio.run(s.hermes._learn_skills())
+FAIL["reject"] = None
+check("自動: 外す台本が「消せなかった」と答えたら、外した扱いにせず「分からない」に残す（試し直さない）",
+      (acts(), [st for st, u, note in entry_of("99990007")], hsk_of("99990007"), (PEND / "99990007.json").exists(), asyncio.run(s.hermes._learn_skills()), acts()[2:]),
+      ([("approve", "99990007"), ("reject", "99990007")], ["unknown"], ("unknown", False), True, 0, []))
+(PEND / "99990007.json").unlink()
+fresh_day()
 FAIL["partial"] = True
 record("99990003", "g3", at=time.time())
 record("gggggg04", "g4", at=time.time() + 1)
