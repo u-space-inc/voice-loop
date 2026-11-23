@@ -28,7 +28,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 TMP = Path(tempfile.mkdtemp()).resolve()
-os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_VOICE_URL="http://127.0.0.1:8796")
+os.environ.update(VL_CONFIG_DIR=f"{TMP}/cfg", VL_STATE_DIR=f"{TMP}/state", VL_VOICE_URL="http://127.0.0.1:8796", VL_HERMES_HOME=f"{TMP}/hermes",
+                  # 本物の聞き取り・Hermes に届かないよう、何も待ち受けていないポートを指す（a2a 35d3b740 の指摘）
+                  VL_WHISPER="http://127.0.0.1:9/v1/audio/transcriptions", VL_HERMES_URL="http://127.0.0.1:9")
 os.environ.pop("VL_HUB", None)
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -68,6 +70,7 @@ async def nothing(*a, **k):
 s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.hermes.watch_hermes_skills = nothing
 s.list_agents = lambda: [{"pane": "w1:p1", "title": "記事", "cwd": "/x/blog", "kind": "claude", "session": "s1", "status": "idle", "name": "", "hub": False}]
 s.jsonl_path = lambda a: None
+s.transcribe = lambda audio, filename: ""  # 作り物の録音は聞き取りに出さない（聞き取れなかった扱い）
 
 srv = uvicorn.Server(uvicorn.Config(s.app, host="127.0.0.1", port=PORT, log_level="warning"))
 th = threading.Thread(target=srv.run, daemon=True)

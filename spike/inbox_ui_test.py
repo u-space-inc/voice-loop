@@ -208,6 +208,8 @@ def run(page, who):
     page.wait_for_function("document.querySelectorAll('#sitBody > .ibCard').length === 2")
     check(f"{who} 済の直後に別の件を開いても「戻す」が出て、戻せる", (in_item, cards(page), CMDS), ((1, "処理時間のアラーム"), [TITLE1, "処理時間のアラーム"], []))
     # 5 秒以内に 2 枚続けて「済」を押しても、件ごとに戻せる（先に押した件の「戻す」が消えない）
+    # 試験の「戻す」の窓（2 秒）では、遅い実行環境の WebKit だと 2 枚目を押し終える前に 1 枚目の窓が切れることがある（CI で 1 回あった）。この場面だけ広げる
+    keep_undo3, ib.UNDO = ib.UNDO, 8.0
     page.locator("#sitBody > .ibCard").nth(0).locator("button.done").click()
     page.wait_for_function("ibUndos.size === 1")
     page.locator("#sitBody > .ibCard").nth(0).locator("button.done").click()
@@ -216,6 +218,7 @@ def run(page, who):
     page.click('#sitBody .ibToast[data-n="1"] button')
     page.click('#sitBody .ibToast[data-n="2"] button')
     page.wait_for_function("document.querySelectorAll('#sitBody > .ibCard').length === 2")
+    ib.UNDO = keep_undo3
     check(f"{who} 2 枚続けて済にしても、件ごとに「戻す」が出て、先に押した件も戻せる", (sorted(toasts), cards(page), CMDS), (["1", "2"], [TITLE1, "処理時間のアラーム"], []))
     # 「済」を押す前に始まった一覧の読み直しが遅れて届いても、消したカードを戻さない
     stash = []
@@ -477,7 +480,9 @@ def run(page, who):
           (page.text_content(".ibItem h3"), page.input_value("#agent"), page.is_visible("#replyBar")), (TITLE1, "w1:p1", False))
     page.goto(BASE + "/#i=999")
     page.wait_for_selector("#sitBody .ibCard")
-    check(f"{who} 無い番号は案内だけ出し、一覧を開く", "判断待ち [999] は、片づいたか見つかりませんでした" in page.text_content("#sitBody"), True)
+    # 案内は、一覧を出したあとに本体へ 1 件だけ聞いて、無かったときに出る（一覧のカードが先に見える。WebKit では聞く前に確かめて落ちていた）
+    noted = wait(lambda: "判断待ち [999] は、片づいたか見つかりませんでした" in page.text_content("#sitBody"), 5)
+    check(f"{who} 無い番号は案内だけ出し、一覧を開く", bool(noted), True)
     page.goto(BASE + "/")
     page.wait_for_function("document.getElementById('conn').classList.contains('on')")
     page.evaluate("location.hash = '#inbox'")

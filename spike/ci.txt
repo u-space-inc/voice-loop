@@ -1,0 +1,69 @@
+# CI（.github/workflows/tests.yml）で、main 宛ての PR と main への push のたびに、上から 1 本ずつ回す試験。1 行に 1 本。
+# 「- 」で始まる行は CI で回さないもの（ファイル名のあとに理由）。spike/ の .py は、どれかに必ず載せる（spike/env_test.py が確かめる）。
+# 回すのは、常駐の 8790・本物の herdr・コンテナ・Hermes・外のサービスに触れないものだけ（各ファイルの先頭の説明）。
+
+agent_name_test.py
+answer_form_test.py
+answer_test.py
+artifact_test.py
+artifact_ui_test.py
+ask_form_test.py
+attach_test.py
+blink_test.py
+brain_boundary_test.py
+check_test.py
+claims_test.py
+close_test.py
+consent_test.py
+device_listen_test.py
+device_test.py
+doctor_probe_test.py
+env_test.py
+face_ui_test.py
+form_ui_test.py
+frame_ui_test.py
+heard_test.py
+hermes_effort_test.py
+hermes_hub_test.py
+hermes_learn_test.py
+hermes_log_test.py
+hermes_memory_test.py
+hermes_session_test.py
+hermes_skills_test.py
+hermes_skills_ui_test.py
+hub_read_task_test.py
+inbox_test.py
+inbox_ui_test.py
+notice_test.py
+origin_guard_test.py
+pc_ui_test.py
+power_test.py
+progress_test.py
+progress_ui_test.py
+push_test.py
+push_ui_test.py
+question_ui_test.py
+reply_html_test.py
+sent_log_test.py
+slack_merge_test.py
+slack_report_test.py
+tasks_test.py
+teams_watch_test.py
+topics_test.py
+typed_enter_test.py
+voice_off_test.py
+watch_scripts_test.py
+whisper_call_test.py
+
+# CI で回さないもの
+- ask_tui.py  試験が共有する部品（試験ではない）
+- container_guard_test.py  本物の Docker のコンテナに入って確かめる
+- guard_test.py  本物の herdr のペインを使う（引数でペインを渡す）
+- hermes_memory_container_test.py  本物の Hermes のコンテナで確かめる
+- hermes_skills_container_test.py  本物の Hermes のコンテナで確かめる
+- make_icon.py  アイコンを描く道具（試験ではない）
+- narr_ab.py  本物の語り手（Anthropic）に頼んで比べる道具（試験ではない）
+- question_screens.py  試験が共有する部品（試験ではない）
+- report_queue_test.py  常駐の 8790 と本物のハブ（Hermes）に頼む
+- report_test.py  常駐の 8790 と本物のハブ（Hermes）に頼む
+- ui_test.py  本物の herdr のペインを使う（引数でペインを渡す）

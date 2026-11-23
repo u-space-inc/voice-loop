@@ -156,18 +156,27 @@ with sync_playwright() as pw:
     head = lambda: pg.text_content(".ask .head")
     check("問いの見出し（名前なし）", head(), "ハブの記事｜質問で止まっています。端末かハブで答えてください")
 
-    def relist(name):
+    def relist(name, want):
+        """名前を返す一覧に替えて読み直させ、先頭の相手の表示を返す。遅い実行環境でも、want になるまで最大 10 秒待つ
+        （決め打ちの 0.3 秒では、CI で描き直しの前に読んで落ちた）。ならなければ、そのときの表示を返す（確かめは呼ぶ側）"""
         entry = dict(HUB, agent_name=name) if name is not None else dict(HUB)
         pg.unroute("**/api/agents")
         pg.route("**/api/agents", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps([entry, WORKER])))
         pg.evaluate("loadAgents()")
-        pg.wait_for_timeout(300)
-        return pg.evaluate("[...document.querySelectorAll('#agent option')].filter(o => o.value).map(o => o.textContent)[0]")
+        first = lambda: pg.evaluate("[...document.querySelectorAll('#agent option')].filter(o => o.value).map(o => o.textContent)[0]")  # noqa: E731
+        end = time.time() + 10
+        while first() != want and time.time() < end:
+            pg.wait_for_timeout(100)
+        return first()
 
-    check("開いたまま、名前を受け取る: 一覧", relist("ヴィカ"), "ヴィカ｜全セッションを統括 [idle]")
-    check("開いたまま、名前を受け取る: 先に描いた問いの見出しも替わる（セッションの名前の「ハブ」は替えない）", head(), "ハブの記事｜質問で止まっています。端末かヴィカで答えてください")
-    check("開いたまま、名前が変わる", (relist("ミカ"), pg.text_content("#hubStart")), ("ミカ｜全セッションを統括 [idle]", "ミカを起動"))
-    check("開いたまま、名前を消す: これまでの表示に戻る", (relist(""), pg.text_content("#hubStart"), head()),
+    check("開いたまま、名前を受け取る: 一覧", relist("ヴィカ", "ヴィカ｜全セッションを統括 [idle]"), "ヴィカ｜全セッションを統括 [idle]")
+    want_head = "ハブの記事｜質問で止まっています。端末かヴィカで答えてください"
+    end = time.time() + 10
+    while head() != want_head and time.time() < end:  # 描き直しを待つ（遅い実行環境）
+        pg.wait_for_timeout(100)
+    check("開いたまま、名前を受け取る: 先に描いた問いの見出しも替わる（セッションの名前の「ハブ」は替えない）", head(), want_head)
+    check("開いたまま、名前が変わる", (relist("ミカ", "ミカ｜全セッションを統括 [idle]"), pg.text_content("#hubStart")), ("ミカ｜全セッションを統括 [idle]", "ミカを起動"))
+    check("開いたまま、名前を消す: これまでの表示に戻る", (relist("", "ハブ（Hermes）｜全セッションを統括 [idle]"), pg.text_content("#hubStart"), head()),
           ("ハブ（Hermes）｜全セッションを統括 [idle]", "ハブを起動", "ハブの記事｜質問で止まっています。端末かハブで答えてください"))
     b.close()
 
