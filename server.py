@@ -23,6 +23,7 @@ import random
 import re
 import secrets
 import shutil
+import signal
 import stat
 import struct
 import subprocess
@@ -3349,17 +3350,40 @@ async def ws(sock: WebSocket):
 hermes.setup(sys.modules[__name__])  # 頭の部品に本体を渡す（このモジュールの名前は、起動のしかたで server か __main__ になる）
 
 
+def quiet_server(uvicorn, config):
+    """止める合図（SIGTERM・SIGINT）を自分では受けない uvicorn の受け口。合図は serve_all がまとめて受け、全部の受け口を止めてから終える
+    （uvicorn 0.54 の受け口は、止まったあとに合図を出し直してプロセスを終えるので、ほかの受け口の止める手順が飛ぶ。a2a ca4d694e）。"""
+    class Quiet(uvicorn.Server):
+        def capture_signals(self):
+            return contextlib.nullcontext()
+    return Quiet(config)
+
+
 def device_servers(uvicorn) -> list:
     """機械の口（VL_DEVICE_PORTS）の受け口。この Mac の中（127.0.0.1）だけで待つ（tailnet へは Tailscale Serve が出す）。同じ本体（app）を使い、
-    起動と終わりの処理（lifespan）は画面の口の受け口だけが受け持つ（見張りなどを二重に動かさない）。止める合図も画面の口の受け口だけが受ける。"""
-    class Quiet(uvicorn.Server):
-        def capture_signals(self):  # 止める合図は画面の口の受け口が受け、終わるときにこちらも止める
-            return contextlib.nullcontext()
-    return [Quiet(uvicorn.Config(app, host="127.0.0.1", port=p, proxy_headers=False, lifespan="off")) for p in sorted(device_ports())]
+    起動と終わりの処理（lifespan）は画面の口の受け口だけが受け持つ（見張りなどを二重に動かさない）。"""
+    return [quiet_server(uvicorn, uvicorn.Config(app, host="127.0.0.1", port=p, proxy_headers=False, lifespan="off")) for p in sorted(device_ports())]
 
 
 async def serve_all(main, extras: list):
-    """画面の口の受け口と、機械の口の受け口を一緒に動かす。画面の口の受け口が終われば、機械の口の受け口も止める。"""
+    """画面の口の受け口と、機械の口の受け口を一緒に動かす。止める合図はここで受けて全部に伝え（2 回目は待たずに止める）、全部が止まってから戻る。
+    画面の口の受け口が終われば（起動に失敗したときも）、機械の口の受け口も止める。"""
+    loop = asyncio.get_running_loop()
+    servers = [main, *extras]
+
+    def stop():
+        hard = any(x.should_exit for x in servers)
+        for x in servers:
+            x.should_exit = True
+            x.force_exit = x.force_exit or hard
+
+    sigs = []
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop)
+            sigs.append(sig)
+        except (NotImplementedError, RuntimeError):
+            pass
     tasks = [asyncio.create_task(x.serve()) for x in extras]
     try:
         await main.serve()
@@ -3367,11 +3391,14 @@ async def serve_all(main, extras: list):
         for x in extras:
             x.should_exit = True
         await asyncio.gather(*tasks, return_exceptions=True)
+        for sig in sigs:
+            loop.remove_signal_handler(sig)
 
 
 if __name__ == "__main__":
     import uvicorn
 
     # proxy_headers を切る: 接続元を X-Forwarded-For で書き換えさせない（コンテナが偽った値で、接続のもとの確かめを外せないように。origin_guard）
-    main_server = uvicorn.Server(uvicorn.Config(app, host=os.environ.get("VL_HOST", "127.0.0.1"), port=int(os.environ.get("VL_PORT", "8790")), proxy_headers=False))
+    main_server = quiet_server(uvicorn, uvicorn.Config(app, host=os.environ.get("VL_HOST", "127.0.0.1"), port=int(os.environ.get("VL_PORT", "8790")),
+                                                       proxy_headers=False))
     asyncio.run(serve_all(main_server, device_servers(uvicorn)))

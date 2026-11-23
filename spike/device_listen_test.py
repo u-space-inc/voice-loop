@@ -5,6 +5,8 @@
   - 起動の処理（lifespan）は 1 回だけ（機械の口の受け口では動かさない。見張りを二重にしない）
   - 機械の口では画面も API も 403、WebSocket は機械として受ける（置き場所は口で決まる）。画面の口は、これまでどおり
   - 画面の口の受け口を止めると、機械の口の受け口も止まる
+  - 別のプロセスに本物の SIGTERM を送ると、機械の口の WebSocket も閉じる合図を受けて閉じ、画面の口の終わりの処理（lifespan）も動き、
+    プロセスはふつうに終わる（uvicorn が合図を出し直してその場で終わり、機械の口の止める手順が飛ぶことがあった。a2a ca4d694e）
 使い方: uv run spike/device_listen_test.py"""
 import asyncio
 import json
@@ -75,7 +77,7 @@ extras = s.device_servers(uvicorn)
 check("書けば、機械の口ごとに 1 つ・127.0.0.1 で待つ・起動の処理は動かさない",
       [(x.config.host, x.config.port, x.config.lifespan) for x in extras], [("127.0.0.1", 8792, "off")])
 
-main = uvicorn.Server(uvicorn.Config(s.app, host="127.0.0.1", port=8791, proxy_headers=False, log_level="warning"))
+main = s.quiet_server(uvicorn, uvicorn.Config(s.app, host="127.0.0.1", port=8791, proxy_headers=False, log_level="warning"))
 for x in extras:
     x.config.log_level = "warning"
 loop = asyncio.new_event_loop()
@@ -110,6 +112,57 @@ except ImportError:
 main.should_exit = True
 th.join(10)
 check("画面の口の受け口を止めると、機械の口の受け口も止まる", (th.is_alive(), listening(8791), listening(8792)), (False, False, False))
+
+# ---------- 別のプロセスに本物の SIGTERM ----------
+import signal  # noqa: E402
+import subprocess  # noqa: E402
+
+CHILD = r"""
+import asyncio, os, sys
+sys.path.insert(0, os.environ["ROOT"])
+import uvicorn
+import server as s
+async def nothing(*a, **k):
+    return None
+async def watcher():
+    try:
+        await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+        print("LIFESPAN-END", flush=True)
+        raise
+s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.hermes.watch_hermes_skills = nothing
+s.HUB.watchers = lambda: [watcher]
+s.list_agents = lambda: []
+main = s.quiet_server(uvicorn, uvicorn.Config(s.app, host="127.0.0.1", port=8791, proxy_headers=False, log_level="warning"))
+extras = s.device_servers(uvicorn)
+asyncio.run(s.serve_all(main, extras))
+print("BYE", flush=True)
+"""
+env = {**os.environ, "ROOT": str(ROOT), "VL_DEVICE_PORTS": "home=8792"}
+child = subprocess.Popen([sys.executable, "-c", CHILD], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+for _ in range(200):
+    if listening(8791) and listening(8792):
+        break
+    time.sleep(0.05)
+closed = "接続できない"
+try:
+    from websockets.exceptions import ConnectionClosed  # noqa: E402
+    from websockets.sync.client import connect  # noqa: E402
+    with connect("ws://127.0.0.1:8792/ws", open_timeout=5) as ws:
+        time.sleep(0.3)
+        child.send_signal(signal.SIGTERM)
+        try:
+            ws.recv(timeout=10)
+            closed = "閉じなかった"
+        except ConnectionClosed as e:
+            closed = "閉じる合図を受けた" if e.rcvd is not None else "合図なしで切れた"
+except ImportError:
+    child.send_signal(signal.SIGTERM)
+    closed = "閉じる合図を受けた"
+out = child.communicate(timeout=20)[0]
+check("SIGTERM: 機械の口の WebSocket は、閉じる合図を受けて閉じる", closed, "閉じる合図を受けた")
+check("SIGTERM: 画面の口の終わりの処理（lifespan）が動き、プロセスはふつうに終わる",
+      (child.returncode, "LIFESPAN-END" in out, "BYE" in out), (0, True, True))
 
 bad = [r for r in results if not r[1]]
 for name, ok, got, want in results:
