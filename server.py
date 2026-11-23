@@ -480,6 +480,83 @@ def transcribe(audio: bytes, filename: str) -> str:
     return text
 
 
+# ---------- 聞き取りの表記の直し ----------
+# whisper に作った名前（呼びかけの名前など）を教えると、ほかの語が崩れる（2026-11-23 に合成音声で実測。語彙の並びが文に漏れる・名前がほかの語に入り込む）。
+# 音はほぼ合っていて、ずれるのは表記（「ヴィカ」が「ウィカ」「Wica」）なので、聞き取ったあとの文字を、設定フォルダの辞書で直す。
+# 直すのは、声で入った文の、画面とハブ・セッションに渡す文だけ。承認に答える・閉じるの守り（ハブの発言の台帳）には、直す前の聞き取ったままの言葉を
+# 載せる（辞書の行が「はい」・番号・選択肢の文言・プロジェクト名を作り出しても、守りは通らない。hub_hermes.hermes_turn_begin の said）
+HEARD_FILE = CONFIG_DIR / "heard.txt"
+HEARD_MAX_LINES = 200  # 読む行の上限
+HEARD_MAX_WORD = 40  # 1 つの語の字数の上限（これより長い行は読まない）
+# 行頭に ^ を付けた語は、文の頭の呼びかけだけで直す（ふだんの言葉と重なる形。「ピッカ」）。前に来てよいのは、呼びかけの前置きだけ
+HEARD_HEAD = r"^(?:(?:ねえ|ねぇ|ねー|ね|えっと|え|あの|おい|ほら)[、,\s]*)?"
+HEARD_AFTER = r"(?=[、,。.!！?？\s]|$)"
+
+
+def heard_rules() -> tuple[dict, dict]:
+    """辞書（heard.txt の「聞き取りの表記=直す表記」）。どこでも直す語と、文の頭の呼びかけだけで直す語（行頭の ^）。同じ語は後の行が勝つ。
+    発言のたびに読む（書き足しは次の発言から効く）。ファイルが無い・読めない・形の崩れた行は無視する（いまと同じ動き）。"""
+    anywhere, head = {}, {}
+    try:
+        lines = HEARD_FILE.read_text(encoding="utf-8").splitlines()[:HEARD_MAX_LINES]
+    except (OSError, UnicodeDecodeError):
+        return anywhere, head
+    for line in lines:
+        line = re.split(r"\s#", line, maxsplit=1)[0].strip()  # 行の途中の「 #」からは書き込み（説明）
+        if not line or line.startswith("#"):
+            continue
+        src, sep, dst = line.partition("=")
+        src, dst = src.strip(), dst.strip()
+        at_head = src.startswith("^")
+        src = src[1:].strip() if at_head else src
+        if not sep or not src or not dst or src == dst or len(src) > HEARD_MAX_WORD or len(dst) > HEARD_MAX_WORD:
+            continue
+        rules = head if at_head else anywhere
+        for k in [k for k in rules if re.fullmatch(re.escape(k), src, re.I)]:  # 大文字・小文字だけ違う語（照合では同じ語）も、後の行が勝つ
+            del rules[k]
+        rules[src] = dst
+    return anywhere, head
+
+
+def _heard_rx(rules: dict) -> tuple[str, list[str]]:
+    """辞書の語の並び（長い語から先に当てる）と、並びの番号ごとの直す表記。語ごとに名前付きの組（r0, r1, …）にして、当たった組から直す表記を引く
+    （大文字・小文字の扱いを正規表現に任せ、引き当てで別の折り畳みをしない）。英字で始まる・終わる語は、英単語の一部では当てない。"""
+    def one(w: str) -> str:
+        return ("(?<![A-Za-z])" if w[0].isascii() and w[0].isalpha() else "") + re.escape(w) + ("(?![A-Za-z])" if w[-1].isascii() and w[-1].isalpha() else "")
+    words = sorted(rules, key=len, reverse=True)
+    return "|".join(f"(?P<r{i}>{one(w)})" for i, w in enumerate(words)), [rules[w] for w in words]
+
+
+def fix_heard(text: str) -> str:
+    """声で入った文の表記を、辞書で直す（画面とハブ・セッションに渡す文。守りの台帳には直す前の言葉を載せる）。"""
+    anywhere, head = heard_rules()
+    if not (anywhere or head):
+        return text
+    done = []
+
+    def put(m: re.Match, dsts: list[str]) -> str:
+        i = int(m.lastgroup[1:])
+        done.append(f"{m.group(m.lastgroup)}→{dsts[i]}")
+        return dsts[i]
+
+    # 直した語は、もう一度は直さない（文の頭で直した語に、どこでも直す語を重ねて当てない）
+    segs = [(text, True)]
+    if head:
+        rx, dsts = _heard_rx(head)
+        m = re.match(f"{HEARD_HEAD}(?:{rx}){HEARD_AFTER}", text, flags=re.I)
+        if m:
+            g = m.lastgroup
+            segs = [(text[:m.start(g)], True), (put(m, dsts), False), (text[m.end(g):], True)]
+    if anywhere:
+        rx, dsts = _heard_rx(anywhere)
+        any_rx = re.compile(rx, re.I)
+        segs = [(any_rx.sub(lambda m: put(m, dsts), s) if open_ else s, open_) for s, open_ in segs]
+    fixed = "".join(s for s, _ in segs)
+    if fixed != text:
+        print(f"[heard] 直した: {'、'.join(done)}", flush=True)
+    return fixed
+
+
 def synth(text: str, speaker: int) -> bytes:
     text = READING_RE.sub(lambda m: READINGS[m.group(1).lower()], text)
     q = urllib.request.urlopen(
@@ -793,7 +870,8 @@ def attachments_shape_problem(files: list[str] | None) -> str:
 ACCEPT_LOCKS: dict[str, asyncio.Lock] = {}  # ハブ（herdr の外の話し相手）が受け取った発言の順番（添付を置く間も、前の発言を追い越させない）
 
 
-async def hub_accepted(talker, text: str, pane: str, reply_at: float | None, files: list[str] | None, item: int | None = None) -> tuple[str, str, bool]:
+async def hub_accepted(talker, text: str, pane: str, reply_at: float | None, files: list[str] | None, item: int | None = None,
+                       said: str | None = None) -> tuple[str, str, bool]:
     """ハブが受け取った発言を、添付を置く → 往復する（置けなければ断る）まで進める。(返事, 失敗・断りの理由, 記録に書けたか)。
     受け取った順に 1 つずつ（ACCEPT_LOCKS）。往復と断りの記録は、さらに頭のやり取りの鍵（自動通知と共有）の順に載る。
     断るときは、ハブに、利用者が最後に聞いたのは本体の断りだと伝える（前の問いへの答えに、次の発言を使わせない）。"""
@@ -802,10 +880,11 @@ async def hub_accepted(talker, text: str, pane: str, reply_at: float | None, fil
         extra = ""
         if not why:
             extra, why = await attachment_lines(files, talker, pane)
+        kw = {"said": said} if said is not None else {}  # 辞書で直した声の発言だけ、直す前の言葉を守りの台帳に渡す
         if why:
-            await talker.refused(text, why)
+            await talker.refused(text, why, **kw)
             return "", why, True
-        return await talker.exchange(text, reply_at, extra, item)
+        return await talker.exchange(text, reply_at, extra, item, **kw)
 
 
 def reply_item_of(d: dict) -> int | None:
@@ -3071,7 +3150,8 @@ async def ws(sock: WebSocket):
                 await speak_to([client], reply, cancel)
 
     def start_turn(text: str, pane: str, speaker: int, key: str | None, reply_at: float | None = None, files: list[str] | None = None,
-                   item: int | None = None):
+                   item: int | None = None, said: str | None = None):
+        # said: 辞書で直す前の聞き取り（直したときだけ。ハブの守りの台帳に載せる）
         nonlocal cancel, current
         client.speaker = speaker
         cancel.set()  # 前のターンの読み上げが残っていれば止める
@@ -3084,7 +3164,7 @@ async def ws(sock: WebSocket):
             # ハブが受け取った発言は、受け取ったその場で（待つものをはさまずに）1 つの仕事にする（hub_accepted: 添付を置く・断る・往復する）。
             # 画面のターン（current）は次の発言で止めるが、この仕事は止めない。受け取った順に作るので、受け取った順に進む
             # （画面のターンの中で作ると、状態の知らせを送る間や、ターンが動き出す前に次の発言が来たとき、前の発言が消える）
-            job = asyncio.create_task(hub_accepted(talker, text, pane, reply_at, files, item))
+            job = asyncio.create_task(hub_accepted(talker, text, pane, reply_at, files, item, said))
             _tasks.add(job)
             job.add_done_callback(_tasks.discard)
         current = asyncio.create_task(turn(text, pane, cancel, key, reply_at, files, job))
@@ -3119,17 +3199,18 @@ async def ws(sock: WebSocket):
             if msg.get("bytes") is not None and pending.get("type") == "turn":
                 await send(type="status", text="聞き取り中…")
                 try:
-                    text = await asyncio.to_thread(transcribe, msg["bytes"], pending.get("filename", "audio.webm"))
+                    said = await asyncio.to_thread(transcribe, msg["bytes"], pending.get("filename", "audio.webm"))
                 except (OSError, ValueError) as e:  # whisper が止まっている・答えの形が違う。接続は切らずに知らせる
                     print(f"[whisper] 聞き取りに失敗: {str(e)[:200]}", flush=True)
                     await send(type="error", text="聞き取りに失敗しました（聞き取りのサーバーを確かめてください）")
                     continue
-                if not text:
+                if not said:
                     await send(type="error", text="聞き取れませんでした")
                     continue
+                text = await asyncio.to_thread(fix_heard, said)  # 画面とハブ・セッションに渡す文。守りの台帳には直す前の said を載せる
                 await send(type="transcript", pane=pending["pane"], text=text)
                 start_turn(text, pending["pane"], int(pending["speaker"]), pending.get("key"), reply_at_of(pending), attachments_of(pending),
-                           reply_item_of(pending))
+                           reply_item_of(pending), said if text != said else None)
     except WebSocketDisconnect:
         pass
     finally:
