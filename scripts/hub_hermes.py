@@ -1153,7 +1153,7 @@ async def _learn_skills() -> int:
                 traceback.print_exc()
                 out = {"result": "error", "why": f"本体の問題（{type(e).__name__}）"}
             dropped = False
-            if (out.get("result") == "failed" and await asyncio.to_thread(_hlearn_unchanged, payload, before["skills"])
+            if (out.get("result") == "failed" and _hlearn_unchanged(out.get("after"), before["skills"])
                     and await asyncio.to_thread(_hsk_mark_failed, pid, str(out.get("why") or ""))):
                 # Hermes がはっきり失敗と返し、手順も当てる前のまま（直す行がもう無い、など）: 当たっていないと分かるので、承認待ちから外す。
                 # 外せなければ、これまでどおり「分からない」に残す（時間切れなら、終わりを確かめるまで次を当てない）。
@@ -1203,13 +1203,13 @@ def _hsk_mark_failed(pid: str, why: str) -> bool:
     return True
 
 
-def _hlearn_unchanged(payload: dict, before: dict) -> bool:
-    """手順のいまの中身が、当てる前に取った控えと同じか（同じ場所の組で、どの場所も指紋が同じ）。読めない・形が違うときは False。"""
+def _hlearn_unchanged(after, before: dict) -> bool:
+    """失敗した台本が返した指紋（after。Hermes の手順の鍵を持ったまま、失敗の直後に読んだもの）が、当てる前に取った控えと同じか
+    （同じ場所の組で、どの場所も指紋が同じ）。指紋が無い・形が違うときは False。読むのを当てる処理と同じ鍵の中にするのは、
+    鍵の外で読み直すと、ほかの書き込みと重なって、別々の時点の中身を混ぜて「同じ」と見てしまうため。"""
     try:
-        now = hermes_learn.run_script(HERMES_CONTAINER, "snap", {"payload": payload})
-        got = now.get("skills") if now.get("result") == "snap" else None
-        return (isinstance(got, dict) and bool(before) and set(got) == set(before)
-                and all(isinstance(got[k], dict) and hermes_learn.digest(got[k]) == hermes_learn.digest(before[k]) for k in before))
+        return (isinstance(after, dict) and bool(before) and set(after) == set(before)
+                and all(isinstance(after[k], str) and after[k] == hermes_learn.digest(before[k]) for k in before))
     except Exception:
         traceback.print_exc()
         return False

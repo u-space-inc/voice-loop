@@ -325,17 +325,18 @@ check("自動: 控えを取るのが一時的に失敗した（時間切れ）�
       (skipped_now, [p for m, p in SCALLS if m == "approve"]), (False, ["eeeeeee3"]))
 
 # 当てて「failed」と返った書き足し: 手順が当てる前のままと確かめられたときだけ、承認待ちから外す
-FAIL = {"partial": False, "reject": None}  # 失敗の前に手順の一部を書いた（偽）／捨てる台本の答えの差し替え
+FAIL = {"partial": False, "reject": None, "noafter": False}  # 失敗の前に手順の一部を書いた（偽）／捨てる台本の答えの差し替え
 MATCH = "operations[0] (patch on 'x') failed: Could not find a match for old"
 
 
 def failing_run(c, mode, pid, raw, wait=90, env=None, script=None):
     if mode == "approve" and pid.startswith("9999"):
         SCALLS.append((mode, pid))
+        place = json.loads(raw)["payload"]["operations"][0]["name"]
         if FAIL["partial"]:
-            place = json.loads(raw)["payload"]["operations"][0]["name"]
             SNAPS[place] = {"exists": True, "files": {"SKILL.md": base64.b64encode("途中まで書いた".encode()).decode()}}
-        return {"result": "failed", "why": MATCH}
+        # 自動の台本は、鍵を持ったまま読んだ失敗の直後の指紋を返す（読めなければ None）
+        return {"result": "failed", "why": MATCH, **({"after": None if FAIL["noafter"] else {place: hl.digest(SNAPS[place])}} if script is not None else {})}
     if mode == "reject" and pid.startswith("9999"):
         SCALLS.append((mode, pid))
         if FAIL["reject"]:
@@ -424,12 +425,13 @@ check("自動: failed でも手順が変わっていたら（途中まで書い�
 asyncio.run(s.hermes._learn_skills())  # gggggg04 を当てて片づける
 record("99990005", "g5", at=time.time())
 fresh_day()
-LOUT["snap"] = lambda req: {"result": "timeout", "why": "時間切れ"} if any(m == "approve" and p == "99990005" for m, p in SCALLS) else \
-    {"result": "snap", "skills": {op["name"]: SNAPS[op["name"]] for op in req["payload"]["operations"]}}
+FAIL["noafter"] = True
 SCALLS.clear()
+LCALLS.clear()
 asyncio.run(s.hermes._learn_skills())
-del LOUT["snap"]
-check("自動: failed のあと手順を読み直せなければ、外さず「分からない」に残す", (acts(), hsk_of("99990005"), (PEND / "99990005.json").exists()),
+FAIL["noafter"] = False
+check("自動: 確かめに使うのは、失敗した台本が鍵を持ったまま読んだ指紋だけ（鍵の外で読み直さない）", [m for m, r in LCALLS], ["snap"])
+check("自動: failed の台本が指紋を返さなければ、外さず「分からない」に残す", (acts(), hsk_of("99990005"), (PEND / "99990005.json").exists()),
       ([("approve", "99990005")], ("unknown", False), True))
 for pid, out, want_verify, label in (("99990061", {"result": "timeout", "why": "時間切れ"}, True, "時間切れ（終わりを確かめるまで次を当てない）"),
                                      ("99990062", {"result": "changed", "why": "承認待ちの記録が変わっていました"}, False, "記録が変わっていた"),
@@ -570,6 +572,8 @@ def apply_skill_pending(payload):
         for op in ops:
             f = _find_skill(op["name"])
             d = f["path"] if f else _resolve_skill_dir(op["name"], op.get("category"))
+            if os.environ.get("VL_TEST_FAIL") == "nomatch" or (os.environ.get("VL_TEST_FAIL") == "partial" and op is not ops[0]):
+                return json.dumps({"success": False, "error": "operations[%d] failed: Could not find a match for old" % ops.index(op)})
             Path(d).mkdir(parents=True, exist_ok=True)
             ns = op.get("new_string", "")
             (Path(d) / "SKILL.md").write_text(ns if ns.startswith("---") else "当てた: " + ns)
@@ -697,6 +701,23 @@ a1 = apply_script("apapap01", pa, e0)
 check("自動で当てる台本: 控えの指紋と同じなら当て、承認待ちから消し、鍵を持ったまま読んだ当てた直後の指紋を返す",
       (a1.get("result"), a1.get("after") == {"voice-loop/ap": hl.digest(hl.snap_dir(str(SK2), "voice-loop/ap"))}, (SK2 / "voice-loop" / "ap" / "SKILL.md").read_text(),
        (PEND2 / "apapap01.json").exists()), ("applied", True, "当てた: 後", False))
+(SK2 / "voice-loop" / "ap" / "SKILL.md").write_text("前\n")
+(SK2 / "voice-loop" / "ap2").mkdir(parents=True, exist_ok=True)
+(SK2 / "voice-loop" / "ap2" / "SKILL.md").write_text("前\n")
+pa2 = {"action": "batch", "operations": [{"action": "patch", "name": "ap", "old_string": "前", "new_string": "後"},
+                                         {"action": "patch", "name": "ap2", "old_string": "無い行", "new_string": "後"}]}
+e2 = {k: hl.digest(hl.snap_dir(str(SK2), k)) for k in ("voice-loop/ap", "voice-loop/ap2")}
+f1 = apply_script("apapap02", pa2, e2, extra={"VL_TEST_FAIL": "nomatch"})
+check("自動で当てる台本: 当てられなかったら failed と、鍵を持ったまま読んだ指紋を返す（何も書かれていなければ、控えと同じ）。記録は消さない",
+      (f1.get("result"), f1.get("after") == e2, s.hermes._hlearn_unchanged(f1.get("after"), {k: hl.snap_dir(str(SK2), k) for k in e2}), (PEND2 / "apapap02.json").exists()),
+      ("failed", True, True, True))
+before2 = {k: hl.snap_dir(str(SK2), k) for k in e2}
+f2 = apply_script("apapap03", pa2, e2, extra={"VL_TEST_FAIL": "partial"})
+check("自動で当てる台本: 途中まで書いて失敗したら、指紋が控えと違う（本体は「変わっていない」と見ない）",
+      (f2.get("result"), (SK2 / "voice-loop" / "ap" / "SKILL.md").read_text(), s.hermes._hlearn_unchanged(f2.get("after"), before2)), ("failed", "当てた: 後", False))
+check("確かめ: 場所が足りない・多い・指紋が字でない・控えが空なら「変わっていない」と見ない",
+      [s.hermes._hlearn_unchanged(a, b) for a, b in (({"voice-loop/ap": e2["voice-loop/ap"]}, before2), ({**e2, "x": "0" * 64}, before2),
+                                                      ({k: before2[k] for k in e2}, before2), ({}, {}), (None, before2))], [False] * 5)
 (SK2 / "voice-loop" / "ap" / "SKILL.md").write_text("前\n")
 a2 = apply_script("apapap02", pa, {"voice-loop/ap": "0" * 64})
 check("自動で当てる台本: 控えの指紋と違えば当てない（承認待ちに残す）", (a2.get("result"), (SK2 / "voice-loop" / "ap" / "SKILL.md").read_text(), (PEND2 / "apapap02.json").exists()),
