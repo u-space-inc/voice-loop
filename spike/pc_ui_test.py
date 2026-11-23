@@ -913,8 +913,34 @@ def run_phone(page, who):
     check(f"{who} スマホの幅では今の形（3 列にしない・PC の箱は出さない・並びは今のまま）",
           (page.evaluate("document.body.classList.contains('wide')"), visible(page, "#side"), visible(page, "#rec"), page.evaluate(order)),
           (False, False, False, "side,rec,asks,tasks,situation,log,bar,viewer,face"))
-    check(f"{who} スマホでは 💡 📋 が出て、どちらも閉じている", (visible(page, "#sitBtn"), visible(page, "#tasksBtn"), visible(page, "#situation"), visible(page, "#tasks")),
-          (True, True, False, False))
+    check(f"{who} スマホの帯は 💡・🔇・⋯ だけ（📋・🔔・🙂・↻ は ⋯ の中）。💡 も 📋 も閉じている",
+          ([x for x in ("#sitBtn", "#mute", "#moreBtn", "#tasksBtn", "#faceGo", "#reload") if visible(page, x)], visible(page, "#situation"), visible(page, "#tasks")),
+          (["#sitBtn", "#mute", "#moreBtn"], False, False))
+    # ⋯ の一覧（2026-11-24 本人「スマホは 💡・🔇 以外はそんなに頻繁にアクセスしないのでまとめてもいいね」）
+    MENU = """() => { const b = document.getElementById('moreBox'), r = b.getBoundingClientRect();
+      return {names: [...b.children].filter(e => e.offsetParent).map(e => getComputedStyle(e, '::after').content.replace(/"/g, '')),
+              inside: r.top >= 0 && r.left >= 0 && r.right <= innerWidth + 1, above: r.bottom <= document.getElementById('status').getBoundingClientRect().top,
+              expanded: document.getElementById('moreBtn').getAttribute('aria-expanded')}; }"""
+    page.click("#moreBtn")
+    got = page.evaluate(MENU)
+    names = [n for n in got["names"] if not n.startswith("通知")]  # 🔔 はブラウザによって出ない（push_ui_test で見る）
+    check(f"{who} ⋯ を押すと、帯の上に一覧が開き、📋・🙂・↻ が名前つきで並ぶ（画面からはみ出さない）",
+          (names, got["inside"], got["above"], got["expanded"]), (["頼んだ件", "顔の表示", "読み込み直す"], True, True, "true"))
+    page.click("#statusText")
+    check(f"{who} 一覧の外を押すと閉じる", (visible(page, "#moreBox > #tasksBtn"), page.get_attribute("#moreBtn", "aria-expanded")), (False, "false"))
+    page.click("#moreBtn")
+    page.keyboard.press("Escape")
+    check(f"{who} Esc で閉じる", visible(page, "#moreBox > #tasksBtn"), False)
+    page.click("#moreBtn")
+    page.click("#moreBtn")
+    check(f"{who} ⋯ をもう一度押すと閉じる", visible(page, "#moreBox > #tasksBtn"), False)
+    page.click("#moreBtn")
+    page.set_viewport_size({"width": 1400, "height": 900})
+    wait(lambda: page.evaluate("document.body.classList.contains('wide')"))
+    check(f"{who} PC の幅では ⋯ を出さず、🙂・↻ を帯に並べる", [visible(page, x) for x in ("#moreBtn", "#faceGo", "#reload")], [False, True, True])
+    page.set_viewport_size({"width": 390, "height": 844})
+    wait(lambda: not page.evaluate("document.body.classList.contains('wide')"))
+    check(f"{who} 一覧を開いたまま PC にして戻しても、一覧は閉じている", visible(page, "#moreBox > #tasksBtn"), False)
     # ▶ タップして再生・ハブを起動が出ても、状態の文が細い列に折れない（2026-10-29 に iPhone で、文の幅が 36px になり 2〜3 字ずつに折れていた）
     row = """id => { const r = i => document.getElementById(i).getBoundingClientRect();
       const t = r('statusText'), b = r(id), s = r('sitBtn'), st = r('status');
@@ -948,8 +974,10 @@ def run_phone(page, who):
           ("side,rec,asks,tasks,situation,log,bar,viewer,face", False, False))
     page.click("#sitBtn")
     check(f"{who} 💡 で判断待ちが開く", wait(lambda: visible(page, "#situation") and "判断待ち1" in (page.text_content("#sitBody") or "")), True)
+    page.click("#moreBtn")
     page.click("#tasksBtn")
-    check(f"{who} 📋 を押すと知らせは閉じて頼んだ件が開く（今の相互の開閉）", (visible(page, "#tasks"), visible(page, "#situation")), (True, False))
+    check(f"{who} ⋯ の 📋 を押すと知らせは閉じて頼んだ件が開き、⋯ の一覧も閉じる（今の相互の開閉）",
+          (visible(page, "#tasks"), visible(page, "#situation"), visible(page, "#moreBox > #tasksBtn")), (True, False, False))
     page.click("#sitBtn")
     page.set_viewport_size({"width": 1400, "height": 900})
     check(f"{who} スマホで 💡 を開いたまま PC にしても、3 列で両方出る", (wait(lambda: page.evaluate("document.body.classList.contains('wide')")),

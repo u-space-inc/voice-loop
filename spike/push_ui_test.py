@@ -2,6 +2,7 @@
 - Chromium: ブラウザの購読の部品（PushManager）を差し替えて、🔔 の入・切・送り直し・断られたとき、見えているかの知らせ、
   sw.js が通知を出すこと、📋 の一覧。配送サービスには送らない（requests.post を差し替える）
 - WebKit（iPhone の名乗り・ホーム画面の外）: 🔔 がホーム画面への追加を案内すること、📋 の一覧
+スマホの幅では、📋・🔔 は帯の ⋯ の中にあるので、開いてから押す。
 iPhone の実機の代わりにはならない（ホーム画面に置いたときの許可と、実際の通知の届き方は、実機で確かめる）。
 使い方: uv run spike/push_ui_test.py"""
 import base64
@@ -112,9 +113,16 @@ def sys_lines(page):
     return page.eval_on_selector_all(".sys", "els => els.map(e => e.textContent)")
 
 
+def more(page):
+    """スマホの幅では、📋・🔔 は帯の ⋯ の中にある（開いていなければ開く。選ぶと閉じる）。PC の幅では帯に並ぶので何もしない"""
+    if not page.evaluate("document.body.classList.contains('wide') || document.getElementById('moreBox').classList.contains('open')"):
+        page.click("#moreBtn")
+
+
 def tasks_view(page, name_prefix):
+    more(page)
     page.click("#tasksBtn")
-    check(f"{name_prefix} 📋 で一覧が開く", page.is_visible("#tasks"), True)
+    check(f"{name_prefix} 📋 で一覧が開き、⋯ の一覧は閉じる", (page.is_visible("#tasks"), page.is_visible("#moreBox > #tasksBtn")), (True, False))
     page.wait_for_selector("#taskList .task")
     items = page.eval_on_selector_all("#taskList .task", "els => els.map(e => [e.className, e.textContent])")
     check(f"{name_prefix} 3件が新しい順", [i[1].split("・")[0] for i in items], ["完了（報告済み）", "見張り中", "見張りが切れた（本体が止まった）"])
@@ -136,7 +144,10 @@ with sync_playwright() as pw:
     page = ctx.new_page()
     page.goto(BASE + "/")
     page.wait_for_function("document.getElementById('conn').classList.contains('on')")
-    check("Chromium: 🔔 が出る（切）", (page.is_visible("#bell"), page.get_attribute("#bell", "aria-pressed")), (True, "false"))
+    more(page)
+    check("Chromium: ⋯ の中に 🔔 が出る（切）", (page.is_visible("#bell"), page.get_attribute("#bell", "aria-pressed"), page.get_attribute("#bell", "data-label")),
+          (True, "false", "通知を受け取る"))
+    page.click("#moreBtn")  # 閉じる
     check("Chromium: 開いた画面は「見えている」と本体に伝わる", wait(lambda: any(c.visible for c in s.CLIENTS)), True)
     page.evaluate("window.__push.hidden = true; document.dispatchEvent(new Event('visibilitychange'))")
     check("Chromium: 隠れると「見えていない」と伝わる", wait(lambda: s.CLIENTS and not any(c.visible for c in s.CLIENTS)), True)
@@ -144,12 +155,13 @@ with sync_playwright() as pw:
     wait(lambda: any(c.visible for c in s.CLIENTS))
 
     wait(lambda: page.evaluate("!!document.getElementById('bell') && typeof swReg !== 'undefined' && !!swReg && !!pushKey"))
+    more(page)
     page.click("#bell")
     check("Chromium: 🔔 で購読（userVisibleOnly・鍵は65バイト）", wait(lambda: "subscribe:visible:65" in page.evaluate("window.__push.calls")), True)
     check("Chromium: 本体に登録される", wait(lambda: [x["endpoint"] for x in s.push_subs()] == ["https://fcm.googleapis.com/fcm/send/ui-test"]), True)
     check("Chromium: 試しの通知を送る（見えていても、押した端末には送る）", wait(lambda: posted == ["https://fcm.googleapis.com/fcm/send/ui-test"]), True)
     check("Chromium: 案内が出る", wait(lambda: "通知を受け取れるようにしました。試しの通知を送りました" in sys_lines(page)), True)
-    check("Chromium: 🔔 に色がつく（入）", page.get_attribute("#bell", "aria-pressed"), "true")
+    check("Chromium: 🔔 に色がつき（入）、⋯ の一覧の名前も「通知を切る」になる", (page.get_attribute("#bell", "aria-pressed"), page.get_attribute("#bell", "data-label")), ("true", "通知を切る"))
 
     s.push_drop(["https://fcm.googleapis.com/fcm/send/ui-test"])  # 本体が登録を失った（状態フォルダを消した等）
     page.reload()
@@ -176,12 +188,14 @@ with sync_playwright() as pw:
     check("Chromium: sw.js が届いた見出しで通知を出す（同じ件は置き換えて鳴らし直す）", sw.evaluate("self.__shown"),
           [["blog｜記事", "完了しました", "report-w2:p1", True, "/"]])
 
+    more(page)
     page.click("#bell")
     check("Chromium: もう一度押すと切れる（端末の購読をやめる）", wait(lambda: "unsubscribe" in page.evaluate("window.__push.calls")), True)
     check("Chromium: 本体の登録も消える", wait(lambda: s.push_subs() == []), True)
     check("Chromium: 切った案内と 🔔（切）", (wait(lambda: "通知を切りました" in sys_lines(page)), page.get_attribute("#bell", "aria-pressed")), (True, "false"))
 
     page.evaluate("window.__push.deny = true")
+    more(page)
     page.click("#bell")
     check("Chromium: 許可されなかったときは、端末の設定を案内", wait(lambda: any("端末の設定（通知 → voice-loop）で許可" in t for t in sys_lines(page))), True)
     check("Chromium: 許可されなかったときは登録しない", s.push_subs(), [])
@@ -197,11 +211,13 @@ with sync_playwright() as pw:
     page = ctx.new_page()
     page.goto(BASE + "/")
     page.wait_for_function("document.getElementById('conn').classList.contains('on')")
+    more(page)
     check("WebKit: iPhone のブラウザでも 🔔 は出る（案内のため）", page.is_visible("#bell"), True)
     # 案内は会話の欄に足す。遅い実行環境では、起動のときの会話の読み込みがあとから届いて欄を描き直し、出した案内を消すことがある（CI で 1 回）。
     # 押せば案内が出ることを確かめたいので、出なければ押し直す（3 回とも出なければ落とす）
     hinted = False
     for _ in range(3):
+        more(page)
         page.click("#bell")
         if wait(lambda: any("ホーム画面に追加した voice-loop で受け取れます" in t for t in sys_lines(page)), 5.0):
             hinted = True
@@ -219,6 +235,7 @@ with sync_playwright() as pw:
     page.goto(BASE + "/")
     page.wait_for_function("document.getElementById('conn').classList.contains('on')")
     page.wait_for_timeout(800)
+    more(page)
     page.click("#bell")
     check("連絡先（VL_PUSH_SUBJECT）の誤りは、🔔 を押したときに理由を出す", wait(lambda: any("VL_PUSH_SUBJECT" in t for t in sys_lines(page))), True)
     check("連絡先が誤っている間は購読しない", page.evaluate("window.__push.calls"), [])

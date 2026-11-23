@@ -2,7 +2,7 @@
 （常駐の 8790・herdr・docker には触れない。声の一覧は、この試験の中の小さな偽物 127.0.0.1:8796 から取る）。
 見ること:
   - ふだんの画面（/）には顔が出ない。名乗りに kind は付かない
-  - PC の幅では、ふだんの画面の上の帯に顔の表示へのリンク（🙂）があり、押すとそのタブが顔の表示になる。スマホの幅では出さない
+  - ふだんの画面に顔の表示へのリンク（🙂）がある（PC の幅は上の帯、スマホの幅は帯の ⋯ の中）。押すとそのタブが顔の表示になる
   - /?face では顔が画面いっぱいに出て、つながると「ふつう」の表情。名乗りに kind: "stackchan"・place: "home" が付く
   - 顔をタップすると「タップして話す」が押される。「画面に戻る」を押したときは押されず、ふだんの画面に戻る
   - 承認・入力待ちがあると縁が光り、無くなると消える
@@ -105,7 +105,10 @@ with sync_playwright() as pw:
     pg.wait_for_function("window.__hello.length > 0", timeout=10000)
     check("ふだん: 顔は出ない", pg.locator("#face").is_visible(), False)
     check("ふだん: 名乗りに kind は付かない", pg.evaluate("window.__hello[0].kind ?? null"), None)
-    check("ふだん: スマホの幅では、顔の表示へのリンク（🙂）を出さない（帯が狭い）", pg.locator("#faceGo").is_visible(), False)
+    check("ふだん: スマホの幅では、顔の表示へのリンク（🙂）は ⋯ の中", pg.locator("#faceGo").is_visible(), False)
+    pg.click("#moreBtn")
+    check("ふだん: ⋯ を開くと 🙂 が出る（行き先は /?face）", (pg.locator("#faceGo").is_visible(), pg.evaluate("document.getElementById('faceGo').getAttribute('href')")), (True, "/?face"))
+    pg.click("#moreBtn")
     pg.set_viewport_size({"width": 1400, "height": 900})
     pg.wait_for_function("document.body.classList.contains('wide')", timeout=5000)
     check("ふだん: PC の幅では、上の帯に顔の表示へのリンク（🙂）がある", (pg.locator("#faceGo").is_visible(), pg.evaluate("document.getElementById('faceGo').getAttribute('href')")), (True, "/?face"))
