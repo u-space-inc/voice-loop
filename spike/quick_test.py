@@ -144,13 +144,33 @@ async def fake_speak_to(clients, text, cancel, plain=False):
 
 AGENTS = [{"pane": "w1:p2", "cwd": "/x/shop", "title": "受注", "status": "blocked", "kind": "claude", "session": "s2", "name": "", "hub": False},
           {"pane": "w1:p1", "cwd": "/x/blog", "title": "記事", "status": "working", "kind": "claude", "session": "s1", "name": "", "hub": False}]
-REAL_SPEAK, REAL_NARRATE, REAL_SYNTH, REAL_LIST = s.speak_to, s.narrate, s.synth, s.list_agents
+REAL_SPEAK, REAL_NARRATE, REAL_SYNTH, REAL_CHECKED = s.speak_to, s.narrate, s.synth, s.list_agents_checked
 keep_herdr = s.herdr
 s.herdr = lambda *a, **k: {"raw": "herdr: connection refused", "code": -1}
-check("一覧: herdr に届かなければ、取れなかった印（空の一覧と区別する）", (REAL_LIST(), s.AGENTS_READ["ok"]), ([], False))
+check("一覧: herdr に届かなければ、その呼び出しの結果として「取れなかった」を返す（空の一覧と区別する）", REAL_CHECKED(), ([], False))
 s.herdr = lambda *a, **k: {"result": {"agents": []}}
-check("一覧: 届けば取れた印（空でも）", (REAL_LIST(), s.AGENTS_READ["ok"]), ([], True))
+check("一覧: 届けば「取れた」（空でも）", REAL_CHECKED(), ([], True))
+# 本体が状態を読む途中で、ほかの呼び出しが一覧を取れても、本体の回の「取れなかった」は変わらない（a2a 8f05ef33 の再現）
+seq = [{"raw": "herdr: connection refused", "code": -1}, {"result": {"agents": [{"pane_id": "w1:p2", "agent_status": "blocked", "cwd": "/x/shop"}]}}]
+s.herdr = lambda *a, **k: seq.pop(0) if seq else {"result": {"agents": []}}
+keep_items_fn = s.HUB.open_items
+s.HUB.open_items = lambda: (s.list_agents(), {"items": [], "problem": False, "partial": False})[1]  # 途中で別の一覧の呼び出しが成功する
+snap = s.quick_snapshot()
+s.HUB.open_items = keep_items_fn
+check("一覧: 途中で別の呼び出しが成功しても、この回は「取れなかった」のまま（言い切らない）", (snap["sessions"], snap["sessions_problem"]), ([], True))
 s.herdr = keep_herdr
+# 接続の印は使い回さない（id() は解放後に使い回される。a2a 8f05ef33 の再現）
+olds = []
+for _ in range(200):
+    o = s.Client(None)
+    s.WIN_SPOKE[s.win_of(o)] = time.time()
+    olds.append(s.win_of(o))
+    del o
+fresh = [s.Client(None) for _ in range(2)]
+check("窓: 印を名乗らない新しい接続は、前の接続の印と話しかけた時刻を引き継がない（まだ話していなければすべて）",
+      (any(s.win_of(c) in olds for c in fresh), s.ring_targets(fresh) == fresh), (False, True))
+for k in olds:
+    s.WIN_SPOKE.pop(k, None)
 
 
 class Sink:  # 声を受け取る画面の代わり
@@ -179,6 +199,7 @@ check("読み上げ: 本体の答えは語り手を呼ばずに、文のまま�
 s.narrate, s.synth = REAL_NARRATE, REAL_SYNTH
 s.hermes.ask_hermes = fake_ask_hermes
 s.list_agents = lambda: [dict(a) for a in AGENTS]
+s.list_agents_checked = lambda: ([dict(a) for a in AGENTS], True)
 s._ask_of = lambda a: {"kind": "permission"}
 s.stepping = lambda a: False
 s.speak_to = fake_speak_to
@@ -282,6 +303,18 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         c.portal.call(s.report, D, "done")
         until(a, "reply"), until(b, "reply")
         check("S1: 別の窓に話しかけたら、そちらで鳴らす", spoken, [["bbbbbbbb02"]])
+        # 声を鳴らす窓に送れなければ（切れていた）、残りの窓から選び直して鳴らす（codex-review）
+        cb = next(x for x in s.CLIENTS if x.win == "bbbbbbbb02")
+
+        async def gone(**m):
+            raise RuntimeError("切れていた")
+        cb.send = gone
+        spoken.clear()
+        plan.append("さらに続きです")
+        c.portal.call(s.report, D, "done")
+        ra = until(a, "reply")[-1]
+        check("S1: 鳴らす窓に送れなければ、残りの窓で声を鳴らす（quiet を付けない）", (spoken, ra.get("quiet")), ([["aaaaaaaa01"]], None))
+        del cb.send
 
     # 相手の位置: セッションや判断待ちの題に「閉じていいですか？」を仕込み、本体の答えに読ませてから、乗せられた Hermes が閉じるを打つ（a2a 8f05ef33 の再現）
     closed: list[str] = []
@@ -358,6 +391,15 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     st2 = {r["pane"]: r["status"] for r in s.quick_snapshot()["sessions"]}
     check("状態: 答えている途中で問いが消えたセッションは、待ちに数えない（元の状態）。問いが残っていれば待ち", (st["w1:p1"], st2["w1:p1"]), ("working", "blocked"))
     s.stepping, s._ask_of = keep_step, keep_ask
+
+    # 印を名乗らない接続が話しかけて切れたら、その話しかけた時刻は消える（ほかの接続に引き継がない）
+    with c.websocket_connect("ws://127.0.0.1:8790/ws") as nw:
+        nw.send_json({"type": "hello", "speaker": 0, "voice": True})
+        say(nw, "次は？")
+        cid = next(x.cid for x in s.CLIENTS if not x.win)
+        spoke_while = cid in s.WIN_SPOKE
+    wait_until(lambda: cid not in s.WIN_SPOKE)
+    check("窓: 印を名乗らない接続の話しかけた時刻は、切れたら消す", (spoke_while, cid in s.WIN_SPOKE), (True, False))
 
     # 機械からの決まった問い: 台帳は機械の印（承認に答える・閉じるに使わない）のまま
     with c.websocket_connect("ws://127.0.0.1:8790/ws") as dv:

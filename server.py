@@ -302,14 +302,17 @@ def pane_shows_trust(pane: str) -> bool | None:
     return None if screen is None else bool(TRUST_PROMPT.search(screen))
 
 
-AGENTS_READ = {"ok": True}  # 最後に一覧を取れたか（herdr に届かない・形が違うと空の一覧になるので、決まった問いの答えが「無い」と言い切らないように）
-
-
 def list_agents() -> list[dict]:
     """herdr のセッションの一覧。ハブ（Hermes）は herdr の外なので、ここには入らない（TALKERS）。"""
+    return list_agents_checked()[0]
+
+
+def list_agents_checked() -> tuple[list[dict], bool]:
+    """セッションの一覧と、その呼び出しで一覧を取れたか（herdr に届かない・形が違うと空の一覧になる。決まった問いの答えが「無い」と言い切らないように。
+    取れたかは呼び出しごとに返す。全体で 1 つ持つと、ほかの呼び出しの結果で上書きされる。a2a 8f05ef33）。"""
     r = herdr("agent", "list")
-    AGENTS_READ["ok"] = isinstance(r.get("result"), dict) and isinstance(r["result"].get("agents"), list)
-    agents = r.get("result", {}).get("agents", [])
+    ok = isinstance(r.get("result"), dict) and isinstance(r["result"].get("agents"), list)
+    agents = r.get("result", {}).get("agents", []) if ok else []
     return [
         {
             "pane": a["pane_id"],
@@ -322,7 +325,7 @@ def list_agents() -> list[dict]:
             "hub": False,  # 画面と本体の形をそろえるための印。ハブは Hermes の項目だけ（hermes_agent）
         }
         for a in agents
-    ]
+    ], ok
 
 
 def agent_key(a: dict) -> str:
@@ -1367,6 +1370,9 @@ def hub_start():
 
 
 # ---------- 画面との接続・セッションとの一往復・読み上げ（1対1でも、ハブからの報告でも使う） ----------
+_CONN_SEQ = __import__("itertools").count(1)
+
+
 class Client:
     """接続中の画面ひとつ。"""
 
@@ -1386,6 +1392,7 @@ class Client:
         self.win = ""  # 窓の印（画面はタブごとに hello で名乗る。つなぎ直しても同じ窓として、最後に話しかけた窓を覚える）
         self.connected = time.time()
         self.last_turn = 0.0  # この接続が最後に話しかけた時刻（同じ窓の印の接続が複数あるとき、話しかけた接続を選ぶ）
+        self.cid = f"conn:{next(_CONN_SEQ)}"  # 窓の印を名乗らない接続の印（id() は解放後に使い回されるので使わない。a2a 8f05ef33）
 
     async def send(self, **msg):
         await self.sock.send_text(json.dumps(msg, ensure_ascii=False))
@@ -1496,7 +1503,7 @@ def win_of(c) -> str:
     """窓の印。口で決まった機械は置き場所（家と車で 1 つずつ）、画面は名乗った印、名乗らない古い画面は接続ごと。"""
     if getattr(c, "bound", False):
         return "device:" + str(getattr(c, "place", ""))
-    return getattr(c, "win", "") or f"conn:{id(c)}"
+    return getattr(c, "win", "") or getattr(c, "cid", "") or f"conn:{id(c)}"
 
 
 def ring_targets(clients: list) -> list:
@@ -1523,7 +1530,8 @@ QUICK_CURSOR: dict = {}  # 「次」をどこまで読んだか（quick.answer �
 def quick_snapshot() -> dict:
     """決まった問いに答えるための、本体の状態の写し（セッションの一覧・承認待ちの種類・頼んだ件の見張り・判断待ち）。"""
     rows = []
-    for a in list_agents():
+    agents, agents_ok = list_agents_checked()
+    for a in agents:
         st, ask = str(a["status"]), ""
         if a["status"] == "blocked" or stepping(a):  # 画面で 1 問ずつ答えている途中（stepping）は、問いが残っているときだけ待ち（/api/prompts と同じ。codex-review）
             ask = _ask_of(a)["kind"]
@@ -1537,7 +1545,7 @@ def quick_snapshot() -> dict:
         box = HUB.open_items()
     except Exception:
         box = {"items": [], "problem": True}
-    return {"sessions": rows, "sessions_problem": not AGENTS_READ["ok"],
+    return {"sessions": rows, "sessions_problem": not agents_ok,
             "watching": sum(1 for t in TASKS.values() if t["status"] in TASK_ACTIVE), "inbox": box.get("items", []),
             "inbox_problem": bool(box.get("problem")), "inbox_partial": bool(box.get("partial"))}
 
@@ -2239,14 +2247,20 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
         if kind in ("done", "more", "gone"):
             d["_slack_done"] = True  # 完了の報告を送った。このあとの見張りの失敗は重ねて知らせない（途中経過のあとの失敗は知らせる）
         clients = list(CLIENTS)
-        ring = ring_targets(clients)  # 声は 1 か所（最後に話しかけた窓）。ほかの窓には文字だけ（quiet: 読み上げの印を付けない）
-        for c in list(clients):
+        msg = dict(type="reply", pane=hub["pane"], text=reply, report=True, about=label, saved=saved, topic=str(d.get("topic") or ""))
+        ring: list = []
+        while clients and not ring:  # 声は 1 か所（最後に話しかけた窓）。その窓に送れなければ（切れていた）、残りから選び直す（codex-review）
+            for c in ring_targets(clients):
+                try:
+                    await c.send(**msg)
+                    ring.append(c)
+                except Exception:
+                    clients.remove(c)
+        for c in [c for c in clients if c not in ring]:  # ほかの窓には文字だけ（quiet: 読み上げの印を付けない）
             try:
-                await c.send(type="reply", pane=hub["pane"], text=reply, report=True, about=label, saved=saved, topic=str(d.get("topic") or ""),
-                             **({} if c in ring else {"quiet": True}))
+                await c.send(**msg, quiet=True)
             except Exception:
                 clients.remove(c)
-        ring = [c for c in ring if c in clients]
         if ring:
             await speak_to(ring, reply, asyncio.Event())
         return "ok"
@@ -3448,6 +3462,8 @@ async def ws(sock: WebSocket):
         pass
     finally:
         CLIENTS.discard(client)
+        if win_of(client) == client.cid:  # 印を名乗らなかった接続の「話しかけた時刻」は、切れたら消す（ほかの接続に引き継がない）
+            WIN_SPOKE.pop(client.cid, None)
         cancel.set()
         if current:
             current.cancel()

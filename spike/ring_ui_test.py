@@ -63,7 +63,9 @@ async def no_voice(clients, text, cancel, plain=False):  # 声は合成しない
 
 
 s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.hermes.watch_hermes_skills = nothing
-s.list_agents = lambda: [{"pane": "w1:p1", "cwd": "/x/blog", "title": "記事", "status": "working", "kind": "claude", "session": "s1", "name": "", "hub": False}]
+AGENTS = [{"pane": "w1:p1", "cwd": "/x/blog", "title": "記事", "status": "working", "kind": "claude", "session": "s1", "name": "", "hub": False}]
+s.list_agents = lambda: [dict(a) for a in AGENTS]
+s.list_agents_checked = lambda: ([dict(a) for a in AGENTS], True)  # 本体の決まった答えが読む一覧（本物の herdr は呼ばない）
 s.jsonl_path = lambda a: None
 s.speak_to = no_voice
 s.HUB.open_items = lambda: {"items": [], "problem": False, "partial": False}  # 判断待ちは無い（本物の記録は読まない）
