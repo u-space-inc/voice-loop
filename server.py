@@ -70,6 +70,7 @@ _load_config_env()
 import hub_hermes as hermes  # noqa: E402  頭の部品。読み込みのときに config.env の値を読むので、ここで読み込む
 import slack_report  # noqa: E402  Slack から頼まれた件の報告を、同じスレッドにも返す（config.env の値を読むので、ここで読み込む）
 import topics  # noqa: E402  件（頼んだ件・報告・Slack のスレッド・問いを結ぶ単位）。件の URL（/#t=<件>）で画面を開く
+from hub_brain import AGENT  # noqa: E402  話しかける相手の呼び名（config.env の VL_AGENT_NAME。無ければ「ハブ」）
 WHISPER = os.environ.get("VL_WHISPER", "http://127.0.0.1:8080/v1/audio/transcriptions")
 # 聞き取りの言語。毎回 whisper に渡す（自動判定に任せると、短い発言や雑音で日本語以外と取り違える。2026-11 の記録で 283 件中 5 件）。
 # 空（VL_WHISPER_LANG=）にすると渡さず、whisper の起動時の設定に任せる
@@ -972,7 +973,7 @@ def artifact_file(pane: str, raw: str) -> tuple[Path | None, str]:
             name, _, rest = raw.partition("/")
             hits = {r for n, r in named if n == name}
             if len(hits) != 1 or not rest:
-                return None, "ハブの会話では、絶対パスか「フォルダ名/場所」だけを見ます（そのフォルダ名のセッションが無いか、二つ以上あります）"
+                return None, f"{AGENT}の会話では、絶対パスか「フォルダ名/場所」だけを見ます（そのフォルダ名のセッションが無いか、二つ以上あります）"
             roots = list(hits)  # その名前のフォルダの中だけを見る（../ や symlink で別のセッションへ回り込ませない）
             p = roots[0] / rest.lstrip("/")
         else:
@@ -1310,7 +1311,7 @@ def doctor():
         add(f"語り手（{model}）", not problem, problem)
     HUB.doctor(add)
     add("セッションを立てる場所", bool(PROJECTS_DIR and PROJECTS_DIR.is_dir()),
-        "ハブに新しいセッションを立てさせるなら、config.env の VL_PROJECTS_DIR にプロジェクトの置き場所を書いてください", optional=True)
+        f"{AGENT}に新しいセッションを立てさせるなら、config.env の VL_PROJECTS_DIR にプロジェクトの置き場所を書いてください", optional=True)
     return JSONResponse({"ok": all(c["ok"] or c["optional"] for c in checks), "checks": checks, "config_dir": str(CONFIG_DIR), "narrator": model})
 
 
@@ -1852,8 +1853,8 @@ async def _watch_delegation(d: dict):
             continue
         if not a:  # ハブがユーザーの許可で閉じたものは、知らせない
             if reported is None and d["pane"] in CLOSED:
-                task_set(d.get("task"), "closed", "ハブが閉じました")
-                relay_slack(d, label, "のセッションは、ハブが閉じました", "", slack_report.SCREEN)
+                task_set(d.get("task"), "closed", f"{AGENT}が閉じました")
+                relay_slack(d, label, f"のセッションは、{AGENT}が閉じました", "", slack_report.SCREEN)
             return await report(d, "gone") if reported is None and d["pane"] not in CLOSED else None
         if a["status"] == "working":
             saw_working, told_blocked, quiet = True, False, 0
@@ -1931,8 +1932,8 @@ async def report(d: dict, kind: str):
     st = {"settled": False, "job": None, "next": None}  # settled = 送った（か、届け先が無い・送れなかった）ので、もう送らない
 
     async def send(outcome: str):
-        tail = {"no_hub": "（ハブが居ないので、声の報告はありません）", "failed": "（ハブから報告を受け取れませんでした）",
-                "waiting": "（ハブの報告は、このあと届きます）"}.get(outcome, "")
+        tail = {"no_hub": f"（{AGENT}が居ないので、声の報告はありません）", "failed": f"（{AGENT}から報告を受け取れませんでした）",
+                "waiting": f"（{AGENT}の報告は、このあと届きます）"}.get(outcome, "")
         while True:
             tid = d.get("topic")  # 件ごとの通知（同じセッションの別の件の通知を上書きしない）。押すとその件を開く
             r = await push_all(f"{d['project']}｜{d['title']}", PUSH_BY_REPORT[kind] + tail,
@@ -1943,7 +1944,7 @@ async def report(d: dict, kind: str):
             if not st["next"]:  # 画面が見えていて送らなかった。あとでハブの報告ができたとき、もう一度確かめる
                 return
             outcome, st["next"] = st["next"], None
-            tail = {"no_hub": "（ハブが居ないので、声の報告はありません）", "failed": "（ハブから報告を受け取れませんでした）"}.get(outcome, "")
+            tail = {"no_hub": f"（{AGENT}が居ないので、声の報告はありません）", "failed": f"（{AGENT}から報告を受け取れませんでした）"}.get(outcome, "")
 
     def notify(outcome: str):
         """1件につき1回送る。ハブの報告ができた時点で（読み上げを待たずに）、送るのは裏で（声を遅らせない）。

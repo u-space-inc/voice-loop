@@ -27,7 +27,7 @@ import hermes_inbox  # 判断待ちの受け箱（画面の 💡）。Hermes の
 import hermes_learn  # Hermes の学びを自動で当て、跡を残し、画面の「戻す」で戻す
 import hermes_skills  # Hermes の手順の書き足しを画面で採る・捨てる、Hermes の記憶を読む
 import topics  # 件（頼んだ件・報告・Slack のスレッド・問いを結ぶ単位）
-from hub_brain import Brain, Talker
+from hub_brain import AGENT, AGENT_H, AGENT_H_SP, AGENT_NAME, AGENT_NAME_BAD, Brain, Talker
 from places import CONFIG_DIR, STATE_DIR
 
 core = None  # 本体（server.py のモジュール）。使ってよい名前は hub_brain.CORE_TOOLS
@@ -130,7 +130,8 @@ def hermes_session_new(now: datetime | None = None) -> str:
 def hermes_agent() -> dict:
     """話し相手の一覧に載せる Hermes の項目（ハブ）。herdr のセッションではないので、pane も key も固定の名前。"""
     return {"pane": HERMES_PANE, "key": "hub", "title": "Hermes", "cwd": "", "kind": "hermes",
-            "session": hermes_session(), "reset_hour": HERMES_RESET_HOUR, "status": "idle", "name": "hermes", "hub": True, "hermes": True}
+            "session": hermes_session(), "reset_hour": HERMES_RESET_HOUR, "status": "idle", "name": "hermes", "hub": True, "hermes": True,
+            "agent_name": AGENT_NAME}  # 画面は、呼び名があればそれで出す（空なら、これまでの表示のまま）
 
 
 # Hermes との会話の記録。Claude Code のセッションが自分で書く記録（JSONL）にあたるものを、本体が状態フォルダに書く。
@@ -432,7 +433,7 @@ async def api_hermes_session_new():
         except OSError:
             traceback.print_exc()
             return JSONResponse({"ok": False, "reason": "state"})
-        hermes_log("note", "ハブの会話を新しくしました（Hermes の記憶と手順書は残ります）")
+        hermes_log("note", f"{AGENT}の会話を新しくしました（{AGENT_H_SP}の記憶と手順書は残ります）")
     core.hlog(f"Hermes の会話を新しくしました: {sid}", flush=True)
     return JSONResponse({"ok": True, "session": sid})
 
@@ -1555,9 +1556,9 @@ async def _watch_once():
             new = await asyncio.to_thread(_hsk_tidy, set(ids))
             applied = await _learn_skills() if ids else 0
             if applied:
-                await core.push_all("voice-loop｜Hermes", f"ハブが手順を {applied} 件書き足しました（💡 の「学んだこと」で見て、戻せます）", "hermes-skills")
+                await core.push_all(f"voice-loop｜{AGENT_H}", f"{AGENT}が手順を {applied} 件書き足しました（💡 の「学んだこと」で見て、戻せます）", "hermes-skills")
             elif new and await asyncio.to_thread(hermes_skills.pending_ids, HERMES_HOME):
-                await core.push_all("voice-loop｜Hermes", f"ハブが手順への書き足しを {len(new)} 件出しました（今日の自動の上限か、画面で扱えない形です。💡 で見られます）", "hermes-skills")
+                await core.push_all(f"voice-loop｜{AGENT_H}", f"{AGENT}が手順への書き足しを {len(new)} 件出しました（今日の自動の上限か、画面で扱えない形です。💡 で見られます）", "hermes-skills")
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -1575,7 +1576,7 @@ class Hermes(Brain, Talker):
 
     pane = HERMES_PANE
     name = "hermes"
-    label = "Hermes"
+    label = AGENT_H
     off_text = "Hermes は設定されていません（config.env の VL_HERMES_KEY）。選び直してください。"
 
     def on(self) -> bool:
@@ -1588,7 +1589,7 @@ class Hermes(Brain, Talker):
         return hermes_history()
 
     def sending_text(self) -> str:
-        return "ハブに送りました。考え中…"
+        return f"{AGENT}に送りました。考え中…"
 
     async def exchange(self, text: str, reply_at: float | None = None, extra: str = "", item: int | None = None,
                        said: str | None = None) -> tuple[str, str, bool]:
@@ -1624,6 +1625,9 @@ class Hermes(Brain, Talker):
     def doctor(self, add):
         problem = hermes_problem()
         add("ハブ（Hermes）", not problem, problem)
+        if AGENT_NAME_BAD:
+            add("呼び名", False, f"config.env の VL_AGENT_NAME「{AGENT_NAME_BAD[:20]}」は使えません。ひらがな・カタカナ・漢字・英数字と「・ー」だけ、16 字までにします"
+                "。いまは、これまでの表示（ハブ・Hermes）のままです", optional=True)
         if HERMES_EFFORT_BAD:
             add("Hermes の考える強さ", False, f"config.env の VL_HERMES_EFFORT「{HERMES_EFFORT_BAD[:20]}」は使えません。{'・'.join(HERMES_EFFORTS)} のどれかにします"
                 "（空なら Hermes の設定のまま）。いまは渡していません", optional=True)
@@ -1674,7 +1678,7 @@ class Hermes(Brain, Talker):
             link = ({"ask": {"fp": ask["fp"], "session": ask["session"]}}
                     if isinstance(ask, dict) and isinstance(ask.get("fp"), str) and _FP.fullmatch(ask["fp"]) and isinstance(ask.get("session"), str) and ask["session"] else {})
             return hermes_log("ai", reply, report=True, about=about, pane=pane, **({"topic": topic} if topics.ID_RE.fullmatch(topic or "") else {}), **link) and saved
-        failed = f"ハブから報告を受け取れませんでした: {core._clip(reply, 200) or '返事が空でした'}"
+        failed = f"{AGENT}から報告を受け取れませんでした: {core._clip(reply, 200) or '返事が空でした'}"
         saved = hermes_log("error", failed, about=about) and saved
         for c in list(core.CLIENTS):  # 開いている画面には、いま知らせる（記録に書けなければ、ここでしか伝わらない）
             try:

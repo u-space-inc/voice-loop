@@ -24,6 +24,7 @@ import re
 import subprocess
 
 from hermes_skills import USER, docker_bin
+from hub_brain import AGENT  # 話しかける相手の呼び名（無ければ「ハブ」）
 
 CHAT = os.environ.get("VL_SLACK_REPORT_CHAT", "").strip()  # 報告を送ってよい、ただ 1 つの DM（利用者と Hermes のボットの DM）
 CHAT_RE = re.compile(r"D[A-Z0-9]{8,12}")  # Slack の DM のチャンネル ID
@@ -48,7 +49,7 @@ def origin(raw) -> tuple[str, str] | None:
     return CHAT, thread
 
 
-NO_REPORT = "（ハブの報告を受け取れませんでした。voice-loop の画面で確かめてください）"
+NO_REPORT = f"（{AGENT}の報告を受け取れませんでした。voice-loop の画面で確かめてください）"
 NOT_FOUND = "（この件の指示を、セッションの記録で見つけられませんでした。結果は voice-loop の画面で確かめてください）"  # セッションが作り直された・記録が読めないなど
 MIXED = "（この件の間に、同じセッションでほかのやり取りがありました。違っていたら、このスレッドで言ってください）"  # ハブが読み分けた報告の頭に付ける
 SCREEN = "（詳しくは voice-loop の画面で確かめてください）"
