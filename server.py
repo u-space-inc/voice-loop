@@ -477,7 +477,87 @@ def transcribe(audio: bytes, filename: str) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     if text.replace("。", "").replace(" ", "") in HALLUCINATIONS:
         return ""
-    return text
+    return fix_heard(text)
+
+
+# ---------- 聞き取りの表記の直し ----------
+# whisper に作った名前（呼びかけの名前など）を教えると、ほかの語が崩れる（2026-11-23 に合成音声で実測。語彙の並びが文に漏れる・名前がほかの語に入り込む）。
+# 音はほぼ合っていて、ずれるのは表記（「ヴィカ」が「ウィカ」「Wica」）なので、聞き取ったあとの文字を、設定フォルダの辞書で直す。
+# 声で入った文だけを直す（打った文は通さない）
+HEARD_FILE = CONFIG_DIR / "heard.txt"
+HEARD_MAX_LINES = 200  # 読む行の上限
+HEARD_MAX_WORD = 40  # 1 つの語の字数の上限（これより長い行は読まない）
+# 行頭に ^ を付けた語は、文の頭の呼びかけだけで直す（ふだんの言葉と重なる形。「ピッカ」）。前に来てよいのは、呼びかけの前置きだけ
+HEARD_HEAD = r"^(?:(?:ねえ|ねぇ|ねー|ね|えっと|え|あの|おい|ほら)[、,\s]*)?"
+HEARD_AFTER = r"(?=[、,。.!！?？\s]|$)"
+
+
+def heard_rules() -> tuple[dict, dict]:
+    """辞書（heard.txt の「聞き取りの表記=直す表記」）。どこでも直す語と、文の頭の呼びかけだけで直す語（行頭の ^）。
+    発言のたびに読む（書き足しは次の発言から効く）。ファイルが無い・読めない・形の崩れた行は無視する（いまと同じ動き）。"""
+    anywhere, head = {}, {}
+    try:
+        lines = HEARD_FILE.read_text().splitlines()[:HEARD_MAX_LINES]
+    except (OSError, UnicodeDecodeError):
+        return anywhere, head
+    for line in lines:
+        line = re.split(r"\s#", line, maxsplit=1)[0].strip()  # 行の途中の「 #」からは書き込み（説明）
+        if not line or line.startswith("#"):
+            continue
+        src, sep, dst = line.partition("=")
+        src, dst = src.strip(), dst.strip()
+        at_head = src.startswith("^")
+        src = src[1:].strip() if at_head else src
+        if not sep or not src or not dst or src == dst or len(src) > HEARD_MAX_WORD or len(dst) > HEARD_MAX_WORD:
+            continue
+        (head if at_head else anywhere)[src.casefold()] = dst
+    return anywhere, head
+
+
+def _heard_alt(words) -> str:
+    """語の並び（長い語から先に当てる）。英字で始まる・終わる語は、英単語の一部では当てない（Wica を Wicapedia の中で直さない）。"""
+    def one(w: str) -> str:
+        return ("(?<![A-Za-z])" if w[0].isascii() and w[0].isalpha() else "") + re.escape(w) + ("(?![A-Za-z])" if w[-1].isascii() and w[-1].isalpha() else "")
+    return "|".join(one(w) for w in sorted(words, key=len, reverse=True))
+
+
+def _answer_reading(text: str, projects) -> tuple:
+    """答えとしての読み（scripts/consent.py の文法）。断る・許す（承認・閉じる。前置きのプロジェクト名を projects の各名前で読んだ場合も）と、文の中の数字。"""
+    nums = re.findall(r"[0-9〇一二三四五六七八九]", unicodedata.normalize("NFKC", text))
+    return (consent.refuses(text), nums,
+            tuple(consent.affirms(text, action, p) for action in ("answer", "close") for p in ("", *projects)))
+
+
+def fix_heard(text: str) -> str:
+    """声で入った文の表記を、辞書で直す。直すと答えとしての読み（断る・許す・番号）が変わるときは、直さない
+    （辞書の行が「はい」などを作り出して、雑音や関係のない発言が承認の守りを通るのを防ぐ。直した語がプロジェクト名の前置きになる読みも見る）。"""
+    anywhere, head = heard_rules()
+    if not (anywhere or head):
+        return text
+    done = []
+
+    def put(rules: dict, word: str) -> str:
+        dst = rules.get(word.casefold())
+        if dst is None:  # 大文字・小文字の扱いの違いで、辞書の語と引き当てられない（直さない）
+            return word
+        done.append(f"{word}→{dst}")
+        return dst
+
+    # 直した語は、もう一度は直さない（文の頭で直した語に、どこでも直す語を重ねて当てない）
+    segs = [(text, True)]
+    m = re.match(HEARD_HEAD + f"({_heard_alt(head)})" + HEARD_AFTER, text, flags=re.I) if head else None
+    if m:
+        segs = [(text[:m.start(1)], True), (put(head, m.group(1)), False), (text[m.end(1):], True)]
+    any_rx = re.compile(_heard_alt(anywhere), re.I) if anywhere else None
+    fixed = "".join(any_rx.sub(lambda m: put(anywhere, m.group(0)), s) if (any_rx and open_) else s for s, open_ in segs)
+    if fixed == text:
+        return text
+    targets = {dst for rules in (anywhere, head) for dst in rules.values()}
+    if _answer_reading(fixed, targets) != _answer_reading(text, targets):
+        print(f"[heard] 直さなかった（直すと答えとしての読みが変わる）: {'、'.join(done)}", flush=True)
+        return text
+    print(f"[heard] 直した: {'、'.join(done)}", flush=True)
+    return fixed
 
 
 def synth(text: str, speaker: int) -> bytes:
