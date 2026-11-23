@@ -198,8 +198,15 @@ with sync_playwright() as pw:
     page.goto(BASE + "/")
     page.wait_for_function("document.getElementById('conn').classList.contains('on')")
     check("WebKit: iPhone のブラウザでも 🔔 は出る（案内のため）", page.is_visible("#bell"), True)
-    page.click("#bell")
-    check("WebKit: 押すとホーム画面への追加を案内", wait(lambda: any("ホーム画面に追加した voice-loop で受け取れます" in t for t in sys_lines(page))), True)
+    # 案内は会話の欄に足す。遅い実行環境では、起動のときの会話の読み込みがあとから届いて欄を描き直し、出した案内を消すことがある（CI で 1 回）。
+    # 押せば案内が出ることを確かめたいので、出なければ押し直す（3 回とも出なければ落とす）
+    hinted = False
+    for _ in range(3):
+        page.click("#bell")
+        if wait(lambda: any("ホーム画面に追加した voice-loop で受け取れます" in t for t in sys_lines(page)), 5.0):
+            hinted = True
+            break
+    check("WebKit: 押すとホーム画面への追加を案内", hinted, True)
     tasks_view(page, "WebKit:")
     b.close()
 

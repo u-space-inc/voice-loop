@@ -19,8 +19,6 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 60
     env:
-      # uv は lock と pyproject が食い違えば失敗する（uv run が lock の外で依存を解き直さない。a2a 35d3b740 の指摘）
-      UV_LOCKED: "1"
       # 本体（常駐）と同じ Python で回す（手元の .venv は 3.12）。指定しないと、実行環境の新しい python3 が選ばれる
       UV_PYTHON: "3.12"
       # 二重の守り: 試験が行き先を指定し忘れても、本体の既定の行き先（声のエンジン・聞き取り・Hermes・語り手）は
@@ -50,7 +48,7 @@ jobs:
           HOMEBREW_NO_AUTO_UPDATE: "1"
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
       - name: ブラウザを入れる（pyproject.toml の Playwright の版に合わせる）
-        run: uv run playwright install chromium webkit
+        run: uv run --locked playwright install chromium webkit
       - name: 試験を 1 本ずつ回す（spike/ci.txt）
         run: |
           set -u
@@ -65,7 +63,9 @@ jobs:
           failed=()
           for t in "${tests[@]}"; do
             echo "::group::$t"
-            if uv run "spike/$t" < /dev/null; then echo "→ 通った: $t"; else echo "::error::落ちた: $t"; failed+=("$t"); fi
+            # --locked: lock と pyproject が食い違えば失敗する（lock の外で依存を解き直さない。a2a 35d3b740 の指摘）。
+            # ジョブ全体の UV_LOCKED にしないのは、試験の中で起動する hubctl（uv run --script。lock を持たない）に効かせないため（codex-review の指摘）
+            if uv run --locked "spike/$t" < /dev/null; then echo "→ 通った: $t"; else echo "::error::落ちた: $t"; failed+=("$t"); fi
             echo "::endgroup::"
           done
           if [ "${#failed[@]}" -gt 0 ]; then
