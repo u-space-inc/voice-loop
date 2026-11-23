@@ -147,8 +147,12 @@ for nonce, known in (("'+fetch(1)+'", set()), ("a1b2c3d4e5f6", {"1'];fetch(1);//
     except ValueError:
         bad_vals.append(True)
 check("相手の位置: 形の合わない印・ID はスクリプトに埋めない", bad_vals, [True, True])
-check("スクリプト: 読むだけ（クリック・入力・外への送信・ページの見た目の書き換えの書き方が無い）",
-      [w for w in ("click", "fetch", "XMLHttpRequest", "sendBeacon", "innerHTML", "outerHTML", "location.href=", "location=", ".value=", "submit",
+check("スクリプト: 押すのは、左で「メンション」が選ばれていないときの、左の「メンション」の 1 つだけ（2026-11-23 本人「推奨で」＝A）",
+      (tw.JS_TEMPLATE.count("click"), "const M='slice-list-item-slice-activities-mentions';" in tw.JS_TEMPLATE,
+       "if(cur()!==M){const e=document.querySelector('[data-testid=\"'+M+'\"]');if(e){e.click();" in tw.JS_TEMPLATE, tw.SELECTED == "slice-list-item-slice-activities-mentions"),
+      (1, True, True, True))
+check("スクリプト: ほかは読むだけ（入力・外への送信・ページの見た目の書き換えの書き方が無い）",
+      [w for w in ("fetch", "XMLHttpRequest", "sendBeacon", "innerHTML", "outerHTML", "location.href=", "location=", ".value=", "submit",
                    "dispatchEvent", "open(", "eval", "appendChild", "remove(", "setAttribute", "localStorage", "cookie") if w in tw.JS_TEMPLATE], [])
 check("スクリプト: 写しを作るのは番号 0 の呼び出しだけ。写しが無ければ err を返す（作り直さない）",
       ("if(k===0){" in tw.JS_TEMPLATE, "if(!W)return 'VLT|'+k+'|0|err|" in tw.JS_TEMPLATE, tw.JS_TEMPLATE.count("window[K]="), "crypto.getRandomValues" in tw.JS_TEMPLATE),
@@ -166,14 +170,18 @@ const waits=[];globalThis.window=globalThis;globalThis.performance={now:()=>AGE}
 globalThis.location={host:'teams.microsoft.com'};
 const row=(m,f)=>({id:'message-slice-card-MentionsSliceCardItem|'+m,querySelector:s=>{const k=(/message-slice-card-([a-z-]+)"/.exec(s)||[])[1];return k in f?{textContent:f[k]}:null}});
 const ROWS=[row('1794529244269',{title:'General',['threads-secondary-title']:'題',preview:'送り手: 本文',timestamp:'9:20'}),row('1794451771109',{title:'General'})];
-globalThis.document={querySelectorAll:s=>s.includes('avatar')?[{children:[],textContent:'組織A'}]:s.includes('LeftRail')?[{getAttribute:()=>'SEL'}]:s.includes('slice-card-item')?ROWS:[]};
+globalThis.__sel='SEL';globalThis.__clicks=0;const MENTIONS={click:()=>{__clicks++;if(CLICK_WORKS)__sel='slice-list-item-slice-activities-mentions';}};
+globalThis.document={querySelectorAll:s=>s.includes('avatar')?[{children:[],textContent:'組織A'}]:s.includes('LeftRail')?[{getAttribute:()=>__sel}]:s.includes('slice-card-item')?ROWS:[],
+  querySelector:s=>s==='[data-testid="slice-list-item-slice-activities-mentions"]'&&HAS_ITEM?MENTIONS:null};
 """
 
 
-def node_run(age, known=(), base=False, ks=(0,)):
+def node_run(age, known=(), base=False, ks=(0,), sel=tw.SELECTED, has_item=True, click_works=True):
     js_text = tw.js_for("a1b2c3d4e5f6", set(known), base)
-    body = (FAKE_PAGE.replace("AGE", str(age)).replace("'SEL'", json.dumps(tw.SELECTED)) + "const res=[];" + "".join(f"res.push(String({js_text.replace('__K__', str(k))}));" for k in ks)
-            + "console.log(JSON.stringify({res,waits}));")
+    page = (FAKE_PAGE.replace("AGE", str(age)).replace("'SEL'", json.dumps(sel)).replace("HAS_ITEM", "true" if has_item else "false")
+            .replace("CLICK_WORKS", "true" if click_works else "false"))
+    body = (page + "const res=[];" + "".join(f"res.push(String({js_text.replace('__K__', str(k))}));" for k in ks)
+            + "console.log(JSON.stringify({res,waits,clicks:__clicks}));")
     p = subprocess.run([NODE, "--input-type=module", "-e", body], capture_output=True, text=True, timeout=30)
     return json.loads(p.stdout) if p.returncode == 0 else {"err": p.stderr[-300:]}
 
@@ -189,6 +197,24 @@ if NODE:
           [(i["msg"], bool(i["fields"])) for i in snap_["items"]] if isinstance(snap_, dict) else snap_,
           [("1794529244269", True), ("1794451771109", False)])
     check("node: 開いて 25 秒なら待たない", node_run(25000).get("waits"), [])
+    check("node: 左で「メンション」が選ばれていれば押さない", node_run(25000).get("clicks"), 0)
+    other = "slice-list-item-slice-followed-threads"
+    r = node_run(25000, known={"1794451771109"}, sel=other)
+    try:
+        snap_ = read("\n".join(r.get("res", [])), known={"1794451771109"})
+    except tw.Unreadable as e:
+        snap_ = f"読めない: {e.args[0]}"
+    check("node: ほかが選ばれていたら、左の「メンション」を 1 回押し、一覧が届くまで待ってから写す",
+          (r.get("clicks"), r.get("waits"), snap_["switched"] if isinstance(snap_, dict) else snap_, len(snap_["items"]) if isinstance(snap_, dict) else 0),
+          (1, [tw.SWITCH_WAIT_MS], True, 2))
+    r = node_run(25000, sel=other, click_works=False)
+    check("node: 押しても選ばれなければ、10 秒まで待ってから写し、「形」で読まない", (r.get("clicks"), len(r.get("waits", [])), r.get("waits", [0])[-1]), (1, 41, tw.SWITCH_WAIT_MS))
+    check("node: 押しても選ばれなければ、読まない", unreadable(lambda: read("\n".join(node_run(25000, sel=other, click_works=False).get("res", [])))), "parse")
+    r = node_run(25000, sel=other, has_item=False)
+    check("node: 左の「メンション」が見つからなければ押さず、「形」で読まない",
+          (r.get("clicks"), unreadable(lambda: read("\n".join(r.get("res", []))))), (0, "parse"))
+    r = node_run(25000)
+    check("node: 選ばれていた回は「戻した」にしない", read("\n".join(r.get("res", [])))["switched"], False)
     check("node: 番号 1 から呼ばれても写しを作らず err（待ちもしない）",
           ((node_run(5000, ks=(1,)).get("res", [""])[0].split("|") + [""] * 4)[3], node_run(5000, ks=(1,)).get("waits")), ("err", []))
 else:

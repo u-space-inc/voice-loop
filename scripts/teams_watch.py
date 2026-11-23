@@ -11,7 +11,8 @@ Hermes の見張りの回（templates/hermes/watch/vl_watch.py の teams の口�
 
 読み方と守り:
 - 組織ごとに、決めた URL（https://teams.microsoft.com/v2/?tenantId=<組織の ID>）を開いたときに出る一覧だけを読む。スレッドは開かない
-  （開くと既読になる）。Teams の Web 版で、左の「メンション」を選んだままにしておく（開いたときに前の表示が出る）。
+  （開くと既読になる）。Teams の Web 版は、左で最後に選んだ項目を覚えて開く。「メンション」以外が選ばれていたら、決まったスクリプトが左の
+  「メンション」を 1 回だけ押して戻す（ほかは押さない。ビューの切り替えで、既読にはならない）。
 - claude -p --chrome を、利用者の設定を読まず（--setting-sources ""。利用者のフック・許可・CLAUDE.md・プラグインを持ち込まない）、
   組み込みの道具なし（--tools ""）、ほかの MCP なしで動かす。PreToolUse のフック（teams_hook.py guard）が、決めた道具・その回の URL・
   待つことと、一覧を写して切り出す決まったスクリプト（JS。LLM が渡した文は使わずに差し替える）だけを通す。
@@ -65,17 +66,25 @@ LIMITS = {"org": 60, "channel": 120, "title": 200, "body": 1200, "shown": 20}
 # 写す前に、ページを開いてから PAGE_AGE_MS が経つまで待つ。開いた直後の一覧は前の回の写しのままで、新しい投稿の取り込みが数秒遅れて届く
 # （11/13、09:53 の回が 9:20 の投稿を写しそこねた）。道具は返った Promise を待たないので、先頭に await を付ける（11/13 に Chrome で確かめた）。
 INDEX, CHUNK, PAGE_AGE_MS = 20, 600, 20000
+# 左で「メンション」以外が選ばれていたら（手で Teams を見たあと・ほかのセッションがチャネルを開いたまま閉じたあと）、左の「メンション」を 1 回だけ
+# 押して戻し、選ばれるのを待ってから（最大 10 秒）、一覧が届くまで SWITCH_WAIT_MS 待って写す（2026-11-19 にチャネルを選んだまま残され、
+# 読めなくなった。11/23 本人「推奨で」＝A）。押すのはこの 1 つの項目だけで、ビューの切り替えなので既読にはならない
+SWITCH_WAIT_MS = 6000
 JS_TEMPLATE = (r"""await (async()=>{const K='__vlT___NONCE__';const k=__K__;if(k===0){const w=20000-performance.now();"""
                r"""if(w>0)await new Promise(r=>setTimeout(r,Math.min(w,20000)));const known=new Set(__KNOWN__);const base=__BASE__;"""
                r"""const q=(r,k)=>((r.querySelector('[data-tid="message-slice-card-'+k+'"]')||{}).textContent||'').trim();"""
                r"""const b=[...document.querySelectorAll('[data-tid="me-control-avatar-trigger"] span')].find(e=>!e.children.length&&e.textContent.trim());"""
-               r"""const s=[...document.querySelectorAll('[data-tabster*="LeftRailSelectedItem"]')].map(e=>e.getAttribute('data-testid')||'').join(',');"""
+               r"""const M='slice-list-item-slice-activities-mentions';"""
+               r"""const cur=()=>[...document.querySelectorAll('[data-tabster*="LeftRailSelectedItem"]')].map(e=>e.getAttribute('data-testid')||'').join(',');"""
+               r"""let sw=0;if(cur()!==M){const e=document.querySelector('[data-testid="'+M+'"]');if(e){e.click();sw=1;"""
+               r"""for(let i=0;i<40&&cur()!==M;i++)await new Promise(r=>setTimeout(r,250));await new Promise(r=>setTimeout(r,__SWITCH_WAIT__));}}"""
+               r"""const s=cur();"""
                r"""const rows=[...document.querySelectorAll('[data-testid="message-slice-card-item"]')];"""
                r"""const items=rows.slice(0,20).map(r=>{const m=/^message-slice-card-MentionsSliceCardItem\|(\d{10,16})$/.exec(r.id);"""
                r"""const id=m?Number(m[1]).toString(36):'x';return base||known.has(id)?[id]:[id,q(r,'title').slice(0,120),"""
                r"""q(r,'threads-secondary-title').slice(0,200),q(r,'preview').slice(0,1200),q(r,'timestamp').slice(0,20)]});"""
                r"""window[K]={id:[...crypto.getRandomValues(new Uint8Array(8))].map(x=>x.toString(16).padStart(2,'0')).join(''),"""
-               r"""a:Array.from(JSON.stringify({vl:'teams-2',host:location.host,org:b?b.textContent.trim().slice(0,60):'',sel:s.slice(0,80),"""
+               r"""a:Array.from(JSON.stringify({vl:'teams-2',host:location.host,org:b?b.textContent.trim().slice(0,60):'',sel:s.slice(0,80),sw,"""
                r"""n:rows.length,items}))}}const W=window[K];if(!W)return 'VLT|'+k+'|0|err|0000000000000000||VLT';const A=W.a;"""
                r"""return 'VLT|'+k+'|'+A.length+'|'+((k+1)*600<A.length?'more':'end')+'|'+W.id+'|'+A.slice(k*600,(k+1)*600).join('')+'|VLT'})()""")
 MSG = re.compile(r"[0-9a-z]{6,11}")  # 投稿の ID（作られた時刻のミリ秒）の 36 進
@@ -136,7 +145,7 @@ def js_for(nonce: str, known: set, base: bool) -> str:
     if not re.fullmatch(r"[0-9a-f]{12}", nonce) or not all(re.fullmatch(r"\d{10,16}", m) for m in known):
         raise ValueError("js")
     return (JS_TEMPLATE.replace("__NONCE__", nonce).replace("__KNOWN__", json.dumps(sorted(b36(m) for m in known)))
-            .replace("__BASE__", "true" if base else "false"))
+            .replace("__BASE__", "true" if base else "false").replace("__SWITCH_WAIT__", str(SWITCH_WAIT_MS)))
 
 
 def assemble(text: str) -> str:
@@ -171,7 +180,8 @@ def assemble(text: str) -> str:
 
 
 def parse_snapshot(whole: str, org_name: str, known: set, base: bool) -> dict:
-    """写し（JSON）を確かめ、{"n": 一覧の数, "items": [{"msg", "fields"}]} にする。fields は新しい投稿だけ（既に見た投稿・初めての回は None）。"""
+    """写し（JSON）を確かめ、{"n": 一覧の数, "items": [{"msg", "fields"}], "switched": 左を「メンション」に戻したか} にする。
+    fields は新しい投稿だけ（既に見た投稿・初めての回は None）。"""
     try:
         data = json.loads(whole)
     except ValueError:
@@ -200,7 +210,7 @@ def parse_snapshot(whole: str, org_name: str, known: set, base: bool) -> dict:
             out.append({"msg": msg, "fields": {"channel": it[1], "title": it[2], "body": it[3], "shown": it[4]}})
         else:
             raise Unreadable("parse")  # 新しい投稿なのに中身が無い・初めての回なのに中身がある
-    return {"n": n, "items": out}
+    return {"n": n, "items": out, "switched": data.get("sw") == 1}
 
 
 def item_id(tenant: str, msg: str) -> str:
@@ -372,7 +382,8 @@ def run(now: float | None = None, reader=read_org) -> int:
                     snap = parse_snapshot(assemble(reader(cfg, org, js_for(secrets.token_hex(6), known, base=not init))), org["name"], known, base=not init)
                     items = snap["items"]
                     n, gap = merge(org, items, now, first=not init, more=snap["n"] > len(items))
-                    status["orgs"][org["tenant"]] = {"ok": True, "reason": "", "at": now, "items": len(items), "new": n, "gap": gap, "init": True}
+                    status["orgs"][org["tenant"]] = {"ok": True, "reason": "", "at": now, "items": len(items), "new": n, "gap": gap, "init": True,
+                                                     **({"switched": True} if snap["switched"] else {})}  # 左を「メンション」に戻した回
                 except Unreadable as e:
                     status["orgs"][org["tenant"]] = {"ok": False, "reason": e.args[0], "at": now, "init": init}
         status["at"] = now  # 時間の外でも、動いている印は書く（Hermes の見張りが「止まっている」を見分ける）
