@@ -479,6 +479,31 @@ check("自動: 二度試さない印を書けなければ、記録を消さず�
 s.hermes.hermes_skills.run_script = failing_run
 RUNNING["v"] = False
 asyncio.run(s.hermes._learn_skills())
+def reject_lost(c, mode, pid, raw, wait=90, env=None, script=None):  # 記録は消えたが、答えは届かなかった（時間切れ）
+    if mode == "reject" and pid == "99990073":
+        SCALLS.append((mode, pid))
+        (PEND / f"{pid}.json").unlink()
+        return {"result": "timeout", "why": "時間切れ"}
+    return failing_run(c, mode, pid, raw, wait, env, script)
+
+
+s.hermes.hermes_skills.run_script = reject_lost
+record("99990073", "g1", at=time.time())
+asyncio.run(s.hermes._learn_skills())
+RUNNING["v"] = False
+asyncio.run(s.hermes._learn_skills())  # 終わりを確かめる
+old = json.loads(s.hermes.HSK_FILE.read_text())
+lost_state = old["items"]["99990073"]["state"]
+old["items"]["99990073"]["at"] = time.time() - s.hermes.HSK_KEEP - 86400
+s.hermes.HSK_FILE.write_text(json.dumps(old))
+s.hermes._hsk_tidy(set())
+record("99990073", "g1", at=time.time())
+SCALLS.clear()
+asyncio.run(s.hermes._learn_skills())
+check("自動: 記録を消す台本の答えが届かず「分からない」になった id も、印は 30 日を過ぎても残る（置き直されても試し直さない）",
+      (lost_state, hsk_of("99990073")[0], acts()), ("unknown", "unknown", []))
+(PEND / "99990073.json").unlink()
+s.hermes.hermes_skills.run_script = failing_run
 rec9 = {"summary": "台本の答え"}
 check("台本が「dropped」のような答えを返しても、外した扱いにはしない（外したと決めるのは本体だけ。画面の「採る」の failed も「分からない」のまま）",
       (s.hermes._hsk_finish("99999998", "v", rec9, b"{}", {"result": "dropped", "dropped": True})["reason"],

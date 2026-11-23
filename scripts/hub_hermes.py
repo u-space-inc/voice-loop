@@ -635,8 +635,11 @@ def _hsk_finish(pid: str, v: str, rec: dict, raw: bytes, out: dict, dropped: boo
             if state is None:
                 d["items"].pop(pid, None)
             else:
+                keep = dropped or (d["items"].get(pid) or {}).get("keep") is True  # 消さない印（_hsk_mark_failed）は、結果が何であっても引き継ぐ
                 d["items"][pid] = {"state": state, "at": time.time(), "v": v, "summary": rec["summary"][:120],
                                    "note": "" if state == "applied" else why[:200], "discarded": dropped or out.get("discarded") is True}
+                if keep:
+                    d["items"][pid]["keep"] = True
                 if dropped:
                     d["items"][pid]["dropped"] = time.time()
             d["verify"] = res == "timeout"  # 時間切れなら、台本がまだ動いているかもしれない
@@ -919,8 +922,8 @@ async def api_hermes_memory_remove(body: dict):
 
 def _hsk_tidy(ids: set[str]) -> list[str]:
     """まだ知らせていない承認待ちの id を、知らせた印にして返す。古い状態と印（30 日。承認待ちに残っている id のものは残す）と控えを片づける。
-    自動で外した id の印（failed）は、日が経っても消さない（承認待ちに実体が無いので、消すと、同じ記録を置き直されたときに試し直してしまう。
-    増えるのは多くて 1 日の上限の数まで）。"""
+    本体が承認待ちから外そうとした id の印（keep つき。_hsk_mark_failed）は、日が経っても消さない（承認待ちに実体が無いかもしれず、
+    消すと、同じ記録を置き直されたときに試し直してしまう。増えるのは多くて 1 日の上限の数まで）。"""
     now = time.time()
     with _hsk_lock:
         d = hsk_state()
@@ -928,7 +931,7 @@ def _hsk_tidy(ids: set[str]) -> list[str]:
             return []
         new = sorted(ids - set(d["told"]))
         told = {k: t for k, t in d["told"].items() if now - t < HSK_KEEP or k in ids} | {k: now for k in new}
-        items = {k: v for k, v in d["items"].items() if now - v["at"] < HSK_KEEP or k in ids or v["state"] in ("applying", "failed")}
+        items = {k: v for k, v in d["items"].items() if now - v["at"] < HSK_KEEP or k in ids or v["state"] == "applying" or v.get("keep") is True}
         if told != d["told"] or items != d["items"]:
             core.write_json(HSK_FILE, {**d, "told": told, "items": items})
     for p in (HSK_DIR / "approved").glob("*.json"):
@@ -1184,13 +1187,14 @@ async def _learn_skills() -> int:
 
 
 def _hsk_mark_failed(pid: str, why: str) -> bool:
-    """当てている途中の id を、二度試さない印（failed）に書き換える。承認待ちの記録を消す前に呼ぶ。書けたら True。"""
+    """当てている途中の id を、二度試さない印（failed）に書き換える。承認待ちの記録を消す前に呼ぶ。書けたら True。
+    消さない印（keep）も付ける。このあと記録を消す台本の結果が分からなくても（時間切れで「分からない」になっても）、印は日が経っても残る。"""
     with _hsk_lock:
         d = hsk_state()
         st = d["items"].get(pid) if d else None
         if not st or st["state"] != "applying":
             return False
-        st.update(state="failed", at=time.time(), note=why[:200])
+        st.update(state="failed", at=time.time(), note=why[:200], keep=True)  # keep: 日が経っても片づけない（_hsk_tidy）
         try:
             core.write_json(HSK_FILE, d)
         except OSError:
