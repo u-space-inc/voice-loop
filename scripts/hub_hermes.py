@@ -1593,7 +1593,7 @@ class Hermes(Brain, Talker):
 
     async def exchange(self, text: str, reply_at: float | None = None, extra: str = "", item: int | None = None,
                        said: str | None = None, via: str = "") -> tuple[str, str, bool]:
-        return await hermes_exchange(text, reply_at, extra, item, said, via)
+        return await hermes_exchange(text, reply_at, extra, item, said=said, via=via)
 
     def ask(self, text: str) -> str:
         return ask_hermes(text)

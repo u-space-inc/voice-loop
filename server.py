@@ -47,7 +47,7 @@ from fastapi.staticfiles import StaticFiles
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "scripts"))
-from origin_guard import SameOriginOnly, from_device  # noqa: E402  接続元の確かめ・機械の住所からの接続か
+from origin_guard import SameOriginOnly, device_place, device_ports  # noqa: E402  接続元の確かめ・機械の口で受けた接続か
 import consent  # noqa: E402  利用者の発言が、許す・選ぶの答えになっているか（承認に答える・閉じるの守り）
 import ask_form  # noqa: E402  選択肢の問い（AskUserQuestion）に、画面と Slack から答える
 from places import CONFIG_DIR, STATE_DIR  # noqa: E402  端末ごとの設定と状態の置き場
@@ -1370,12 +1370,12 @@ class Client:
         self.voice = True  # この画面で読み上げるか（画面の 🔇 で切ると、返答は文字だけになる）
         self.visible = False  # この画面がいま見えているか。見えている画面が1つでもあれば、プッシュ通知は送らない（画面に声と文字で届くため）
         self.seen = 0.0  # 画面が最後に様子（hello）を知らせてきた時刻
-        # 機械（スタックチャン）か。VL_DEVICE_ADDRS に書いた tailnet の住所からの接続は、名乗りに関係なく機械（origin_guard の from_device）。
+        # 機械（スタックチャン）か。機械の口（VL_DEVICE_PORTS）で受けた接続は、名乗りに関係なく機械で、置き場所も口で決まる（origin_guard の device_place）。
         # 画面も hello で kind: "stackchan" と名乗れば機械として扱う（守りが強くなる側だけ）。機械は見えている画面に数えず、
         # 機械からの発言は、承認に答える・閉じるに使わない
-        self.bound = from_device(getattr(sock, "headers", None) or {})
+        self.place = device_place(getattr(sock, "scope", None) or {})  # 機械の置き場所（home・car・desk）。口で決まった機械は名乗りで変えない
+        self.bound = bool(self.place)
         self.kind = "device" if self.bound else "screen"
-        self.place = ""  # 機械の置き場所（home・car・desk）。いまは記録だけ
         self.audio = "wav"  # 返答の声の形。機械が audio: "opus" を名乗れば Ogg の Opus
 
     async def send(self, **msg):
@@ -3301,9 +3301,9 @@ async def ws(sock: WebSocket):
                 if d["type"] == "hello":  # 画面が選んでいる声と、読み上げるか（ハブからの報告を、その声で届けるため）。🔇 を押すたび・画面が隠れる／見えるたびにも届く
                     client.speaker = None if d.get("speaker") in (None, "") else int(d["speaker"])
                     client.voice = d.get("voice") is not False  # voice を送らない古い画面は、これまでどおり読み上げる
-                    if not client.bound:  # 住所で機械と決まった接続は、画面と名乗っても機械のまま
+                    if not client.bound:  # 口で機械と決まった接続は、画面と名乗っても機械のまま。置き場所も口で決まる
                         client.kind = "device" if d.get("kind") in ("stackchan", "device") else "screen"
-                    client.place = d.get("place") if d.get("place") in ("home", "car", "desk") else ""
+                        client.place = d.get("place") if d.get("place") in ("home", "car", "desk") else ""
                     client.audio = "opus" if d.get("audio") == "opus" else "wav"
                     # visible を送らない古い画面は、見えていないものとして扱う（通知を止めない）。機械は見えている画面に数えない
                     client.visible = d.get("visible") is True and client.kind == "screen"
@@ -3349,8 +3349,29 @@ async def ws(sock: WebSocket):
 hermes.setup(sys.modules[__name__])  # 頭の部品に本体を渡す（このモジュールの名前は、起動のしかたで server か __main__ になる）
 
 
+def device_servers(uvicorn) -> list:
+    """機械の口（VL_DEVICE_PORTS）の受け口。この Mac の中（127.0.0.1）だけで待つ（tailnet へは Tailscale Serve が出す）。同じ本体（app）を使い、
+    起動と終わりの処理（lifespan）は画面の口の受け口だけが受け持つ（見張りなどを二重に動かさない）。止める合図も画面の口の受け口だけが受ける。"""
+    class Quiet(uvicorn.Server):
+        def capture_signals(self):  # 止める合図は画面の口の受け口が受け、終わるときにこちらも止める
+            return contextlib.nullcontext()
+    return [Quiet(uvicorn.Config(app, host="127.0.0.1", port=p, proxy_headers=False, lifespan="off")) for p in sorted(device_ports())]
+
+
+async def serve_all(main, extras: list):
+    """画面の口の受け口と、機械の口の受け口を一緒に動かす。画面の口の受け口が終われば、機械の口の受け口も止める。"""
+    tasks = [asyncio.create_task(x.serve()) for x in extras]
+    try:
+        await main.serve()
+    finally:
+        for x in extras:
+            x.should_exit = True
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 if __name__ == "__main__":
     import uvicorn
 
     # proxy_headers を切る: 接続元を X-Forwarded-For で書き換えさせない（コンテナが偽った値で、接続のもとの確かめを外せないように。origin_guard）
-    uvicorn.run(app, host=os.environ.get("VL_HOST", "127.0.0.1"), port=int(os.environ.get("VL_PORT", "8790")), proxy_headers=False)
+    main_server = uvicorn.Server(uvicorn.Config(app, host=os.environ.get("VL_HOST", "127.0.0.1"), port=int(os.environ.get("VL_PORT", "8790")), proxy_headers=False))
+    asyncio.run(serve_all(main_server, device_servers(uvicorn)))
