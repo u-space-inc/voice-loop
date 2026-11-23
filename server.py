@@ -511,7 +511,10 @@ def heard_rules() -> tuple[dict, dict]:
         src = src[1:].strip() if at_head else src
         if not sep or not src or not dst or src == dst or len(src) > HEARD_MAX_WORD or len(dst) > HEARD_MAX_WORD:
             continue
-        (head if at_head else anywhere)[src] = dst
+        rules = head if at_head else anywhere
+        for k in [k for k in rules if re.fullmatch(re.escape(k), src, re.I)]:  # 大文字・小文字だけ違う語（照合では同じ語）も、後の行が勝つ
+            del rules[k]
+        rules[src] = dst
     return anywhere, head
 
 

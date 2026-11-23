@@ -115,6 +115,9 @@ Weekar=ヴィカ
     dictionary("Straße=道路\nﬀ=エフ\n")
     check("ß を含む語も、その表記で直す", hear("Straße を渡る"), "道路 を渡る")
     check("合字（ﬀ）も、その表記で直す", hear("ﬀ の字"), "エフ の字")
+    dictionary("Wica=ヴィカ\nwica=ビカ\n^Pika=A\n^PIKA=B\n")
+    check("大文字・小文字だけ違う行は、後の行が勝つ", hear("WICA と Wica"), "ビカ と ビカ")
+    check("大文字・小文字だけ違う行は、後の行が勝つ（文の頭だけの語）", hear("pika、次は"), "B、次は")
     dictionary("Wica=ヴィカ\n")
     check("聞き取り（transcribe）は直さない（直すのは、そのあとの fix_heard）", (heard.update(text="Wica、次は"), s.transcribe(b"AUDIO", "a.webm"))[1], "Wica、次は")
 
