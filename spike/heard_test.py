@@ -1,18 +1,20 @@
-"""聞き取りの表記の直し（設定フォルダの heard.txt）の試験。whisper は差し替え、聞き取りのあとの文字だけを見る。常駐の 8790・本物の whisper には触れない。
+"""聞き取りの表記の直し（設定フォルダの heard.txt）の試験。whisper と Hermes は動かさず（Hermes は応答しない場所を指す）、聞き取りのあとの文字と、
+ハブの守りの台帳・記録だけを見る。常駐の 8790・本物の whisper・Hermes・herdr には触れない。
 確かめること:
-  - 辞書の「聞き取りの表記=直す表記」で、声で入った文を直す。長い語から先に当てる。英字は大文字・小文字を区別せず、英単語の一部では直さない
+  - 辞書の「聞き取りの表記=直す表記」で、声で入った文を直す。長い語から先に当てる。英字は大文字・小文字を区別せず、英単語の一部では直さない。
+    大文字・小文字の扱いは正規表現に任せる（ß・合字も、その表記で直す）
   - 行頭に ^ を付けた語は、文の頭の呼びかけ（前に「ねえ」などが来てもよい。後ろに読点・空白・文の終わり）だけで直す
   - 直した語は、もう一度は直さない。行の中の記号は、ただの文字として扱う（正規表現として読まない）
-  - ファイルが無い・形の崩れた行・長すぎる行は無視する（いまと同じ動き）。書き足しは次の発言から効く（再起動なし）
-  - 相手の位置: 辞書の行が「はい」などの答えの言葉や番号を作り出す・断る言葉を消す・プロジェクト名の前置きを作る場合は、直さない
-    （雑音や関係のない発言が、辞書を通って承認・閉じるの守りを通らないように）
-  - WebSocket: 声の turn は直した文を画面と相手に渡す。打った文（type=text）は直さない
+  - ファイルが無い・形の崩れた行・長すぎる行・読めないファイル・201 行目から後は無視する。書き足しは次の発言から効く（再起動なし）
+  - 相手の位置: 辞書の行が「はい」を作り出しても（雑音の「肌」が「はい」になる）、承認に答える・閉じるの守りが読む台帳は、直す前の言葉。
+    記録には直した文と直す前の言葉を残し、起動のときも直す前の言葉で台帳を戻す。断った発言も同じ
+  - WebSocket: 声の turn は直した文を画面とハブに渡す。打った文（type=text）は直さない
 使い方: uv run spike/heard_test.py"""
+import asyncio
 import json
 import os
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 TMP = tempfile.mkdtemp()
@@ -40,8 +42,9 @@ s._whisper = lambda audio, filename, timeout=120, vad=None: {"text": heard["text
 
 
 def hear(text):
+    """声の turn と同じ順: 聞き取り（transcribe。幻の定番文を捨てる）→ 辞書で直す（fix_heard）。"""
     heard["text"] = text
-    return s.transcribe(b"AUDIO", "a.webm")
+    return s.fix_heard(s.transcribe(b"AUDIO", "a.webm"))
 
 
 try:
@@ -108,61 +111,79 @@ Weekar=ヴィカ
     dictionary("Wica=ヴィカ\n^ビカ=ヴィカ\n")
     check("書き足したら、再起動なしで次の発言から効く", hear("ビカ、次は"), "ヴィカ、次は")
 
-    # ---------- 相手の位置: 辞書で答えの言葉を作らない ----------
-    dictionary("""ウィカ=ヴィカ
-肌=はい
-^ピッカ=許可して
-ダメ=ヴィカ
-いち=1
-ボイス=voice-loop
-二=ニ
-""")
-    check("「はい」を作り出す行では直さない（雑音の「肌」が承認にならない）", hear("肌"), "肌")
-    check("文の頭で「許可して」を作り出す行では直さない", hear("ピッカ"), "ピッカ")
-    check("断る言葉を消す行では直さない（「ダメ」を消して許すにしない）", hear("ウィカ、ダメ"), "ウィカ、ダメ")
-    check("番号を作り出す行では直さない", hear("いち番"), "いち番")
-    check("番号を消す行では直さない", hear("二番"), "二番")
-    check("直した語がプロジェクト名の前置きになって許す読みになる行では直さない", hear("ボイスはい"), "ボイスはい")
-    check("答えの読みが変わらなければ直す（「はい」はそのまま、名前だけ直す）", hear("ウィカ、次は"), "ヴィカ、次は")
-    check("答えの読みが変わらなければ直す（断る文の名前）", hear("ウィカ、だめだよ"), "ヴィカ、だめだよ")
-    check("名前を直しても、許す読みにはならない（もとから許す読みではない）", hear("ウィカ、はい"), "ヴィカ、はい")
-    check("辞書に当たらない発言は、そのまま", hear("はい"), "はい")
+    # ---------- 大文字・小文字の扱いは正規表現に任せる（引き当てで別の折り畳みをしない） ----------
+    dictionary("Straße=道路\nﬀ=エフ\n")
+    check("ß を含む語も、その表記で直す", hear("Straße を渡る"), "道路 を渡る")
+    check("合字（ﬀ）も、その表記で直す", hear("ﬀ の字"), "エフ の字")
+    dictionary("Wica=ヴィカ\n")
+    check("聞き取り（transcribe）は直さない（直すのは、そのあとの fix_heard）", (heard.update(text="Wica、次は"), s.transcribe(b"AUDIO", "a.webm"))[1], "Wica、次は")
 
     # ---------- 幻の定番文は直す前に捨てる ----------
     dictionary("ご視聴=ヴィカ\n")
     check("無音の定番文は、辞書より先に空にする", hear("ご視聴ありがとうございました。"), "")
 
-    # ---------- WebSocket: 声だけ直す ----------
-    dictionary("Wica=ヴィカ\n")
-    turns = []
-    real_accepted = s.hub_accepted
+    # ---------- 相手の位置: 守りの台帳には直す前の言葉 ----------
+    # 辞書の行が「はい」を作り出しても（雑音の「肌」が「はい」になる、など）、承認に答える・閉じるの守りが読む台帳は、聞き取ったままの言葉。
+    # 本物のハブの受け口（hub_accepted → Hermes との往復）を通す。Hermes は動いていない（往復は失敗する）が、台帳と記録には載る
+    dictionary("Wica=ヴィカ\n肌=はい\n")
+    hub = s.hermes.HERMES_PANE
 
-    async def fake_accepted(talker, text, pane, *a, **k):  # ハブが受け取る文だけを控え、往復はしない
-        turns.append(text)
-        return "", "試験のため送っていません", True
+    def voice(c, text, pane=hub):
+        heard["text"] = text
+        shown = None
+        with c.websocket_connect("ws://127.0.0.1:8790/ws") as ws:
+            ws.send_text(json.dumps({"type": "turn", "pane": pane, "speaker": "8", "filename": "a.webm"}))
+            ws.send_bytes(b"AUDIO")
+            for _ in range(40):
+                m = ws.receive_json()
+                if m.get("type") == "transcript":
+                    shown = m.get("text")
+                if m.get("type") in ("error", "reply"):
+                    break
+        return shown
 
-    s.hub_accepted = fake_accepted
-    try:
-        heard["text"] = "ねえ、Wica、次は?"
-        with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
-            with c.websocket_connect("ws://127.0.0.1:8790/ws") as ws:
-                ws.send_text(json.dumps({"type": "turn", "pane": s.hermes.HERMES_PANE, "speaker": "8", "filename": "a.webm"}))
-                ws.send_bytes(b"AUDIO")
-                shown = None
-                for _ in range(20):
-                    m = ws.receive_json()
-                    if m.get("type") == "transcript":
-                        shown = m.get("text")
-                        break
-                ws.send_text(json.dumps({"type": "text", "text": "Wica、次は?", "pane": s.hermes.HERMES_PANE, "speaker": "8"}))
-                for _ in range(50):
-                    if len(turns) >= 2:
-                        break
-                    time.sleep(0.02)
-        check("声の turn: 画面には直した文を出す", shown, "ねえ、ヴィカ、次は?")
-        check("声の turn: 相手には直した文を渡し、打った文は直さない", turns, ["ねえ、ヴィカ、次は?", "Wica、次は?"])
-    finally:
-        s.hub_accepted = real_accepted
+    def typed(c, text, pane=hub):
+        with c.websocket_connect("ws://127.0.0.1:8790/ws") as ws:
+            ws.send_text(json.dumps({"type": "text", "text": text, "pane": pane, "speaker": "8"}))
+            for _ in range(40):
+                m = ws.receive_json()
+                if m.get("type") in ("error", "reply"):
+                    break
+
+    def last_me():
+        rows = [json.loads(line) for line in s.hermes.HERMES_LOG.read_text().splitlines() if line.strip()]
+        return [d for d in rows if d.get("role") == "me"][-1]
+
+    with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+        shown = voice(c, "肌")
+        check("声: 画面には直した文を出す", shown, "はい")
+        check("声: 記録の発言（画面の履歴・Hermes に送る文）は直した文", last_me().get("text"), "はい")
+        check("声: 記録には直す前の言葉も残す", last_me().get("said"), "肌")
+        check("声: 守りの台帳は直す前の言葉", s.hub_turns(1)[0][1], "肌")
+        check("声: 台帳の言葉は、承認に答えるの文法では許すにならない", s.consent.affirms(s.hub_turns(1)[0][1], "answer"), False)
+        check("声: 台帳の言葉は、閉じるの文法でも許すにならない", s.consent.affirms(s.hub_turns(1)[0][1], "close"), False)
+        s.hermes.HERMES_TURNS.clear()
+        s.hermes._load_hermes_turns()
+        check("声: 起動のときも、記録の直す前の言葉で台帳を戻す", s.hub_turns(1)[0][1], "肌")
+
+        shown = voice(c, "ねえ、Wica、次は?")
+        check("声: 名前を直した文を画面に出す", shown, "ねえ、ヴィカ、次は?")
+        check("声: 台帳は直す前の言葉", s.hub_turns(1)[0][1], "ねえ、Wica、次は?")
+
+        shown = voice(c, "次は?")
+        check("声: 直さなかった発言は、記録に直す前の言葉を足さない", (shown, "said" in last_me(), s.hub_turns(1)[0][1]), ("次は?", False, "次は?"))
+
+        typed(c, "Wica、肌")
+        check("打った文は直さない（記録も台帳も打ったまま）", (last_me().get("text"), "said" in last_me(), s.hub_turns(1)[0][1]),
+              ("Wica、肌", False, "Wica、肌"))
+
+    # 断った発言（添付の形が違う）も、記録には直す前の言葉を残す（台帳には空で載る）
+    asyncio.run(s.hub_accepted(s.TALKERS[hub], "はい", hub, None, ["../x"], None, "肌"))
+    check("断った発言: 台帳は空（承認にも閉じる許可にもならない）", s.hub_turns(1)[0][1], "")
+    check("断った発言: 記録には直す前の言葉", (last_me().get("text"), last_me().get("said")), ("はい", "肌"))
+    s.hermes.HERMES_TURNS.clear()
+    s.hermes._load_hermes_turns()
+    check("断った発言: 起動のときは、直す前の言葉で戻す（「はい」で戻さない）", s.hub_turns(1)[0][1], "肌")
 finally:
     s._whisper = real_whisper
 
