@@ -50,10 +50,11 @@ TENANT_A = "11111111-2222-3333-4444-555555555555"
 TENANT_B = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 
-def snap(org="組織A", items=(), n=None, host="teams.microsoft.com", sel=tw.SELECTED, vl="teams-2"):
+def snap(org="組織A", items=(), n=None, host="teams.microsoft.com", sel=tw.SELECTED, vl="teams-2", sw=None):
     """スクリプトが作る写し（JSON）。items は (投稿の ID, 中身 (チャネル, 題名, 本文, 時刻) または None)。"""
     its = [[tw.b36(m)] if f is None else [tw.b36(m), *f] for m, f in items][:tw.INDEX]
-    return json.dumps({"vl": vl, "host": host, "org": org, "sel": sel, "n": len(items) if n is None else n, "items": its}, ensure_ascii=False, separators=(",", ":"))
+    d = {"vl": vl, "host": host, "org": org, "sel": sel, "n": len(items) if n is None else n, "items": its, **({"sw": sw} if sw is not None else {})}
+    return json.dumps(d, ensure_ascii=False, separators=(",", ":"))
 
 
 SID = "0123456789abcdef"
@@ -111,6 +112,10 @@ check("写し: 初めての回なのに中身があれば「形」", unreadable(
 check("写し: 組織の名前が違えば「組織」", unreadable(lambda: read(chunks(snap(org="組織B", items=[(IDS[0], F1)])))), "org")
 check("写し: サインインの画面（login の host）なら「サインイン」", unreadable(lambda: read(chunks(snap(host="login.microsoftonline.com")))), "signin")
 check("写し: 左で「メンション」以外を選んでいたら「形」", unreadable(lambda: read(chunks(snap(sel="slice-list-item-slice-followed-threads")))), "parse")
+check("写し: 戻した回（sw=1）は一覧が空なら読めた・戻した", read(chunks(snap(items=[], sw=1))), {"n": 0, "items": [], "switched": True})
+check("写し: 戻した回（sw=1）に一覧が付いていたら「形」（スクリプトは写さない）",
+      unreadable(lambda: read(chunks(snap(items=[("1794529244269", None)], sw=1)))), "parse")
+check("写し: 戻した回（sw=1）でも、選ばれていなければ「形」", unreadable(lambda: read(chunks(snap(items=[], sw=1, sel="slice-list-item-slice-followed-threads")))), "parse")
 check("写し: 投稿の数と項目の数が合わなければ「形」", unreadable(lambda: read(chunks(snap(items=[(IDS[0], F1)], n=9)))), "parse")
 check("写し: メンションの一覧の行でない ID（スクリプトが x にする）は「形」",
       unreadable(lambda: read(chunks(snap(items=[(IDS[0], F1)]).replace(f'"{tw.b36(IDS[0])}"', '"x"')))), "parse")
@@ -147,8 +152,20 @@ for nonce, known in (("'+fetch(1)+'", set()), ("a1b2c3d4e5f6", {"1'];fetch(1);//
     except ValueError:
         bad_vals.append(True)
 check("相手の位置: 形の合わない印・ID はスクリプトに埋めない", bad_vals, [True, True])
-check("スクリプト: 読むだけ（クリック・入力・外への送信・ページの見た目の書き換えの書き方が無い）",
-      [w for w in ("click", "fetch", "XMLHttpRequest", "sendBeacon", "innerHTML", "outerHTML", "location.href=", "location=", ".value=", "submit",
+check("スクリプト: 押すのは、Teams のページで、左で「メンション」が選ばれていないときに 1 回だけ（2026-11-23 本人「推奨で」＝A）",
+      (tw.JS_TEMPLATE.count("click"), "const M='slice-list-item-slice-activities-mentions';" in tw.JS_TEMPLATE,
+       "if(cur()!==M&&location.host==='teams.microsoft.com'){const C=[...document.querySelectorAll('[data-testid=\"'+M+'\"]')];" in tw.JS_TEMPLATE
+       and "const e=C.length===1&&R.length===1&&R[0]===C[0]&&V.length===1&&!V[0].querySelector('[data-testid=\"message-slice-card-item\"]')?C[0]:null;" in tw.JS_TEMPLATE
+       and "if(e&&!e.closest('a[href],[role=\"main\"],[data-tid*=\"message\"],[data-testid*=\"message\"]')){e.click();" in tw.JS_TEMPLATE,
+       tw.SELECTED == "slice-list-item-slice-activities-mentions"),
+      (1, True, True, True))
+check("スクリプト: 押す相手の位置は、本物の Teams で確かめた左の欄の作り（左の欄→チャットとチャネルの木→クイック ビューの段→その項目。親子は > でつなぐ）",
+      ("const N='[data-tid=\"app-layout-area--mid-nav\"] [role=\"tree\"][data-testid=\"simple-collab-dnd-rail\"]>[role=\"treeitem\"][data-item-type=\"quick-views\"][aria-level=\"1\"]>"
+       "[role=\"group\"]>[role=\"treeitem\"][data-item-type=\"slice\"][aria-level=\"2\"][data-testid=\"'+M+'\"]';" in tw.JS_TEMPLATE,
+       "const R=[...document.querySelectorAll(N)];const V=[...document.querySelectorAll('[data-tid=\"app-layout-area--mid-nav\"]')];" in tw.JS_TEMPLATE),
+      (True, True))
+check("スクリプト: ほかは読むだけ（入力・外への送信・ページの見た目の書き換えの書き方が無い）",
+      [w for w in ("fetch", "XMLHttpRequest", "sendBeacon", "innerHTML", "outerHTML", "location.href=", "location=", ".value=", "submit",
                    "dispatchEvent", "open(", "eval", "appendChild", "remove(", "setAttribute", "localStorage", "cookie") if w in tw.JS_TEMPLATE], [])
 check("スクリプト: 写しを作るのは番号 0 の呼び出しだけ。写しが無ければ err を返す（作り直さない）",
       ("if(k===0){" in tw.JS_TEMPLATE, "if(!W)return 'VLT|'+k+'|0|err|" in tw.JS_TEMPLATE, tw.JS_TEMPLATE.count("window[K]="), "crypto.getRandomValues" in tw.JS_TEMPLATE),
@@ -166,14 +183,24 @@ const waits=[];globalThis.window=globalThis;globalThis.performance={now:()=>AGE}
 globalThis.location={host:'teams.microsoft.com'};
 const row=(m,f)=>({id:'message-slice-card-MentionsSliceCardItem|'+m,querySelector:s=>{const k=(/message-slice-card-([a-z-]+)"/.exec(s)||[])[1];return k in f?{textContent:f[k]}:null}});
 const ROWS=[row('1794529244269',{title:'General',['threads-secondary-title']:'題',preview:'送り手: 本文',timestamp:'9:20'}),row('1794451771109',{title:'General'})];
-globalThis.document={querySelectorAll:s=>s.includes('avatar')?[{children:[],textContent:'組織A'}]:s.includes('LeftRail')?[{getAttribute:()=>'SEL'}]:s.includes('slice-card-item')?ROWS:[]};
+globalThis.__sel='SEL';globalThis.__clicks=[];
+const item=(name,inside,rail)=>({rail:rail===undefined?name==='real':rail,closest:q=>inside&&inside.some(x=>q.includes(x))?{}:null,click:()=>{__clicks.push(name);if(CLICK_WORKS&&name==='real')__sel='slice-list-item-slice-activities-mentions';}});
+const CANDS=ITEMS;const nav=(cards)=>({querySelector:s=>cards&&s==='[data-testid="message-slice-card-item"]'?{}:null});const NAVS=NAVLIST;
+globalThis.document={querySelectorAll:s=>s.includes('avatar')?[{children:[],textContent:'組織A'}]:s.includes('LeftRail')?[{getAttribute:()=>__sel}]:
+  s.includes('simple-collab-dnd-rail')?(s.endsWith('>[role="treeitem"][data-item-type="slice"][aria-level="2"][data-testid="slice-list-item-slice-activities-mentions"]')?CANDS.filter(c=>c.rail):[]):
+  s==='[data-tid="app-layout-area--mid-nav"]'?NAVS:s.includes('slice-card-item')?ROWS:
+  s==='[data-testid="slice-list-item-slice-activities-mentions"]'?CANDS:[]};
 """
 
 
-def node_run(age, known=(), base=False, ks=(0,)):
+def node_run(age, known=(), base=False, ks=(0,), sel=tw.SELECTED, items="[item('real',null)]", click_works=True, host="teams.microsoft.com", navs="[nav(false)]"):
+    """items: 左の「メンション」の印を持つ要素（JS の式）。item(名前, 中にいる部品の書き方の一部の並び, 左の欄の確かめた位置にあるか（既定は real だけ）)。
+    navs: 左の欄（app-layout-area--mid-nav）の並び。nav(一覧の投稿を含むか)。"""
     js_text = tw.js_for("a1b2c3d4e5f6", set(known), base)
-    body = (FAKE_PAGE.replace("AGE", str(age)).replace("'SEL'", json.dumps(tw.SELECTED)) + "const res=[];" + "".join(f"res.push(String({js_text.replace('__K__', str(k))}));" for k in ks)
-            + "console.log(JSON.stringify({res,waits}));")
+    page = (FAKE_PAGE.replace("AGE", str(age)).replace("'SEL'", json.dumps(sel)).replace("ITEMS", items).replace("NAVLIST", navs)
+            .replace("CLICK_WORKS", "true" if click_works else "false").replace("globalThis.location={host:'teams.microsoft.com'}", "globalThis.location={host:" + json.dumps(host) + "}"))
+    body = (page + "const res=[];" + "".join(f"res.push(String({js_text.replace('__K__', str(k))}));" for k in ks)
+            + "console.log(JSON.stringify({res,waits,clicks:__clicks}));")
     p = subprocess.run([NODE, "--input-type=module", "-e", body], capture_output=True, text=True, timeout=30)
     return json.loads(p.stdout) if p.returncode == 0 else {"err": p.stderr[-300:]}
 
@@ -189,6 +216,41 @@ if NODE:
           [(i["msg"], bool(i["fields"])) for i in snap_["items"]] if isinstance(snap_, dict) else snap_,
           [("1794529244269", True), ("1794451771109", False)])
     check("node: 開いて 25 秒なら待たない", node_run(25000).get("waits"), [])
+    check("node: 左で「メンション」が選ばれていれば押さない", node_run(25000).get("clicks"), [])
+    other = "slice-list-item-slice-followed-threads"
+    r = node_run(25000, known={"1794451771109"}, sel=other)
+    try:
+        snap_ = read("\n".join(r.get("res", [])), known={"1794451771109"})
+    except tw.Unreadable as e:
+        snap_ = f"読めない: {e.args[0]}"
+    check("node: ほかが選ばれていたら、左の「メンション」を 1 回押し、選ばれたら（待たずに）戻したと返す。その回は一覧を写さない",
+          (r.get("clicks"), r.get("waits"), snap_["switched"] if isinstance(snap_, dict) else snap_, snap_["items"] if isinstance(snap_, dict) else None),
+          (["real"], [], True, []))
+    r = node_run(25000, sel=other, click_works=False)
+    check("node: 押しても選ばれなければ、10 秒（0.25 秒 × 40）まで待つ", (r.get("clicks"), len(r.get("waits", [])), sum(r.get("waits", []))), (["real"], 40, 10000))
+    check("node: 押しても選ばれなければ、読まない", unreadable(lambda: read("\n".join(node_run(25000, sel=other, click_works=False).get("res", [])))), "parse")
+    # 相手の位置: 投稿などに同じ印をまねた要素を置かれても、押さない（a2a 849f8464 の指摘）
+    for name, items in [("見つからない", "[]"), ("2 つある（まねた要素と本物）", "[item('fake',null),item('real',null)]"),
+                        ("リンクの中", "[item('fake',['a[href]'],true)]"), ("本文（role=main）の中", "[item('fake',['[role=\"main\"]'],true)]"),
+                        ("投稿の部品の中", "[item('fake',['[data-tid*=\"message\"]'],true)]"), ("投稿の部品（testid）の中", "[item('fake',['[data-testid*=\"message\"]'],true)]")]:
+        r = node_run(25000, sel=other, items=items)
+        check(f"node: 左の「メンション」の要素が{name}なら押さず、「形」で読まない", (r.get("clicks"), unreadable(lambda: read("\n".join(r.get("res", []))))), ([], "parse"))
+    r = node_run(25000)
+    check("node: 選ばれていた回は「戻した」にしない", read("\n".join(r.get("res", [])))["switched"], False)
+    # 相手の位置: 本物が描かれていないときに、まねた要素が 1 つだけあっても、左の欄の確かめた位置に無ければ押さない（a2a 849f8464 の 3 回目の残り。11/23 本人 A）
+    for name, items, navs in [("本物が無く、まねた要素が 1 つだけ（左の欄の外）", "[item('fake',null)]", "[nav(false)]"),
+                              ("本物が無く、まねた要素が 1 つだけ（左の欄の外）で、左の欄も無い", "[item('fake',null)]", "[]"),
+                              ("左の欄が 2 つある", "[item('real',null)]", "[nav(false),nav(false)]"),
+                              ("左の欄が無い", "[item('real',null)]", "[]"),
+                              ("左の欄が一覧の投稿を含む（作りが変わった）", "[item('real',null)]", "[nav(true)]"),
+                              ("確かめた位置に本物、左の欄の外にまねた要素", "[item('real',null),item('fake',null)]", "[nav(false)]"),
+                              ("確かめた位置に 2 つ", "[item('real',null),item('fake',null,true)]", "[nav(false)]")]:
+        r = node_run(25000, sel=other, items=items, navs=navs)
+        check(f"node: {name}なら押さず、「形」で読まない", (r.get("clicks"), unreadable(lambda: read("\n".join(r.get("res", []))))), ([], "parse"))
+    r = node_run(25000, sel=other, items="[item('fake',null,true)]")
+    check("node: 押すのは、左の欄の確かめた位置にある 1 つだけ（まねた要素をその位置に置けたときは押す。左の欄の中に投稿の HTML から要素を作れるかは確かめていない。README の約束の残り）", r.get("clicks"), ["fake"])
+    r = node_run(25000, sel=other, host="evil.example")
+    check("node: Teams のページでなければ押さない", r.get("clicks"), [])
     check("node: 番号 1 から呼ばれても写しを作らず err（待ちもしない）",
           ((node_run(5000, ks=(1,)).get("res", [""])[0].split("|") + [""] * 4)[3], node_run(5000, ks=(1,)).get("waits")), ("err", []))
 else:
@@ -343,6 +405,16 @@ tw.run(noon + 2400, reader)
 check("1 回: 初回が空だった組織に、写せる件数を超える投稿が一度に来たら、足せるだけ足して、つながらない印を立てる（黙って落とさない）",
       (json.loads(STATUS.read_text())["orgs"][ORG_C["tenant"]]["new"], json.loads(STATUS.read_text())["orgs"][ORG_C["tenant"]]["gap"]), (tw.INDEX, True))
 check("1 回: 既に見た投稿の ID をスクリプトに渡す（その本文は返させない）", tw.b36("1795000000000") in js_seen[-1], True)
+n_rows = len(rows())
+feed_for[ORG_C["tenant"]] = chunks(snap(org="組織C", items=[], sw=1))
+tw.run(noon + 3000, reader)
+o = json.loads(STATUS.read_text())["orgs"][ORG_C["tenant"]]
+check("1 回: 左を「メンション」に戻した回は一覧を読まず（足さない）、読めた・戻した印を書く（次の回に読む）",
+      (len(rows()) - n_rows, o["ok"], o.get("switched"), o["at"], o["init"]), (0, True, True, noon + 3000, True))
+feed_for[ORG_C["tenant"]] = chunks(snap(org="組織C", items=[("1795200000000", ("General", "【件】", "山田: 戻した回の一覧", "13:00"))]))
+tw.run(noon + 3300, reader)
+o = json.loads(STATUS.read_text())["orgs"][ORG_C["tenant"]]
+check("1 回: 次の回は、いつもどおり読んで足す（戻した印は消える）", (len(rows()) - n_rows, o["new"], "switched" in o), (1, 1, False))
 saturday = time.mktime((2026, 11, 14, 12, 0, 0, 0, 0, -1))
 calls.clear()
 tw.run(saturday, reader)
