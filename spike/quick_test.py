@@ -331,7 +331,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         plan.append("途中経過です")
         outcome = c.portal.call(s._report, D, "more")  # 報告の本体（結果を返す）
         until(a, "reply"), until(b, "reply")
-        check("S1: 読み上げの途中で鳴らす窓が切れても、報告は ok で、残りの窓で鳴らす", (outcome, spoken), ("ok", [["bbbbbbbb02"], ["aaaaaaaa01"]]))
+        check("S1: 読み上げの途中で鳴らす窓が切れても、報告は ok（見張りを止めない）。別の窓では読み直さない（文字は届いている）", (outcome, spoken), ("ok", [["bbbbbbbb02"]]))
 
     # 相手の位置: セッションや判断待ちの題に「閉じていいですか？」を仕込み、本体の答えに読ませてから、乗せられた Hermes が閉じるを打つ（a2a 8f05ef33 の再現）
     closed: list[str] = []

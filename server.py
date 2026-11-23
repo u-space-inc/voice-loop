@@ -2261,14 +2261,14 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
                 await c.send(**msg, quiet=True)
             except Exception:
                 clients.remove(c)
-        while ring:  # 読み上げの途中で鳴らす窓が切れても、見張りには伝えない（1 対 1 の speak_to は失敗を投げる）。残りの窓から選び直す（codex-review）
+        if ring:
+            # 読み上げの途中で鳴らす窓が切れても（1 対 1 の speak_to は失敗を投げる）、見張りには伝えない（codex-review）。別の窓では読み直さない:
+            # 文字はすべての窓に届いている。読み直すと、文字だけで届けた窓に読み上げの印が付かず（a2a 8f05ef33）、
+            # 語り手・合成そのものの失敗では窓の数だけ作り直して、ハブの順番を長く止める（codex-review）
             try:
                 await speak_to(ring, reply, asyncio.Event())
-                break
             except Exception as e:
-                hlog(f"報告の声を送れませんでした（{type(e).__name__}）。ほかの窓から選び直します", flush=True)
-                clients = [c for c in clients if c not in ring]
-                ring = ring_targets(clients) if clients else []
+                hlog(f"報告の声を送り終えられませんでした（{type(e).__name__}）。文字はすべての窓に届いています", flush=True)
         return "ok"
 
 
