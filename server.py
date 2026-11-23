@@ -1449,6 +1449,8 @@ async def speak_progress(clients: list[Client], cancel: asyncio.Event, state: di
             state["sending"] = True  # ここから送り終わるまで、返事の側は待つ（短い）
             try:
                 await c.send(type="speaking")
+                if not c.voice or cancel.is_set() or state["stop"]:  # 合図を送る間に、止めた・読み上げを切った・返事が来た
+                    continue
                 await c.sock.send_bytes(_progress_wav[sp])
                 state["sent"] = True
             finally:
@@ -3149,7 +3151,7 @@ async def ws(sock: WebSocket):
             await send(type="error", gone=True, text=talker.off_text)
             return
         await send(type="status", text=talker.sending_text())
-        cue, cue_task = None, None
+        cue, cue_task, dropped = None, None, False
         if PROGRESS_AFTER > 0:  # しばらく返事が無ければ、本体の一言（返事の中身・記録・守りには関わらない）
             finished, _ = await asyncio.wait({job}, timeout=PROGRESS_AFTER)  # 期限切れと、job 自身の例外を取り違えない（例外は下で job から受ける）
             if not finished and not cancel.is_set():
@@ -3158,6 +3160,12 @@ async def ws(sock: WebSocket):
         try:
             # 画面が閉じても、止めても、返事は最後まで待って記録する（相手は答えて覚えているので、記録が欠けると画面と食い違う）
             reply, why, saved = await asyncio.shield(job)
+        except asyncio.CancelledError:  # このターンが取り消された（止めて次の発言など）。一言は待たずに取り消す（次のターンの返事のあとに届かないように）
+            if cue:
+                cue["stop"] = True
+                cue_task.cancel()
+                dropped = True
+            raise
         except Exception:  # 往復が例外で終わった（呼び出し側が画面に知らせる）。一言の声を送っていたら、終わりの合図で話し終わりに戻す
             if cue:
                 cue["stop"] = True
@@ -3168,7 +3176,7 @@ async def ws(sock: WebSocket):
                         await send(type="done", sentences=0)
             raise
         finally:
-            if cue:
+            if cue and not dropped:
                 cue["stop"] = True  # まだ送っていない一言の声は捨てる
                 if cue["sending"]:  # 送っている途中なら、送り終わるのを待ってから返事を送る（順が入れ替わらないように）
                     await asyncio.gather(cue_task, return_exceptions=True)

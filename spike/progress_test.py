@@ -11,6 +11,7 @@
   - 一言の声を送ったあと往復が失敗・例外で終わったら、終わりの合図（done）を送って画面を話し終わりに戻す
   - 往復そのものが期限より前に TimeoutError で終わっても、一言は出さない（待つ期限と取り違えない）
   - 合成の間に読み上げを切った画面には、一言の声を送らない
+  - 一言を送っている途中でターンが取り消された（止めて次の発言）ら、一言は取り消す（次のターンの返事のあとに届かない）
 使い方: uv run spike/progress_test.py"""
 import asyncio
 import json
@@ -163,6 +164,49 @@ try:
     got = turn(mute_after=0.2)
     check("合成の間に読み上げを切った: 一言の声は送らない", any(k == "wav" and w == "WAV:確認しています" for k, w in got), False)
     mode["synth_delay"] = 0.0
+
+    # 一言を送っている途中（合図の送り）で、止めて次の発言をする
+    s._progress_wav.clear()
+    real_send = s.Client.send
+    hold = {"n": 0}
+    sent_log = []  # 本体が画面に送った文の通知の種類（送った順）
+
+    async def slow_send(self, **msg):  # 一言の合図（speaking）の最初の 1 回だけ、送りを 2.5 秒止める（次のターンが終わるより長く）
+        if msg.get("type") == "speaking" and hold["n"] == 0:
+            hold["n"] += 1
+            await asyncio.sleep(2.5)
+        sent_log.append(msg.get("type"))
+        return await real_send(self, **msg)
+
+    s.Client.send = slow_send
+    s.PROGRESS_AFTER, mode["delay"] = 0.05, 1.0
+    got = []
+    try:
+        with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
+            with c.websocket_connect("ws://127.0.0.1:8790/ws") as ws:
+                ws.send_text(json.dumps({"type": "text", "text": "一つ目", "pane": HUB, "speaker": "8"}))
+                time.sleep(0.25)  # 一言の合図を送っている途中
+                ws.send_text(json.dumps({"type": "stop"}))
+                time.sleep(2.6)  # 止めただけ（次の発言はまだ）。止める前の一言の合図が、止めたあとに送られないか待つ
+                mode["delay"] = 0.05
+                ws.send_text(json.dumps({"type": "text", "text": "二つ目", "pane": HUB, "speaker": "8"}))
+                for _ in range(40):
+                    m = ws.receive()
+                    if m.get("bytes") is not None:
+                        got.append(("wav", m["bytes"].decode()))
+                        continue
+                    d = json.loads(m["text"])
+                    got.append((d["type"], d.get("text", "")))
+                    if d["type"] == "done":
+                        break
+                ws.send_text(json.dumps({"type": "clientlog", "msg": "end"}))
+    finally:
+        s.Client.send = real_send
+    check("取り消したターンの一言の声は届かない（次のターンの返事の前にも後にも）", [w for k, w in got if k == "wav"], ["WAV:わかりました。"])
+    stopped = sent_log.index("stopped")
+    nxt = sent_log.index("status", stopped)  # 次のターンの「送りました」
+    check("止めたターンの一言の合図（speaking）は、止めたあとに送られない", sent_log[stopped + 1:nxt].count("speaking"), 0)
+    check("次のターンの返事は届く", ("reply", "わかりました。") in got, True)
 
     # 設定の読み方
     for raw, want in [("3", 3.0), ("1.5", 1.5), ("0", 0.0), ("-1", 0.0), ("abc", 3.0), ("", 3.0)]:
