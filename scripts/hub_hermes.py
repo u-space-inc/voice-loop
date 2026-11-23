@@ -317,9 +317,8 @@ async def hermes_answered_here(text: str, answer: str, said: str | None = None, 
     それが最後に聞いた文を書いたあとで空にする（鍵の外で空にすると、あとから終わった往復が古い返事で書き戻す。断りと同じ）。"""
     async with core.pane_lock(HERMES_PANE):
         turn = hermes_turn_begin(text, said=said, via=via)  # 守りの台帳に載せる（「すぐ次の発言」を進め、保留中の確認を失効させる）
-        for row in HERMES_TURNS:
-            if row[0] == turn:
-                row[2] = answer
+        # 台帳の返事の欄（row[2]）は空のまま: 閉じるの守りは、Hermes が閉じていいかを聞いた発言の返事の欄を「利用者が聞いた問い」として読む。
+        # 本体の答えにはセッションや判断待ちの題（Hermes や他のセッションが書ける文）が入るので、そこに置くと、題に仕込んだ問いで閉じられる（a2a 8f05ef33）
         HERMES_HEARD["text"] = ""  # 利用者が最後に聞いたのは本体の答え（頭の問いではない）。次の発言を、前に聞いた問いへの答えに使わせない
         if not await asyncio.to_thread(hermes_log, "ai", answer, turn=turn, by="body"):
             _unsaved.add(turn)
@@ -351,7 +350,7 @@ def _load_hermes_turns():
             continue
         if d["role"] == "me":  # 辞書で直した声の発言は、直す前の言葉（said）で台帳を戻す
             rows[turn] = [turn, d["said"] if isinstance(d.get("said"), str) else d["text"], "", None, str(d.get("reply_to") or ""), str(d.get("reply_pane") or ""), {}, str(d.get("via") or "")]  # 直前に聞いた返答の写しと、返信先が見ていた問いは記録から作らない（承認に答えるときは聞き直してもらう）
-        elif d["role"] == "ai" and turn in rows:
+        elif d["role"] == "ai" and turn in rows and d.get("by") != "body":  # 本体がその場で答えた文は、返事の欄に戻さない（閉じるの守りが問いとして読むため）
             rows[turn][2] = d["text"]
     HERMES_TURNS.extend(rows.values())
 
@@ -1709,11 +1708,12 @@ class Hermes(Brain, Talker):
     def topic_report(self, tid: str) -> dict | None:
         return topic_report(tid)
 
-    def open_items(self) -> tuple[list[dict], bool]:
-        """受け箱（💡）と同じ一覧（あとでに回した件・済んだを押して戻せる間の件は入れない）。題と案件は記録の文を 1 行にして字数で切ったもの。"""
+    def open_items(self) -> dict:
+        """受け箱（💡）と同じ一覧（あとでに回した件・済んだを押して戻せる間の件は入れない）。題と案件は記録の文を 1 行にして字数で切ったもの。
+        記録が大きくて新しい側だけを読んだ（受け箱の note）ときは partial（古い側の判断待ちが残っているかもしれない）。"""
         box = hermes_inbox.inbox()
         rows = [{"n": it["n"], "title": str(it.get("title") or "")[:80], "project": str(it.get("project") or "")[:40]} for it in box.get("items", [])]
-        return rows, bool(box.get("problem"))
+        return {"items": rows, "problem": bool(box.get("problem")), "partial": bool(box.get("note"))}
 
     def report_begin(self, headline: str, about: str) -> bool:
         """Hermes の会話は本体が記録する（画面が無くても、あとで履歴に出る）。"""

@@ -54,7 +54,7 @@ async def nothing(*a, **k):
     return None
 
 
-async def no_voice(clients, text, cancel):  # 声は合成しない。合図は本物と同じく、話し始め（speaking）と終わり（done）を送る
+async def no_voice(clients, text, cancel, plain=False):  # 声は合成しない。合図は本物と同じく、話し始め（speaking）と終わり（done）を送る
     for c in clients:
         await c.send(type="speaking")
     await asyncio.sleep(0.6)  # 本物は声の合成に時間がかかる（画面が会話を読み直して、読み上げの印を付けてから終わる）
@@ -66,6 +66,7 @@ s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation 
 s.list_agents = lambda: [{"pane": "w1:p1", "cwd": "/x/blog", "title": "記事", "status": "working", "kind": "claude", "session": "s1", "name": "", "hub": False}]
 s.jsonl_path = lambda a: None
 s.speak_to = no_voice
+s.HUB.open_items = lambda: {"items": [], "problem": False, "partial": False}  # 判断待ちは無い（本物の記録は読まない）
 s.hermes.ask_hermes = lambda text: (_ for _ in ()).throw(AssertionError("決まった問いを Hermes に送った"))
 srv = uvicorn.Server(uvicorn.Config(s.app, host="127.0.0.1", port=PORT, log_level="warning"))
 th = threading.Thread(target=srv.run, daemon=True)

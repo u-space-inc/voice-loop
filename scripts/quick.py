@@ -96,13 +96,15 @@ def answer(kind: str, snap: dict, cursor: dict | None = None, now: float = 0.0) 
             keys = [x["key"] for x in items]
             if cur["key"] in keys:
                 start = keys.index(cur["key"]) + 1
+        partial = "（判断待ちの記録が大きいので、新しい側だけを見ています）" if snap.get("inbox_partial") else ""
         if not items:
             cur.update(key="", at=now)
-            tail = "判断待ちの記録を読めませんでした。" if snap.get("inbox_problem") else ""
-            return "いま、あなたを待っているものはありません。" + tail
+            if snap.get("inbox_problem"):
+                return "承認・入力待ちのセッションはありません。判断待ちの記録は読めませんでした。"
+            return f"見た範囲では、あなたを待っているものはありません{partial}。" if partial else "いま、あなたを待っているものはありません。"
         if start >= len(items):
             cur.update(key="", at=now)
-            return f"ほかに待っているものはありません（全部で {len(items)} 件でした）。"
+            return f"見た範囲では、ほかに待っているものはありません{partial}。" if partial else f"ほかに待っているものはありません（全部で {len(items)} 件でした）。"
         it = items[start]
         cur.update(key=it["key"], at=now)
         rest = len(items) - start - 1

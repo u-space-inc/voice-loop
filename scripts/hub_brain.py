@@ -108,10 +108,10 @@ class Brain:
         """件の一番新しい報告（{"at": 記録の時刻, "about": 名前}）。画面が件を開くとき、返信先にする。無ければ None。"""
         return None
 
-    def open_items(self) -> tuple[list[dict], bool]:
-        """あなたの判断を待っている件（[{"n", "title", "project"}]。新しい順）と、読めなかったか。本体が決まった問い（「次は？」）に答えるときに読む。
-        頭が判断待ちを持たなければ ([], False)。"""
-        return [], False
+    def open_items(self) -> dict:
+        """あなたの判断を待っている件。{"items": [{"n", "title", "project"}]（新しい順）, "problem": 読めなかったか, "partial": 一部だけ読んだか}。
+        本体が決まった問い（「次は？」）に答えるときに読む。頭が判断待ちを持たなければ items は空。"""
+        return {"items": [], "problem": False, "partial": False}
 
 
 class Talker:

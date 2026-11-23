@@ -1435,9 +1435,19 @@ async def ask(agent: dict, text: str) -> tuple[str, str]:
     return "done", reply or read_screen(pane, 40)[-2000:]
 
 
-async def speak_to(clients: list[Client], text: str, cancel: asyncio.Event):
+async def plain_sentences(text: str, cancel: asyncio.Event):
+    """語り手を通さず、文のまま区切って返す（本体がその場で答えた決まった問いの答え。もう話し言葉になっている）。"""
+    for part in re.split(r"(?<=[。！？!?])\s*", text):
+        if cancel.is_set():
+            return
+        if part.strip():
+            yield part.strip()
+
+
+async def speak_to(clients: list[Client], text: str, cancel: asyncio.Event, plain: bool = False):
     """話し言葉に直し、文ごとに合成して画面へ送る。声は画面ごとの選択に従う。切れた画面は飛ばす。
-    読み上げを切った画面には音声を送らない（文字は先に reply で届いている）。聞く画面が無ければ、語り手も合成も呼ばない。"""
+    読み上げを切った画面には音声を送らない（文字は先に reply で届いている）。聞く画面が無ければ、語り手も合成も呼ばない。
+    plain なら語り手を通さず、文のまま合成する（本体の決まった答え。語り手の待ち・失敗に左右されない）。"""
     alive = list(clients)
 
     async def each(fn):
@@ -1452,7 +1462,7 @@ async def speak_to(clients: list[Client], text: str, cancel: asyncio.Event):
     await each(lambda c: c.send(type="speaking"))  # これ以降の音声がこのターンのもの（止めた後に届く古い音声と区別する）
     n = 0
     if any(c.voice for c in alive):
-        async with aclosing(narrate(text, cancel)) as sentences:  # 途中で抜けたら、語り手の生成もすぐ止める
+        async with aclosing(plain_sentences(text, cancel) if plain else narrate(text, cancel)) as sentences:  # 途中で抜けたら、語り手の生成もすぐ止める
             async for sentence in sentences:
                 # 読み上げの途中で切った画面は、次の文から外す。聞く画面が無くなれば、そこで止める
                 voice = {c: DEFAULT_SPEAKER if c.speaker is None else c.speaker for c in alive if c.voice}  # VOICEVOX では 0 も声の ID
@@ -1509,16 +1519,21 @@ def quick_snapshot() -> dict:
     """決まった問いに答えるための、本体の状態の写し（セッションの一覧・承認待ちの種類・頼んだ件の見張り・判断待ち）。"""
     rows = []
     for a in list_agents():
-        st = "blocked" if a["status"] == "blocked" or stepping(a) else str(a["status"])
+        st, ask = str(a["status"]), ""
+        if a["status"] == "blocked" or stepping(a):  # 画面で 1 問ずつ答えている途中（stepping）は、問いが残っているときだけ待ち（/api/prompts と同じ。codex-review）
+            ask = _ask_of(a)["kind"]
+            if a["status"] == "blocked" or ask != "none":
+                st = "blocked"
         r = {"pane": a["pane"], "name": f"{a['cwd'].rsplit('/', 1)[-1]}（{a['title']}）" if a.get("title") else a["cwd"].rsplit("/", 1)[-1], "status": st}
         if st == "blocked":
-            r["ask"] = _ask_of(a)["kind"]
+            r["ask"] = ask
         rows.append(r)
     try:
-        items, problem = HUB.open_items()
+        box = HUB.open_items()
     except Exception:
-        items, problem = [], True
-    return {"sessions": rows, "watching": sum(1 for t in TASKS.values() if t["status"] in TASK_ACTIVE), "inbox": items, "inbox_problem": problem}
+        box = {"items": [], "problem": True}
+    return {"sessions": rows, "watching": sum(1 for t in TASKS.values() if t["status"] in TASK_ACTIVE), "inbox": box.get("items", []),
+            "inbox_problem": bool(box.get("problem")), "inbox_partial": bool(box.get("partial"))}
 
 
 async def hub_quick(talker, kind: str, text: str, pane: str, said: str | None = None, via: str = "") -> tuple[str, str, bool]:
@@ -3245,11 +3260,11 @@ async def ws(sock: WebSocket):
     send = client.send
 
     async def turn(text: str, pane: str, cancel: asyncio.Event, key: str | None, reply_at: float | None = None, files: list[str] | None = None,
-                   job: asyncio.Task | None = None):
+                   job: asyncio.Task | None = None, plain: bool = False):
         try:
             talker = TALKERS.get(pane)
             if talker:  # herdr のセッションではなく、本体の外の話し相手（ハブ）。job は受け取ったその場で作った仕事（start_turn）
-                await talk_turn(talker, job, pane, cancel)
+                await talk_turn(talker, job, pane, cancel, plain)
                 return
             why = attachments_shape_problem(files)
             extra = ""
@@ -3265,7 +3280,8 @@ async def ws(sock: WebSocket):
             traceback.print_exc()
             await send(type="error", text=f"{type(e).__name__}: {e}"[:300])
 
-    async def talk_turn(talker, job: asyncio.Task | None, pane: str, cancel: asyncio.Event):
+    async def talk_turn(talker, job: asyncio.Task | None, pane: str, cancel: asyncio.Event, plain: bool = False):
+        # plain: 本体がその場で答えた決まった問い。読み上げは語り手を通さない
         if job is None:  # 受け取ったときに相手が使えなかった
             await send(type="error", gone=True, text=talker.off_text)
             return
@@ -3308,7 +3324,7 @@ async def ws(sock: WebSocket):
         if cancel.is_set():
             return
         await send(type="reply", pane=pane, text=reply, saved=saved)  # saved=False なら、画面は記録から描き直さずに足す
-        await speak_to([client], reply, cancel)
+        await speak_to([client], reply, cancel, **({"plain": True} if plain else {}))  # 本体の答えのときだけ渡す（これまでの呼び方は変えない）
 
     async def run_turn(text: str, pane: str, cancel: asyncio.Event, key: str | None, extra: str = ""):
         # extra: 本体が足す添付の行（セッションに渡す文の末尾に付ける）
@@ -3351,18 +3367,20 @@ async def ws(sock: WebSocket):
             current.cancel()
         cancel = asyncio.Event()
         job = None
+        quick_kind = None
         talker = TALKERS.get(pane)
         if talker and talker.on():
             # ハブが受け取った発言は、受け取ったその場で（待つものをはさまずに）1 つの仕事にする（hub_accepted: 添付を置く・断る・往復する）。
             # 画面のターン（current）は次の発言で止めるが、この仕事は止めない。受け取った順に作るので、受け取った順に進む
             # （画面のターンの中で作ると、状態の知らせを送る間や、ターンが動き出す前に次の発言が来たとき、前の発言が消える）
-            kind = quick.match(text, AGENT) if QUICK and not files and reply_at is None and item is None else None
+            # 添付が無い（空の一覧）ときだけ。形の壊れた添付（None）は、ふつうの道で断る（a2a 8f05ef33）
+            kind = quick_kind = quick.match(text, AGENT) if QUICK and isinstance(files, list) and not files and reply_at is None and item is None else None
             via = "device" if client.kind == "device" else ""
             # 決まった問いは本体が答える（返信・添付つき・受け箱の件への返信は、いつも頭へ）
             job = asyncio.create_task(hub_quick(talker, kind, text, pane, said, via) if kind else hub_accepted(talker, text, pane, reply_at, files, item, said, via=via))
             _tasks.add(job)
             job.add_done_callback(_tasks.discard)
-        current = asyncio.create_task(turn(text, pane, cancel, key, reply_at, files, job))
+        current = asyncio.create_task(turn(text, pane, cancel, key, reply_at, files, job, plain=bool(quick_kind)))
 
     pending: dict = {}
     try:
