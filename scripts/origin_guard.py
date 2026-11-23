@@ -102,6 +102,39 @@ def forwarded_from_self(headers: dict[str, str]) -> bool:
     return addrs is None or last in addrs
 
 
+DEVICE_PLACES = ("home", "car", "desk")
+
+
+def device_ports() -> dict[int, str]:
+    """機械（スタックチャン）の口。config.env の VL_DEVICE_PORTS に「置き場所=口」をカンマ区切りで書く（例: home=8797,car=8798）。{口: 置き場所}。
+    本体はこの口でも、この Mac の中（127.0.0.1）だけで待ち、tailnet へは Tailscale Serve が出す。どの機械がどの口に届くかは、Tailscale の決まり（ACL）で
+    機械の印（タグ）ごとに絞る（設計書の R10 の A。2026-11-23 本人「推奨で」＝家と車で口を分ける）。置き場所は home・car・desk、口は 1024〜65535。
+    画面の口（VL_PORT）と同じ口・2 つ目の同じ口・2 つ目の同じ置き場所は使わない。"""
+    try:
+        screen = int(os.environ.get("VL_PORT", "8790") or "8790")
+    except ValueError:
+        screen = 8790
+    out: dict[int, str] = {}
+    for part in os.environ.get("VL_DEVICE_PORTS", "").split(","):
+        place, sep, port = part.partition("=")
+        place, port = place.strip().lower(), port.strip()
+        if not sep or place not in DEVICE_PLACES or not (port.isascii() and port.isdigit()) or len(port) > 5:
+            continue
+        n = int(port)
+        if 1024 <= n <= 65535 and n != screen and n not in out and place not in out.values():
+            out[n] = place
+    return out
+
+
+def device_place(scope) -> str:
+    """接続を受けた口（ASGI の scope["server"]。受けた側のソケットの値なので、相手は偽れない）が機械の口なら、その置き場所。そうでなければ空。"""
+    try:
+        port = int((scope.get("server") or ())[1])
+    except (IndexError, TypeError, ValueError):
+        return ""
+    return device_ports().get(port, "")
+
+
 def is_container(program: str | None) -> bool:
     """もとのプログラムがコンテナの中継か。調べられなかった（None）ときもコンテナとして扱う。"""
     if program is None:
@@ -115,9 +148,11 @@ def _allowed_name(name: str) -> bool:
     return name in LOCAL_NAMES or name.endswith(".ts.net") or name in extra
 
 
-def problem(headers: dict[str, str], method: str = "GET", path: str = "", container: bool = False) -> str | None:
-    """断る理由。通してよければ None。headers の名前は小文字。method と path はコンテナからの接続の判定にだけ使う。
-    container: 接続のもとがコンテナの中継のプログラムだった（Host に関係なく、コンテナからの接続として扱う）。"""
+def problem(headers: dict[str, str], method: str = "GET", path: str = "", container: bool = False, device: bool = False) -> str | None:
+    """断る理由。通してよければ None。headers の名前は小文字。method と path はコンテナと機械からの接続の判定に使う。
+    container: 接続のもとがコンテナの中継のプログラムだった（Host に関係なく、コンテナからの接続として扱う）。
+    device: 機械の口（VL_DEVICE_PORTS）で受けた接続。使えるのは WebSocket（/ws）だけ（画面のボタンの口・記憶・設定は使えない）。
+    コンテナからは、機械の口にはつながれない（hubctl の口も）。"""
     host = headers.get("host", "").strip().lower()
     try:
         name = urllib.parse.urlsplit("//" + host).hostname or ""
@@ -125,6 +160,8 @@ def problem(headers: dict[str, str], method: str = "GET", path: str = "", contai
     except ValueError:
         return f"Host か Origin の形が読めません（Host {host!r}）"
     if name == DOCKER_NAME or container:
+        if device:
+            return "機械の口には、コンテナからはつながれません"
         if origin is not None:
             return f"コンテナ経由のブラウザからは使えません（Origin {headers['origin']!r}）"
         if (method, path) not in DOCKER_ALLOWED:
@@ -135,6 +172,8 @@ def problem(headers: dict[str, str], method: str = "GET", path: str = "", contai
         return None
     if not _allowed_name(name):
         return f"Host {host!r} はこの Mac の名前ではありません"
+    if device and (path != "/ws" or method):  # WebSocket は method が無い
+        return f"機械からは WebSocket（/ws）だけを使えます（{method or 'websocket'} {path}）"
     site = headers.get("sec-fetch-site", "").strip().lower()
     if site and site not in ("same-origin", "none") and (path.startswith("/api/") or path == "/ws"):
         return f"別のサイトからの {path} は使えません（Sec-Fetch-Site {site}）"
@@ -158,7 +197,8 @@ class SameOriginOnly:
             program = await asyncio.to_thread(peer_program, scope.get("client"), scope.get("server"))  # Host は偽れるので、接続のもとのプログラムも見る
             # もとが見えない接続（root の Tailscale の中継など）は、中継が付けた接続元がこの Mac 自身なら、コンテナとして扱う
             container = is_container(program) or (program == "" and await asyncio.to_thread(forwarded_from_self, headers))
-            why = problem(headers, scope.get("method", ""), scope.get("path", ""), container)  # WebSocket は method 無し → コンテナからは断られる
+            device = bool(device_place(scope))  # 機械の口で受けた接続は、/ws だけ（コンテナからは断る）
+            why = problem(headers, scope.get("method", ""), scope.get("path", ""), container, device)  # WebSocket は method 無し → コンテナからは断られる
             if why:
                 print(f"[guard] 断りました: {scope['type']} {scope.get('path')} … {why}", flush=True)
                 if scope["type"] == "websocket":  # 受け入れる前に閉じると、サーバーが 403 を返す
