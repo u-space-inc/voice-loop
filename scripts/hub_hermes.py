@@ -40,6 +40,13 @@ router = APIRouter()
 HERMES_URL = os.environ.get("VL_HERMES_URL", "http://127.0.0.1:8642").rstrip("/")
 HERMES_KEY = os.environ.get("VL_HERMES_KEY", "")
 HERMES_SESSION = os.environ.get("VL_HERMES_SESSION", "voice-loop")
+# Hermes に頼むときの考える強さ（要求ごとの model_options.reasoning.effort。Hermes は、要求で渡した強さを設定の強さより優先する）。
+# 空なら渡さない（Hermes の設定のまま）。声の線を速くするため（2026-11-23 に読むだけの問い 4 つで測ると、low は medium より 1〜2 秒速く、
+# 答えが変わる問いもあった）。知らない値は渡さず、診断で知らせる
+HERMES_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+_effort = os.environ.get("VL_HERMES_EFFORT", "").strip().lower()
+HERMES_EFFORT = _effort if _effort in HERMES_EFFORTS else ""
+HERMES_EFFORT_BAD = _effort if _effort and not HERMES_EFFORT else ""
 # 会話を新しくする時刻（0〜23）。空か off なら日ごとには変えない（画面の「新しくする」だけ）。
 # Hermes は会話の始まりに記憶を読み込み、会話が長いほど1回ごとに読み直す量が増えるので、日ごとに新しくする（README「Hermes を話し相手にする」）
 _reset = os.environ.get("VL_HERMES_RESET_HOUR", "4").strip().lower()
@@ -388,9 +395,12 @@ def hermes_messages(text: str) -> list[dict]:
 
 def ask_hermes(text: str) -> str:
     """Hermes の API サーバー（OpenAI 互換）に送り、返事を待つ。X-Hermes-Session-Id で、その日の会話を続ける。"""
+    body = {"model": "hermes-agent", "messages": hermes_messages(text), "stream": False}
+    if HERMES_EFFORT:
+        body["model_options"] = {"reasoning": {"effort": HERMES_EFFORT}}
     req = urllib.request.Request(
         f"{HERMES_URL}/v1/chat/completions",
-        data=json.dumps({"model": "hermes-agent", "messages": hermes_messages(text), "stream": False}).encode(),
+        data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {HERMES_KEY}", "X-Hermes-Session-Id": hermes_session()},
         method="POST")
     t0 = time.monotonic()
@@ -405,7 +415,8 @@ def ask_hermes(text: str) -> str:
     content = (choice.get("message") or {}).get("content") or ""
     if isinstance(content, list):  # 形が配列のときは文字の部分だけ拾う
         content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
-    print(f"[hermes] {time.monotonic() - t0:.1f}秒（{len(text)}字 → {len(content)}字、finish={choice.get('finish_reason')}）", flush=True)
+    effort = f"、考える強さ {HERMES_EFFORT}" if HERMES_EFFORT else ""  # 入れる前と後の速さを、この行で比べる
+    print(f"[hermes] {time.monotonic() - t0:.1f}秒（{len(text)}字 → {len(content)}字、finish={choice.get('finish_reason')}{effort}）", flush=True)
     return content.strip()
 
 
@@ -1613,6 +1624,9 @@ class Hermes(Brain, Talker):
     def doctor(self, add):
         problem = hermes_problem()
         add("ハブ（Hermes）", not problem, problem)
+        if HERMES_EFFORT_BAD:
+            add("Hermes の考える強さ", False, f"config.env の VL_HERMES_EFFORT「{HERMES_EFFORT_BAD[:20]}」は使えません。{'・'.join(HERMES_EFFORTS)} のどれかにします"
+                "（空なら Hermes の設定のまま）。いまは渡していません", optional=True)
         if not HERMES_HOME.is_dir():
             add("Hermes の書き足し（💡 で採る）", False, f"Hermes の置き場 {HERMES_HOME} がありません。別の場所なら config.env の VL_HERMES_HOME に書いてください", optional=True)
         else:
