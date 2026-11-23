@@ -1,4 +1,4 @@
-"""代理（Hermes）からの知らせ（hubctl notice）の試験。本体の口（受ける。一覧・消す口は 0.35.1 で無くした）と、コンテナから使える口の範囲、hubctl を確かめる。
+"""代理（Hermes）からの知らせ（hubctl notice）の試験。本体の口（受ける。一覧・消す口は 0.35.2 で無くした）と、コンテナから使える口の範囲、hubctl を確かめる。
 常駐の 8790・本物のコンテナには触れない。hubctl の確かめには、この試験の中で 127.0.0.1:8792 に本体の写しを立てる。
 画面での扱い（一覧に出さない・受け箱を取り直す）は spike/pc_ui_test.py の「知らせ」で確かめる。
 相手の位置から見ること: コンテナ（鍵あり）から使えるのは知らせを足す口だけ。知らせは鳴らすだけで残さない。題と一言は 1 行・上限の字数で切り、
@@ -70,7 +70,7 @@ saved = s.NOTICES_FILE.read_text()
 check("知らせは残さない（記録にあるのは、次の番号と受けた時刻だけ。題も一言も書かない）",
       (sorted(json.loads(saved)), "山田" in saved, "下書き" in saved, json.loads(saved)["next"]), (["next", "sent"], False, False, 2))
 check("一言は省ける・番号は続く", post({"title": "二つ目"}).json().get("n"), 2)
-check("一覧と消す口は無い（0.35.1 から）", [c.get("/api/notices").status_code, c.post("/api/notices/dismiss", json={"all": True}).status_code], [404, 404])
+check("一覧と消す口は無い（0.35.2 から）", [c.get("/api/notices").status_code, c.post("/api/notices/dismiss", json={"all": True}).status_code], [404, 404])
 
 # ---------- 形をそろえる ----------
 reset()

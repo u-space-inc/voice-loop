@@ -18,10 +18,12 @@ import io
 import json
 import math
 import os
+import random
 import re
 import secrets
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import threading
@@ -72,6 +74,10 @@ WHISPER = os.environ.get("VL_WHISPER", "http://127.0.0.1:8080/v1/audio/transcrip
 # 聞き取りの言語。毎回 whisper に渡す（自動判定に任せると、短い発言や雑音で日本語以外と取り違える。2026-11 の記録で 283 件中 5 件）。
 # 空（VL_WHISPER_LANG=）にすると渡さず、whisper の起動時の設定に任せる
 WHISPER_LANG = os.environ.get("VL_WHISPER_LANG", "ja").strip()
+# 声の区間だけを聞き取らせる（whisper の vad=true）。声の入っていない雑音が「はい」「コミット」と聞き取られ、承認やセッションへの
+# 指示として届くのを防ぐ（2026-11-22 実測。雑音と無音の 8 本は空になり、本物の短い発話は同じ文字）。whisper の起動に VAD のモデル（-vm）が要る。
+# off にすると渡さない
+WHISPER_VAD = os.environ.get("VL_WHISPER_VAD", "on").strip().lower() != "off"
 # 聞き取りに渡す音声の拡張子。画面の録音（webm・mp4）と、機械の録音（ogg・opus・wav）。ほかは webm として渡す
 AUDIO_EXTS = ("webm", "mp4", "m4a", "ogg", "opus", "wav")
 # 声のエンジン。どちらも同じ形の API（audio_query → synthesis）で、違うのは呼び先と既定の声だけ
@@ -443,11 +449,13 @@ def audio_name(filename) -> str:
     return f"audio.{ext if ext in AUDIO_EXTS else 'webm'}"
 
 
-def _whisper(audio: bytes, filename: str, timeout: float = 120) -> dict:
+def _whisper(audio: bytes, filename: str, timeout: float = 120, vad: bool | None = None) -> dict:
     boundary = "----vl" + os.urandom(8).hex()
     lang = f"--{boundary}\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\n{WHISPER_LANG}\r\n" if WHISPER_LANG else ""
+    vad = WHISPER_VAD if vad is None else vad
+    vad_part = f"--{boundary}\r\nContent-Disposition: form-data; name=\"vad\"\r\n\r\ntrue\r\n" if vad else ""
     body = (
-        f"--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nwhisper\r\n{lang}"
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nwhisper\r\n{lang}{vad_part}"
         f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{audio_name(filename)}\"\r\n"
         f"Content-Type: application/octet-stream\r\n\r\n"
     ).encode() + audio + f"\r\n--{boundary}--\r\n".encode()
@@ -456,8 +464,16 @@ def _whisper(audio: bytes, filename: str, timeout: float = 120) -> dict:
         return json.loads(r.read().decode(), strict=False)
 
 
+def _text_of(reply) -> str:
+    """whisper の返事の文。形が違えば（dict でない・text が無い・文が文字でない）ValueError にそろえる（受け口が「聞き取りに失敗しました」と返す。
+    {"error": …} のような返事を、空の聞き取りとして通さない）。"""
+    if not isinstance(reply, dict) or not isinstance(reply.get("text"), str):
+        raise ValueError("whisper の返事の形が違います")
+    return reply["text"]
+
+
 def transcribe(audio: bytes, filename: str) -> str:
-    text = _whisper(audio, filename).get("text", "")
+    text = _text_of(_whisper(audio, filename))
     text = re.sub(r"\s+", " ", text).strip()
     if text.replace("。", "").replace(" ", "") in HALLUCINATIONS:
         return ""
@@ -1103,19 +1119,52 @@ def _probe(name: str, fn, keep_ok: float = 60, keep_ng: float = 5) -> str:
     return problem
 
 
-def _whisper_problem() -> str:
-    """短い無音を実際に聞き取らせる（同じポートで別のサービスが動いているだけ、を「使える」と数えないため）。"""
+def _probe_wav(seconds: float, amp: float = 0.0) -> bytes:
+    """点検に渡す音（16kHz・1ch）。amp が 0 なら無音、ほかは決まった種の白い雑音（声は入っていない）。"""
+    r = random.Random(20261122)
+    n = int(16000 * seconds)
+    frames = b"\0\0" * n if not amp else b"".join(struct.pack("<h", int(max(-1.0, min(1.0, r.gauss(0, amp))) * 32767)) for _ in range(n))
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
-        w.writeframes(b"\0\0" * 4800)  # 0.3秒
+        w.writeframes(frames)
+    return buf.getvalue()
+
+
+def _whisper_problem() -> str:
+    """短い無音を実際に聞き取らせる（同じポートで別のサービスが動いているだけ、を「使える」と数えないため）。
+    声の区間（vad）を使うときは、声の入っていない雑音も聞き取らせて、空になるかを見る（vad を読まない版の whisper は、黙って雑音を文字にすることがある。
+    2026-11-22 に、この雑音は vad なしで「コミット」、vad=true で空になることを実際の whisper で確かめた）。空でも VAD が効いている証明にはならない
+    （vad を読まなくても、この雑音をもともと空にする whisper もありうる）。気づけるのは、この雑音を文字にする場合だけ。"""
+    silence = _probe_wav(0.3)
     try:
-        ok = "text" in _whisper(buf.getvalue(), "probe.wav", timeout=30)
+        reply = _whisper(silence, "probe.wav", timeout=30)
+        ok = isinstance(reply, dict) and isinstance(reply.get("text"), str)
     except (urllib.error.HTTPError, ValueError):  # 何かは応答したが、whisper の返事の形ではない
         ok = False
     except OSError as e:
         return f"whisper のサーバーが {WHISPER} で動いていません（{str(e)[:80]}）。起動してください。入れ方は README の「準備」にあります"
-    return "" if ok else f"{WHISPER} は応答しますが、whisper の返事ではありません。別のサービスが同じポートを使っていないか確かめ、config.env の VL_WHISPER を合わせてください"
+    if not ok:
+        if WHISPER_VAD:  # vad を付けなければ答える。モデルを読み込んでいないことが多い（一度きりの失敗のこともある。点検は 5 秒で取り直す）
+            try:
+                plain = _whisper(silence, "probe.wav", timeout=30, vad=False)
+                ok_plain = isinstance(plain, dict) and isinstance(plain.get("text"), str)
+            except (OSError, ValueError):
+                ok_plain = False
+            if ok_plain:
+                return ("whisper は、声の区間（vad=true）を付けた確かめにだけ答えませんでした。声の区間を見分けるモデル（VAD）を読み込んでいないことが多いです。"
+                        "起動に `-vm <Silero のモデル>` があるか確かめてください（README の「準備」）。使わないなら config.env に VL_WHISPER_VAD=off")
+        return f"{WHISPER} は応答しますが、whisper の返事ではありません。別のサービスが同じポートを使っていないか確かめ、config.env の VL_WHISPER を合わせてください"
+    if WHISPER_VAD:
+        try:
+            heard = re.sub(r"\s+", " ", _text_of(_whisper(_probe_wav(2.0, 0.1), "probe.wav", timeout=30))).strip()
+        except (OSError, ValueError) as e:
+            return f"whisper に声の入っていない雑音を渡す確かめに失敗しました（{str(e)[:80]}）。もう一度開いて確かめてください"
+        if heard:
+            return (f"whisper に声の入っていない雑音を渡すと「{heard[:30]}」と聞き取りました。声の区間（vad=true）が効いていません"
+                    "（VAD に対応していない版の whisper.cpp など。`whisper-server --help` に `--vad-model` がある版を、`-vm` を足して起動してください）。"
+                    "使わないなら config.env に VL_WHISPER_VAD=off")
+    return ""
 
 
 def _narrator_problem(model: str) -> str:
@@ -2852,7 +2901,7 @@ def _read_json(path: Path, default):
 
 
 # ---------- 代理からの知らせ（hubctl notice） ----------
-# 代理（Hermes）が、見張りの回（cron）で見つけた判断待ちなどを知らせる口。本体は鳴らすだけで、知らせを残さない（0.35.1 から。一覧も、その口も無い。
+# 代理（Hermes）が、見張りの回（cron）で見つけた判断待ちなどを知らせる口。本体は鳴らすだけで、知らせを残さない（0.35.2 から。一覧も、その口も無い。
 # 判断待ちは受け箱に、見張りが止まった口は受け箱の帯に出る）。開いている画面とプッシュ通知には題だけを載せ、一言は受けるが使わない。知らせには押して動くものが無い（送る・答える・立てる・閉じるの口とはつながらない）。
 # 通知を押すと受け箱（💡）が開く。判断待ちの記録の番号が 1 つ添えてあれば、その件を開く（開くだけ。中身は本体が記録から読む。scripts/hermes_inbox.py）。
 # 残すのは、次の番号と、直近 1 時間に受けた時刻だけ（1 時間に受ける数の上限のため）。
@@ -3069,7 +3118,12 @@ async def ws(sock: WebSocket):
                 continue
             if msg.get("bytes") is not None and pending.get("type") == "turn":
                 await send(type="status", text="聞き取り中…")
-                text = await asyncio.to_thread(transcribe, msg["bytes"], pending.get("filename", "audio.webm"))
+                try:
+                    text = await asyncio.to_thread(transcribe, msg["bytes"], pending.get("filename", "audio.webm"))
+                except (OSError, ValueError) as e:  # whisper が止まっている・答えの形が違う。接続は切らずに知らせる
+                    print(f"[whisper] 聞き取りに失敗: {str(e)[:200]}", flush=True)
+                    await send(type="error", text="聞き取りに失敗しました（聞き取りのサーバーを確かめてください）")
+                    continue
                 if not text:
                     await send(type="error", text="聞き取れませんでした")
                     continue
