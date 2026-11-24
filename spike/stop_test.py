@@ -146,7 +146,9 @@ for name, between, want in [("止めた", s.HUB.stopped, ""), ("話しかけた"
     s.HUB.report_begin("proj｜t が完了しました", "proj｜t")
     between()
     asyncio.run(s.HUB.report_end("done", "proj の報告です。閉じていいですか？", "proj｜t", True, mark=mark))
-    check(f"報告を頼んだあとに{name}: 届いた報告を聞いた文に{'しない' if not want else 'する'}", hm.HERMES_HEARD["text"], want)
+    check(f"報告: 画面に送り終えるまでは聞いた文にしない（頼んだあとに{name}）", hm.HERMES_HEARD["text"], "")
+    s.HUB.report_delivered(mark)  # 鳴らす画面に送り終えた（本体の _report が呼ぶ）
+    check(f"報告を頼んだあとに{name}: 画面に送り終えても、届いた報告を聞いた文に{'しない' if not want else 'する'}", hm.HERMES_HEARD["text"], want)
 
 
 # ---- 本物の報告の流れ（_report）: 頼んだその場で番号を控える。順番待ち（頭のやり取りの鍵）の間に止めても、報告は聞いた文にしない
@@ -170,7 +172,7 @@ async def both_reports():  # 鍵は 1 つのイベントループに結び付く
 
 stopped_heard, plain_heard = asyncio.run(both_reports())
 check("本物の報告の流れ: 鍵の順番待ちの間に止めたら、届いた報告は聞いた文にしない", stopped_heard, "")
-check("本物の報告の流れ: 止めなければ、届いた報告は聞いた文", plain_heard, "proj の報告です。閉じていいですか？")
+check("本物の報告の流れ: 開いている画面が無ければ、止めなくても、届いた報告は聞いた文にしない（あとで読んだなら ↩ 返信か、頭が聞き直す）", plain_heard, "")
 
 # ---- 本物の WebSocket の流れ
 async def nothing(*a, **k):
@@ -202,6 +204,12 @@ def receive_until(w, kind):
 
 with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as w:
+        # 画面が無いときの報告（上の本物の報告の流れ）のあと、最初につないだ画面の「はい」は、その報告への答えにならない（a2a 30fd5b94 の 3 回目）
+        hm.ask_hermes = lambda text: "わかりました"
+        w.send_text(json.dumps({"type": "text", "text": "画面を開いて最初のはい", "pane": hm.HERMES_PANE, "speaker": 0}))
+        receive_until(w, "reply")
+        first = next((r for r in list(hm.HERMES_TURNS) if r[1] == "画面を開いて最初のはい"), None)
+        check("本物の流れ: 画面が無いときに届いた報告は、あとで画面を開いて最初に言った発言の「聞いた文」にならない", first[3] if first else None, "")
         hm.HERMES_HEARD["text"] = Q
         before = hm.HERMES_GEN["n"]
         w.send_text(json.dumps({"type": "stop"}))

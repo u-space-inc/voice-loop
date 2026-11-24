@@ -236,6 +236,16 @@ asked()
 say("はい、閉じて")
 s.HUB.stopped()
 check("止める: 「はい」のあとに止めたら、頭が回の途中で閉じない", close(confirmed=True), ("stopped", []))
+s.CLOSING.pop("w9:p1", None)
+asked()
+say("はい、閉じて")
+real_reply_to = s.hub_reply_to
+s.hub_reply_to = lambda turn: (s.HUB.stopped(), real_reply_to(turn))[1]  # 入口で確かめたあと、閉じる前の読み取りの間に止めた（a2a 30fd5b94 の 3 回目）
+try:
+    got = close(confirmed=True)
+finally:
+    s.hub_reply_to = real_reply_to
+check("止める: 閉じる直前の読み取りの間に止めたら、閉じない", got, ("stopped", []))
 
 bad = [f"{name}: {g!r}（期待 {w!r}）" for name, ok, g, w in results if not ok]
 print("\n".join(bad) or f"{len(results)} 例、すべて期待どおり")

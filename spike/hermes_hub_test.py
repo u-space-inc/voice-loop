@@ -291,6 +291,25 @@ screen()
 asked_then(DQ, "はい")
 check("確認: カーソルがもう Yes なら Enter だけ", answer(), ("ok", ["enter"]))
 s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+# 止める（2026-11-24、a2a 30fd5b94 の 3 回目）: 入口で確かめたあと、読み取りの待ちの間に止めたら、キーを送らない（番号の承認・確認の段の Enter）
+state.update(screen=PERMISSION, on_key=None)
+begin("見て")
+screen()
+asked_then(Q, "はい")
+real_heard = s.hub_heard
+s.hub_heard = lambda turn: (s.HUB.stopped(), real_heard(turn))[1]  # 答えを送る前の読み取りの間に、利用者が止めた
+try:
+    got = answer()
+finally:
+    s.hub_heard = real_heard
+check("止める: 答えを送る直前の読み取りの間に止めたら、キーを送らない", got, ("stopped", []))
+s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+state.update(screen=CONFIRM_NO, on_key=lambda k: (state.update(screen=CONFIRM_YES), s.HUB.stopped()) if k == "down" else None)
+begin("見て")
+screen()
+asked_then(DQ, "削除して")
+check("止める: 確認の段で、カーソルを動かしたあと Enter の前に止めたら、Enter を送らない", answer(), ("stopped", ["down"]))
+s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
 state.update(screen=LEFTOVER, on_key=lambda k: state.update(screen=LEFTOVER.replace(" ❯ No\n   Yes", "   No\n ❯ Yes")) if k == "down" else None)
 begin("見て")
 sc = screen()

@@ -2611,10 +2611,11 @@ CONFIRMING: dict[str, tuple[str, str | None]] = {}  # 取り消しにくい操�
 CONFIRM_WAIT = 3.0  # 番号の無い確認で、カーソルが Yes に来たのを確かめるまで待つ秒数
 
 
-async def confirm_yes(pane: str, fp0: str) -> tuple[bool, str]:
+async def confirm_yes(pane: str, fp0: str, still=None) -> tuple[bool, str]:
     """番号の無い確認（parse_confirm）で Yes を選ぶ。初めに読んだ画面が答えを決めた画面（指紋 fp0）と同じで、カーソルが Yes に無ければ
     ↓か↑を 1 回送り、画面を読み直して、同じ問いでカーソルが Yes に来たのを確かめてから Enter を送る。
-    思った画面でなければ、そこで止める（Enter は送らない）。返すのは (Enter まで送れたか, 止めた理由)。"""
+    思った画面でなければ、そこで止める（Enter は送らない）。返すのは (Enter まで送れたか, 止めた理由)。
+    still は、キーを送る直前ごとに呼ぶ確かめ（答えに使う発言のあとに利用者が止めた・次の発言をしたら False）。False なら送らずに (False, "stopped")。"""
     text = await asyncio.to_thread(read_prompt, pane)
     c = parse_confirm(text)
     if prompt_fp(text) != fp0 or not c:
@@ -2623,6 +2624,8 @@ async def confirm_yes(pane: str, fp0: str) -> tuple[bool, str]:
     if c["cursor"] != yes:
         # カーソルを動かしたあとの画面は、選択肢の 2 行のカーソルだけが入れ替わり、ほかは 1 字も変わらないはず（道具の見出しの ⏺ の点滅だけは数えない）
         want = confirm_norm(confirm_text(text, yes))
+        if still is not None and not still():  # 送る直前（ここから送るまで待ちを挟まない）
+            return False, "stopped"
         r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, "down" if yes > c["cursor"] else "up")
         if "result" not in r:
             return False, "herdr が応答しない（Enter は送っていない）"
@@ -2635,6 +2638,8 @@ async def confirm_yes(pane: str, fp0: str) -> tuple[bool, str]:
             if time.monotonic() >= end:
                 return False, "カーソルが Yes に来たのを確かめられない（Enter は送っていない）"
             await asyncio.sleep(0.2)
+    if still is not None and not still():  # Enter を送る直前（読み直し・待ちのあいだに止めたら送らない）
+        return False, "stopped"
     r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, "enter")
     return ("result" in r), ("" if "result" in r else "herdr が応答しない（Enter が届いたか分からない）")
 
@@ -2761,12 +2766,16 @@ async def _hub_answer(body: dict):
             key, said = str(n), f"{n}番「{prompt['options'][n]}」"
     if answered(pane, fp):  # 画面のボタンと共有する「答えた問い」。答えたあと画面が書き換わるまでに、同じ問いへもう一度送らない
         return JSONResponse({"ok": False, "reason": "answered"})
+    # キーを送る直前に、答えに使う発言のあとに利用者が止めた・次の発言をしていないかを、もう一度確かめる（入口で確かめたあとの読み取りの
+    # 待ちの間に止めることがある。ここから送るまで待ちを挟まない。確認の段は、キーを送る直前ごとに確かめる。a2a 30fd5b94 の 3 回目）
+    if not hub_current(turn):
+        return JSONResponse({"ok": False, "reason": "stopped"})
     if key == "confirm":
         mark_answered(pane, fp)  # カーソルを動かし始めたら、同じ画面に重ねて送らない（途中で止めても）
-        ok, why = await confirm_yes(pane, fp)
+        ok, why = await confirm_yes(pane, fp, still=lambda: hub_current(turn))
         hlog(f"answer → {pane} ({project}): {said} {'ok' if ok else '止めました: ' + why}", flush=True)
         if not ok:
-            return JSONResponse({"ok": False, "reason": "stuck", "why": why})
+            return JSONResponse({"ok": False, "reason": "stopped" if why == "stopped" else "stuck", "why": why})
     else:
         r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, key)
         hlog(f"answer → {pane} ({project}): {said} {'ok' if 'result' in r else 'ERR'}", flush=True)
@@ -3170,6 +3179,8 @@ async def hub_close(body: dict):
                 why = "not_asked"
             elif not consent.affirms(said, "close", project):
                 why = "not_yes"
+            elif not hub_current(now):  # 閉じる直前に、もう一度（読み取りの待ちの間に止めた・次の発言をした。ここから閉じるまで待ちを挟まない）
+                why = "stopped"
             else:
                 del CLOSING[pane]  # 閉じる前に外す（重ねて届いた同じ許可で、二度閉じない）
                 CLOSED.add(pane)

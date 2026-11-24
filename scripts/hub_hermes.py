@@ -1801,13 +1801,13 @@ class Hermes(Brain, Talker):
     async def report_end(self, state: str, reply: str, about: str, saved: bool, pane: str = "", topic: str = "", ask: dict | None = None,
                          mark: int | None = None) -> bool:
         # 利用者が次に聞くのはこの報告（受け取れなければ本体の失敗の知らせ）。記録に書けたかに関係なく、ここで置き換える
-        # 報告を頼んだあとに利用者が話しかけた・止めたなら、報告は聞いていない（届いても聞いた文にしない）。開いている画面があれば、
-        # 画面に送り終えてから聞いた文にする（report_delivered。送る前に話しかけた・止めたなら聞いていない）。画面が無ければ、ここで（あとで履歴と通知で読む）
+        # 報告は、鳴らす画面に送り終えてから聞いた文にする（report_delivered）。頼んだあとに利用者が話しかけた・止めたなら、届いても聞いた文にしない。
+        # 開いている画面が無ければ聞いた文にしない（あとで履歴や通知で読んだなら「↩ 返信」で答える。ふつうの発言なら頭が聞き直す。a2a 30fd5b94 の 3 回目）
         ok = state == "done" and reply.strip() and (mark is None or HERMES_GEN["n"] == mark)
         REPORT_PENDING.clear()
-        if ok and core.CLIENTS:
+        if ok:
             REPORT_PENDING["now"] = {"reply": reply, "mark": mark}
-        HERMES_HEARD["text"] = reply if ok and not core.CLIENTS else ""
+        HERMES_HEARD["text"] = ""
         if state == "done" and reply.strip():
             # pane: どのセッションの報告か（返信の守りが照らす）。topic: どの件の報告か（件の URL で開くとき・返信の続きを同じ件にするとき）。
             # ask: 止まった報告でハブが見た問い（返信をその問いへの答えに使えるかを、本体が照らす）

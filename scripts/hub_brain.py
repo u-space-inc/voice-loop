@@ -109,7 +109,7 @@ class Brain:
         """報告のあと。記録に書けたかを返す。topic は、どの件の報告か（記録を持つ頭は、報告の記録に書く）。
         ask は、止まった報告でハブが見た問い {"fp": 画面の指紋, "session": セッション}（記録を持つ頭は報告の記録に書き、reply_ask で返す）。
         mark は報告を頼んだときの heard_mark。そのあとに利用者が話しかけた・止めたなら、報告は「利用者が聞いた文」にしない。
-        開いている画面があれば、報告は report_delivered で画面に送り終えてから「利用者が聞いた文」にする。"""
+        報告は report_delivered で鳴らす画面に送り終えてから「利用者が聞いた文」にする（開いている画面が無ければ、聞いた文にしない）。"""
         return saved
 
     def report_delivered(self, mark: int | None = None):
