@@ -2679,14 +2679,16 @@ async def _hub_answer(body: dict):
     取り消しにくい操作の「はい」は、聞き返してユーザーがもう一度発言してから（どちらの発言も上の確かめを通ること）。「今後は聞かずに許可」は選ばない。"""
     if REPORTING:
         return JSONResponse({"ok": False, "reason": "reporting"})
-    if await asyncio.to_thread(hub_via, hub_human_turn()) == "device":  # 機械（スタックチャン）からの発言は答えに使わない。答えは画面で（README「守り」）。早めに断るだけで、確かめの本番は下の発言の取り直しのあと
-        return JSONResponse({"ok": False, "reason": "device"})
     pane, answer, confirmed = str(body.get("pane", "")), str(body.get("answer", "")).strip().lower(), bool(body.get("confirmed"))
     a = await asyncio.to_thread(_worker, pane)
     if not a:
         return JSONResponse({"ok": False, "reason": f"セッションが見つかりません: {pane}"}, status_code=404)
+    # 止まっていないかを、機械からの発言かより先に返す。返事の中で文で聞いて入力を待っているだけのセッション（「A で進めますか？」）への返事は、
+    # 答えではなくふつうの指示（hubctl send。機械からでも送れる）。機械を先に返すと、ハブが「画面の承認のボタンで」と、無いボタンへ案内していた（2026-11-24）
     if a["status"] != "blocked":
         return JSONResponse({"ok": False, "reason": "not_blocked", "status": a["status"]})
+    if await asyncio.to_thread(hub_via, hub_human_turn()) == "device":  # 機械（スタックチャン）からの発言は答えに使わない。答えは画面で（README「守り」）。早めに断るだけで、確かめの本番は下の発言の取り直しのあと
+        return JSONResponse({"ok": False, "reason": "device"})
     trust = await asyncio.to_thread(pane_shows_trust, pane)
     if trust is None:  # 何を聞かれているか読めないまま、答えを送らない
         return JSONResponse({"ok": False, "reason": "unreadable"})
