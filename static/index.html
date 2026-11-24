@@ -59,10 +59,25 @@
   .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--mute); flex:none; }
   .dot.on { background:var(--ok); }
   #statusText { flex:1; min-width:0; }
-  /* 顔の表示へ（ふつうのリンク。⌘・中ボタンで押せば、この画面を残して別のタブで開く）。↻ と同じく目立たないように。
-     PC の幅だけに出す（スマホの帯は 💡 📋 🔔 🔇 ↻ で埋まり、足すと状態の文が細く折れる。スマホは /?face で開く） */
+  /* 顔の表示へ（ふつうのリンク。⌘・中ボタンで押せば、この画面を残して別のタブで開く）。↻ と同じく目立たないように */
   #faceGo { flex:none; text-decoration:none; font-size:15px; line-height:1; padding:4px 3px; margin:-4px 0; opacity:.45; }
-  body:not(.wide) #faceGo { display:none; }
+  /* スマホの幅では、よく使う 💡・🔇 だけを帯に出し、📋・🔔・🙂・↻ は ⋯ の中に名前つきでまとめる（2026-11-24 本人。帯が埋まると状態の文が細く折れる）。
+     PC の幅では ⋯ を出さず、これまでどおり帯に並べる */
+  #moreBtn { flex:none; border:none; border-radius:8px; background:none; color:var(--mute); font-size:17px; line-height:1; padding:6px 9px; margin:-6px 0; }
+  #moreBtn[aria-expanded="true"] { background:#2a2a2a; color:#ddd; }
+  body.wide #moreBtn { display:none; }
+  body.wide #moreBox { display:contents; }
+  body:not(.wide) #status { position:relative; }
+  body:not(.wide) #moreBox { display:none; }
+  body:not(.wide) #moreBox.open { display:flex; flex-direction:column; position:absolute; right:0; bottom:calc(100% + 8px); z-index:50; min-width:12em; padding:6px; gap:2px;
+    background:#1e1e1e; border:1px solid #333; border-radius:12px; box-shadow:0 6px 24px rgba(0,0,0,.5); }
+  body:not(.wide) #moreBox > * { display:flex; align-items:center; gap:12px; width:100%; margin:0; padding:10px 12px; border:none; border-radius:8px; background:none;
+    color:#ddd; font-size:17px; line-height:1; text-align:left; text-decoration:none; opacity:1; }
+  body:not(.wide) #moreBox > *::after { content:attr(data-label); font-size:14px; }
+  body:not(.wide) #moreBox > [hidden] { display:none; }
+  body:not(.wide) #moreBox > :disabled { opacity:.35; }
+  body:not(.wide) #moreBox > #tasksBtn[aria-pressed="true"] { background:#2a2f45; }
+  body:not(.wide) #moreBox > #bell[aria-pressed="true"] { background:#1f4a32; }
   #reload { flex:none; border:none; background:none; color:var(--mute); font-size:16px; line-height:1; padding:4px 6px; margin:-4px -6px; } /* 目立たないように小さく、押せる広さは少し持たせる */
   /* 読み上げの切り替え。読み上げの途中でもすぐ押せるよう、↻ より押せる広さを持たせる。切っている間は色をつけて、文字だけと分かるようにする */
   #mute { flex:none; border:none; border-radius:8px; background:none; font-size:17px; line-height:1; padding:6px 9px; margin:-6px 0; opacity:.45; }
@@ -405,7 +420,7 @@
   <div id="situation" hidden><div class="top"><span>判断待ち（Hermes から）</span><button id="sitClose" aria-label="閉じる">✕</button></div><div id="sitBody"></div></div>
   <div id="log"></div>
   <div id="bar">
-    <div id="status"><span id="conn" class="dot"></span><span id="statusText">接続中…</span><button id="hubStart">ハブを起動</button><button id="tap">▶ タップして再生</button><button id="sitBtn" aria-pressed="false" aria-label="判断待ち" title="判断待ち">💡</button><button id="tasksBtn" aria-pressed="false" aria-label="頼んだ件" title="頼んだ件">📋</button><button id="bell" aria-pressed="false" hidden>🔔</button><button id="mute" aria-pressed="false">🔇</button><a id="faceGo" href="/?face" aria-label="顔の表示にする" title="顔の表示にする（⌘ を押しながらで別のタブ）">🙂</a><button id="reload" aria-label="最新の画面を読み込み直す" title="最新の画面を読み込み直す">↻</button></div>
+    <div id="status"><span id="conn" class="dot"></span><span id="statusText">接続中…</span><button id="hubStart">ハブを起動</button><button id="tap">▶ タップして再生</button><button id="sitBtn" aria-pressed="false" aria-label="判断待ち" title="判断待ち">💡</button><button id="mute" aria-pressed="false">🔇</button><button id="moreBtn" aria-expanded="false" aria-controls="moreBox" aria-label="ほかの操作" title="ほかの操作（頼んだ件・通知・顔の表示・読み込み直し）">⋯</button><span id="moreBox"><button id="tasksBtn" aria-pressed="false" aria-label="頼んだ件" title="頼んだ件" data-label="頼んだ件">📋</button><button id="bell" aria-pressed="false" hidden data-label="通知">🔔</button><a id="faceGo" href="/?face" aria-label="顔の表示にする" title="顔の表示にする（⌘ を押しながらで別のタブ）" data-label="顔の表示">🙂</a><button id="reload" aria-label="最新の画面を読み込み直す" title="最新の画面を読み込み直す" data-label="読み込み直す">↻</button></span></div>
     <div class="row"><select id="agent" aria-label="セッション"></select><select id="speaker" aria-label="声"></select></div>
     <div id="topicMsg" hidden role="status"><span id="topicMsgText"></span><button id="topicMsgClose" type="button" aria-label="件の案内を閉じる">✕</button></div>
     <div id="replyBar" hidden><span id="replyTo"></span><button id="replyClear" type="button" aria-label="返信をやめる">✕</button></div>
@@ -1120,6 +1135,7 @@ function showBell() {
   $('bell').setAttribute('aria-pressed', String(!!pushSub));
   $('bell').title = pushSub ? '通知を切る（いまは画面を閉じていても届く）' : '通知を受け取る（画面を閉じていても、報告と承認待ちが届く）';
   $('bell').setAttribute('aria-label', $('bell').title);
+  $('bell').dataset.label = pushSub ? '通知を切る' : '通知を受け取る'; // スマホの ⋯ の一覧に出す名前
 }
 const postJSON = async (path, body) => (await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
 function keyBytes(b64) { const s = atob(b64.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - b64.length % 4) % 4)); return Uint8Array.from(s, c => c.charCodeAt(0)); }
@@ -1239,6 +1255,15 @@ function runTasks(open) {  // 見える・10 秒ごとに取り直す、を切�
   if (open) { loadTasks(); tasksTimer = setInterval(() => { if (!document.hidden) loadTasks(); }, 10000); }
 }
 $('tasksBtn').onclick = () => { showSituation(false); showTasks($('tasks').hidden); };
+// スマホの帯の ⋯（📋・🔔・🙂・↻ をまとめた一覧）。選ぶ・外を押す・Esc で閉じる。PC の幅では使わない（幅が変わったら閉じる）
+function showMore(open) { $('moreBox').classList.toggle('open', open); $('moreBtn').setAttribute('aria-expanded', String(open)); }
+$('moreBtn').onclick = () => showMore(!$('moreBox').classList.contains('open'));
+$('moreBox').addEventListener('click', () => showMore(false)); // 押したものの動きはそのまま（先に動く）
+document.addEventListener('click', e => { if ($('moreBox').classList.contains('open') && !(e.target.closest && e.target.closest('#moreBox, #moreBtn'))) showMore(false); });
+document.addEventListener('keydown', e => { // 開いている間の Esc は、一覧を閉じるだけ（停止・読む画面の Esc に回さない）
+  if (e.key !== 'Escape' || !$('moreBox').classList.contains('open')) return;
+  e.preventDefault(); e.stopImmediatePropagation(); showMore(false); $('moreBtn').focus();
+}, true);
 $('tasksClose').onclick = () => showTasks(false);
 
 // ---------- 判断待ち（💡）の「その他」 ----------
@@ -1792,7 +1817,7 @@ let recTab = (() => { try { return localStorage.getItem('vl.recTab') === 'sit' ?
 function applyWide() {
   if (WIDE.matches === wide) return;
   wide = WIDE.matches;
-  document.body.classList.toggle('wide', wide);
+  document.body.classList.toggle('wide', wide); showMore(false);
   if (wide) {
     $('side').appendChild($('tasks')); $('rec').appendChild($('situation'));
     runTasks(true); runSituation(true); setRecTab(recTab); renderSessions();
