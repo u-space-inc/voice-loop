@@ -330,6 +330,26 @@ for label, scr, utter, last in [("番号の承認", PERMISSION, "はい", 3), ("
         s.hub_current = real_current
     check(f"止める: {label}を、ワーカーの空きを待つ間に止めたら送らない（ワーカーの中で確かめる）", (got, calls["n"]), (("stopped", []), last))
     s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+# 確認の段でキーを 1 つも送らずに止めたら、答えた印を外す（画面のボタン・ハブの断りを 15 秒止めない）。カーソルを動かしたあとなら残す（codex-review fb69347）
+for label, flip_at, keys, marked in [("キーを送る前", 3, [], False), ("カーソルを動かしたあと", 5, ["down"], True)]:
+    state.update(screen=CONFIRM_NO, on_key=cursor_moves)
+    begin("見て")
+    screen()
+    asked_then(DQ, "削除して")
+    real_current, calls = s.hub_current, {"n": 0}
+
+    def flips2(turn, real_current=real_current, calls=calls, flip_at=flip_at):
+        calls["n"] += 1
+        return real_current(turn) if calls["n"] < flip_at else False
+
+    s.hub_current = flips2
+    try:
+        got = answer()
+    finally:
+        s.hub_current = real_current
+    check(f"止める: 確認の段で{label}に止めたら、答えた印は{'残す' if marked else '外す'}", (got, s.answered("w9:p1", s.prompt_fp(CONFIRM_NO))), (("stopped", keys), marked))
+    s.ANSWERED.clear()
+    s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
 # 確認の段の最初の読み取り（カーソルを動かす前）の間に止めた・次の発言を受け付けたら、キーを 1 つも送らない（a2a 30fd5b94 の 4 回目）
 for change, act in [("止めた", s.HUB.stopped), ("次の発言を受け付けた", s.HUB.admit)]:
     state.update(screen=CONFIRM_NO, on_key=cursor_moves)

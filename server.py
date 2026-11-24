@@ -805,6 +805,10 @@ def hub_current(turn: str | None) -> bool:
     return HUB.current(turn) if turn else False
 
 
+TURN_QUEUE_MAX = 4  # 1 つの接続で、聞き取りを待つ・処理している発言の数の上限（codex-review fb69347）
+TURN_QUEUE_MAX_BYTES = 20_000_000  # その声の大きさの合計の上限
+
+
 def admit_now() -> int | None:
     """利用者の発言を受けた（相手がハブでなくても）。ハブが使えるなら受け付けの番号を進めて返す（それより前のハブの往復の許可と、
     まだ画面に届いていない返事・報告を失効させる）。"""
@@ -1424,7 +1428,7 @@ REPORTING = False  # ハブが自動通知に応答している最中か
 REPORT_IDLE: asyncio.Event | None = None  # 報告が終わったときに立つ（Slack から来た送信が、報告の終わりを待つのに使う）。イベントループの中で作る
 SLACK_QUEUE_WAIT = 45.0  # Slack から来た送信が、報告の終わりを待つ上限（秒）。送り（herdr の上限 30 秒）と合わせて hubctl send の待ち（100 秒）に収める
 REPORT_SEQ = 0  # 報告の通し番号（報告を始めるたびに進む）
-REPORT_SPEECH: set = set()  # いま読み上げている報告の止める合図（画面の「停止」で立てる。codex-review bcd26ac）
+REPORT_SPEECH: dict = {}  # 作っている・読み上げている報告の止める合図 → 鳴らす画面（画面の「停止」で合図を立て、鳴らす画面にも止めたと送る。codex-review bcd26ac・fb69347）
 REPORT_FAILED: dict[int, bool] = {}  # 番号ごとに、報告が失敗・時間切れで終わったか（直近の分だけ持つ）
 LAST_DONE: dict[str, tuple] = {}  # セッションごとの、最後に報告した (ターンの目印, 返答)。同じ返答を二度知らせないため
 _tasks: set[asyncio.Task] = set()
@@ -2199,9 +2203,19 @@ def report_about(d: dict) -> str:
 async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
     """ハブに自動通知を送り、ハブの報告を、開いている画面へ声で届ける。画面が無ければ履歴に残るだけ。
     結果は ok / no_hub（ハブが居ない）/ failed（ハブから報告を受け取れなかった）/ skipped（もう止まっていない）。
-    notify は、ハブの報告を受け取れた時点で（読み上げる前に）呼ぶ。"""
-    global REPORTING, REPORT_SEQ
+    notify は、ハブの報告を受け取れた時点で（読み上げる前に）呼ぶ。
+    頼んだその場で、受け付けの番号（mark）と止める合図（speech）を取る。報告を作っている間に「停止」を押したら、届いた報告は文字だけにする。"""
     mark = HUB.heard_mark()  # 頼んだその場の受け付けの番号（順番待ちの間に利用者が話しかけた・止めたなら、報告を「利用者が聞いた文」にしない。a2a 30fd5b94）
+    speech = asyncio.Event()
+    REPORT_SPEECH[speech] = []
+    try:
+        return await _report_body(d, kind, notify, mark, speech)
+    finally:
+        REPORT_SPEECH.pop(speech, None)
+
+
+async def _report_body(d: dict, kind: str, notify, mark: int, speech: asyncio.Event) -> str:
+    global REPORTING, REPORT_SEQ
     label = _clip(f"{d['project']}｜{d['title']}", 80)
     hub = await HUB.report_target()
     # この件の範囲（指示を送った位置から今まで）を読ませ、この指示への答えを、間にあったほかの発言への答えと分けて報告させる。
@@ -2270,33 +2284,30 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
             d["_slack_done"] = True  # 完了の報告を送った。このあとの見張りの失敗は重ねて知らせない（途中経過のあとの失敗は知らせる）
         clients = list(CLIENTS)
         msg = dict(type="reply", pane=hub["pane"], text=reply, report=True, about=label, saved=saved, topic=str(d.get("topic") or ""))
-        ring: list = []
-        speech = asyncio.Event()  # 報告の読み上げを「停止」で止める合図（どの画面の停止でも。利用者は一人）。文字を送り始める前から受ける（a2a 5a3533e2）
-        REPORT_SPEECH.add(speech)
-        try:
-            while clients and not ring:  # 声は 1 か所（最後に話しかけた窓）。その窓に送れなければ（切れていた）、残りから選び直す（codex-review）
-                for c in ring_targets(clients):
-                    try:
-                        await c.send(**msg)
-                        ring.append(c)
-                    except Exception:
-                        clients.remove(c)
-            for c in [c for c in clients if c not in ring]:  # ほかの窓には文字だけ（quiet: 読み上げの印を付けない）
+        ring: list = REPORT_SPEECH.get(speech, [])  # 鳴らす画面（「停止」を押した画面がほかでも、ここに止めたと送る）
+        while clients and not ring:  # 声は 1 か所（最後に話しかけた窓）。その窓に送れなければ（切れていた）、残りから選び直す（codex-review）
+            for c in ring_targets(clients):
                 try:
-                    await c.send(**msg, quiet=True)
+                    await c.send(**msg)
+                    ring.append(c)
                 except Exception:
                     clients.remove(c)
-            if ring:
-                HUB.report_delivered(mark)  # 鳴らす窓に送り終えた。頼んだあとに話しかけた・止めていなければ、ここで報告を聞いた文にする
-                # 読み上げの途中で鳴らす窓が切れても（1 対 1 の speak_to は失敗を投げる）、見張りには伝えない（codex-review）。別の窓では読み直さない:
-                # 文字はすべての窓に届いている。読み直すと、文字だけで届けた窓に読み上げの印が付かず（a2a 8f05ef33）、
-                # 語り手・合成そのものの失敗では窓の数だけ作り直して、ハブの順番を長く止める（codex-review）
-                try:
-                    await speak_to(ring, reply, speech)
-                except Exception as e:
-                    hlog(f"報告の声を送り終えられませんでした（{type(e).__name__}）。文字はすべての窓に届いています", flush=True)
-        finally:
-            REPORT_SPEECH.discard(speech)
+        for c in [c for c in clients if c not in ring]:  # ほかの窓には文字だけ（quiet: 読み上げの印を付けない）
+            try:
+                await c.send(**msg, quiet=True)
+            except Exception:
+                clients.remove(c)
+        if ring:
+            HUB.report_delivered(mark)  # 鳴らす窓に送り終えた。頼んだあとに話しかけた・止めていなければ、ここで報告を聞いた文にする
+            if speech.is_set():  # 報告を作っている・送っている間に「停止」を押した。読み上げない（文字は届いている）
+                return "ok"
+            # 読み上げの途中で鳴らす窓が切れても（1 対 1 の speak_to は失敗を投げる）、見張りには伝えない（codex-review）。別の窓では読み直さない:
+            # 文字はすべての窓に届いている。読み直すと、文字だけで届けた窓に読み上げの印が付かず（a2a 8f05ef33）、
+            # 語り手・合成そのものの失敗では窓の数だけ作り直して、ハブの順番を長く止める（codex-review）
+            try:
+                await speak_to(ring, reply, speech)
+            except Exception as e:
+                hlog(f"報告の声を送り終えられませんでした（{type(e).__name__}）。文字はすべての窓に届いています", flush=True)
         return "ok"
 
 
@@ -2636,6 +2647,7 @@ async def confirm_yes(pane: str, fp0: str, still=None) -> tuple[bool, str]:
     ↓か↑を 1 回送り、画面を読み直して、同じ問いでカーソルが Yes に来たのを確かめてから Enter を送る。
     思った画面でなければ、そこで止める（Enter は送らない）。返すのは (Enter まで送れたか, 止めた理由)。
     still は、キーを送る直前ごとに呼ぶ確かめ（答えに使う発言のあとに利用者が止めた・次の発言をしたら False）。False なら送らずに (False, "stopped")。"""
+    moved = False  # カーソルのキーを送ったか（止めたとき、キーを 1 つも送っていなければ "stopped"、送ったあとなら "stopped:moved"）
     text = await asyncio.to_thread(read_prompt, pane)
     c = parse_confirm(text)
     if prompt_fp(text) != fp0 or not c:
@@ -2649,6 +2661,7 @@ async def confirm_yes(pane: str, fp0: str, still=None) -> tuple[bool, str]:
         r = await asyncio.to_thread(_if_still, still, herdr, "agent", "send-keys", pane, "down" if yes > c["cursor"] else "up")
         if r is None:
             return False, "stopped"
+        moved = True
         if "result" not in r:
             return False, "herdr が応答しない（Enter は送っていない）"
         end = time.monotonic() + CONFIRM_WAIT
@@ -2661,10 +2674,10 @@ async def confirm_yes(pane: str, fp0: str, still=None) -> tuple[bool, str]:
                 return False, "カーソルが Yes に来たのを確かめられない（Enter は送っていない）"
             await asyncio.sleep(0.2)
     if still is not None and not still():  # Enter を送る直前（読み直し・待ちのあいだに止めたら送らない）
-        return False, "stopped"
+        return False, "stopped:moved" if moved else "stopped"
     r = await asyncio.to_thread(_if_still, still, herdr, "agent", "send-keys", pane, "enter")
     if r is None:
-        return False, "stopped"
+        return False, "stopped:moved" if moved else "stopped"
     return ("result" in r), ("" if "result" in r else "herdr が応答しない（Enter が届いたか分からない）")
 
 
@@ -2795,11 +2808,18 @@ async def _hub_answer(body: dict):
     if not hub_current(turn):
         return JSONResponse({"ok": False, "reason": "stopped"})
     if key == "confirm":
+        prev = ANSWERED.get(pane)
         mark_answered(pane, fp)  # カーソルを動かし始めたら、同じ画面に重ねて送らない（途中で止めても）
+        mine = ANSWERED.get(pane)
         ok, why = await confirm_yes(pane, fp, still=lambda: hub_current(turn))
         hlog(f"answer → {pane} ({project}): {said} {'ok' if ok else '止めました: ' + why}", flush=True)
         if not ok:
-            return JSONResponse({"ok": False, "reason": "stopped" if why == "stopped" else "stuck", "why": why})
+            if why == "stopped" and ANSWERED.get(pane) is mine:  # キーを 1 つも送らずに止めた。答えた印を外す（画面のボタン・ハブの断りを 15 秒止めない。codex-review fb69347）
+                if prev:
+                    ANSWERED[pane] = prev
+                else:
+                    ANSWERED.pop(pane, None)
+            return JSONResponse({"ok": False, "reason": "stopped" if why.startswith("stopped") else "stuck", "why": why})
     else:
         r = await asyncio.to_thread(_if_still, lambda: hub_current(turn), herdr, "agent", "send-keys", pane, key)
         if r is None:  # スレッドの空きを待つ間に止めた・次の発言をした（送っていない）
@@ -3477,12 +3497,15 @@ async def ws(sock: WebSocket):
     # 声の発言は、聞き取りを受信の外（接続ごとの列）で進める。聞き取りの間も「停止」を読み、止めたら、聞き取った発言は送らない
     # （顔を押して止めても、聞き取り中の発言が送られていた。codex-review bcd26ac）。列が空でないときに届いた文字の発言も、順を守って後ろに並べる
     turn_q: asyncio.Queue = asyncio.Queue()
-    queued = {"n": 0}  # 列に並べた・処理している発言の数
+    queued = {"n": 0, "bytes": 0}  # 列に並べた・処理している発言の数と、声の大きさの合計（上限 TURN_QUEUE_MAX・TURN_QUEUE_MAX_BYTES）
     stops = {"n": 0}  # この接続で「停止」を受けた回数（並べたときの数と違えば、そのあとに止めた）
 
     async def run_queued(item: dict):
         d = item["d"]
         if item["kind"] == "audio":
+            if stops["n"] != item["stops"]:  # 並んでいる間に止めた。聞き取りに回さない（話し直した発言を待たせない。codex-review fb69347）
+                await send(type="status", text="止めたので、聞き取った発言は送っていません")
+                return
             await send(type="status", text="聞き取り中…")
             try:
                 said = await asyncio.to_thread(transcribe, item["bytes"], d.get("filename", "audio.webm"))
@@ -3522,6 +3545,7 @@ async def ws(sock: WebSocket):
                     await send(type="error", text=f"{type(e).__name__}: {e}"[:300])
             finally:
                 queued["n"] -= 1
+                queued["bytes"] -= len(item.get("bytes") or b"")
 
     worker = asyncio.create_task(turn_worker())
     try:
@@ -3550,8 +3574,12 @@ async def ws(sock: WebSocket):
                     cancel.set()
                     if current:
                         current.cancel()
-                    for ev in list(REPORT_SPEECH):  # 報告の読み上げも止める
+                    for ev, ring in list(REPORT_SPEECH.items()):  # 作っている・読み上げている報告も止める。鳴らしている画面がほかなら、そこにも止めたと送る
                         ev.set()
+                        for c in list(ring):
+                            if c is not client:
+                                with contextlib.suppress(Exception):
+                                    await c.send(type="stopped")
                     for t in TALKERS.values():  # 利用者は、読まれていた返事・まだ届いていない返事を聞いていない（承認に答える・閉じるの守り）
                         t.stopped()
                     await send(type="stopped")
@@ -3564,13 +3592,21 @@ async def ws(sock: WebSocket):
                     pending = {**d, "_admitted": admit_now(), "_stops": stops["n"]}
                 if d["type"] == "text":
                     if queued["n"]:  # 前の声の発言を聞き取っている間は、後ろに並べる（順を守る）
+                        if queued["n"] >= TURN_QUEUE_MAX:
+                            await send(type="error", text="前の発言を聞き取っています。終わってから送ってください（いまの発言は送っていません）")
+                            continue
                         queued["n"] += 1
                         turn_q.put_nowait({"kind": "text", "d": d, "stops": stops["n"], "admitted": admit_now()})
                     else:
                         start_turn(d["text"], d["pane"], int(d["speaker"]), d.get("key"), reply_at_of(d), attachments_of(d), reply_item_of(d))
                 continue
             if msg.get("bytes") is not None and pending.get("type") == "turn":
+                if queued["n"] >= TURN_QUEUE_MAX or queued["bytes"] + len(msg["bytes"]) > TURN_QUEUE_MAX_BYTES:  # 聞き取りが追いつかない。溜め込まない
+                    pending = {}
+                    await send(type="error", text="前の発言を聞き取っています。終わってから話してください（いまの発言は送っていません）")
+                    continue
                 queued["n"] += 1
+                queued["bytes"] += len(msg["bytes"])
                 turn_q.put_nowait({"kind": "audio", "d": pending, "bytes": msg["bytes"], "stops": pending["_stops"], "admitted": pending["_admitted"]})
                 pending = {}
     except WebSocketDisconnect:

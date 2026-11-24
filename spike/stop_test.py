@@ -15,6 +15,7 @@
 本物の Hermes・herdr・コンテナには触れない（頭の往復は差し替える。VL_HERMES_URL は何も待ち受けていないポート）。
 使い方: uv run spike/stop_test.py"""
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -321,6 +322,92 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         finally:
             s.transcribe = real_transcribe
         check("声の発言のあとに届いた文字の発言は、声の発言のあとに送る（順を守る）", order, ["先の声の発言", "あとの文字の発言"])
+        # 並んでいた声の発言は、止めたら聞き取りに回さない。列には上限がある（codex-review fb69347）
+        calls_t, gate_t, in_t = {"n": 0}, threading.Event(), threading.Event()
+
+        def counting_transcribe(audio, filename):
+            calls_t["n"] += 1
+            in_t.set()
+            gate_t.wait(5)
+            return "並んでいた声の発言"
+
+        s.transcribe = counting_transcribe
+        real_max, real_max_bytes = s.TURN_QUEUE_MAX, s.TURN_QUEUE_MAX_BYTES
+        s.TURN_QUEUE_MAX_BYTES = 10_000
+        try:
+            for _ in range(2):
+                w.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm"}))
+                w.send_bytes(b"0" * 4000)
+            in_t.wait(5)
+            w.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm"}))
+            w.send_bytes(b"0" * 4000)  # 3 つ目で、並んだ声の大きさの合計が上限（この試験では 10000）を超える
+            over = receive_until(w, "error")
+            check("声の列の大きさの合計が上限を超えたら、溜め込まずに断る", over and over.get("text", "").startswith("前の発言を聞き取っています"), True)
+            w.send_text(json.dumps({"type": "stop"}))
+            receive_until(w, "stopped")
+            gate_t.set()
+            time.sleep(0.5)
+        finally:
+            s.transcribe, s.TURN_QUEUE_MAX, s.TURN_QUEUE_MAX_BYTES = real_transcribe, real_max, real_max_bytes
+        check("止めたら、並んでいた声の発言は聞き取りに回さない（聞き取ったのは止める前の 1 つだけ）", calls_t["n"], 1)
+        # 報告を作っている間に止めたら、届いた報告は読み上げない（文字は届く）
+        said_calls, rep_in, rep_go = [], threading.Event(), threading.Event()
+
+        async def count_speak(ring, reply, ev, **k):
+            said_calls.append(reply)
+
+        def slow_report(text):
+            rep_in.set()
+            rep_go.wait(5)
+            return "作っている間に止めた報告です。"
+
+        real_speak2 = s.speak_to
+        s.speak_to = count_speak
+        try:
+            hm.ask_hermes = slow_report
+            fut = c.portal.start_task_soon(s._report, dict(REPORT_D), "done")
+            rep_in.wait(5)
+            w.send_text(json.dumps({"type": "stop"}))
+            receive_until(w, "stopped")
+            rep_go.set()
+            fut.result(timeout=10)
+            got_reply = receive_until(w, "reply")
+        finally:
+            s.speak_to = real_speak2
+        check("報告を作っている間に止めたら、届いた報告は読み上げない（文字は届く）", (got_reply and got_reply.get("text"), said_calls), ("作っている間に止めた報告です。", []))
+        # 別の画面で止めても、報告を鳴らしている画面にも止めたと送る
+        speech2, real_speak3 = {}, s.speak_to
+
+        async def held_speak2(ring, reply, ev, **k):
+            speech2["ev"] = ev
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(ev.wait(), 5)
+
+        s.speak_to = held_speak2
+        try:
+            hm.ask_hermes = lambda text: "別の画面で止める報告です。"
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as other:
+                other.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "w-other-0001"}))
+                fut = c.portal.start_task_soon(s._report, dict(REPORT_D), "done")
+                for _ in range(100):
+                    if "ev" in speech2:
+                        break
+                    time.sleep(0.05)
+                other.send_text(json.dumps({"type": "stop"}))
+                receive_until(other, "stopped")
+                fut.result(timeout=10)
+                # 鳴らしている画面に届いたものを、必ず返事が来る合図（無い相手への発言 → error）まで読む（届かなくても待ち続けない）
+                w.send_text(json.dumps({"type": "text", "text": "区切り", "pane": "w9:nope", "speaker": 0}))
+                seen = []
+                for _ in range(50):
+                    m = json.loads(w.receive_text())
+                    seen.append(m.get("type"))
+                    if m.get("type") == "error":
+                        break
+                got_stop = "stopped" in seen
+        finally:
+            s.speak_to = real_speak3
+        check("別の画面で止めても、報告を鳴らしている画面に「止めた」を送る（鳴らしている画面の再生を止める）", got_stop, True)
         # 別のセッションに話しかけ直したら、前のハブの発言はもういまの発言ではない
         hub_turn = hm.hermes_turn_begin("ハブへの前の発言")
         w.send_text(json.dumps({"type": "text", "text": "別のセッションへ", "pane": "w9:p1", "speaker": 0}))
