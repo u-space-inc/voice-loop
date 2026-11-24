@@ -805,6 +805,14 @@ def hub_current(turn: str | None) -> bool:
     return HUB.current(turn) if turn else False
 
 
+async def tell_stopped(clients) -> None:
+    """ほかの画面に「止めた」を送る（鳴らしている報告の再生を止めさせる）。届かない・遅い画面は待ちすぎない。"""
+    async def one(c):
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(c.send(type="stopped"), 3)
+    await asyncio.gather(*(one(c) for c in clients))
+
+
 TURN_QUEUE_MAX = 4  # 1 つの接続で、聞き取りを待つ・処理している発言の数の上限（codex-review fb69347）
 TURN_QUEUE_MAX_BYTES = 20_000_000  # その声の大きさの合計の上限
 
@@ -1428,6 +1436,7 @@ REPORTING = False  # ハブが自動通知に応答している最中か
 REPORT_IDLE: asyncio.Event | None = None  # 報告が終わったときに立つ（Slack から来た送信が、報告の終わりを待つのに使う）。イベントループの中で作る
 SLACK_QUEUE_WAIT = 45.0  # Slack から来た送信が、報告の終わりを待つ上限（秒）。送り（herdr の上限 30 秒）と合わせて hubctl send の待ち（100 秒）に収める
 REPORT_SEQ = 0  # 報告の通し番号（報告を始めるたびに進む）
+REPORT_STOP_GRACE = 90  # 報告の声を送り終えたあと、鳴らした画面を「停止」の宛先に残す秒数（受け取った声の再生が続くあいだ）
 REPORT_SPEECH: dict = {}  # 作っている・読み上げている報告の止める合図 → 鳴らす画面（画面の「停止」で合図を立て、鳴らす画面にも止めたと送る。codex-review bcd26ac・fb69347）
 REPORT_FAILED: dict[int, bool] = {}  # 番号ごとに、報告が失敗・時間切れで終わったか（直近の分だけ持つ）
 LAST_DONE: dict[str, tuple] = {}  # セッションごとの、最後に報告した (ターンの目印, 返答)。同じ返答を二度知らせないため
@@ -2211,7 +2220,8 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
     try:
         return await _report_body(d, kind, notify, mark, speech)
     finally:
-        REPORT_SPEECH.pop(speech, None)
+        # 声を送り終えても、鳴らした画面ではまだ再生していることがある。しばらく（REPORT_STOP_GRACE 秒）止める宛先に残す（codex-review 44b3c2e）
+        asyncio.get_running_loop().call_later(REPORT_STOP_GRACE, REPORT_SPEECH.pop, speech, None)
 
 
 async def _report_body(d: dict, kind: str, notify, mark: int, speech: asyncio.Event) -> str:
@@ -3584,12 +3594,12 @@ async def ws(sock: WebSocket):
                     rings = list(REPORT_SPEECH.items())
                     for ev, _ in rings:  # 作っている・読み上げている報告も止める
                         ev.set()
-                    for _, ring in rings:  # 鳴らしている画面がほかなら、そこにも止めたと送る
-                        for c in list(ring):
-                            if c is not client:
-                                with contextlib.suppress(Exception):
-                                    await c.send(type="stopped")
-                    await send(type="stopped")
+                    await send(type="stopped")  # 止めた画面には先に返す（ほかの画面へ送るのが遅くても、この画面の受け取りを止めない。codex-review 44b3c2e）
+                    others = {c for _, ring in rings for c in ring if c is not client}
+                    if others:  # 鳴らしている画面がほかなら、そこにも止めたと送る（期限つきの別の仕事で）
+                        task = asyncio.create_task(tell_stopped(others))
+                        _tasks.add(task)
+                        task.add_done_callback(_tasks.discard)
                     continue
                 if d["type"] == "clientlog":  # 端末側（特にスマホ）の再生まわりの出来事を残す
                     print(f"[client] {str(d.get('msg'))[:300]}", flush=True)

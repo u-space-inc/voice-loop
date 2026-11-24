@@ -90,6 +90,7 @@ CATCH = """(() => { window.__hello = []; window.__types = []; const o = WebSocke
     let d = null; try { d = typeof m === 'string' ? JSON.parse(m) : null; } catch {}
     if (d && d.type === 'hello') window.__hello.push(d);
     if (d && d.type) window.__types.push(d.type);
+    if (d && d.type === 'stop' && window.__dropStop) return;  // 止める合図が本体に届かなかった（届いた印を出さないかを見る）
     return o.call(this, m);
   }; })()"""
 
@@ -202,13 +203,28 @@ with sync_playwright() as pw:
         pg.evaluate(f"window.__talk = 0; window.__types.length = 0; face('{st}')")
         check(f"顔: （前提）{st} の顔になっている", pg.evaluate("document.getElementById('face').dataset.s"), st)
         pg.locator("#face svg").click()
-        check(f"顔: {st} の顔のときに押すと止める（停止を送り、録音は始めず、届いた印が光る）",
-              (pg.evaluate("window.__types.includes('stop')"), pg.evaluate("window.__talk"), pg.evaluate("document.getElementById('face').classList.contains('ack')"),
+        acked = True
+        try:
+            pg.wait_for_function("document.getElementById('face').classList.contains('ack')", timeout=3000)  # 本体が止めたと返してから光る
+        except Exception:
+            acked = False
+        check(f"顔: {st} の顔のときに押すと止める（停止を送り、録音は始めず、本体が止めたと返したら届いた印が光る）",
+              (pg.evaluate("window.__types.includes('stop')"), pg.evaluate("window.__talk"), acked,
                pg.evaluate("document.getElementById('face').dataset.s")), (True, 0, True, "idle"))
     pg.wait_for_function("document.getElementById('faceCap').textContent === '止めました'", timeout=5000)
     check("顔: 止めたら、顔の下に「止めました」", pg.evaluate("document.getElementById('faceCap').textContent"), "止めました")
     pg.wait_for_timeout(700)
     check("顔: 届いた印は一瞬で消える", pg.evaluate("document.getElementById('face').classList.contains('ack')"), False)
+    # 止める合図が本体に届かなかったら、届いた印を出さず、「止めました」とも言わない（手元の再生は止める。codex-review 44b3c2e）
+    pg.evaluate("window.__dropStop = true; face('speak')")
+    pg.locator("#face svg").click()
+    pg.wait_for_timeout(150)
+    early = pg.evaluate("document.getElementById('face').classList.contains('ack')")
+    pg.wait_for_timeout(650)
+    check("顔: 止める合図に本体が返さなければ、届いた印を出さず「止めています…」のまま（手元の再生は止める）",
+          (early, pg.evaluate("document.getElementById('face').classList.contains('ack')"), pg.evaluate("document.getElementById('faceCap').textContent"),
+           pg.evaluate("document.getElementById('face').dataset.s")), (False, False, "止めています…", "idle"))
+    pg.evaluate("window.__dropStop = false; faceAckWait = false")
     pg.evaluate("window.__talk = 0; window.__types.length = 0; face('think')")
     check("顔: （前提）think の顔になっている", pg.evaluate("document.getElementById('face').dataset.s"), "think")
     pg.locator("#face").press("Escape")
