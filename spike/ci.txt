@@ -27,6 +27,7 @@ hermes_effort_test.py
 hermes_hub_test.py
 hermes_learn_test.py
 hermes_log_test.py
+hermes_refusal_test.py
 hermes_memory_test.py
 hermes_session_test.py
 hermes_skills_test.py

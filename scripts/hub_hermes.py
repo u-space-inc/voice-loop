@@ -430,6 +430,16 @@ def hermes_messages(text: str) -> list[dict]:
     return ([{"role": "system", "content": guide}] if guide else []) + [{"role": "user", "content": text}]
 
 
+# モデルの安全の仕組み（content filter）に止められたときの決まり文句。Hermes はこれを、ふつうの終わり（finish_reason=stop）として返す
+# （2026-11-23 22:11、報告の回に英語の断り文がそのまま読み上げられた。Hermes の記録では finish_reason=content-filter、出力 0 トークン）。
+# 返事の全体がこの形のときだけ、失敗として扱う（ハブは日本語で話すので、英語の文の一部や引用には当てない）
+REFUSAL_RE = re.compile(r"I['’]m sorry,? but I (?:cannot|can['’]t|am unable to) (?:assist|help) with (?:that|this)(?: request)?\.?", re.I)
+
+
+def refusal(text: str) -> bool:
+    return bool(REFUSAL_RE.fullmatch(text.strip()))
+
+
 def ask_hermes(text: str) -> str:
     """Hermes の API サーバー（OpenAI 互換）に送り、返事を待つ。X-Hermes-Session-Id で、その日の会話を続ける。"""
     body = {"model": "hermes-agent", "messages": hermes_messages(text), "stream": False}
@@ -454,6 +464,9 @@ def ask_hermes(text: str) -> str:
         content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
     effort = f"、考える強さ {HERMES_EFFORT}" if HERMES_EFFORT else ""  # 入れる前と後の速さを、この行で比べる
     print(f"[hermes] {time.monotonic() - t0:.1f}秒（{len(text)}字 → {len(content)}字、finish={choice.get('finish_reason')}{effort}）", flush=True)
+    if refusal(content):  # 読み上げず、届かなかったときと同じ失敗にする（報告なら「報告を受け取れませんでした」、発言なら画面に ⚠）
+        print("[hermes] 返事は、モデルの安全の仕組みに止められたときの決まり文句でした（失敗として扱います）", flush=True)
+        raise RuntimeError(f"{AGENT}の返答が、モデルの安全の仕組みで止められました（英語の断り文が返りました）。頼み直すか、画面で確かめてください")
     return content.strip()
 
 
