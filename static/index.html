@@ -2146,6 +2146,7 @@ function connect() {
     if (m.type === 'status') setStatus(m.text);
     else if (m.type === 'transcript') { if (here) { bubble('me', m.text, 'pending'); localPush('me', m.text); } setStatus('エージェントに送りました。考え中…'); }
     else if (m.type === 'reply') {
+      speakingReport = m.report && !m.quiet ? (m.rid ?? null) : null; // いま鳴らす報告の番号（別の画面からの停止は、この報告の音声にだけ効く）
       if (!here) { if (m.report) sys(A('ハブから報告が届きました: ') + m.about + (m.saved === false ? A('（記録に書けなかったので、ハブの履歴には出ません）') : A('（ハブを選ぶと読めます）'))); return; } // report = 頼んだ件についての、ハブからの自発的な報告
       if (m.saved === false) { bubble('ai', m.text); sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); } // 描き直すと消えるので、そのまま足す
       else {
@@ -2160,7 +2161,7 @@ function connect() {
     else if (m.type === 'error') { stopPlayback(); face('idle'); sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); setStatus(''); if (FACE) $('faceCap').textContent = '⚠ ' + m.text; if (m.gone) { agentsSig = ''; loadAgents(); } } // 相手が消えた・入れ替わった → 一覧を取り直す
     else if (m.type === 'notice') { sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); } // ハブから報告を受け取れなかった等（いまの話し相手とは別の知らせ）
     else if (m.type === 'done') { serverDone = true; turnDone = true; if (!playing && !queue.length) finishSpeaking(); loadAgents(); }
-    else if (m.type === 'stopped') { stopPlayback(); setStatus('止めました'); if (faceAckWait) { faceAckWait = false; faceAck(); } } // 届いた印は、本体が止めたと返してから（codex-review 44b3c2e）
+    else if (m.type === 'stopped') { if (m.report != null && m.report !== speakingReport) return; speakingReport = null; stopPlayback(); setStatus('止めました'); if (faceAckWait) { faceAckWait = false; faceAck(); } } // 届いた印は、本体が止めたと返してから（codex-review 44b3c2e）
     else if (m.type === 'blocked') loadAsks(); // 話している相手が承認で止まった → すぐ並べる
     else if (m.type === 'agent_notice') { loadSituation(); faceNotice(m); } // 代理からの知らせ。会話の欄には出さず、💡 の数と受け箱を取り直す（閉じていても）。顔の表示では縁と一言で知らせる
   };
@@ -2308,6 +2309,7 @@ Promise.race([Promise.allSettled([loadAgents(), ensureSpeakers()]).then(() => tr
 function face(s) { if (FACE) $('face').dataset.s = !linked() ? 'offline' : rec && rec.state === 'recording' ? 'listen' : s; }
 // 顔を押して止めたとき、届いた印（縁を白く一瞬）は、本体が止めたと返してから光らせる
 let faceAckWait = false;
+let speakingReport = null; // いま鳴らしている報告の番号（別の画面からの「止めた」は、番号が合うときだけ再生を止める。codex-review cfb561a）
 function faceAck() { if (!FACE) return; const f = $('face'); f.classList.remove('ack'); void f.offsetWidth; f.classList.add('ack'); setTimeout(() => f.classList.remove('ack'), 600); }
 // 縁の琥珀色: 急ぎ。承認・入力待ちがあるか、代理（Hermes）からの新しい知らせをまだ聞いていないとき。顔の表示では受け箱が見えず、
 // 画面が見えている扱いでプッシュ通知も止まるので、知らせは顔で示す（codex-review b7a7b3f）。顔をタップしたら聞いたことにする。

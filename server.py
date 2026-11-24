@@ -805,12 +805,13 @@ def hub_current(turn: str | None) -> bool:
     return HUB.current(turn) if turn else False
 
 
-async def tell_stopped(clients) -> None:
-    """ほかの画面に「止めた」を送る（鳴らしている報告の再生を止めさせる）。届かない・遅い画面は待ちすぎない。"""
-    async def one(c):
+async def tell_stopped(targets) -> None:
+    """ほかの画面に「止めた」を報告の番号つきで送る（その画面がまだその報告を鳴らしていれば止めさせる。別の返事に移っていれば画面が無視する。
+    codex-review cfb561a）。届かない・遅い画面は待ちすぎない。"""
+    async def one(c, rid):
         with contextlib.suppress(Exception):
-            await asyncio.wait_for(c.send(type="stopped"), 3)
-    await asyncio.gather(*(one(c) for c in clients))
+            await asyncio.wait_for(c.send(type="stopped", **({"report": rid} if rid is not None else {})), 3)
+    await asyncio.gather(*(one(c, rid) for c, rid in targets))
 
 
 TURN_QUEUE_MAX = 4  # 1 つの接続で、聞き取りを待つ・処理している発言の数の上限（codex-review fb69347）
@@ -2216,7 +2217,7 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
     頼んだその場で、受け付けの番号（mark）と止める合図（speech）を取る。報告を作っている間に「停止」を押したら、届いた報告は文字だけにする。"""
     mark = HUB.heard_mark()  # 頼んだその場の受け付けの番号（順番待ちの間に利用者が話しかけた・止めたなら、報告を「利用者が聞いた文」にしない。a2a 30fd5b94）
     speech = asyncio.Event()
-    REPORT_SPEECH[speech] = []
+    REPORT_SPEECH[speech] = {"ring": [], "rid": None}  # 鳴らす画面と、報告の番号（別の画面からの停止を、この報告の音声にだけ効かせる）
     try:
         return await _report_body(d, kind, notify, mark, speech)
     finally:
@@ -2265,6 +2266,8 @@ async def _report_body(d: dict, kind: str, notify, mark: int, speech: asyncio.Ev
         saved = HUB.report_begin(note[len(NOTE_PREFIX):].split("‖", 1)[0].strip(), label)  # 見出しと報告を記録に書けたか
         REPORT_SEQ += 1
         seq, state, reply = REPORT_SEQ, "error", ""
+        if speech in REPORT_SPEECH:
+            REPORT_SPEECH[speech]["rid"] = seq
         REPORTING = True
         report_idle().clear()
         asked_from = time.time()
@@ -2293,8 +2296,8 @@ async def _report_body(d: dict, kind: str, notify, mark: int, speech: asyncio.Ev
         if kind in ("done", "more", "gone"):
             d["_slack_done"] = True  # 完了の報告を送った。このあとの見張りの失敗は重ねて知らせない（途中経過のあとの失敗は知らせる）
         clients = list(CLIENTS)
-        msg = dict(type="reply", pane=hub["pane"], text=reply, report=True, about=label, saved=saved, topic=str(d.get("topic") or ""))
-        ring: list = REPORT_SPEECH.get(speech, [])  # 鳴らす画面（「停止」を押した画面がほかでも、ここに止めたと送る）
+        msg = dict(type="reply", pane=hub["pane"], text=reply, report=True, rid=seq, about=label, saved=saved, topic=str(d.get("topic") or ""))
+        ring: list = REPORT_SPEECH.get(speech, {}).get("ring", [])  # 鳴らす画面（「停止」を押した画面がほかでも、ここに止めたと送る）
         while clients and not ring:  # 声は 1 か所（最後に話しかけた窓）。その窓に送れなければ（切れていた）、残りから選び直す（codex-review）
             for c in ring_targets(clients):
                 try:
@@ -3525,10 +3528,12 @@ async def ws(sock: WebSocket):
                 said = await asyncio.to_thread(transcribe, item["bytes"], d.get("filename", "audio.webm"))
             except (OSError, ValueError) as e:  # whisper が止まっている・答えの形が違う。接続は切らずに知らせる
                 print(f"[whisper] 聞き取りに失敗: {str(e)[:200]}", flush=True)
-                await send(type="error", text="聞き取りに失敗しました（聞き取りのサーバーを確かめてください）")
+                if stops["n"] == item["stops"]:  # 聞き取りの間に止めていたら、取り消した発言の失敗は知らせない（「止めました」を上書きしない。codex-review cfb561a）
+                    await send(type="error", text="聞き取りに失敗しました（聞き取りのサーバーを確かめてください）")
                 return
             if not said:
-                await send(type="error", text="聞き取れませんでした")
+                if stops["n"] == item["stops"]:
+                    await send(type="error", text="聞き取れませんでした")
                 return
             text = await asyncio.to_thread(fix_heard, said)  # 画面とハブ・セッションに渡す文。守りの台帳には直す前の said を載せる
             if stops["n"] != item["stops"]:
@@ -3595,8 +3600,13 @@ async def ws(sock: WebSocket):
                     for ev, _ in rings:  # 作っている・読み上げている報告も止める
                         ev.set()
                     await send(type="stopped")  # 止めた画面には先に返す（ほかの画面へ送るのが遅くても、この画面の受け取りを止めない。codex-review 44b3c2e）
-                    others = {c for _, ring in rings for c in ring if c is not client}
-                    if others:  # 鳴らしている画面がほかなら、そこにも止めたと送る（期限つきの別の仕事で）
+                    latest: dict = {}  # 画面ごとに、いちばん新しい報告の番号だけ（画面は、いま鳴らしている報告と番号が合うときだけ止める）
+                    for _, info in rings:
+                        for c in info.get("ring", []):
+                            if c is not client:
+                                latest[c] = max(latest.get(c) or 0, info.get("rid") or 0) or None
+                    others = list(latest.items())
+                    if others:  # 鳴らしている画面がほかなら、そこにも止めたと送る（期限つきの別の仕事で。報告の番号を付け、その報告の音声だけを止めさせる）
                         task = asyncio.create_task(tell_stopped(others))
                         _tasks.add(task)
                         task.add_done_callback(_tasks.discard)

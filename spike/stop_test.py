@@ -393,7 +393,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             if json.loads(w.receive_text()).get("type") == "error":
                 break
         fake_ev = asyncio.Event()
-        s.REPORT_SPEECH[fake_ev] = [SlowRing()]
+        s.REPORT_SPEECH[fake_ev] = {"ring": [SlowRing()], "rid": None}
         try:
             before_stop = hm.hermes_turn_begin("止める前の発言")
             w.send_text(json.dumps({"type": "stop"}))
@@ -484,21 +484,47 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         try:
             hm.ask_hermes = lambda text: "送り終えたあとに止める報告です。"
             c.portal.call(s._report, dict(REPORT_D), "done")  # 声を送り終えて報告が終わる
-            receive_until(w, "reply")
+            rep_msg = receive_until(w, "reply")
             with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as other2:
                 other2.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "w-other-0002"}))
                 other2.send_text(json.dumps({"type": "stop"}))
                 receive_until(other2, "stopped")
                 w.send_text(json.dumps({"type": "text", "text": "区切り", "pane": "w9:nope", "speaker": 0}))
-                seen2 = []
+                seen2, stop_msgs = [], []
                 for _ in range(50):
                     m = json.loads(w.receive_text())
                     seen2.append(m.get("type"))
+                    if m.get("type") == "stopped":
+                        stop_msgs.append(m)
                     if m.get("type") == "error":
                         break
         finally:
             s.speak_to = real_speak3
         check("報告の声を送り終えたあとも、しばらくは別の画面から止められる（鳴らした画面に止めたと送る）", "stopped" in seen2, True)
+        check("別の画面からの「止めた」には報告の番号が付く（鳴らした画面は、その報告の音声だけを止める）",
+              ([m.get("report") for m in stop_msgs], rep_msg and rep_msg.get("rid") is not None), ([rep_msg.get("rid") if rep_msg else None], True))
+        # 聞き取り中に止めたあと、聞き取りが空・失敗で返っても、取り消した発言のエラーは出さない（codex-review cfb561a）
+        e_in, e_go = threading.Event(), threading.Event()
+        s.transcribe = lambda audio, filename: (e_in.set(), e_go.wait(5), "")[2]
+        try:
+            w.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm"}))
+            w.send_bytes(b"0" * 4000)
+            e_in.wait(5)
+            w.send_text(json.dumps({"type": "stop"}))
+            receive_until(w, "stopped")
+            e_go.set()
+            time.sleep(0.3)
+            w.send_text(json.dumps({"type": "text", "text": "区切り", "pane": "w9:nope", "speaker": 0}))
+            errs = []
+            for _ in range(50):
+                m = json.loads(w.receive_text())
+                if m.get("type") == "error":
+                    errs.append(m.get("text"))
+                    if "見つかりません" in (m.get("text") or ""):
+                        break
+        finally:
+            s.transcribe = real_transcribe
+        check("聞き取り中に止めたあと、聞き取りが空で返っても、取り消した発言のエラーは出さない", [e for e in errs if "聞き取" in (e or "")], [])
         # 別のセッションに話しかけ直したら、前のハブの発言はもういまの発言ではない
         hub_turn = hm.hermes_turn_begin("ハブへの前の発言")
         w.send_text(json.dumps({"type": "text", "text": "別のセッションへ", "pane": "w9:p1", "speaker": 0}))

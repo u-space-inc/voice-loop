@@ -215,6 +215,18 @@ with sync_playwright() as pw:
     check("顔: 止めたら、顔の下に「止めました」", pg.evaluate("document.getElementById('faceCap').textContent"), "止めました")
     pg.wait_for_timeout(700)
     check("顔: 届いた印は一瞬で消える", pg.evaluate("document.getElementById('face').classList.contains('ack')"), False)
+    # 別の画面からの「止めた」は、いま鳴らしている報告の番号が合うときだけ再生を止める（別の返事に移っていれば止めない。codex-review cfb561a）
+    pg.wait_for_timeout(700)  # 前の確かめで押した停止への本体の返事が届き終わってから数える
+    pg.evaluate("window.__sp = 0; window._sp = stopPlayback; stopPlayback = function () { window.__sp++; return window._sp.apply(this, arguments); }")
+    deliver = "msg => ws.onmessage({ data: JSON.stringify(msg) })"
+    pg.evaluate(f"({deliver})({{type: 'reply', report: true, rid: 7, text: '報告', about: 'proj｜t', pane: 'nope'}})")
+    pg.evaluate(f"({deliver})({{type: 'reply', text: 'ふつうの返事', pane: 'nope'}})")
+    # 数えるのは「止めた」を渡した同じ実行の中だけ（本体からあとで届くほかの知らせを数えない。「止めた」の受け取りは同期で動く）
+    once = "msg => { window.__sp = 0; ws.onmessage({ data: JSON.stringify(msg) }); return window.__sp; }"
+    check("顔: 別の画面からの「止めた」は、もう別の返事を鳴らしていれば止めない", pg.evaluate(f"({once})({{type: 'stopped', report: 7}})"), 0)
+    pg.evaluate(f"({deliver})({{type: 'reply', report: true, rid: 8, text: '報告2', about: 'proj｜t', pane: 'nope'}})")
+    check("顔: 別の画面からの「止めた」は、その報告を鳴らしていれば止める", pg.evaluate(f"({once})({{type: 'stopped', report: 8}})"), 1)
+    pg.evaluate("stopPlayback = window._sp")
     # 止める合図が本体に届かなかったら、届いた印を出さず、「止めました」とも言わない（手元の再生は止める。codex-review 44b3c2e）
     pg.evaluate("window.__dropStop = true; face('speak')")
     pg.locator("#face svg").click()
