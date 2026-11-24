@@ -245,6 +245,8 @@ docker run --rm -v ~/.hermes:/opt/data nousresearch/hermes-agent config set API_
 
 モデルと認証は、対話の設定で選びます（Anthropic の API キー、Nous Portal など。Claude の個人プランの OAuth は使えません）。
 
+モデルの安全の仕組みに返答を止められると、Hermes は英語の決まり文句（「I'm sorry, but I cannot assist with that request.」など）をふつうの返事として返します。本体は、返事の全体がこの形のときは読み上げず、届かなかったときと同じ失敗として扱います（報告なら「報告を受け取れませんでした」、発言なら画面に ⚠ と理由）。
+
 ```sh
 docker run -it --rm -v ~/.hermes:/opt/data nousresearch/hermes-agent model
 ```
