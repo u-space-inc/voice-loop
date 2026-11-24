@@ -310,6 +310,28 @@ screen()
 asked_then(DQ, "削除して")
 check("止める: 確認の段で、カーソルを動かしたあと Enter の前に止めたら、Enter を送らない", answer(), ("stopped", ["down"]))
 s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+# 確認の段の最初の読み取り（カーソルを動かす前）の間に止めた・次の発言を受け付けたら、キーを 1 つも送らない（a2a 30fd5b94 の 4 回目）
+for change, act in [("止めた", s.HUB.stopped), ("次の発言を受け付けた", s.HUB.admit)]:
+    state.update(screen=CONFIRM_NO, on_key=cursor_moves)
+    begin("見て")
+    screen()
+    asked_then(DQ, "削除して")
+    real_read = s.read_prompt
+    reads = {"n": 0}
+
+    def read_then_change(pane):
+        reads["n"] += 1
+        if reads["n"] == 2:  # 1 回目は答えの道の読み取り、2 回目は確認の段の最初の読み取り
+            act()
+        return real_read(pane)
+
+    s.read_prompt = read_then_change
+    try:
+        got = answer()
+    finally:
+        s.read_prompt = real_read
+    check(f"止める: 確認の段で、カーソルを動かす前の読み取りの間に{change}ら、キーを 1 つも送らない", got, ("stopped", []))
+    s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
 state.update(screen=LEFTOVER, on_key=lambda k: state.update(screen=LEFTOVER.replace(" ❯ No\n   Yes", "   No\n ❯ Yes")) if k == "down" else None)
 begin("見て")
 sc = screen()
