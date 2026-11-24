@@ -60,7 +60,8 @@ def check(name, got, want):
 
 
 def records():
-    return [(d["role"], d["text"]) for d in s.hermes.hermes_records()]
+    """発言・返事・見出し・失敗の並び。「止めた」の行（drain が合図に送る停止で書かれる。stop_test で見る）は除く。"""
+    return [(d["role"], d["text"]) for d in s.hermes.hermes_records() if d["role"] != "stop"]
 
 
 def wait_until(fn, limit=5.0):

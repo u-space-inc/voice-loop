@@ -157,6 +157,12 @@ class Talker:
         記録に書けたかを返す。"""
         raise NotImplementedError
 
+    def stopped(self):
+        """利用者が画面・顔で「止める」を押した（読み上げと返事待ちを止めた）。利用者は、いま読まれていた返事と、まだ届いていない返事を聞いていない。
+        承認に答える・閉じるの守りが「利用者が聞いた問い」として読む文（直前に聞いた文と、台帳の最新の返事）を空にし、止める前に始まった往復と報告の返事は、
+        あとで届いても「聞いた文」にしない（記録には残す。止めたあとの「はい」を、聞いていない問いへの答えに使わせない。2026-11-24）。"""
+        raise NotImplementedError
+
     def put_attachment(self, name: str, data: bytes) -> str:
         """画面から添付したファイルを、この話し相手が開ける場所に置き、その場所を返す（置けなければ RuntimeError）。名前は本体が付けたもの。"""
         raise NotImplementedError

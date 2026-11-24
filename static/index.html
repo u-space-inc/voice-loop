@@ -401,6 +401,8 @@
   #face[data-s="offline"] .eye { opacity:0; animation:none; }
   #face[data-s="offline"] .lid { opacity:.55; }
   #face[data-s="offline"] .mouth { opacity:.4; }
+  /* 押したのが届いた印（止めた）。縁を白く一瞬光らせる（届いたか分からないと、もう一度押してしまう。R12） */
+  #face.ack::after { box-shadow:inset 0 0 0 6px #ffffff, inset 0 0 48px rgba(255,255,255,.4); transition:none; }
   #faceCap { min-height:2.8em; max-width:min(90vw, 36em); text-align:center; font-size:17px; line-height:1.4; color:#bdbdbd;
     display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
   #faceBack { position:absolute; top:calc(10px + env(safe-area-inset-top)); right:calc(12px + env(safe-area-inset-right)); color:#8a8a8a; font-size:14px;
@@ -429,7 +431,7 @@
     <form id="typedForm" class="row"><button id="attachBtn" type="button" aria-label="ファイルを添付する" title="ファイルを添付する（画像・PDF・テキスト。1 つ 20MB・5 つまで）">📎</button><input id="attachInput" type="file" multiple accept="image/png,image/jpeg,image/gif,image/webp,image/heic,.heic,application/pdf,text/plain,text/markdown,text/csv,.md,.txt,.csv" hidden><textarea id="typed" rows="1" placeholder="文字で送る" autocomplete="off"></textarea><button id="send" type="submit">送る</button></form>
   </div>
   <div id="viewer" hidden role="dialog" aria-modal="true" aria-labelledby="vName"><div class="vhead"><span id="vName"></span><span id="vPos"></span><button id="vPrev" aria-label="前の成果物">←</button><button id="vNext" aria-label="次の成果物">→</button><button id="vClose">✕ 閉じる</button></div><div id="vStage"></div><div id="vPath"></div></div>
-<div id="face" hidden role="button" tabindex="0" aria-label="タップして話す（もう一度タップで送る）" data-s="idle">
+<div id="face" hidden role="button" tabindex="0" aria-label="タップして話す（もう一度タップで送る。話している・考えているときは止める）" data-s="idle">
   <a id="faceBack" href="/">画面に戻る</a>
   <div id="faceSit" hidden title="判断待ちの数（3 日以内）"></div>
   <svg viewBox="0 0 320 200" aria-hidden="true">
@@ -2333,9 +2335,12 @@ if (FACE) {
   const tapAct = () => {
     if (rec && rec.state === 'recording') { $('talk').click(); return; } // 録音中は、まず録音を止めて送る（再生のタップ待ちより先。codex-review dc4b0b9）
     if ($('tap').style.display === 'inline-block') { $('tap').click(); return; } // 再生にタップが要るとき（自動の再生を断られた）は、録音ではなく再生を始める（codex-review 779f0c2）
+    const s = $('face').dataset.s;
+    if (s === 'think' || s === 'speak') { $('stop').click(); faceAck(); return; } // 考えている・話しているときに押したら止める（録音は始めない。もう一度押すと話せる。R12・2026-11-24）
     if ($('talk').disabled) { $('faceCap').textContent = 'いまは話せません（' + ($('statusText').textContent || '準備中') + '）'; return; } // 黙って何もしないと、壊れたように見える
     $('talk').click();
   };
+  const faceAck = () => { const f = $('face'); f.classList.remove('ack'); void f.offsetWidth; f.classList.add('ack'); setTimeout(() => f.classList.remove('ack'), 600); };
   const tapFace = e => {
     if (e.target.closest('#faceBack')) return;
     faceUnheard = false; faceAttn(); // 知らせはタップで聞いたことにする（縁は承認・入力待ちがあれば残る）
@@ -2356,7 +2361,11 @@ if (FACE) {
   window.addEventListener('hashchange', e => { let h = ''; try { h = new URL(e.newURL).hash; } catch {} if (/^#(t=|inbox|i=)/.test(h)) closeFace(); });
   $('face').addEventListener('click', tapFace);
   if (/^#(t=|inbox|i=)/.test(FACE_HASH)) closeFace(); // 件・受け箱・判断待ちの場所つきで開いたときも、顔を閉じて中身を見せる（最初の表示では hashchange が起きない）
-  $('face').addEventListener('keydown', e => { if (e.target.closest('#faceBack')) return; if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); if (!e.repeat) tapFace(e); } }); // 戻るリンクの Enter は止めない。長押しの繰り返しでは押さない（codex-review b5a95ff）
+  $('face').addEventListener('keydown', e => {
+    if (e.target.closest('#faceBack')) return;
+    if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); if (!e.repeat) tapFace(e); } // 戻るリンクの Enter は止めない。長押しの繰り返しでは押さない（codex-review b5a95ff）
+    else if (e.key === 'Escape' && !e.repeat) { e.preventDefault(); e.stopPropagation(); $('stop').click(); faceAck(); } // 机の顔（PC の 3 列の幅でない窓）でも Esc で止める
+  });
   face('idle');
 }
 </script>

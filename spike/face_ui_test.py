@@ -12,6 +12,7 @@
   - 通知・リンクで件・受け箱を開いたら、顔を閉じて中身を見せる
   - 録音中は、再生のタップ待ちがあっても、顔のタップで録音を止めて送る
   - 「停止」で再生を止めたら、口を閉じる。録音中は、再生の始まり・終わり・停止でも「聞いている」のまま
+  - 考えている・話している顔のときに押す（Esc でも）と止める（録音は始めない。届いた印に縁が光り、顔の下に「止めました」）
   - タップのときに画面を消さない許可を頼み、外されたら画面に戻ったときに取り直す。顔を閉じたら手放し（頼んでいる途中でも）、取り直さない
   - 件・受け箱の場所つき（/?face#inbox など）で開いたときも、顔を閉じて中身を見せる
   - 顔の表示中は、裏の画面をフォーカス・操作できない（閉じたら戻る）
@@ -84,10 +85,11 @@ for _ in range(200):
     time.sleep(0.05)
 
 # 画面が送る hello を拾う
-CATCH = """(() => { window.__hello = []; const o = WebSocket.prototype.send;
+CATCH = """(() => { window.__hello = []; window.__types = []; const o = WebSocket.prototype.send;
   WebSocket.prototype.send = function (m) {
     let d = null; try { d = typeof m === 'string' ? JSON.parse(m) : null; } catch {}
     if (d && d.type === 'hello') window.__hello.push(d);
+    if (d && d.type) window.__types.push(d.type);
     return o.call(this, m);
   }; })()"""
 
@@ -193,6 +195,25 @@ with sync_playwright() as pw:
                 "f.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', repeat: true, bubbles: true }));"
                 "f.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', repeat: true, bubbles: true }))")
     check("顔: キーの長押しの繰り返しでは「話す」を押さない", pg.evaluate("window.__talk"), 0)
+
+    # 考えている・話しているときに顔を押すと止める（R12。録音は始めない。届いた印に縁が白く一瞬光る。2026-11-24）
+    for st in ("speak", "think"):
+        pg.wait_for_timeout(600)  # 前の「停止」への本体の返事（stopped。顔を「ふつう」に戻す）が届き終わってから
+        pg.evaluate(f"window.__talk = 0; window.__types.length = 0; face('{st}')")
+        check(f"顔: （前提）{st} の顔になっている", pg.evaluate("document.getElementById('face').dataset.s"), st)
+        pg.locator("#face svg").click()
+        check(f"顔: {st} の顔のときに押すと止める（停止を送り、録音は始めず、届いた印が光る）",
+              (pg.evaluate("window.__types.includes('stop')"), pg.evaluate("window.__talk"), pg.evaluate("document.getElementById('face').classList.contains('ack')"),
+               pg.evaluate("document.getElementById('face').dataset.s")), (True, 0, True, "idle"))
+    pg.wait_for_function("document.getElementById('faceCap').textContent === '止めました'", timeout=5000)
+    check("顔: 止めたら、顔の下に「止めました」", pg.evaluate("document.getElementById('faceCap').textContent"), "止めました")
+    pg.wait_for_timeout(700)
+    check("顔: 届いた印は一瞬で消える", pg.evaluate("document.getElementById('face').classList.contains('ack')"), False)
+    pg.evaluate("window.__talk = 0; window.__types.length = 0; face('think')")
+    check("顔: （前提）think の顔になっている", pg.evaluate("document.getElementById('face').dataset.s"), "think")
+    pg.locator("#face").press("Escape")
+    check("顔: 机の顔（PC の 3 列でない幅）でも、Esc で止める（録音は始めない）", (pg.evaluate("window.__types.includes('stop')"), pg.evaluate("window.__talk")), (True, 0))
+    pg.evaluate("face('idle')")
 
     # 代理からの知らせは、縁と一言で示し、タップしたら聞いたことにする（前の「停止」への本体の返事が届き終わってから）
     pg.wait_for_timeout(500)

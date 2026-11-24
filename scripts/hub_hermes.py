@@ -277,6 +277,9 @@ HERMES_TURNS: deque = deque(maxlen=50)  # (発言の ID, ユーザーの文, Her
 # ハブ（Hermes）の最後の出力（発言への返答か、自動通知への報告）。利用者の発言が始まるときに台帳の行へ写す（承認に答えるの守りの heard）。
 # 記録（hermes-log.jsonl）からは取らない（書けなかった報告で、古い問いを拾わないため）。Hermes とのやり取りの鍵（pane_lock）の中で置き換え・写す
 HERMES_HEARD = {"text": ""}
+# 利用者が最後に「止める」を押した時刻（Talker.stopped）。これより前に始まった往復・報告の返事は、届いても「聞いた文」にしない
+HERMES_STOP = {"at": 0.0}
+REPORT_BEGAN = {"at": 0.0}  # いま作っている報告を頼んだ時刻
 # 本体がその場で答えた決まった問い（scripts/quick.py）。Hermes はこのやり取りを見ていないので、次に Hermes に送る発言の前に添える
 # （新しい 3 件まで・30 分以内のものだけ。送ったら空にする）。(発言, 本体の答え, 時刻)
 QUICK_NOTES: list[tuple[str, str, float]] = []
@@ -329,13 +332,25 @@ async def hermes_answered_here(text: str, answer: str, said: str | None = None, 
         return saved
 
 
-def hermes_turn_end(turn: str, reply: str):
-    HERMES_HEARD["text"] = reply
+def hermes_turn_end(turn: str, reply: str, heard: bool = True):
+    """heard=False は、待つ間に利用者が止めた往復の返事。利用者は聞いていないので、直前に聞いた文と台帳の返事の欄（閉じるの守りが問いとして読む）に置かない。
+    記録には unheard の印を付けて残す（画面の履歴では読める。起動し直しても返事の欄に戻さない）。"""
+    if heard:
+        HERMES_HEARD["text"] = reply
     for row in HERMES_TURNS:
         if row[0] == turn:
-            row[2] = reply
-    if reply and not hermes_log("ai", reply, turn=turn):
+            row[2] = reply if heard else ""
+    if reply and not hermes_log("ai", reply, turn=turn, **({} if heard else {"unheard": True})):
         _unsaved.add(turn)
+
+
+def hermes_stopped():
+    """Talker.stopped の中身。"""
+    HERMES_STOP["at"] = time.time()
+    HERMES_HEARD["text"] = ""
+    if HERMES_TURNS and HERMES_TURNS[-1][2]:
+        HERMES_TURNS[-1][2] = ""  # いま読まれていた（かもしれない）返事。閉じるの守りに、聞き直してもらう
+        hermes_log("stop", "", turn=HERMES_TURNS[-1][0])  # 起動し直して台帳を記録から作り直しても、この返事を返事の欄に戻さない（画面の履歴には出ない）
 
 
 def _load_hermes_turns():
@@ -350,8 +365,10 @@ def _load_hermes_turns():
             continue
         if d["role"] == "me":  # 辞書で直した声の発言は、直す前の言葉（said）で台帳を戻す
             rows[turn] = [turn, d["said"] if isinstance(d.get("said"), str) else d["text"], "", None, str(d.get("reply_to") or ""), str(d.get("reply_pane") or ""), {}, str(d.get("via") or "")]  # 直前に聞いた返答の写しと、返信先が見ていた問いは記録から作らない（承認に答えるときは聞き直してもらう）
-        elif d["role"] == "ai" and turn in rows and d.get("by") != "body":  # 本体がその場で答えた文は、返事の欄に戻さない（閉じるの守りが問いとして読むため）
+        elif d["role"] == "ai" and turn in rows and d.get("by") != "body" and not d.get("unheard"):  # 本体がその場で答えた文と、止めたあとに届いた返事は、返事の欄に戻さない（閉じるの守りが問いとして読むため）
             rows[turn][2] = d["text"]
+        elif d["role"] == "stop" and turn in rows:  # 読んでいる途中で止めた返事（hermes_stopped）
+            rows[turn][2] = ""
     HERMES_TURNS.extend(rows.values())
 
 
@@ -400,6 +417,7 @@ async def hermes_exchange(text: str, reply_at: float | None = None, extra: str =
         if QUICK_NOTES:  # 本体がその場で答えたやり取りを、Hermes に送る文の前にだけ添える（守りの台帳と記録の発言は利用者の言葉のまま）
             pre = quick_preface()
             sent = f"{pre}\n{sent}" if pre else sent
+        began = time.time()  # これより後に利用者が止めたら、この返事は聞いていない
         try:
             reply = await asyncio.to_thread(ask_hermes, sent + extra)
             QUICK_NOTES.clear()  # Hermes に届いてから消す（届かなかったら、言い直したときにまた添える。codex-review）
@@ -410,7 +428,7 @@ async def hermes_exchange(text: str, reply_at: float | None = None, extra: str =
             reply = ""
             HERMES_HEARD["text"] = ""  # 利用者が聞くのは本体の失敗の知らせ（ハブの問いではない）
         else:
-            hermes_turn_end(turn, reply)
+            hermes_turn_end(turn, reply, heard=HERMES_STOP["at"] < began)
             why = "" if reply else "Hermes の返事が空でした"
         finally:
             REPLY_TOPIC["topic"] = ""
@@ -1731,11 +1749,16 @@ class Hermes(Brain, Talker):
 
     def report_begin(self, headline: str, about: str) -> bool:
         """Hermes の会話は本体が記録する（画面が無くても、あとで履歴に出る）。"""
+        REPORT_BEGAN["at"] = time.time()
         return hermes_log("note", headline, about=about)
+
+    def stopped(self):
+        hermes_stopped()
 
     async def report_end(self, state: str, reply: str, about: str, saved: bool, pane: str = "", topic: str = "", ask: dict | None = None) -> bool:
         # 利用者が次に聞くのはこの報告（受け取れなければ本体の失敗の知らせ）。記録に書けたかに関係なく、ここで置き換える
-        HERMES_HEARD["text"] = reply if state == "done" and reply.strip() else ""
+        # 報告を頼んだあとに利用者が止めていたら、報告は聞いていない（届いても聞いた文にしない）
+        HERMES_HEARD["text"] = reply if state == "done" and reply.strip() and HERMES_STOP["at"] < REPORT_BEGAN["at"] else ""
         if state == "done" and reply.strip():
             # pane: どのセッションの報告か（返信の守りが照らす）。topic: どの件の報告か（件の URL で開くとき・返信の続きを同じ件にするとき）。
             # ask: 止まった報告でハブが見た問い（返信をその問いへの答えに使えるかを、本体が照らす）

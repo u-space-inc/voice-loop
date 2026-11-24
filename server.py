@@ -3442,6 +3442,8 @@ async def ws(sock: WebSocket):
                     cancel.set()
                     if current:
                         current.cancel()
+                    for t in TALKERS.values():  # 利用者は、読まれていた返事・まだ届いていない返事を聞いていない（承認に答える・閉じるの守り）
+                        t.stopped()
                     await send(type="stopped")
                     continue
                 if d["type"] == "clientlog":  # 端末側（特にスマホ）の再生まわりの出来事を残す
