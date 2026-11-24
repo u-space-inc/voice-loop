@@ -213,7 +213,13 @@ class FakeTalker:
     def sending_text(self):
         return "送っています"
 
-    async def exchange(self, text, reply_at=None, extra="", item=None):
+    def admit(self):
+        return 0
+
+    def stopped(self):
+        pass
+
+    async def exchange(self, text, reply_at=None, extra="", item=None, admitted=None):
         EXCHANGED.append(text)
         return "わかりました", "", True
 

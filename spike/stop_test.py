@@ -1,12 +1,16 @@
-"""「止める」を押したら、利用者は返事を聞いていない、の試験（承認に答える・閉じるの守り）。
+"""「止める」を押した・話しかけ直したら、利用者は返事を聞いていない、の試験（承認に答える・閉じるの守り）。
 2026-11-24: 顔の表示で、考えている・話しているときに顔を押すと止めるようにした（R12）。止めても頭（Hermes）との往復は最後まで進み、
 届いた返事を本体が「利用者が聞いた文」にしていた。返事が「〇〇を閉じていいですか？」なら、聞いていない問いへの「はい」で閉じられうる。
+受け付けの番号（発言を受け付けたとき・止めたときに進む。時計は使わない）で、受け付けた・頼んだあとに番号が進んだ返事は「聞いた文」にしない（a2a 30fd5b94）。
 見ること:
   - 読んでいる途中で止めたら、直前に聞いた文と、台帳の最新の返事（閉じるの守りが問いとして読む欄）を空にする
-  - 待つ間に止めたら、あとで届いた返事は、聞いた文にも台帳の返事の欄にも置かない（記録には「聞いていない」の印を付けて残す）
-  - 止めたあとに始めた往復の返事は、ふつうに聞いた文になる
-  - 起動し直しても、聞いていない返事は台帳の返事の欄に戻さない
-  - 報告: 頼んだあとに止めたら、届いた報告は聞いた文にしない（止めなければ聞いた文）
+  - 待つ間に止めたら、あとで届いた返事は、聞いた文にも台帳の返事の欄にも置かない（記録には残す）
+  - 受け付けたあと、頭に送る前（順番待ち・添付の用意）に止めても同じ（本物の WebSocket の流れで、添付の用意の間に止める）
+  - 返事を待つ間に次の発言を受け付けたら、前の返事は聞いていない（読まれない）
+  - 止めたあとに受け付けた往復の返事は、ふつうに聞いた文になる
+  - 時計が戻っても、順を取り違えない（時計を使わない）
+  - 起動し直したら、台帳の返事の欄は記録から戻さない（閉じるのは聞き直してから）
+  - 報告: 頼んだあとに止めた・話しかけたら、届いた報告は聞いた文にしない（どちらも無ければ聞いた文）。本物の _report で、鍵の順番待ちの間に止めても同じ
   - 画面の「停止」（WebSocket の stop）で、話し相手に止めたことが伝わる
 本物の Hermes・herdr・コンテナには触れない（頭の往復は差し替える。VL_HERMES_URL は何も待ち受けていないポート）。
 使い方: uv run spike/stop_test.py"""
@@ -16,6 +20,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 TMP = tempfile.mkdtemp()
@@ -35,9 +40,9 @@ def check(name, got, want):
     results.append((name, got == want, got, want))
 
 
-def log_rows():
+def ai_rows(turn):
     p = Path(hm.HERMES_LOG)
-    return [json.loads(x) for x in p.read_text().splitlines() if x.strip()] if p.exists() else []
+    return [d["text"] for d in (json.loads(x) for x in p.read_text().splitlines() if x.strip()) if d.get("role") == "ai" and d.get("turn") == turn]
 
 
 Q = "proj のセッションを閉じていいですか？"
@@ -49,7 +54,6 @@ t1 = s.hub_human_turn()
 check("前提: 止めなければ、返事は聞いた文で、台帳の返事の欄にも載る", (hm.HERMES_HEARD["text"], s.hub_reply_to(t1)), (Q, Q))
 s.HUB.stopped()
 check("読んでいる途中で止めたら、聞いた文と台帳の最新の返事を空にする（閉じるの守りに聞き直してもらう）", (hm.HERMES_HEARD["text"], s.hub_reply_to(t1)), ("", ""))
-check("…止めたことを記録に残す（画面の履歴には出さない）", ([r.get("turn") for r in log_rows() if r.get("role") == "stop"], any(m["role"] == "stop" for m in hm.hermes_history())), ([t1], False))
 
 # ---- 待つ間に止める（返事は止めたあとに届く）
 gate, entered = threading.Event(), threading.Event()
@@ -61,64 +65,141 @@ def slow(text):
     return Q
 
 
-hm.ask_hermes = slow
-
-
-async def stop_while_waiting():
-    task = asyncio.create_task(hm.hermes_exchange("proj を閉じて"))
+async def while_waiting(between, admitted=None):
+    """往復を始め、頭が返事を作っている間に between() を呼び、返事を届ける。"""
+    gate.clear()
+    entered.clear()
+    task = asyncio.create_task(hm.hermes_exchange("proj を閉じて", admitted=admitted))
     await asyncio.to_thread(entered.wait, 5)
-    s.HUB.stopped()
+    between()
     gate.set()
     return await task
 
 
-reply, why, saved = asyncio.run(stop_while_waiting())
+hm.ask_hermes = slow
+reply, why, saved = asyncio.run(while_waiting(s.HUB.stopped))
 t2 = s.hub_human_turn()
 check("待つ間に止めたら、あとで届いた返事は、聞いた文にも台帳の返事の欄にも置かない", (reply, why, hm.HERMES_HEARD["text"], s.hub_reply_to(t2)), (Q, "", "", ""))
-last_ai = [r for r in log_rows() if r.get("role") == "ai" and r.get("turn") == t2]
-check("…記録には残し、「聞いていない」の印を付ける（画面の履歴では読める）", [(r["text"], r.get("unheard")) for r in last_ai], [(Q, True)])
+check("…記録には残す（画面の履歴では読める）", ai_rows(t2), [Q])
 
-# ---- 止めたあとに始めた往復
+# ---- 受け付けたあと、頭に送る前に止める（受け付けの番号は、受けたその場で取る）
+adm = s.HUB.admit()
+s.HUB.stopped()
 hm.ask_hermes = lambda text: Q
-asyncio.run(hm.hermes_exchange("もう一度、proj を閉じて"))
+asyncio.run(hm.hermes_exchange("proj を閉じて", admitted=adm))
+check("受け付けたあと、頭に送る前に止めたら、返事は聞いた文にしない", (hm.HERMES_HEARD["text"], s.hub_reply_to(s.hub_human_turn())), ("", ""))
+
+# ---- 返事を待つ間に次の発言を受け付けた
+hm.ask_hermes = slow
+adm = s.HUB.admit()
+asyncio.run(while_waiting(s.HUB.admit, admitted=adm))
+check("返事を待つ間に次の発言を受け付けたら、前の返事は聞いていない（読まれない）", (hm.HERMES_HEARD["text"], s.hub_reply_to(s.hub_human_turn())), ("", ""))
+
+# ---- 時計が戻る（時計は使わない）
+real_time = time.time
+try:
+    clock = iter([1000.0] + [999.0] * 1000)
+    time.time = lambda: next(clock)
+    reply, why, saved = asyncio.run(while_waiting(s.HUB.stopped))
+finally:
+    time.time = real_time
+check("時計が戻っても、止めたあとに届いた返事は聞いた文にしない", (hm.HERMES_HEARD["text"], s.hub_reply_to(s.hub_human_turn())), ("", ""))
+
+# ---- 止めたあとに受け付けた往復
+hm.ask_hermes = lambda text: Q
+adm = s.HUB.admit()
+asyncio.run(hm.hermes_exchange("もう一度、proj を閉じて", admitted=adm))
 t3 = s.hub_human_turn()
-check("止めたあとに始めた往復の返事は、ふつうに聞いた文になる", (hm.HERMES_HEARD["text"], s.hub_reply_to(t3)), (Q, Q))
+check("止めたあとに受け付けた往復の返事は、ふつうに聞いた文になる", (hm.HERMES_HEARD["text"], s.hub_reply_to(t3)), (Q, Q))
 
 # ---- 起動し直し
 hm.HERMES_TURNS.clear()
 hm._load_hermes_turns()
-check("起動し直しても、止めた・聞いていない返事は台帳の返事の欄に戻さない（聞いた返事は戻す）", (s.hub_reply_to(t1), s.hub_reply_to(t2), s.hub_reply_to(t3)), ("", "", Q))
+check("起動し直したら、台帳の返事の欄は記録から戻さない（聞いた返事も。閉じるのは聞き直してから）",
+      (s.hub_reply_to(t1), s.hub_reply_to(t2), s.hub_reply_to(t3), [r[1] for r in hm.HERMES_TURNS][-1]), ("", "", "", "もう一度、proj を閉じて"))
 
 # ---- 報告
-s.HUB.report_begin("proj｜t が完了しました", "proj｜t")
-s.HUB.stopped()
-asyncio.run(s.HUB.report_end("done", "proj の報告です。閉じていいですか？", "proj｜t", True))
-check("報告を頼んだあとに止めたら、届いた報告は聞いた文にしない", hm.HERMES_HEARD["text"], "")
-s.HUB.report_begin("proj｜t が完了しました", "proj｜t")
-asyncio.run(s.HUB.report_end("done", "proj の報告です。", "proj｜t", True))
-check("止めていない報告は、聞いた文になる", hm.HERMES_HEARD["text"], "proj の報告です。")
+for name, between, want in [("止めた", s.HUB.stopped, ""), ("話しかけた", s.HUB.admit, ""), ("どちらも無い", lambda: None, "proj の報告です。閉じていいですか？")]:
+    hm.HERMES_HEARD["text"] = ""
+    mark = s.HUB.heard_mark()  # 頼んだその場で控える（本体の _report の始め）
+    s.HUB.report_begin("proj｜t が完了しました", "proj｜t")
+    between()
+    asyncio.run(s.HUB.report_end("done", "proj の報告です。閉じていいですか？", "proj｜t", True, mark=mark))
+    check(f"報告を頼んだあとに{name}: 届いた報告を聞いた文に{'しない' if not want else 'する'}", hm.HERMES_HEARD["text"], want)
 
 
-# ---- 画面の「停止」（WebSocket の stop）で、話し相手に伝わる
+# ---- 本物の報告の流れ（_report）: 頼んだその場で番号を控える。順番待ち（頭のやり取りの鍵）の間に止めても、報告は聞いた文にしない
+REPORT_D = {"pane": "w9:p1", "cwd": "/x/proj", "project": "proj", "title": "テスト", "text": "", "offset": 0, "was_working": False, "gen": 1}
+
+
+async def report_while_locked(between):
+    hm.HERMES_HEARD["text"] = ""
+    hm.ask_hermes = lambda text: "proj の報告です。閉じていいですか？"
+    async with s.pane_lock(hm.HERMES_PANE):  # ほかのやり取りが鍵を持っている間に、報告を頼む
+        task = asyncio.create_task(s._report(dict(REPORT_D), "done"))
+        await asyncio.sleep(0.2)
+        between()
+    await task
+    return hm.HERMES_HEARD["text"]
+
+
+async def both_reports():  # 鍵は 1 つのイベントループに結び付くので、同じ実行の中で続けて回す
+    return await report_while_locked(s.HUB.stopped), await report_while_locked(lambda: None)
+
+
+stopped_heard, plain_heard = asyncio.run(both_reports())
+check("本物の報告の流れ: 鍵の順番待ちの間に止めたら、届いた報告は聞いた文にしない", stopped_heard, "")
+check("本物の報告の流れ: 止めなければ、届いた報告は聞いた文", plain_heard, "proj の報告です。閉じていいですか？")
+
+# ---- 本物の WebSocket の流れ
 async def nothing(*a, **k):
     return None
 
 
 s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.hermes.watch_hermes_skills = nothing
 s.list_agents = lambda: []
-hm.HERMES_HEARD["text"] = Q
-before = hm.HERMES_STOP["at"]
+prep_in, prep_go = threading.Event(), threading.Event()
+
+
+async def slow_attachment(ids, talker, pane=""):
+    prep_in.set()
+    await asyncio.to_thread(prep_go.wait, 5)
+    return "", ""
+
+
+s.attachment_lines = slow_attachment
+hm.ask_hermes = lambda text: Q
+
+
+def receive_until(w, kind):
+    for _ in range(50):
+        m = json.loads(w.receive_text())
+        if m.get("type") == kind:
+            return m
+    return None
+
+
 with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as w:
+        hm.HERMES_HEARD["text"] = Q
+        before = hm.HERMES_GEN["n"]
         w.send_text(json.dumps({"type": "stop"}))
-        got = None
-        for _ in range(20):
-            m = json.loads(w.receive_text())
-            if m.get("type") == "stopped":
-                got = m
+        got = receive_until(w, "stopped")
+        check("画面の「停止」で、止めたことが話し相手に伝わる（聞いた文を空にし、受け付けの番号を進める）",
+              (got is not None, hm.HERMES_HEARD["text"], hm.HERMES_GEN["n"] > before), (True, "", True))
+        # 受け付けたあと、添付の用意の間に止める（a2a 30fd5b94 の 1 の再現）
+        w.send_text(json.dumps({"type": "text", "text": "添付つきで proj を閉じて", "pane": hm.HERMES_PANE, "speaker": 0, "attachments": ["a1"]}))
+        prep_in.wait(5)
+        w.send_text(json.dumps({"type": "stop"}))
+        receive_until(w, "stopped")
+        prep_go.set()
+        for _ in range(100):  # 往復が最後まで進み、返事が記録に載るまで
+            turn = next((r[0] for r in hm.HERMES_TURNS if r[1] == "添付つきで proj を閉じて"), None)
+            if turn and ai_rows(turn):
                 break
-check("画面の「停止」で、止めたことが話し相手に伝わる（聞いた文を空にし、止めた時刻を進める）",
-      (got is not None, hm.HERMES_HEARD["text"], hm.HERMES_STOP["at"] > before), (True, "", True))
+            time.sleep(0.05)
+        check("本物の流れ: 受け付けたあと、添付の用意の間に止めたら、あとで届いた返事は聞いた文にしない（記録には残る）",
+              (hm.HERMES_HEARD["text"], s.hub_reply_to(turn), ai_rows(turn)), ("", "", [Q]))
 
 bad = [r for r in results if not r[1]]
 for name, ok, got, want in results:

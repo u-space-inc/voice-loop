@@ -95,9 +95,15 @@ class Brain:
         """報告の前。頭が記録を持たないときだけ、本体が見出しを記録する。記録に書けたら True。"""
         return True
 
-    async def report_end(self, state: str, reply: str, about: str, saved: bool, pane: str = "", topic: str = "", ask: dict | None = None) -> bool:
+    def heard_mark(self) -> int:
+        """いまの受け付けの番号（発言を受け付けたとき・止めたときに進む。時計は使わない）。報告を頼んだときに控え、report_end に渡す。"""
+        return 0
+
+    async def report_end(self, state: str, reply: str, about: str, saved: bool, pane: str = "", topic: str = "", ask: dict | None = None,
+                         mark: int | None = None) -> bool:
         """報告のあと。記録に書けたかを返す。topic は、どの件の報告か（記録を持つ頭は、報告の記録に書く）。
-        ask は、止まった報告でハブが見た問い {"fp": 画面の指紋, "session": セッション}（記録を持つ頭は報告の記録に書き、reply_ask で返す）。"""
+        ask は、止まった報告でハブが見た問い {"fp": 画面の指紋, "session": セッション}（記録を持つ頭は報告の記録に書き、reply_ask で返す）。
+        mark は報告を頼んだときの heard_mark。そのあとに利用者が話しかけた・止めたなら、報告は「利用者が聞いた文」にしない。"""
         return saved
 
     def reply_topic(self) -> str:
@@ -137,9 +143,15 @@ class Talker:
         """送ったときの状態の文。"""
         raise NotImplementedError
 
+    def admit(self) -> int:
+        """利用者の新しい発言を受け付けた（添付の用意・順番待ちの前に、受けたその場で呼ぶ）。受け付けの番号を進めて返す。exchange の admitted に渡す。
+        これより前に受け付けた往復と頼んだ報告の返事は、あとで届いても「利用者が聞いた文」にしない（利用者は次の発言に移り、その返事は読まれない）。"""
+        return 0
+
     async def exchange(self, text: str, reply_at: float | None = None, extra: str = "", item: int | None = None,
-                       via: str = "") -> tuple[str, str, bool]:
-        """ユーザーの発言を 1 往復する。via は発言の来た所（機械なら "device"。台帳に残し、承認に答える・閉じるの守りが見る）。(返事, 失敗の理由, 記録に書けたか)。reply_at は、画面の「返信」が指した報告の記録の時刻（無ければ None）。
+                       via: str = "", admitted: int | None = None) -> tuple[str, str, bool]:
+        """ユーザーの発言を 1 往復する。admitted は admit の番号（無ければ往復を始めたときの番号）。返事が届いたときに番号が進んでいたら
+        （そのあとに話しかけた・止めた）、返事は記録に残すが「利用者が聞いた文」と台帳の返事の欄には置かない。via は発言の来た所（機械なら "device"。台帳に残し、承認に答える・閉じるの守りが見る）。(返事, 失敗の理由, 記録に書けたか)。reply_at は、画面の「返信」が指した報告の記録の時刻（無ければ None）。
         item は、画面の受け箱（💡）で押した判断待ちの記録の番号（無ければ None。形が違えば -1）。その件への返信として渡し、text は空でもよい。
         返信と同じく、承認に答える・閉じるには使わせない。
         extra は本体が発言の末尾に足す行（添付の場所）。相手に渡す文と記録には付けるが、承認・閉じるの守りが見る発言は利用者の言葉（text）のまま。"""
@@ -159,8 +171,8 @@ class Talker:
 
     def stopped(self):
         """利用者が画面・顔で「止める」を押した（読み上げと返事待ちを止めた）。利用者は、いま読まれていた返事と、まだ届いていない返事を聞いていない。
-        承認に答える・閉じるの守りが「利用者が聞いた問い」として読む文（直前に聞いた文と、台帳の最新の返事）を空にし、止める前に始まった往復と報告の返事は、
-        あとで届いても「聞いた文」にしない（記録には残す。止めたあとの「はい」を、聞いていない問いへの答えに使わせない。2026-11-24）。"""
+        受け付けの番号を進め、承認に答える・閉じるの守りが「利用者が聞いた問い」として読む文（直前に聞いた文と、台帳の最新の返事）を空にする。
+        止める前に受け付けた往復と頼んだ報告の返事は、あとで届いても「聞いた文」にしない（記録には残す。止めたあとの「はい」を、聞いていない問いへの答えに使わせない。2026-11-24）。"""
         raise NotImplementedError
 
     def put_attachment(self, name: str, data: bytes) -> str:

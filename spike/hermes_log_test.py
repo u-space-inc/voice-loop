@@ -60,8 +60,7 @@ def check(name, got, want):
 
 
 def records():
-    """発言・返事・見出し・失敗の並び。「止めた」の行（drain が合図に送る停止で書かれる。stop_test で見る）は除く。"""
-    return [(d["role"], d["text"]) for d in s.hermes.hermes_records() if d["role"] != "stop"]
+    return [(d["role"], d["text"]) for d in s.hermes.hermes_records()]
 
 
 def wait_until(fn, limit=5.0):
@@ -195,13 +194,13 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     check("返事が空なら、画面に知らせて記録する", (m["text"], records()[-1]), ("Hermes の返事が空でした", ("error", "Hermes の返事が空でした")))
     check("返事が空の発言は、台帳の返事も空", s.hub_reply_to(s.hub_human_turn()), "")
 
-    # ---- 再起動: 台帳は記録から戻る。発言の ID は再起動をまたいでも重ならない
+    # ---- 再起動: 台帳の発言は記録から戻る（返事の欄は戻さない。閉じるのは起動し直したあとに聞き直してから。a2a 30fd5b94）。発言の ID は再起動をまたいでも重ならない
     before = [list(r) for r in s.hermes.HERMES_TURNS]
     s.hermes.HERMES_TURNS.clear()
     s.hermes._load_hermes_turns()
-    check("台帳が記録から戻る（発言・返事とも）", [list(r)[:3] for r in s.hermes.HERMES_TURNS], [r[:3] for r in before])
+    check("台帳の発言は記録から戻り、返事の欄は戻さない", [list(r)[:3] for r in s.hermes.HERMES_TURNS], [r[:2] + [""] for r in before])
     check("記録から戻した行には、直前に聞いた返答の写しを作らない（承認に答えるときは聞き直してもらう）", {r[3] for r in s.hermes.HERMES_TURNS}, {None})
-    check("戻した台帳で、前の発言への返事が読める", s.hub_reply_to(before[1][0]), "brew の件を送りました")
+    check("戻した台帳では、前の発言への返事は空（閉じるの守りは、起動し直したあとに聞き直してから）", s.hub_reply_to(before[1][0]), "")
     new = s.hermes.hermes_turn_begin("再起動のあと")
     check("新しい発言の ID は前のどれとも違う", new in {r[0] for r in before}, False)
     s.hermes.hermes_turn_end(new, "はい")
@@ -273,7 +272,8 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                             " print(json.dumps({'turns': [list(r)[:3] for r in s.hermes.HERMES_TURNS][:n], 'new': t}))"],
                            cwd=ROOT, capture_output=True, text=True, timeout=120)
     after = json.loads(probe.stdout.strip().splitlines()[-1]) if probe.returncode == 0 else {"turns": None, "new": None}
-    check("起動し直すと、台帳が記録から戻る（記録に書けなかった発言は戻らない）", after["turns"], [list(r)[:3] for r in s.hermes.HERMES_TURNS if not r[1].startswith(("書けないとき", "発言だけ書けない"))])
+    check("起動し直すと、台帳の発言が記録から戻る（記録に書けなかった発言は戻らない。返事の欄は戻さない）", after["turns"],
+          [list(r)[:2] + [""] for r in s.hermes.HERMES_TURNS if not r[1].startswith(("書けないとき", "発言だけ書けない"))])
     check("起動し直したあとの発言の ID は、前のどれとも違う", after["new"] in {r[0] for r in s.hermes.HERMES_TURNS}, False)
 
     # ---- 記録を読めなくても、本体は起動する（守りの台帳は空から。履歴は「読めなかった」と出す）

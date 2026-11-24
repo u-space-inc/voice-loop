@@ -286,7 +286,7 @@ async def fake_ask(hub, note):
     return ("done", "内訳は次のとおりです")
 
 
-async def fake_end(state, reply, about, saved, pane="", topic="", ask=None):
+async def fake_end(state, reply, about, saved, pane="", topic="", ask=None, mark=None):
     ended.append(topic)
     return True
 

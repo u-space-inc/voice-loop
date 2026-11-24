@@ -917,7 +917,7 @@ ACCEPT_LOCKS: dict[str, asyncio.Lock] = {}  # ハブ（herdr の外の話し相�
 
 
 async def hub_accepted(talker, text: str, pane: str, reply_at: float | None, files: list[str] | None, item: int | None = None,
-                       said: str | None = None, via: str = "") -> tuple[str, str, bool]:
+                       said: str | None = None, via: str = "", admitted: int | None = None) -> tuple[str, str, bool]:
     """ハブが受け取った発言を、添付を置く → 往復する（置けなければ断る）まで進める。(返事, 失敗・断りの理由, 記録に書けたか)。
     受け取った順に 1 つずつ（ACCEPT_LOCKS）。往復と断りの記録は、さらに頭のやり取りの鍵（自動通知と共有）の順に載る。
     断るときは、ハブに、利用者が最後に聞いたのは本体の断りだと伝える（前の問いへの答えに、次の発言を使わせない）。"""
@@ -931,7 +931,8 @@ async def hub_accepted(talker, text: str, pane: str, reply_at: float | None, fil
             await talker.refused(text, why, **kw, **({"via": via} if via else {}))  # 断った発言も、機械からなら機械の印で台帳に載せる
             return "", why, True
         # via は機械からの発言のときだけ渡す（画面からの往復は、これまでの頭の約束の形のまま）
-        return await talker.exchange(text, reply_at, extra, item, **kw, **({"via": via} if via else {}))
+        # admitted: 受け付けたその場の番号（添付の用意・順番待ちの間に止めた・話しかけたなら、返事を「利用者が聞いた文」にしない。a2a 30fd5b94）
+        return await talker.exchange(text, reply_at, extra, item, **kw, **({"via": via} if via else {}), **({"admitted": admitted} if admitted is not None else {}))
 
 
 def reply_item_of(d: dict) -> int | None:
@@ -2180,6 +2181,7 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
     結果は ok / no_hub（ハブが居ない）/ failed（ハブから報告を受け取れなかった）/ skipped（もう止まっていない）。
     notify は、ハブの報告を受け取れた時点で（読み上げる前に）呼ぶ。"""
     global REPORTING, REPORT_SEQ
+    mark = HUB.heard_mark()  # 頼んだその場の受け付けの番号（順番待ちの間に利用者が話しかけた・止めたなら、報告を「利用者が聞いた文」にしない。a2a 30fd5b94）
     label = _clip(f"{d['project']}｜{d['title']}", 80)
     hub = await HUB.report_target()
     # この件の範囲（指示を送った位置から今まで）を読ませ、この指示への答えを、間にあったほかの発言への答えと分けて報告させる。
@@ -2236,7 +2238,7 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
         seen = SEEN_PROMPT.get(d["pane"]) if kind == "blocked" else None
         ask_link = ({"fp": seen[0], "session": seen[2]}
                     if seen and len(seen) > 2 and seen[2] and seen[2] == now.get("session") and SEEN_AT.get(d["pane"], 0) >= asked_from else None)
-        saved = await HUB.report_end(state, reply, label, saved, str(d.get("pane", "")), str(d.get("topic") or ""), ask=ask_link)
+        saved = await HUB.report_end(state, reply, label, saved, str(d.get("pane", "")), str(d.get("topic") or ""), ask=ask_link, mark=mark)
         if state != "done" or not reply.strip():
             relay_slack(d, label, headline, "", ask=kind == "blocked")
             if kind in ("done", "more", "gone"):
@@ -3410,8 +3412,9 @@ async def ws(sock: WebSocket):
             # 添付が無い（空の一覧）ときだけ。形の壊れた添付（None）は、ふつうの道で断る（a2a 8f05ef33）
             kind = quick_kind = quick.match(text, AGENT) if QUICK and isinstance(files, list) and not files and reply_at is None and item is None else None
             via = "device" if client.kind == "device" else ""
+            admitted = talker.admit()  # 受け付けたその場で番号を進める（これより前に受け付けた往復・頼んだ報告の返事は、届いても読まれないので聞いた文にしない）
             # 決まった問いは本体が答える（返信・添付つき・受け箱の件への返信は、いつも頭へ）
-            job = asyncio.create_task(hub_quick(talker, kind, text, pane, said, via) if kind else hub_accepted(talker, text, pane, reply_at, files, item, said, via=via))
+            job = asyncio.create_task(hub_quick(talker, kind, text, pane, said, via) if kind else hub_accepted(talker, text, pane, reply_at, files, item, said, via=via, admitted=admitted))
             _tasks.add(job)
             job.add_done_callback(_tasks.discard)
         current = asyncio.create_task(turn(text, pane, cancel, key, reply_at, files, job, plain=bool(quick_kind)))
