@@ -800,6 +800,11 @@ def hub_via(turn: str | None) -> str:
     return HUB.via(turn) if turn else ""
 
 
+def hub_current(turn: str | None) -> bool:
+    """発言 turn を受け付けたあとに、利用者が止めていない・次の発言をしていないか（承認に答える・閉じるの直前に見る）。発言が無ければ False。"""
+    return HUB.current(turn) if turn else False
+
+
 def hub_heard(turn: str | None) -> str:
     """利用者が発言 turn の直前に聞いたハブの返答（本体が受け取った原文）。分からなければ空（守りは断る側に倒れる）。"""
     return HUB.heard(turn) if turn else ""
@@ -2264,6 +2269,7 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
             except Exception:
                 clients.remove(c)
         if ring:
+            HUB.report_delivered(mark)  # 鳴らす窓に送り終えた。頼んだあとに話しかけた・止めていなければ、ここで報告を聞いた文にする
             # 読み上げの途中で鳴らす窓が切れても（1 対 1 の speak_to は失敗を投げる）、見張りには伝えない（codex-review）。別の窓では読み直さない:
             # 文字はすべての窓に届いている。読み直すと、文字だけで届けた窓に読み上げの印が付かず（a2a 8f05ef33）、
             # 語り手・合成そのものの失敗では窓の数だけ作り直して、ハブの順番を長く止める（codex-review）
@@ -2700,6 +2706,8 @@ async def _hub_answer(body: dict):
     (turn, utter), = (await asyncio.to_thread(hub_turns, 1) or [(None, "")])[:1]
     if await asyncio.to_thread(hub_via, turn) == "device":  # 答えに使うこの発言そのもので確かめる（入口で見たあとに、機械からの発言が入れ替わりで届いても使わない。a2a 356c8a73）
         return JSONResponse({"ok": False, "reason": "device"})
+    if not await asyncio.to_thread(hub_current, turn):  # この発言のあとに利用者が止めた・次の発言をした（頭が回の途中で答えを送らない。a2a 30fd5b94）
+        return JSONResponse({"ok": False, "reason": "stopped"})
     fp, prompt, project = prompt_fp(text), read_ask(text), a["cwd"].rsplit("/", 1)[-1]
     conf = prompt["kind"] == "confirm"  # 番号の無い「Yes / No」の確認（はい・いいえだけで答える）
     if answer in ("no", "n"):
@@ -3139,6 +3147,8 @@ async def hub_close(body: dict):
     (now, said), (before, _) = (await asyncio.to_thread(hub_turns, 2) + [(None, "")] * 2)[:2]
     if confirmed and await asyncio.to_thread(hub_via, now) == "device":  # 機械からの発言では閉じない（閉じていいかは画面で答える）
         return JSONResponse({"ok": False, "reason": "device"})
+    if confirmed and now and not await asyncio.to_thread(hub_current, now):  # この発言のあとに利用者が止めた・次の発言をした（頭が回の途中で閉じない。a2a 30fd5b94）
+        return JSONResponse({"ok": False, "reason": "stopped"})
     heard = await asyncio.to_thread(hub_reply_to, held[1]) if confirmed and held and held[1] else ""
     rp = await asyncio.to_thread(hub_replying, now) if now else None
     if heard and rp is not None:  # 返信の発言なら、聞いた文は返信先の報告（古い報告への「はい」で、閉じるの問いに答えない）
@@ -3296,11 +3306,11 @@ async def ws(sock: WebSocket):
     send = client.send
 
     async def turn(text: str, pane: str, cancel: asyncio.Event, key: str | None, reply_at: float | None = None, files: list[str] | None = None,
-                   job: asyncio.Task | None = None, plain: bool = False):
+                   job: asyncio.Task | None = None, plain: bool = False, admitted: int | None = None):
         try:
             talker = TALKERS.get(pane)
             if talker:  # herdr のセッションではなく、本体の外の話し相手（ハブ）。job は受け取ったその場で作った仕事（start_turn）
-                await talk_turn(talker, job, pane, cancel, plain)
+                await talk_turn(talker, job, pane, cancel, plain, admitted)
                 return
             why = attachments_shape_problem(files)
             extra = ""
@@ -3316,7 +3326,7 @@ async def ws(sock: WebSocket):
             traceback.print_exc()
             await send(type="error", text=f"{type(e).__name__}: {e}"[:300])
 
-    async def talk_turn(talker, job: asyncio.Task | None, pane: str, cancel: asyncio.Event, plain: bool = False):
+    async def talk_turn(talker, job: asyncio.Task | None, pane: str, cancel: asyncio.Event, plain: bool = False, admitted: int | None = None):
         # plain: 本体がその場で答えた決まった問い。読み上げは語り手を通さない
         if job is None:  # 受け取ったときに相手が使えなかった
             await send(type="error", gone=True, text=talker.off_text)
@@ -3360,6 +3370,8 @@ async def ws(sock: WebSocket):
         if cancel.is_set():
             return
         await send(type="reply", pane=pane, text=reply, saved=saved)  # saved=False なら、画面は記録から描き直さずに足す
+        if admitted is not None:  # 画面に送り終えた。ここで初めて、返事を利用者が聞いた文にする（送る前に話しかけ直した・止めたなら、頭が捨てている）
+            talker.delivered(admitted)
         await speak_to([client], reply, cancel, **({"plain": True} if plain else {}))  # 本体の答えのときだけ渡す（これまでの呼び方は変えない）
 
     async def run_turn(text: str, pane: str, cancel: asyncio.Event, key: str | None, extra: str = ""):
@@ -3404,6 +3416,7 @@ async def ws(sock: WebSocket):
         cancel = asyncio.Event()
         job = None
         quick_kind = None
+        admitted = None
         talker = TALKERS.get(pane)
         if talker and talker.on():
             # ハブが受け取った発言は、受け取ったその場で（待つものをはさまずに）1 つの仕事にする（hub_accepted: 添付を置く・断る・往復する）。
@@ -3417,7 +3430,7 @@ async def ws(sock: WebSocket):
             job = asyncio.create_task(hub_quick(talker, kind, text, pane, said, via) if kind else hub_accepted(talker, text, pane, reply_at, files, item, said, via=via, admitted=admitted))
             _tasks.add(job)
             job.add_done_callback(_tasks.discard)
-        current = asyncio.create_task(turn(text, pane, cancel, key, reply_at, files, job, plain=bool(quick_kind)))
+        current = asyncio.create_task(turn(text, pane, cancel, key, reply_at, files, job, plain=bool(quick_kind), admitted=admitted))
 
     pending: dict = {}
     try:

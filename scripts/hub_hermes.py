@@ -280,6 +280,10 @@ HERMES_HEARD = {"text": ""}
 # 受け付けの番号（Talker.admit・stopped で進む。時計は使わない: 時計が戻っても順を取り違えない。a2a 30fd5b94）。
 # 往復・報告は、受け付けた・頼んだときの番号を控え、返事が届いたときに番号が進んでいたら、その返事を「聞いた文」にしない
 HERMES_GEN = {"n": 0}
+# 画面からの発言（受け付けの番号つき）への返事で、画面に送り終えるのを待っているもの（番号 → (発言, 返事)）。送り終えたら（Talker.delivered）
+# 「利用者が聞いた文」と台帳の返事の欄に置く。その前に話しかけ直した・止めたなら捨てる（返事ができただけでは聞いていない。a2a 30fd5b94 の 2 回目）
+HERMES_PENDING: dict[int, tuple[str, str]] = {}
+REPORT_PENDING: dict = {}  # 開いている画面に送り終えるのを待っている報告 {"reply", "mark"}
 # 本体がその場で答えた決まった問い（scripts/quick.py）。Hermes はこのやり取りを見ていないので、次に Hermes に送る発言の前に添える
 # （新しい 3 件まで・30 分以内のものだけ。送ったら空にする）。(発言, 本体の答え, 時刻)
 QUICK_NOTES: list[tuple[str, str, float]] = []
@@ -289,7 +293,7 @@ _unsaved: set[str] = set()  # 記録に書けなかった発言の ID（画面�
 
 
 def hermes_turn_begin(text: str, reply_to: str = "", heard: str | None = None, reply_pane: str = "", extra: str = "", refused: bool = False,
-                      reply_ask: dict | None = None, item: int | None = None, said: str | None = None, via: str = "") -> str:
+                      reply_ask: dict | None = None, item: int | None = None, said: str | None = None, via: str = "", gen: int | None = None) -> str:
     """発言を台帳と記録に載せる。返信のときは heard に返信先の報告の文を渡す: 承認に答える・閉じるの守りが「発言の直前に聞いた文」として見るのは、
     最後に届いた返事ではなく、利用者が返信を押した報告になる（古い報告への「はい」が、そのあとに届いた別件の問いへの答えにならない）。
     extra（本体が足す添付の行）は記録にだけ付ける（画面の履歴に残す）。守りの台帳は利用者の言葉のまま。
@@ -300,7 +304,8 @@ def hermes_turn_begin(text: str, reply_to: str = "", heard: str | None = None, r
     turn = f"h{os.urandom(6).hex()}"
     words = text if said is None else said
     HERMES_TURNS.append([turn, "" if refused else words, "", HERMES_HEARD["text"] if heard is None else heard, reply_to, reply_pane,
-                         dict(reply_ask or {}) if reply_to else {}, via])  # 守りの台帳は、利用者の言葉のまま（返信の前置き・添付の行は入れない）。via は機械からなら "device"
+                         dict(reply_ask or {}) if reply_to else {}, via,
+                         HERMES_GEN["n"] if gen is None else gen])  # 守りの台帳は、利用者の言葉のまま（返信の前置き・添付の行は入れない）。via は機械からなら "device"。最後は受け付けの番号
     if not hermes_log("me", text + extra, turn=turn, **({"reply_to": reply_to, "reply_pane": reply_pane} if reply_to else {}),
                       **({"reply_item": item} if item else {}), **({"said": said} if said is not None and said != text else {}), **({"via": via} if via else {})):
         _unsaved.add(turn)
@@ -345,12 +350,27 @@ def hermes_turn_end(turn: str, reply: str, heard: bool = True):
 
 def hermes_admit() -> int:
     HERMES_GEN["n"] += 1
+    HERMES_PENDING.clear()  # 送り終える前に次の発言が来た返事は、読まれない
+    REPORT_PENDING.clear()
     return HERMES_GEN["n"]
+
+
+def hermes_delivered(admitted: int):
+    p = HERMES_PENDING.pop(admitted, None)
+    if p is None or HERMES_GEN["n"] != admitted:
+        return
+    turn, reply = p
+    HERMES_HEARD["text"] = reply
+    for row in HERMES_TURNS:
+        if row[0] == turn:
+            row[2] = reply
 
 
 def hermes_stopped():
     """Talker.stopped の中身。"""
     HERMES_GEN["n"] += 1
+    HERMES_PENDING.clear()
+    REPORT_PENDING.clear()
     HERMES_HEARD["text"] = ""
     if HERMES_TURNS:
         HERMES_TURNS[-1][2] = ""  # いま読まれていた（かもしれない）返事。閉じるの守りに、聞き直してもらう
@@ -399,7 +419,7 @@ async def hermes_exchange(text: str, reply_at: float | None = None, extra: str =
             why = ("返信先の判断待ちが見つかりませんでした（記録が読めないか、番号が違います）。送っていません。💡 から選び直すか、返信をやめて送ってください"
                    if item is not None else
                    "返信先の報告が見つかりませんでした（記録が回ったか、読めません）。送っていません。返信を選び直すか、返信をやめて送ってください")
-            turn = hermes_turn_begin(text, heard="", extra=extra, refused=True, said=said, via=via)
+            turn = hermes_turn_begin(text, heard="", extra=extra, refused=True, said=said, via=via, gen=mark)
             HERMES_HEARD["text"] = ""
             if not hermes_log("error", why, turn=turn):
                 _unsaved.add(turn)
@@ -407,14 +427,14 @@ async def hermes_exchange(text: str, reply_at: float | None = None, extra: str =
             _unsaved.discard(turn)
             return "", why, saved
         if it:  # 判断待ちへの返信。返信先の問いは空（承認に答える・閉じるには使えない）。聞いた文も空（ハブの問いに答えた発言ではない）
-            turn = hermes_turn_begin(text, f"判断待ち [{it['n']}]", "", "", extra, reply_ask={}, item=it["n"], said=said, via=via)
+            turn = hermes_turn_begin(text, f"判断待ち [{it['n']}]", "", "", extra, reply_ask={}, item=it["n"], said=said, via=via, gen=mark)
             REPLY_TOPIC["topic"] = ""
             plain = lambda v: " ".join(_REF_DROP.sub(" ", str(v or "")).split())  # 記録の文から前置きの括弧（〔〕）と制御文字を外す（報告への返信と同じ）
             head = f"〔返信: 判断待ち [{it['n']}]「{plain(it['title'])}」（{plain(it['project'])}）〕"
             sent = f"{head}\n{text}" if text.strip() else f"{head}\n{ITEM_EMPTY}"
         else:
             ask = await asyncio.to_thread(report_ask, reply_at) if ref else {}  # 返信先の報告が見ていた問い（承認に答えるの守りが、いまの問いと照らす）
-            turn = hermes_turn_begin(text, ref, ref_text if ref else None, ref_pane, extra, reply_ask=ask, said=said, via=via)  # 発言の台帳。承認に答える・閉じるの守りが「見たあとの発言か」を見る
+            turn = hermes_turn_begin(text, ref, ref_text if ref else None, ref_pane, extra, reply_ask=ask, said=said, via=via, gen=mark)  # 発言の台帳。承認に答える・閉じるの守りが「見たあとの発言か」を見る
             REPLY_TOPIC["topic"] = await asyncio.to_thread(report_topic, reply_at) if ref else ""
             sent = f"〔返信: {ref} の報告〕\n{text}" if ref else text
         if QUICK_NOTES:  # 本体がその場で答えたやり取りを、Hermes に送る文の前にだけ添える（守りの台帳と記録の発言は利用者の言葉のまま）
@@ -430,7 +450,10 @@ async def hermes_exchange(text: str, reply_at: float | None = None, extra: str =
             reply = ""
             HERMES_HEARD["text"] = ""  # 利用者が聞くのは本体の失敗の知らせ（ハブの問いではない）
         else:
-            hermes_turn_end(turn, reply, heard=HERMES_GEN["n"] == mark)
+            # 画面からの発言（受け付けの番号つき）は、画面に送り終えてから聞いた文にする（Talker.delivered）。番号の無い呼び方は、返事が届いたときに
+            hermes_turn_end(turn, reply, heard=HERMES_GEN["n"] == mark and admitted is None)
+            if admitted is not None and HERMES_GEN["n"] == mark:
+                HERMES_PENDING[mark] = (turn, reply)
             why = "" if reply else "Hermes の返事が空でした"
         finally:
             REPLY_TOPIC["topic"] = ""
@@ -1667,6 +1690,19 @@ class Hermes(Brain, Talker):
     def admit(self) -> int:
         return hermes_admit()
 
+    def delivered(self, admitted: int):
+        hermes_delivered(admitted)
+
+    def current(self, turn: str) -> bool:
+        """台帳に無い・番号の欄が無い（起動し直す前の）発言は False（断る側）。"""
+        row = next((r for r in HERMES_TURNS if r[0] == turn), None)
+        return bool(row) and len(row) > 8 and row[8] == HERMES_GEN["n"]
+
+    def report_delivered(self, mark: int | None = None):
+        p = REPORT_PENDING.pop("now", None)
+        if p and (mark is None or p["mark"] == mark) and (p["mark"] is None or HERMES_GEN["n"] == p["mark"]):
+            HERMES_HEARD["text"] = p["reply"]
+
     def heard_mark(self) -> int:
         return HERMES_GEN["n"]
 
@@ -1765,8 +1801,13 @@ class Hermes(Brain, Talker):
     async def report_end(self, state: str, reply: str, about: str, saved: bool, pane: str = "", topic: str = "", ask: dict | None = None,
                          mark: int | None = None) -> bool:
         # 利用者が次に聞くのはこの報告（受け取れなければ本体の失敗の知らせ）。記録に書けたかに関係なく、ここで置き換える
-        # 報告を頼んだあとに利用者が話しかけた・止めたなら、報告は聞いていない（届いても聞いた文にしない）
-        HERMES_HEARD["text"] = reply if state == "done" and reply.strip() and (mark is None or HERMES_GEN["n"] == mark) else ""
+        # 報告を頼んだあとに利用者が話しかけた・止めたなら、報告は聞いていない（届いても聞いた文にしない）。開いている画面があれば、
+        # 画面に送り終えてから聞いた文にする（report_delivered。送る前に話しかけた・止めたなら聞いていない）。画面が無ければ、ここで（あとで履歴と通知で読む）
+        ok = state == "done" and reply.strip() and (mark is None or HERMES_GEN["n"] == mark)
+        REPORT_PENDING.clear()
+        if ok and core.CLIENTS:
+            REPORT_PENDING["now"] = {"reply": reply, "mark": mark}
+        HERMES_HEARD["text"] = reply if ok and not core.CLIENTS else ""
         if state == "done" and reply.strip():
             # pane: どのセッションの報告か（返信の守りが照らす）。topic: どの件の報告か（件の URL で開くとき・返信の続きを同じ件にするとき）。
             # ask: 止まった報告でハブが見た問い（返信をその問いへの答えに使えるかを、本体が照らす）

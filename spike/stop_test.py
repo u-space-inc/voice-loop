@@ -110,13 +110,34 @@ hm.ask_hermes = lambda text: Q
 adm = s.HUB.admit()
 asyncio.run(hm.hermes_exchange("もう一度、proj を閉じて", admitted=adm))
 t3 = s.hub_human_turn()
+check("画面からの発言の返事は、画面に送り終えるまでは聞いた文にしない", (hm.HERMES_HEARD["text"], s.hub_reply_to(t3)), ("", ""))
+s.HUB.delivered(adm)  # 画面に送り終えた（本体の画面の turn が呼ぶ）
 check("止めたあとに受け付けた往復の返事は、ふつうに聞いた文になる", (hm.HERMES_HEARD["text"], s.hub_reply_to(t3)), (Q, Q))
+
+# ---- 画面に送り終える前に、次の発言を受け付けた・止めた
+for name, between in [("次の発言を受け付けた", s.HUB.admit), ("止めた", s.HUB.stopped)]:
+    adm = s.HUB.admit()
+    asyncio.run(hm.hermes_exchange("proj を閉じて", admitted=adm))
+    between()
+    s.HUB.delivered(adm)  # 遅れて送り終えても
+    check(f"画面に送り終える前に{name}ら、あとで送り終えても聞いた文にしない", (hm.HERMES_HEARD["text"], s.hub_reply_to(s.hub_human_turn())), ("", ""))
+
+# ---- 承認に答える・閉じるの直前に見る「その発言のあとに止めていないか」
+turn = hm.hermes_turn_begin("はい")
+check("発言のすぐあとは、いまの発言", s.HUB.current(turn), True)
+s.HUB.stopped()
+check("止めたら、その前の発言はもういまの発言ではない（答えを送らない・閉じない）", s.HUB.current(turn), False)
+turn = hm.hermes_turn_begin("はい")
+s.HUB.admit()
+check("次の発言を受け付けても、前の発言はいまの発言ではない", s.HUB.current(turn), False)
+check("台帳に無い発言は、いまの発言ではない（断る側）", s.HUB.current("hzzzzzzzzzzzz"), False)
 
 # ---- 起動し直し
 hm.HERMES_TURNS.clear()
 hm._load_hermes_turns()
 check("起動し直したら、台帳の返事の欄は記録から戻さない（聞いた返事も。閉じるのは聞き直してから）",
-      (s.hub_reply_to(t1), s.hub_reply_to(t2), s.hub_reply_to(t3), [r[1] for r in hm.HERMES_TURNS][-1]), ("", "", "", "もう一度、proj を閉じて"))
+      (s.hub_reply_to(t1), s.hub_reply_to(t2), s.hub_reply_to(t3)), ("", "", ""))
+check("起動し直す前の発言は、いまの発言ではない（答えを送らない・閉じない）", s.HUB.current(t3), False)
 
 # ---- 報告
 for name, between, want in [("止めた", s.HUB.stopped, ""), ("話しかけた", s.HUB.admit, ""), ("どちらも無い", lambda: None, "proj の報告です。閉じていいですか？")]:
@@ -187,6 +208,18 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         got = receive_until(w, "stopped")
         check("画面の「停止」で、止めたことが話し相手に伝わる（聞いた文を空にし、受け付けの番号を進める）",
               (got is not None, hm.HERMES_HEARD["text"], hm.HERMES_GEN["n"] > before), (True, "", True))
+        # 止めずに画面に届いた返事・報告は、聞いた文になる（送り終えた知らせが本体から頭に届く）
+        hm.ask_hermes = lambda text: Q
+        w.send_text(json.dumps({"type": "text", "text": "ふつうに proj を閉じて", "pane": hm.HERMES_PANE, "speaker": 0}))
+        got = receive_until(w, "reply")
+        time.sleep(0.2)
+        check("本物の流れ: 止めずに画面に届いた返事は、聞いた文で、台帳の返事の欄にも入る",
+              (got and got.get("text"), hm.HERMES_HEARD["text"], s.hub_reply_to(s.hub_human_turn())), (Q, Q, Q))
+        hm.HERMES_HEARD["text"] = ""
+        hm.ask_hermes = lambda text: "proj の報告です。閉じていいですか？"
+        c.portal.call(s._report, dict(REPORT_D), "done")
+        check("本物の流れ: 開いている画面に届いた報告は、聞いた文になる", hm.HERMES_HEARD["text"], "proj の報告です。閉じていいですか？")
+        hm.ask_hermes = lambda text: Q
         # 受け付けたあと、添付の用意の間に止める（a2a 30fd5b94 の 1 の再現）
         w.send_text(json.dumps({"type": "text", "text": "添付つきで proj を閉じて", "pane": hm.HERMES_PANE, "speaker": 0, "attachments": ["a1"]}))
         prep_in.wait(5)
@@ -194,12 +227,42 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         receive_until(w, "stopped")
         prep_go.set()
         for _ in range(100):  # 往復が最後まで進み、返事が記録に載るまで
-            turn = next((r[0] for r in hm.HERMES_TURNS if r[1] == "添付つきで proj を閉じて"), None)
+            turn = next((r[0] for r in list(hm.HERMES_TURNS) if r[1] == "添付つきで proj を閉じて"), None)
             if turn and ai_rows(turn):
                 break
             time.sleep(0.05)
         check("本物の流れ: 受け付けたあと、添付の用意の間に止めたら、あとで届いた返事は聞いた文にしない（記録には残る）",
               (hm.HERMES_HEARD["text"], s.hub_reply_to(turn), ai_rows(turn)), ("", "", [Q]))
+        # 画面に送る途中で、次の発言を受け付けた（a2a 30fd5b94 の 2 回目の再現: 送れていない問いが、次の「はい」の行に「聞いた文」として写った）
+        real_send = s.Client.send
+        hold, holding, block = threading.Event(), threading.Event(), {"on": True}
+
+        async def held_send(self, **msg):
+            if msg.get("type") == "reply" and block["on"]:
+                block["on"] = False
+                holding.set()
+                await asyncio.to_thread(hold.wait, 5)
+            return await real_send(self, **msg)
+
+        s.Client.send = held_send  # 画面の流れは、つないだときの send を控えるので、差し替えてから新しくつなぐ
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as w2:
+                hm.ask_hermes = lambda text: Q
+                w2.send_text(json.dumps({"type": "text", "text": "送る途中の問い", "pane": hm.HERMES_PANE, "speaker": 0}))
+                check("（前提）問いの返事を、画面に送る途中で止めている", holding.wait(5), True)
+                hm.ask_hermes = lambda text: "わかりました"
+                w2.send_text(json.dumps({"type": "text", "text": "はい", "pane": hm.HERMES_PANE, "speaker": 0}))
+                for _ in range(100):
+                    yes = next((r for r in list(hm.HERMES_TURNS) if r[1] == "はい" and ai_rows(r[0])), None)
+                    if yes:
+                        break
+                    time.sleep(0.05)
+                hold.set()
+        finally:
+            s.Client.send = real_send
+        asked_row = next((r for r in list(hm.HERMES_TURNS) if r[1] == "送る途中の問い"), None)
+        check("本物の流れ: 画面に送る途中で次の「はい」を受け付けたら、送れていない問いは「はい」の聞いた文にも、台帳の返事の欄にも入らない",
+              (yes[3] if yes else None, asked_row[2] if asked_row else None), ("", ""))
 
 bad = [r for r in results if not r[1]]
 for name, ok, got, want in results:

@@ -118,7 +118,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         until(w, "status")
     check("閉じたあとも、返事を最後まで待って記録する", wait_until(lambda: records()[-1:] == [("ai", "brew の件を送りました")]), True)
     check("閉じたあとの返事が履歴に出る", history()["messages"][-2:], [{"role": "me", "text": "brew の件を頼んで"}, {"role": "ai", "text": "brew の件を送りました"}])
-    check("閉じたあとの返事も台帳に入る", s.hub_reply_to(s.hub_human_turn()), "brew の件を送りました")
+    check("閉じたあとの返事は、画面に届いていないので台帳の返事の欄に置かない（利用者は聞いていない。記録と履歴にはある）", s.hub_reply_to(s.hub_human_turn()), "")
 
     # ---- 止める（読み上げや待ちを止めても、Hermes は答えて覚えている）
     plan.append((1.0, "止められる前の返事"))
