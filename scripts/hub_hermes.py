@@ -284,6 +284,10 @@ HERMES_GEN = {"n": 0}
 # 「利用者が聞いた文」と台帳の返事の欄に置く。その前に話しかけ直した・止めたなら捨てる（返事ができただけでは聞いていない。a2a 30fd5b94 の 2 回目）
 HERMES_PENDING: dict[int, tuple[str, str]] = {}
 REPORT_PENDING: dict = {}  # 開いている画面に送り終えるのを待っている報告 {"reply", "mark"}
+# 発言ごとの受け付けの番号（Brain.current が引く）。台帳（deque）をワーカーのスレッドで回すと、ループが行を足す間に壊れるので、辞書で引く。
+# 新しい発言から TURN_GEN_MAX 件だけ持つ（古い発言はもう「いまの発言」ではない）
+TURN_GEN: dict[str, int] = {}
+TURN_GEN_MAX = 200
 # 本体がその場で答えた決まった問い（scripts/quick.py）。Hermes はこのやり取りを見ていないので、次に Hermes に送る発言の前に添える
 # （新しい 3 件まで・30 分以内のものだけ。送ったら空にする）。(発言, 本体の答え, 時刻)
 QUICK_NOTES: list[tuple[str, str, float]] = []
@@ -306,6 +310,9 @@ def hermes_turn_begin(text: str, reply_to: str = "", heard: str | None = None, r
     HERMES_TURNS.append([turn, "" if refused else words, "", HERMES_HEARD["text"] if heard is None else heard, reply_to, reply_pane,
                          dict(reply_ask or {}) if reply_to else {}, via,
                          HERMES_GEN["n"] if gen is None else gen])  # 守りの台帳は、利用者の言葉のまま（返信の前置き・添付の行は入れない）。via は機械からなら "device"。最後は受け付けの番号
+    TURN_GEN[turn] = HERMES_GEN["n"] if gen is None else gen
+    while len(TURN_GEN) > TURN_GEN_MAX:
+        TURN_GEN.pop(next(iter(TURN_GEN)))
     if not hermes_log("me", text + extra, turn=turn, **({"reply_to": reply_to, "reply_pane": reply_pane} if reply_to else {}),
                       **({"reply_item": item} if item else {}), **({"said": said} if said is not None and said != text else {}), **({"via": via} if via else {})):
         _unsaved.add(turn)
@@ -1694,9 +1701,9 @@ class Hermes(Brain, Talker):
         hermes_delivered(admitted)
 
     def current(self, turn: str) -> bool:
-        """台帳に無い・番号の欄が無い（起動し直す前の）発言は False（断る側）。"""
-        row = next((r for r in HERMES_TURNS if r[0] == turn), None)
-        return bool(row) and len(row) > 8 and row[8] == HERMES_GEN["n"]
+        """番号の無い（起動し直す前の・台帳に無い）発言は False（断る側）。ワーカーのスレッドからも呼ぶので、台帳を回さず辞書で引く。"""
+        g = TURN_GEN.get(turn)
+        return g is not None and g == HERMES_GEN["n"]
 
     def report_delivered(self, mark: int | None = None):
         p = REPORT_PENDING.pop("now", None)

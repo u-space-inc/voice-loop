@@ -202,6 +202,8 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
 # 1 つ目の状態の知らせを送っている間に 2 つ目が届いても、1 つ目を捨てない（画面のターンの中で仕事を作ると、知らせを待つ間に止められて消えていた。
 # a2a 81fecd16 の再現を試験にした）。画面の口は作り物の接続、話し相手は作り物
 EXCHANGED: list[str] = []
+DELIVERED: list = []  # 画面に返事を送り終えた知らせ（本体の画面の turn が呼ぶ）
+SENT_TYPES: list[str] = []
 
 
 class FakeTalker:
@@ -218,6 +220,9 @@ class FakeTalker:
 
     def stopped(self):
         pass
+
+    def delivered(self, admitted):
+        DELIVERED.append(admitted)
 
     async def exchange(self, text, reply_at=None, extra="", item=None, admitted=None):
         EXCHANGED.append(text)
@@ -250,6 +255,7 @@ class SlowStatusSock:
 
     async def send_text(self, text):
         d = json.loads(text)
+        SENT_TYPES.append(d["type"])
         if d["type"] == "status":
             self.status += 1
             if self.status == 1:
@@ -272,6 +278,7 @@ try:
 finally:
     s.TALKERS, s.speak_to = real_talkers, real_speak
 check("渡す: ハブへの 1 つ目の発言の知らせを送っている間に 2 つ目が届いても、1 つ目を捨てず、受け取った順に送る", EXCHANGED, ["一つ目", "二つ目"])
+check("渡す: 返事を送り終えたら、話し相手に知らせ、そのあとにエラーを送らない（codex-review bcd26ac）", (len(DELIVERED), "error" in SENT_TYPES[SENT_TYPES.index("reply"):] if "reply" in SENT_TYPES else None), (1, False))
 
 # ---------- 片づけ ----------
 day = Path(TMP) / "state" / "attachments" / "20200101"

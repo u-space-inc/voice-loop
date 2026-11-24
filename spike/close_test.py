@@ -246,6 +246,16 @@ try:
 finally:
     s.hub_reply_to = real_reply_to
 check("止める: 閉じる直前の読み取りの間に止めたら、閉じない", got, ("stopped", []))
+s.CLOSING.pop("w9:p1", None)
+asked()
+say("はい、閉じて")
+real_current, calls = s.hub_current, {"n": 0}
+s.hub_current = lambda turn: (calls.__setitem__("n", calls["n"] + 1), real_current(turn) if calls["n"] < 3 else False)[1]  # 3 回目（ワーカーの中）でだけ止めたあと
+try:
+    got = close(confirmed=True)
+finally:
+    s.hub_current = real_current
+check("止める: ループで確かめたあと、ワーカーの空きを待つ間に止めたら閉じない（ワーカーの中で確かめる。codex-review bcd26ac）", (got, calls["n"]), (("stopped", []), 3))
 
 bad = [f"{name}: {g!r}（期待 {w!r}）" for name, ok, g, w in results if not ok]
 print("\n".join(bad) or f"{len(results)} 例、すべて期待どおり")

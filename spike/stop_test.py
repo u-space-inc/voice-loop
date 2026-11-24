@@ -241,6 +241,62 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             time.sleep(0.05)
         check("本物の流れ: 受け付けたあと、添付の用意の間に止めたら、あとで届いた返事は聞いた文にしない（記録には残る）",
               (hm.HERMES_HEARD["text"], s.hub_reply_to(turn), ai_rows(turn)), ("", "", [Q]))
+        # 声の発言の聞き取りの間に止めたら、聞き取った発言は送らない（聞き取りの間も停止を読む。codex-review bcd26ac）
+        trans_in, trans_go = threading.Event(), threading.Event()
+
+        def slow_transcribe(audio, filename):
+            trans_in.set()
+            trans_go.wait(5)
+            return "聞き取りの間に止めた発言"
+
+        real_transcribe = s.transcribe
+        s.transcribe = slow_transcribe
+        try:
+            w.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm"}))
+            w.send_bytes(b"0" * 4000)
+            check("（前提）聞き取りの途中", trans_in.wait(5), True)
+            w.send_text(json.dumps({"type": "stop"}))
+            got = receive_until(w, "stopped")
+            check("聞き取りの間も「停止」を読む（聞き取りが終わる前に止めたと返す）", (got is not None, trans_go.is_set()), (True, False))
+            trans_go.set()
+            note = receive_until(w, "status")
+            while note and note.get("text") == "聞き取り中…":
+                note = receive_until(w, "status")
+        finally:
+            s.transcribe = real_transcribe
+        time.sleep(0.2)
+        check("聞き取りの間に止めたら、聞き取った発言は送らない（ハブにも台帳にも載らない）",
+              (note and note.get("text"), any(r[1] == "聞き取りの間に止めた発言" for r in list(hm.HERMES_TURNS))), ("止めたので、聞き取った発言は送っていません", False))
+        # 報告の読み上げも「停止」で止める（codex-review bcd26ac: 報告の合成・送信は、画面の停止と別の合図で続いていた）
+        speech, real_speak = {}, s.speak_to
+
+        async def held_speak(ring, reply, ev, **k):
+            speech["ev"] = ev
+            try:
+                await asyncio.wait_for(ev.wait(), 5)  # 停止で止まるまで読み続けている
+            except asyncio.TimeoutError:
+                pass
+            speech["stopped"] = ev.is_set()
+
+        s.speak_to = held_speak
+        try:
+            hm.ask_hermes = lambda text: "proj の報告です。"
+            fut = c.portal.start_task_soon(s._report, dict(REPORT_D), "done")
+            for _ in range(100):
+                if "ev" in speech:
+                    break
+                time.sleep(0.05)
+            w.send_text(json.dumps({"type": "stop"}))
+            receive_until(w, "stopped")
+            fut.result(timeout=10)
+        finally:
+            s.speak_to = real_speak
+        check("報告の読み上げの途中で「停止」を押したら、報告の読み上げも止める", speech.get("stopped"), True)
+        # 別のセッションに話しかけ直したら、前のハブの発言はもういまの発言ではない
+        hub_turn = hm.hermes_turn_begin("ハブへの前の発言")
+        w.send_text(json.dumps({"type": "text", "text": "別のセッションへ", "pane": "w9:p1", "speaker": 0}))
+        receive_until(w, "error")  # 相手のセッションは無い（一覧が空）
+        check("別のセッションに話しかけ直したら、前のハブの発言はいまの発言ではない（前の許可で答えない・閉じない）", s.HUB.current(hub_turn), False)
         # 画面に送る途中で、次の発言を受け付けた（a2a 30fd5b94 の 2 回目の再現: 送れていない問いが、次の「はい」の行に「聞いた文」として写った）
         real_send = s.Client.send
         hold, holding, block = threading.Event(), threading.Event(), {"on": True}

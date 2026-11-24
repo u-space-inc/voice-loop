@@ -310,6 +310,25 @@ screen()
 asked_then(DQ, "削除して")
 check("止める: 確認の段で、カーソルを動かしたあと Enter の前に止めたら、Enter を送らない", answer(), ("stopped", ["down"]))
 s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+# ループの側で確かめたあと、ワーカーのスレッドの空きを待つ間に止めた（codex-review bcd26ac）: ワーカーの中で、送る直前にもう一度確かめる
+for label, scr, utter, last in [("番号の承認", PERMISSION, "はい", 3), ("確認の段の Enter", CONFIRM_YES, "削除して", 4)]:
+    state.update(screen=scr, on_key=None)
+    begin("見て")
+    screen()
+    asked_then(Q if scr == PERMISSION else DQ, utter)
+    real_current, calls = s.hub_current, {"n": 0}
+
+    def flips(turn, real_current=real_current, calls=calls, last=last):
+        calls["n"] += 1
+        return real_current(turn) if calls["n"] < last else False  # 最後の 1 回（ワーカーの中）でだけ、止めたあと
+
+    s.hub_current = flips
+    try:
+        got = answer()
+    finally:
+        s.hub_current = real_current
+    check(f"止める: {label}を、ワーカーの空きを待つ間に止めたら送らない（ワーカーの中で確かめる）", (got, calls["n"]), (("stopped", []), last))
+    s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
 # 確認の段の最初の読み取り（カーソルを動かす前）の間に止めた・次の発言を受け付けたら、キーを 1 つも送らない（a2a 30fd5b94 の 4 回目）
 for change, act in [("止めた", s.HUB.stopped), ("次の発言を受け付けた", s.HUB.admit)]:
     state.update(screen=CONFIRM_NO, on_key=cursor_moves)
