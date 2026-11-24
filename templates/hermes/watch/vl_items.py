@@ -1,7 +1,9 @@
 """voice-loop の見張りの記録（出来事ごとに 1 行）。見張りの回（cron）が書き、ふだんの会話が読む。
 
   vl_items.py seen <source> <id>        記録にあれば 0 で終わる（無ければ 1）。同じ出来事を二度扱わないために使う
-  vl_items.py unseen ["<行>" ...]       見張りの行（引数か標準入力。先頭の + は外す）から、まだ記録に無い出来事の行だけを出す
+  vl_items.py unseen --current         見張りの台本の今の出力（Hermes が回の前に書く monitor_last_output.txt）を自分で読み、
+                                       まだ記録に無い出来事の行だけを出す（見張りの回はこれを使う。行を手で写さない）
+  vl_items.py unseen ["<行>" ...]       見張りの行（引数か標準入力。先頭の + は外す）から、まだ記録に無い出来事の行だけを出す（--current を読めないときの代わり）
   vl_items.py add --source mail --id X --project P --kind judge|fyi|info|baseline --title T [--note N] [--prepared 準備したこと] [--key 照合の鍵] [--sent 届いた時刻]
                                        （--sent はメールなどが届いた時刻の UNIX 秒。find の --before と並びに使う）
                                        （fyi は、人が利用者に宛てて書いたが対応の要らないもの。見張りの回が DM に 1 行で知らせる）
@@ -64,6 +66,34 @@ _LINE = {
     "plaud": re.compile(rf"plaud ({_ID}) \| {_ID}"),
     "teams": re.compile(r"teams ([0-9a-f]{16})"),
 }
+# unseen --current が読む、見張りの台本の今の出力（Hermes が cron の回の前に、ジョブごとの出力の置き場に書く）。
+# 2026-11-24: 見張りの回が差分の行を手で写して渡し、Plaud の行の後半を落とす・Teams の id を 2 字落とす・末尾に「;」を付けることがあった。
+# 写させず、ここで読む。古すぎる出力（回の前に書かれていない）は使わない（見張りが止まっているのに「新しい出来事 0 件」と言わないため）
+WATCH_JOB = "voice-loop-watch"
+CURRENT_MAX_AGE = 30 * 60
+_JOB_ID = re.compile(r"[A-Za-z0-9_-]{1,80}")
+
+
+def _current_lines() -> tuple[list[str] | None, str]:
+    """見張りの台本の今の出力の行。読めなければ (None, 理由)。"""
+    try:
+        jobs = json.loads((HOME / "cron" / "jobs.json").read_text(encoding="utf-8")).get("jobs")
+    except (OSError, ValueError, AttributeError) as e:
+        return None, f"cron の設定を読めません（{type(e).__name__}）"
+    ids = [j.get("id") for j in (jobs if isinstance(jobs, list) else []) if isinstance(j, dict) and j.get("name") == WATCH_JOB]
+    if len(ids) != 1 or not isinstance(ids[0], str) or not _JOB_ID.fullmatch(ids[0]):
+        return None, f"cron のジョブ {WATCH_JOB} が 1 つに決まりません（{len(ids)} 件）"
+    path = HOME / "cron" / "output" / ids[0] / "monitor_last_output.txt"
+    try:
+        age = time.time() - path.stat().st_mtime
+        text = path.read_text(encoding="utf-8")
+    except OSError as e:
+        return None, f"台本の出力を読めません（{type(e).__name__}）"
+    if age > CURRENT_MAX_AGE:
+        return None, f"台本の出力が古すぎます（{int(age // 60)} 分前に書かれたもの）"
+    return text.splitlines(), ""
+
+
 # 記録の id。切らずに保存し（切ると、同じ出来事が記録済みにならない）、形が合わなければ断る
 _RECORD_ID = re.compile(r"[A-Za-z0-9_.@:+=/-]{1,200}")
 
@@ -222,7 +252,7 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("seen"); s.add_argument("source"); s.add_argument("id")
-    s = sub.add_parser("unseen"); s.add_argument("lines", nargs="*")
+    s = sub.add_parser("unseen"); s.add_argument("lines", nargs="*"); s.add_argument("--current", action="store_true")
     s = sub.add_parser("add")
     s.add_argument("--source", required=True, choices=sorted(SOURCES)); s.add_argument("--id", required=True)
     s.add_argument("--project", default="未振り分け"); s.add_argument("--kind", required=True, choices=sorted(KINDS))
@@ -248,9 +278,19 @@ def main() -> int:
         print("seen" if hit else "new")
         return 0 if hit else 1
     if a.cmd == "unseen":
+        if a.current and a.lines:
+            print("--current と行は一緒に渡せません（--current だけを打ってください）")
+            return 2
+        if a.current:
+            given, why = _current_lines()
+            if given is None:
+                print(f"見張りの台本の今の出力を読めません: {why}。差分の + の行を、そのまま vl_items.py unseen \"<行>\" … で渡してください")
+                return 2
+        else:
+            given = a.lines or sys.stdin.read().splitlines()
         known = {(r["source"], r["id"]) for r in items.values()}
-        new, old, odd, picked = [], 0, 0, set()
-        for raw in (a.lines or sys.stdin.read().splitlines()):
+        new, old, odd, picked, odd_lines = [], 0, 0, set(), []
+        for raw in given:
             line = raw.strip()
             line = line[1:].strip() if line.startswith("+") else line
             src, _, rest = line.partition(" ")
@@ -258,7 +298,8 @@ def main() -> int:
                 continue  # 差分の見出し・口の見出し・「読めない」の行
             m = _LINE[src].fullmatch(line)
             if not m:
-                odd += 1  # 黙って捨てず、数を出す（見張りの台本と食い違っている）
+                odd += 1  # 黙って捨てず、数と行の頭を出す（見張りの台本と食い違っている）
+                odd_lines.append(f"形の合わない行: {src} {re.sub(r'[^A-Za-z0-9_.@:+=/|-]', '?', rest.split(' ')[0])[:40]}")
                 continue
             key = (src, m.group(1))
             if key in picked:
@@ -268,7 +309,7 @@ def main() -> int:
                 old += 1
             else:
                 new.append(line)
-        print("\n".join(new + [f"新しい出来事 {len(new)} 件（扱い済み {old} 件・形の合わない行 {odd} 件）"]))
+        print("\n".join(new + odd_lines[:10] + [f"新しい出来事 {len(new)} 件（扱い済み {old} 件・形の合わない行 {odd} 件）"]))
         return 0
     if a.cmd in ("add", "find") and len(raw_key(a.key)) > KEY_MAX:
         print(f"照合の鍵が長すぎます（{KEY_MAX} 字まで。切らずに断ります）")
