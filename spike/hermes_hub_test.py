@@ -311,8 +311,9 @@ asked_then(DQ, "削除して")
 check("止める: 確認の段で、カーソルを動かしたあと Enter の前に止めたら、Enter を送らない", answer(), ("stopped", ["down"]))
 s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
 # ループの側で確かめたあと、ワーカーのスレッドの空きを待つ間に止めた（codex-review bcd26ac）: ワーカーの中で、送る直前にもう一度確かめる
-for label, scr, utter, last in [("番号の承認", PERMISSION, "はい", 3), ("確認の段の Enter", CONFIRM_YES, "削除して", 4)]:
-    state.update(screen=scr, on_key=None)
+for label, scr, utter, last in [("番号の承認", PERMISSION, "はい", 3), ("確認の段の Enter", CONFIRM_YES, "削除して", 4),
+                                ("確認の段のカーソル（a2a 5a3533e2）", CONFIRM_NO, "削除して", 4)]:
+    state.update(screen=scr, on_key=cursor_moves if scr == CONFIRM_NO else None)
     begin("見て")
     screen()
     asked_then(Q if scr == PERMISSION else DQ, utter)

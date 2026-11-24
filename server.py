@@ -2271,31 +2271,32 @@ async def _report(d: dict, kind: str, notify=lambda outcome: None) -> str:
         clients = list(CLIENTS)
         msg = dict(type="reply", pane=hub["pane"], text=reply, report=True, about=label, saved=saved, topic=str(d.get("topic") or ""))
         ring: list = []
-        while clients and not ring:  # 声は 1 か所（最後に話しかけた窓）。その窓に送れなければ（切れていた）、残りから選び直す（codex-review）
-            for c in ring_targets(clients):
+        speech = asyncio.Event()  # 報告の読み上げを「停止」で止める合図（どの画面の停止でも。利用者は一人）。文字を送り始める前から受ける（a2a 5a3533e2）
+        REPORT_SPEECH.add(speech)
+        try:
+            while clients and not ring:  # 声は 1 か所（最後に話しかけた窓）。その窓に送れなければ（切れていた）、残りから選び直す（codex-review）
+                for c in ring_targets(clients):
+                    try:
+                        await c.send(**msg)
+                        ring.append(c)
+                    except Exception:
+                        clients.remove(c)
+            for c in [c for c in clients if c not in ring]:  # ほかの窓には文字だけ（quiet: 読み上げの印を付けない）
                 try:
-                    await c.send(**msg)
-                    ring.append(c)
+                    await c.send(**msg, quiet=True)
                 except Exception:
                     clients.remove(c)
-        for c in [c for c in clients if c not in ring]:  # ほかの窓には文字だけ（quiet: 読み上げの印を付けない）
-            try:
-                await c.send(**msg, quiet=True)
-            except Exception:
-                clients.remove(c)
-        if ring:
-            HUB.report_delivered(mark)  # 鳴らす窓に送り終えた。頼んだあとに話しかけた・止めていなければ、ここで報告を聞いた文にする
-            # 読み上げの途中で鳴らす窓が切れても（1 対 1 の speak_to は失敗を投げる）、見張りには伝えない（codex-review）。別の窓では読み直さない:
-            # 文字はすべての窓に届いている。読み直すと、文字だけで届けた窓に読み上げの印が付かず（a2a 8f05ef33）、
-            # 語り手・合成そのものの失敗では窓の数だけ作り直して、ハブの順番を長く止める（codex-review）
-            speech = asyncio.Event()  # 「停止」で止める（どの画面の停止でも。利用者は一人）
-            REPORT_SPEECH.add(speech)
-            try:
-                await speak_to(ring, reply, speech)
-            except Exception as e:
-                hlog(f"報告の声を送り終えられませんでした（{type(e).__name__}）。文字はすべての窓に届いています", flush=True)
-            finally:
-                REPORT_SPEECH.discard(speech)
+            if ring:
+                HUB.report_delivered(mark)  # 鳴らす窓に送り終えた。頼んだあとに話しかけた・止めていなければ、ここで報告を聞いた文にする
+                # 読み上げの途中で鳴らす窓が切れても（1 対 1 の speak_to は失敗を投げる）、見張りには伝えない（codex-review）。別の窓では読み直さない:
+                # 文字はすべての窓に届いている。読み直すと、文字だけで届けた窓に読み上げの印が付かず（a2a 8f05ef33）、
+                # 語り手・合成そのものの失敗では窓の数だけ作り直して、ハブの順番を長く止める（codex-review）
+                try:
+                    await speak_to(ring, reply, speech)
+                except Exception as e:
+                    hlog(f"報告の声を送り終えられませんでした（{type(e).__name__}）。文字はすべての窓に届いています", flush=True)
+        finally:
+            REPORT_SPEECH.discard(speech)
         return "ok"
 
 
@@ -3497,6 +3498,9 @@ async def ws(sock: WebSocket):
                 await send(type="status", text="止めたので、聞き取った発言は送っていません")
                 return
             await send(type="transcript", pane=d["pane"], text=text)
+            if stops["n"] != item["stops"]:  # 聞き取った文を画面に送る間に止めた（a2a 5a3533e2）
+                await send(type="status", text="止めたので、聞き取った発言は送っていません")
+                return
             start_turn(text, d["pane"], int(d["speaker"]), d.get("key"), reply_at_of(d), attachments_of(d), reply_item_of(d),
                        said if text != said else None, admitted=item["admitted"])
             return

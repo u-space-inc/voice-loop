@@ -292,11 +292,66 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         finally:
             s.speak_to = real_speak
         check("報告の読み上げの途中で「停止」を押したら、報告の読み上げも止める", speech.get("stopped"), True)
+        # 声の発言の頭が届いた時点で、前のハブの発言はいまの発言でなくなる（聞き取りを待たない）
+        prev = hm.hermes_turn_begin("頭の前のハブの発言")
+        w.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm"}))
+        for _ in range(100):
+            if not s.HUB.current(prev):
+                break
+            time.sleep(0.02)
+        check("声の発言の頭が届いた時点で、前のハブの発言はいまの発言でなくなる（聞き取りを待たない）", s.HUB.current(prev), False)
+        # 声の発言の聞き取りの間に届いた文字の発言は、声の発言のあとに並べる（順を守る）
+        trans_in.clear()
+        trans_go.clear()
+        s.transcribe = lambda audio, filename: (trans_in.set(), trans_go.wait(5), "先の声の発言")[2]
+        try:
+            hm.ask_hermes = lambda text: "わかりました"
+            w.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm"}))
+            w.send_bytes(b"0" * 4000)
+            trans_in.wait(5)
+            w.send_text(json.dumps({"type": "text", "text": "あとの文字の発言", "pane": hm.HERMES_PANE, "speaker": 0}))
+            time.sleep(0.3)
+            check("聞き取りの間に届いた文字の発言は、まだ送らない（声の発言を待つ）", any(r[1] == "あとの文字の発言" for r in list(hm.HERMES_TURNS)), False)
+            trans_go.set()
+            for _ in range(100):
+                order = [r[1] for r in list(hm.HERMES_TURNS) if r[1] in ("先の声の発言", "あとの文字の発言")]
+                if len(order) == 2:
+                    break
+                time.sleep(0.05)
+        finally:
+            s.transcribe = real_transcribe
+        check("声の発言のあとに届いた文字の発言は、声の発言のあとに送る（順を守る）", order, ["先の声の発言", "あとの文字の発言"])
         # 別のセッションに話しかけ直したら、前のハブの発言はもういまの発言ではない
         hub_turn = hm.hermes_turn_begin("ハブへの前の発言")
         w.send_text(json.dumps({"type": "text", "text": "別のセッションへ", "pane": "w9:p1", "speaker": 0}))
         receive_until(w, "error")  # 相手のセッションは無い（一覧が空）
         check("別のセッションに話しかけ直したら、前のハブの発言はいまの発言ではない（前の許可で答えない・閉じない）", s.HUB.current(hub_turn), False)
+        # 聞き取った文を画面に送る間に止めたら、その発言は送らない（a2a 5a3533e2 の再現）
+        real_send2 = s.Client.send
+        t_hold, t_holding, t_block = threading.Event(), threading.Event(), {"on": True}
+
+        async def held_transcript(self, **msg):
+            if msg.get("type") == "transcript" and t_block["on"]:
+                t_block["on"] = False
+                t_holding.set()
+                await asyncio.to_thread(t_hold.wait, 5)
+            return await real_send2(self, **msg)
+
+        s.Client.send = held_transcript  # 画面の流れは、つないだときの send を控えるので、差し替えてから新しくつなぐ
+        s.transcribe = lambda audio, filename: "文を送る間に止めた発言"
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as w3:
+                w3.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm"}))
+                w3.send_bytes(b"0" * 4000)
+                check("（前提）聞き取った文を画面に送る途中で止めている", t_holding.wait(5), True)
+                w3.send_text(json.dumps({"type": "stop"}))
+                receive_until(w3, "stopped")
+                t_hold.set()
+                time.sleep(0.5)
+        finally:
+            s.Client.send = real_send2
+            s.transcribe = real_transcribe
+        check("聞き取った文を画面に送る間に止めたら、その発言は送らない", any(r[1] == "文を送る間に止めた発言" for r in list(hm.HERMES_TURNS)), False)
         # 画面に送る途中で、次の発言を受け付けた（a2a 30fd5b94 の 2 回目の再現: 送れていない問いが、次の「はい」の行に「聞いた文」として写った）
         real_send = s.Client.send
         hold, holding, block = threading.Event(), threading.Event(), {"on": True}
