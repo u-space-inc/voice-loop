@@ -2288,18 +2288,22 @@ async def _report_body(d: dict, kind: str, notify, mark: int, speech: asyncio.Ev
         while clients and not ring:  # 声は 1 か所（最後に話しかけた窓）。その窓に送れなければ（切れていた）、残りから選び直す（codex-review）
             for c in ring_targets(clients):
                 try:
-                    await c.send(**msg)
+                    await c.send(**msg, **({"quiet": True} if speech.is_set() else {}))  # 作っている間に止めていたら、文字だけの形で（読み上げ中の印を付けない）
                     ring.append(c)
                 except Exception:
                     clients.remove(c)
+        if ring:
+            HUB.report_delivered(mark)  # 鳴らす窓に送り終えた時点で確定（ほかの窓への文字を待たない。codex-review ce5be84）。頼んだあとに話しかけた・止めていなければ、聞いた文にする
         for c in [c for c in clients if c not in ring]:  # ほかの窓には文字だけ（quiet: 読み上げの印を付けない）
             try:
                 await c.send(**msg, quiet=True)
             except Exception:
                 clients.remove(c)
         if ring:
-            HUB.report_delivered(mark)  # 鳴らす窓に送り終えた。頼んだあとに話しかけた・止めていなければ、ここで報告を聞いた文にする
-            if speech.is_set():  # 報告を作っている・送っている間に「停止」を押した。読み上げない（文字は届いている）
+            if speech.is_set():  # 報告を作っている・送っている間に「停止」を押した。読み上げない（文字は届いている）。送る間に止めたなら、読み上げ中の印を外す
+                for c in ring:
+                    with contextlib.suppress(Exception):
+                        await c.send(type="stopped")
                 return "ok"
             # 読み上げの途中で鳴らす窓が切れても（1 対 1 の speak_to は失敗を投げる）、見張りには伝えない（codex-review）。別の窓では読み直さない:
             # 文字はすべての窓に届いている。読み直すと、文字だけで届けた窓に読み上げの印が付かず（a2a 8f05ef33）、
@@ -3570,18 +3574,21 @@ async def ws(sock: WebSocket):
                     client.seen = time.time()
                     continue
                 if d["type"] == "stop":
+                    # 最初の await より前に、許可を失効させ、すべての報告に止めたことを反映する（ほかの画面へ送るのが滞っても、前の許可を残さない。codex-review ce5be84）
                     stops["n"] += 1  # 聞き取り中・並んでいる発言は送らない
                     cancel.set()
                     if current:
                         current.cancel()
-                    for ev, ring in list(REPORT_SPEECH.items()):  # 作っている・読み上げている報告も止める。鳴らしている画面がほかなら、そこにも止めたと送る
+                    for t in TALKERS.values():  # 利用者は、読まれていた返事・まだ届いていない返事を聞いていない（承認に答える・閉じるの守り）
+                        t.stopped()
+                    rings = list(REPORT_SPEECH.items())
+                    for ev, _ in rings:  # 作っている・読み上げている報告も止める
                         ev.set()
+                    for _, ring in rings:  # 鳴らしている画面がほかなら、そこにも止めたと送る
                         for c in list(ring):
                             if c is not client:
                                 with contextlib.suppress(Exception):
                                     await c.send(type="stopped")
-                    for t in TALKERS.values():  # 利用者は、読まれていた返事・まだ届いていない返事を聞いていない（承認に答える・閉じるの守り）
-                        t.stopped()
                     await send(type="stopped")
                     continue
                 if d["type"] == "clientlog":  # 端末側（特にスマホ）の再生まわりの出来事を残す

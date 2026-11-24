@@ -341,8 +341,13 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             in_t.wait(5)
             w.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm"}))
             w.send_bytes(b"0" * 4000)  # 3 つ目で、並んだ声の大きさの合計が上限（この試験では 10000）を超える
-            over = receive_until(w, "error")
-            check("声の列の大きさの合計が上限を超えたら、溜め込まずに断る", over and over.get("text", "").startswith("前の発言を聞き取っています"), True)
+            over = None
+            for _ in range(50):  # ほかのエラー（CI では語り手の鍵が無い）を飛ばし、上限の断りまで読む
+                m = json.loads(w.receive_text())
+                if m.get("type") == "error" and m.get("text", "").startswith("前の発言を聞き取っています"):
+                    over = m
+                    break
+            check("声の列の大きさの合計が上限を超えたら、溜め込まずに断る", over is not None, True)
             w.send_text(json.dumps({"type": "stop"}))
             receive_until(w, "stopped")
             gate_t.set()
@@ -374,7 +379,63 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             got_reply = receive_until(w, "reply")
         finally:
             s.speak_to = real_speak2
-        check("報告を作っている間に止めたら、届いた報告は読み上げない（文字は届く）", (got_reply and got_reply.get("text"), said_calls), ("作っている間に止めた報告です。", []))
+        check("報告を作っている間に止めたら、届いた報告は読み上げない（文字だけの形で届く。読み上げ中の印を付けない）",
+              (got_reply and got_reply.get("text"), got_reply and got_reply.get("quiet"), said_calls), ("作っている間に止めた報告です。", True, []))
+        # 止めたら、ほかの画面へ「止めた」を送るより前に、許可を失効させる（送るのが滞っても前の許可を残さない。codex-review ce5be84）
+        slow_go = threading.Event()
+
+        class SlowRing:
+            async def send(self, **msg):
+                await asyncio.to_thread(slow_go.wait, 5)
+
+        fake_ev = asyncio.Event()
+        s.REPORT_SPEECH[fake_ev] = [SlowRing()]
+        try:
+            before_stop = hm.hermes_turn_begin("止める前の発言")
+            w.send_text(json.dumps({"type": "stop"}))
+            for _ in range(100):
+                if not s.HUB.current(before_stop):
+                    break
+                time.sleep(0.02)
+            check("止めたら、ほかの画面へ止めたと送り終える前に、前の発言の許可を失効させる", (s.HUB.current(before_stop), slow_go.is_set()), (False, False))
+            slow_go.set()
+            receive_until(w, "stopped")
+        finally:
+            s.REPORT_SPEECH.pop(fake_ev, None)
+        # 鳴らす画面に送った時点で、報告を聞いた文にする（ほかの画面への文字が滞っても待たない。codex-review ce5be84）
+        quiet_go = threading.Event()
+
+        class SlowQuiet:
+            kind, win, cid, bound, place, voice, visible = "screen", "w-slow-quiet", "conn:slow", False, "", True, False
+            last_turn = seen = connected = 0.0
+
+            async def send(self, **msg):
+                if msg.get("quiet"):
+                    await asyncio.to_thread(quiet_go.wait, 5)
+
+        slow_client = SlowQuiet()
+        hm.HERMES_HEARD["text"] = ""
+        s.CLIENTS.add(slow_client)
+        real_speak4 = s.speak_to
+
+        async def no_speak(*a, **k):
+            return None
+
+        s.speak_to = no_speak
+        try:
+            hm.ask_hermes = lambda text: "鳴らす画面に先に届く報告です。"
+            fut = c.portal.start_task_soon(s._report, dict(REPORT_D), "done")
+            got_rep = receive_until(w, "reply")
+            for _ in range(100):
+                if hm.HERMES_HEARD["text"]:
+                    break
+                time.sleep(0.02)
+            check("鳴らす画面に送った時点で、報告を聞いた文にする（ほかの画面への文字を待たない）", (hm.HERMES_HEARD["text"], quiet_go.is_set()), ("鳴らす画面に先に届く報告です。", False))
+            quiet_go.set()
+            fut.result(timeout=10)
+        finally:
+            s.CLIENTS.discard(slow_client)
+            s.speak_to = real_speak4
         # 別の画面で止めても、報告を鳴らしている画面にも止めたと送る
         speech2, real_speak3 = {}, s.speak_to
 
