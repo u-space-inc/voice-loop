@@ -85,6 +85,10 @@
 - `hermes/hub.md` に、`templates/hermes/hub.md` の「指示を出すときの決まり」の節（入れ替え）と、「セッションの結果を伝えるときの決まり」の節（その次に足す）、「話し方」の最後の 1 文を写します。写さないと、通知の読み方だけが変わり、指示への足しは前のままです。
 - Hermes の手順（スキル）に、前に採った書き足しで「送信しない指示があれば明示」「外部への変更は先に報告して止まる」のような行が残っていると、ハブは足し続けます。画面の「記憶」か Hermes の対話画面で、手順を見直してください。
 
+## 0.41.3（文で聞いて待っているセッションへの返事は、ふつうの指示で送る）
+
+- 設定フォルダの `hermes/hub.md` の「承認・質問に答える」の節に、`templates/hermes/hub.md` の同じ節の「セッションが承認・質問の画面で止まっておらず、…」の項目を写します（写さなくても、`hubctl answer` が `not_blocked` で断ったときの文で、同じ案内が出ます）。
+
 ## 0.41.2（見張りの回に、行を手で写させない）
 
 - 見張りの回を使っているときは、`templates/hermes/watch/vl_items.py` を `~/.hermes/scripts/` に写し、Hermes の置き場の見張りの手順（`~/.hermes/skills/voice-loop/voice-loop-watch/SKILL.md`）の手順 2 を、`templates/hermes/watch/voice-loop-watch/SKILL.md` の手順 2 に入れ替えます（Hermes が自動で手順 2 の後ろに足した文は残してかまいません）。道具を先に写します（手順が `unseen --current` を使います）。

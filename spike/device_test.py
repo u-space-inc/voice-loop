@@ -170,10 +170,23 @@ def close(body):
 
 t_dev = hm.hermes_turn_begin("はい、許可して", via="device")
 check("守り: 台帳は機械からの発言を覚える", s.hub_via(t_dev), "device")
+BLOCKED = {"status": "blocked", "cwd": "/x/proj", "session": "s1", "project": "proj", "title": "t"}
+s._worker = lambda pane: BLOCKED  # 承認・質問の画面で止まっているセッション
 got, code = answer({"pane": "w0:p1", "answer": "yes"})
 check("守り: 機械からの「はい」では承認に答えない", got.get("reason"), "device")
 got, code = answer({"pane": "w0:p1", "answer": "2"})
 check("守り: 機械からの番号でも答えない", got.get("reason"), "device")
+# 止まっていないセッション（返事の中で文で聞いて入力を待っているだけ）には、機械からの発言でも「止まっていない」を返す。
+# ハブはそれを見て、ユーザーの返事をふつうの指示（hubctl send）で送る（2026-11-24: 機械を先に返し、無い承認のボタンへ案内していた）
+s._worker = lambda pane: {**BLOCKED, "status": "idle"}
+got, code = answer({"pane": "w0:p1", "answer": "yes"})
+check("守り: 止まっていないセッションには、機械からの発言でも「止まっていない」を返す（答えは送らない）", (got.get("ok"), got.get("reason")), (False, "not_blocked"))
+HUBCTL = (ROOT / "hubctl").read_text(encoding="utf-8")
+check("ハブへの案内: 止まっていないと断られたら、文の問いへの返事は hubctl send で送る（機械からでも送れる）",
+      ("`hubctl send {a.pane}" in HUBCTL, "機械からの発言でも送れます" in HUBCTL), (True, True))
+check("指示文のひな形: 文で聞いて待っているだけのセッションへの返事は answer でなく send",
+      "`hubctl answer` を使わず、`hubctl send` でユーザーの言葉のまま送ります" in (ROOT / "templates/hermes/hub.md").read_text(encoding="utf-8"), True)
+s._worker = lambda pane: None  # セッションは見つからない（守りの先に進んだかを、見つからないの答えで見る）
 got, code = close({"pane": "w0:p1", "confirmed": True})
 check("守り: 機械からの許可では閉じない", got.get("reason"), "device")
 
