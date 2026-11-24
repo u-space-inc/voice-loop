@@ -217,6 +217,25 @@ finally:
     s._worker, s.pane_shows_trust, s.read_prompt = real_worker, real_trust, real_prompt
 check("守り: 確かめの途中で機械の発言が入れ替わりで届いても、それを答えに使わない", got.get("reason"), "device")
 
+# 入れ替わり（後ろの確かめ）: 入口の確かめ（止まっているかのあと）は画面の発言で通り、問いを読んでいる間に機械からの「はい」が届く。
+# 答えに使う発言を取り直したあとの確かめで断る（並べ替えで、上の入れ替わりは入口の確かめで止まるようになったため。a2a acc49e43）
+hm.hermes_turn_begin("ふつうの発言")
+
+
+def prompt_then_device(pane):
+    hm.hermes_turn_begin("はい、許可して", via="device")
+    return "Do you want to proceed?\n❯ 1. Yes\n  2. No"
+
+
+s._worker = lambda pane: BLOCKED
+s.pane_shows_trust = lambda pane: False
+s.read_prompt = prompt_then_device
+try:
+    got, code = answer({"pane": "w0:p1", "answer": "yes"})
+finally:
+    s._worker, s.pane_shows_trust, s.read_prompt = real_worker, real_trust, real_prompt
+check("守り: 問いを読んでいる間に機械の発言が届いても、取り直した発言の確かめで断る", got.get("reason"), "device")
+
 check("守り: 台帳に無い発言は機械として扱う", s.HUB.via("hzzzzzzzzzzzz"), "device")
 check("守り: 発言が無ければ空", s.hub_via(None), "")
 
