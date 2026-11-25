@@ -431,12 +431,14 @@ with sync_playwright() as pw:
     check("録音: 録音を始めた接続と送る接続が違えば、返事の番号を付けない", pg.evaluate("window.__turn2.hid"), -1)
     # 文字の発言には、送るを押した時点で受け取っていた返事の番号を付ける（添付を送る間に届いた返事の番号ではない。a2a 3752b7a5 の 5 回目）
     pg.wait_for_timeout(300)
-    pg.evaluate("heardId = 5; window.__text = null; window.__sa = sendAttach;"
+    pg.evaluate("heardId = 5; window.__text = null; window.__types.length = 0; window.__sa = sendAttach;"
                 "sendAttach = async (...a) => { heardId = 9; return window.__sa(...a); };"  # 添付を送る間に、次の返事が届いた
                 "document.getElementById('typed').value = 'はい（文字）'; document.getElementById('typedForm').requestSubmit()")
     pg.wait_for_function("window.__text", timeout=5000)
     pg.evaluate("() => { sendAttach = window.__sa; }")
     check("文字: 送るを押した時点で受け取っていた返事の番号を付ける", pg.evaluate("[window.__text.hid, heardId]"), [5, 9])
+    check("文字: 送るを押した時点で、本文より前に発言を始めた合図（begin）を送り、本文にも同じ番号を付ける",
+          pg.evaluate("[window.__types.indexOf('begin') >= 0 && window.__types.indexOf('begin') < window.__types.indexOf('text'), typeof window.__text.begin]"), [True, "number"])
     # 前の「止めた」への返事が、次の録音を始めたあとに届いても、「止めました」と出さず印も光らせない（録音は続いている。codex-review 6096e1d）
     pg.wait_for_timeout(600)
     pg.evaluate("startRec()")

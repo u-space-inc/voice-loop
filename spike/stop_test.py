@@ -563,6 +563,82 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s._if_still, s.herdr, s.list_agents, s.jsonl_path = real_if, real_herdr, real_agents, real_jsonl
         check("別の画面で止めても、送る前のハブ以外への指示は送らず、指示を出した画面に送っていないと知らせる",
               (prompts6, any(t == "error" and "送っていません" in x for t, x in seen6)), ([], True))
+        # 発言を始めた合図（begin）のあと、発言が届くまでに別の画面で止めたら、その発言では承認に答えない・閉じない（↩ 返信でも）。
+        # ハブ以外への指示なら送らずに知らせる。止めていなければ、ふつうに受け付ける（codex-review c72fbbe）
+        def row_of(text):
+            for _ in range(100):
+                r = next((x for x in list(hm.HERMES_TURNS) if x[1] == text), None)
+                if r:
+                    return r
+                time.sleep(0.05)
+            return None
+
+        hm.ask_hermes = lambda text: "わかりました"
+        w.send_text(json.dumps({"type": "begin", "b": 901}))
+        w.send_text(json.dumps({"type": "text", "text": "はい（またがない）", "pane": hm.HERMES_PANE, "speaker": 0, "hid": -1, "begin": 901}))
+        plain_row = row_of("はい（またがない）")
+        plain_cur = s.HUB.current(plain_row[0]) if plain_row else None
+        w.send_text(json.dumps({"type": "begin", "b": 902}))
+        with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+            wb.send_text(json.dumps({"type": "stop", "n": 1}))
+            receive_until(wb, "stopped")
+        w.send_text(json.dumps({"type": "text", "text": "はい（またいだ）", "pane": hm.HERMES_PANE, "speaker": 0, "hid": -1, "begin": 902}))
+        crossed_row = row_of("はい（またいだ）")
+        check("発言を始めたあと届くまでに別の画面で止めたら、その発言はハブに届くが、もういまの発言ではない（止めていなければいまの発言）",
+              (plain_cur, crossed_row is not None, s.HUB.current(crossed_row[0]) if crossed_row else None), (True, True, False))
+        prompts10 = []
+        s.herdr = lambda *a, **k: (prompts10.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        s.jsonl_path = lambda a: None
+        seen10 = []
+        try:
+            w.send_text(json.dumps({"type": "begin", "b": 903}))
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+                wb.send_text(json.dumps({"type": "stop", "n": 1}))
+                receive_until(wb, "stopped")
+            w.send_text(json.dumps({"type": "text", "text": "またいだ直接の指示", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 903}))
+            for _ in range(60):  # 知らせが来なければ、送ったあとの「回答を読めませんでした」で終わる
+                m = json.loads(w.receive_text())
+                seen10.append((m.get("type"), m.get("text", "")))
+                if m.get("type") == "error":
+                    break
+            time.sleep(0.3)
+        finally:
+            s.herdr, s.list_agents, s.jsonl_path = real_herdr, real_agents, real_jsonl
+        check("発言を始めたあと届くまでに別の画面で止めたら、ハブ以外への指示は送らず、送っていないと知らせる",
+              (prompts10, any(t == "error" and "送っていません" in x for t, x in seen10)), ([], True))
+        # 次の声の発言の頭を受けたら、この画面の前の、まだ送っていないハブ以外への指示は送らずに知らせる（文字と同じ。codex-review c72fbbe）
+        prompts11, gate11, entered11 = [], threading.Event(), threading.Event()
+
+        def waiting_if_still11(still, fn, *a):
+            entered11.set()
+            gate11.wait(5)
+            return real_if(still, fn, *a)
+
+        s._if_still, s.jsonl_path = waiting_if_still11, (lambda a: None)
+        s.herdr = lambda *a, **k: (prompts11.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        s.transcribe = lambda audio, filename: "次の声の発言"
+        hm.ask_hermes = lambda text: "わかりました"
+        seen11 = []
+        try:
+            w.send_text(json.dumps({"type": "text", "text": "声の頭で取り消す指示", "pane": "w9:p1", "speaker": 0, "hid": -1}))
+            check("（前提）前の指示が送るスレッドの手前で待っている", entered11.wait(5), True)
+            w.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm", "hid": -1}))
+            for _ in range(60):
+                m = json.loads(w.receive_text())
+                seen11.append((m.get("type"), m.get("text", "")))
+                if m.get("type") == "error":
+                    break
+            gate11.set()
+            w.send_bytes(b"0" * 4000)
+            receive_until(w, "transcript")
+            time.sleep(0.3)
+        finally:
+            gate11.set()
+            s._if_still, s.herdr, s.list_agents, s.jsonl_path, s.transcribe = real_if, real_herdr, real_agents, real_jsonl, real_transcribe
+        check("次の声の発言の頭を受けたら、前のまだ送っていないハブ以外への指示は送らずに知らせる",
+              (prompts11, any(t == "error" and "送っていません" in x for t, x in seen11)), ([], True))
         # 話し始めるときに再生だけを止める停止（scope=talk）では、ほかの画面の送る前の指示は取り消さない（codex-review dad00a5）
         prompts9, gate9, entered9 = [], threading.Event(), threading.Event()
 
