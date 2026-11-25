@@ -1438,7 +1438,23 @@ REPORTING = False  # ハブが自動通知に応答している最中か
 REPORT_IDLE: asyncio.Event | None = None  # 報告が終わったときに立つ（Slack から来た送信が、報告の終わりを待つのに使う）。イベントループの中で作る
 SLACK_QUEUE_WAIT = 45.0  # Slack から来た送信が、報告の終わりを待つ上限（秒）。送り（herdr の上限 30 秒）と合わせて hubctl send の待ち（100 秒）に収める
 REPORT_SEQ = 0  # 報告の通し番号（報告を始めるたびに進む）
-DIRECT_DROPS: set = set()  # 接続ごとの「送る前のハブ以外への指示を取り消す」処理（どの画面の「停止」でも、全部の接続の分を取り消す。a2a 38ef4720）
+# 送る前のハブ以外への指示（番号 → 印 {"key", "sent", "dropped", "handed", "lock", "notify"}）。どの画面の「停止」でも全部を取り消す。
+# 接続が切れても、送る仕事が終わるまで残す（切れた画面の指示も、ほかの画面の停止で送らせない。a2a 38ef4720）
+DIRECT_PENDING: dict[int, dict] = {}
+DIRECT_SEQ = {"n": 0}
+STOP_GEN = {"n": 0}  # どこかの画面で「停止」を押した回数（声の聞き取りの間に止めたかを、指示を作るときに見る）
+
+
+def drop_pending(d: dict):
+    """送る前のハブ以外への指示 d を取り消す。まだ送っていなければ送らせず（送るスレッドの commit が見る）、指示を出した画面に知らせる。"""
+    with d["lock"]:
+        if d["sent"] or d["dropped"] or DIRECT_PENDING.get(d["key"]) is not d:  # 送った・取り消した・送る仕事に渡さずに終わった
+            return
+        d["dropped"] = True
+    DIRECT_PENDING.pop(d["key"], None)
+    d["notify"]()
+
+
 REPORT_SPEECH: set = set()  # いま読み上げている報告の止める合図（画面の「停止」で立てる。codex-review bcd26ac）
 REPORT_FAILED: dict[int, bool] = {}  # 番号ごとに、報告が失敗・時間切れで終わったか（直近の分だけ持つ）
 LAST_DONE: dict[str, tuple] = {}  # セッションごとの、最後に報告した (ターンの目印, 返答)。同じ返答を二度知らせないため
@@ -3401,6 +3417,9 @@ async def ws(sock: WebSocket):
         except Exception as e:  # 語り手・音声合成・herdr の失敗を黙って止めず、画面とログに出す
             traceback.print_exc()
             await send(type="error", text=f"{type(e).__name__}: {e}"[:300])
+        finally:
+            if direct is not None and not direct["handed"]:  # 送る仕事に渡さずに終わった（断った・相手がいない・取り消した）。一覧から外す
+                DIRECT_PENDING.pop(direct["key"], None)
 
     async def talk_turn(talker, job: asyncio.Task | None, pane: str, cancel: asyncio.Event, plain: bool = False, admitted: int | None = None):
         # plain: 本体がその場で答えた決まった問い。読み上げは語り手を通さない
@@ -3480,6 +3499,8 @@ async def ws(sock: WebSocket):
                 loop.call_soon_threadsafe(topics.mark_direct, session)
                 return True
 
+            if direct is not None:
+                direct["handed"] = True  # ここからは、送る仕事が終わるまで一覧に残す（切れても、ほかの画面の停止で取り消せる）
             tok = ASK_COMMIT.set(commit)
             try:
                 fut = track_send(pane, ask(agent, text + extra))  # 送る仕事は、作るときの ASK_COMMIT を持つ
@@ -3499,6 +3520,8 @@ async def ws(sock: WebSocket):
                     t.add_done_callback(_tasks.discard)
 
             fut.add_done_callback(report_failure)
+            if direct is not None:
+                fut.add_done_callback(lambda _f, k=direct["key"]: DIRECT_PENDING.pop(k, None))
             try:
                 state, reply = await asyncio.shield(fut)
             except asyncio.CancelledError:
@@ -3518,7 +3541,8 @@ async def ws(sock: WebSocket):
                 await speak_to([client], reply, cancel)
 
     def start_turn(text: str, pane: str, speaker: int, key: str | None, reply_at: float | None = None, files: list[str] | None = None,
-                   item: int | None = None, said: str | None = None, admitted: int | None = None, via: str | None = None, seen: int | None = None):
+                   item: int | None = None, said: str | None = None, admitted: int | None = None, via: str | None = None, seen: int | None = None,
+                   stopgen: int | None = None):
         # said: 辞書で直す前の聞き取り（直したときだけ。ハブの守りの台帳に載せる）
         # admitted: 発言を受けたその場（声なら発言の頭が届いたとき）に取った受け付けの番号。無ければここで取る
         # via: 発言を受けたその場の発言元（機械なら "device"）。無ければいまの名乗りから決める（声は頭のときに控える。頭と声の間に
@@ -3551,27 +3575,30 @@ async def ws(sock: WebSocket):
             _tasks.add(job)
             job.add_done_callback(_tasks.discard)
         direct = None
-        if job is None and not (talker and talker.on()):  # ハブ以外への指示。送るのは画面のターンの中なので、送り始めたかを控える
-            direct = direct_turn["d"] = {"sent": False, "dropped": False, "lock": threading.Lock()}
+        if job is None and not (talker and talker.on()):  # ハブ以外への指示。送るのは画面のターンの中なので、送ったかを本体の一覧で控える
+            DIRECT_SEQ["n"] += 1
+            direct = direct_turn["d"] = DIRECT_PENDING[DIRECT_SEQ["n"]] = {
+                "key": DIRECT_SEQ["n"], "sent": False, "dropped": False, "handed": False, "lock": threading.Lock(), "notify": notify_unsent}
+            if stopgen is not None and stopgen != STOP_GEN["n"]:  # 声の頭を受けたあと（聞き取りの間）に、どこかの画面で止めた
+                drop_pending(direct)
         current = asyncio.create_task(turn(text, pane, cancel, key, reply_at, files, job, plain=bool(quick_kind), admitted=admitted, direct=direct))
 
     direct_turn: dict = {"d": None}  # いまの画面のターンが、ハブ以外への指示ならその印 {"sent": 送り始めたか}
 
     def drop_direct():
-        # 画面のターンを止める・次の発言で取り消す前に呼ぶ。ハブ以外への指示をまだ送り始めていなければ、送っていないと画面に知らせる
-        # （「送りました」と出たまま、黙って消さない。聞き取りの間に止めたときも同じ。codex-review e460a4f）
+        # この接続の画面のターンを次の発言で取り消す前に呼ぶ。ハブ以外への指示をまだ送っていなければ、送らせず、送っていないと画面に知らせる
+        # （「送りました」と出たまま、黙って消さない。codex-review e460a4f）
         d, direct_turn["d"] = direct_turn["d"], None
-        if d is None or not current or current.done():
-            return
-        with d["lock"]:
-            if d["sent"]:
-                return
-            d["dropped"] = True  # ワーカーがまだ送っていなければ、送らせない
-        task = asyncio.create_task(send(type="error", text="送る前に取り消したので、セッションへの前の指示は送っていません"))
+        if d is not None:
+            drop_pending(d)
+
+    def notify_unsent():
+        async def tell():
+            with contextlib.suppress(Exception):  # 画面が切れていれば知らせない
+                await send(type="error", text="送る前に取り消したので、セッションへの前の指示は送っていません")
+        task = asyncio.create_task(tell())
         _tasks.add(task)
         task.add_done_callback(_tasks.discard)
-
-    DIRECT_DROPS.add(drop_direct)
 
     def left_hub(pane: str):
         # ハブ以外に話した（声は発言の頭が届いたとき。聞き取りが空・失敗でも）。ハブの直前の問いは、次にハブへ言う発言の直前に聞いた文
@@ -3608,8 +3635,10 @@ async def ws(sock: WebSocket):
                     if pending.get("type") == "turn":  # 声の発言の頭のあと、声の本体の前に止めた。あとから届く声は聞き取らずに捨てる（「止めました」のあとに送らない。codex-review 7793a44）
                         pending = {"type": "dropped"}
                     cancel.set()
-                    for drop in list(DIRECT_DROPS):  # この画面とほかの画面の、送る前のハブ以外への指示を取り消し、それぞれの画面に知らせる
-                        drop()
+                    STOP_GEN["n"] += 1
+                    direct_turn["d"] = None
+                    for pend in list(DIRECT_PENDING.values()):  # この画面とほかの画面（切れた画面も）の、送る前のハブ以外への指示を取り消し、それぞれに知らせる
+                        drop_pending(pend)
                     if current:
                         current.cancel()
                     for ev in list(REPORT_SPEECH):  # 報告の読み上げも止める
@@ -3623,7 +3652,7 @@ async def ws(sock: WebSocket):
                     continue
                 pending = d  # {"type":"turn", pane, speaker, filename} → 次のバイナリが音声
                 if d["type"] == "turn":  # 声の発言の頭が届いた。受け付けの番号はここで取る（聞き取りの間に届いた前の往復の返事を、聞いた文にしない）
-                    pending = {**d, "_admitted": admit_now(heard_seen(d)), "_via": "device" if client.kind == "device" else ""}
+                    pending = {**d, "_admitted": admit_now(heard_seen(d)), "_via": "device" if client.kind == "device" else "", "_stopgen": STOP_GEN["n"]}
                     left_hub(str(d.get("pane", "")))
                 if d["type"] == "text":
                     start_turn(d["text"], d["pane"], int(d["speaker"]), d.get("key"), reply_at_of(d), attachments_of(d), reply_item_of(d), seen=heard_seen(d))
@@ -3649,11 +3678,10 @@ async def ws(sock: WebSocket):
                 text = await asyncio.to_thread(fix_heard, said)  # 画面とハブ・セッションに渡す文。守りの台帳には直す前の said を載せる
                 await send(type="transcript", pane=head["pane"], text=text)
                 start_turn(text, head["pane"], int(head["speaker"]), head.get("key"), reply_at_of(head), attachments_of(head),
-                           reply_item_of(head), said if text != said else None, admitted=head["_admitted"], via=head["_via"])
+                           reply_item_of(head), said if text != said else None, admitted=head["_admitted"], via=head["_via"], stopgen=head["_stopgen"])
     except WebSocketDisconnect:
         pass
     finally:
-        DIRECT_DROPS.discard(drop_direct)
         CLIENTS.discard(client)
         if win_of(client) == client.cid:  # 印を名乗らなかった接続の「話しかけた時刻」は、切れたら消す（ほかの接続に引き継がない）
             WIN_SPOKE.pop(client.cid, None)

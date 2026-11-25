@@ -563,6 +563,69 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s._if_still, s.herdr, s.list_agents, s.jsonl_path = real_if, real_herdr, real_agents, real_jsonl
         check("別の画面で止めても、送る前のハブ以外への指示は送らず、指示を出した画面に送っていないと知らせる",
               (prompts6, any(t == "error" and "送っていません" in x for t, x in seen6)), ([], True))
+        # 別の画面の「停止」が、この画面の声（ハブ以外宛て）の聞き取りの間に来ても、聞き取ったあとの指示は送らずに知らせる（a2a 38ef4720 の 4 回目）
+        prompts7, tr_in7, tr_go7 = [], threading.Event(), threading.Event()
+
+        def slow_transcribe7(audio, filename):
+            tr_in7.set()
+            tr_go7.wait(5)
+            return "聞き取りの間に別の画面で止めた指示"
+
+        def fake_herdr7(*a, **k):
+            if a[:2] == ("agent", "prompt"):
+                prompts7.append(a[3])
+            return {"result": {"agent": {"agent_status": "idle"}}}
+
+        s.transcribe, s.herdr, s.jsonl_path = slow_transcribe7, fake_herdr7, (lambda a: None)
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        seen7 = []
+        try:
+            w.send_text(json.dumps({"type": "turn", "pane": "w9:p1", "speaker": 0, "filename": "a.webm", "hid": -1}))
+            w.send_bytes(b"0" * 4000)
+            check("（前提）この画面の声を聞き取っている", tr_in7.wait(5), True)
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+                wb.send_text(json.dumps({"type": "stop"}))
+                receive_until(wb, "stopped")
+            tr_go7.set()
+            for _ in range(60):  # 知らせが来なければ、送ったあとの「回答を読めませんでした」で終わる
+                m = json.loads(w.receive_text())
+                seen7.append((m.get("type"), m.get("text", "")))
+                if m.get("type") == "error":
+                    break
+            time.sleep(0.3)
+        finally:
+            tr_go7.set()
+            s.transcribe, s.herdr, s.list_agents, s.jsonl_path = real_transcribe, real_herdr, real_agents, real_jsonl
+        check("別の画面の停止がこの画面の聞き取りの間に来たら、聞き取ったハブ以外への指示は送らず、送っていないと知らせる",
+              (prompts7, any(t == "error" and "送っていません" in x for t, x in seen7)), ([], True))
+        # 指示を出した画面が、送るスレッドの空きを待つ間に切れても、別の画面の停止で取り消す（切れた画面の指示も送らせない）
+        prompts8, gate8, entered8 = [], threading.Event(), threading.Event()
+
+        def waiting_if_still8(still, fn, *a):
+            entered8.set()
+            gate8.wait(5)
+            return real_if(still, fn, *a)
+
+        def fake_herdr8(*a, **k):
+            if a[:2] == ("agent", "prompt"):
+                prompts8.append(a[3])
+            return {"result": {"agent": {"agent_status": "idle"}}}
+
+        s._if_still, s.herdr, s.jsonl_path = waiting_if_still8, fake_herdr8, (lambda a: None)
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "text", "text": "切れる画面の指示", "pane": "w9:p1", "speaker": 0, "hid": -1}))
+                check("（前提）切れる画面の指示が、送るスレッドの手前で待っている", entered8.wait(5), True)
+            time.sleep(0.3)  # 画面 A が切れた
+            w.send_text(json.dumps({"type": "stop"}))
+            receive_until(w, "stopped")
+            gate8.set()
+            time.sleep(0.5)
+        finally:
+            gate8.set()
+            s._if_still, s.herdr, s.list_agents, s.jsonl_path = real_if, real_herdr, real_agents, real_jsonl
+        check("指示を出した画面が切れたあとでも、別の画面の停止で送る前の指示を取り消す", prompts8, [])
         # 送り始めたあとに次の発言でターンを取り消し、そのあとで相手が断ったら、送れなかったことを画面に知らせる（a2a 38ef4720）
         gate4, entered4 = threading.Event(), threading.Event()
 
