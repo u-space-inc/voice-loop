@@ -85,10 +85,11 @@ for _ in range(200):
     time.sleep(0.05)
 
 # 画面が送る hello を拾う
-CATCH = """(() => { window.__hello = []; window.__types = []; const o = WebSocket.prototype.send;
+CATCH = """(() => { window.__hello = []; window.__types = []; window.__sent = []; const o = WebSocket.prototype.send;
   WebSocket.prototype.send = function (m) {
     let d = null; try { d = typeof m === 'string' ? JSON.parse(m) : null; } catch {}
     if (d && d.type === 'hello') window.__hello.push(d);
+    if (d && d.type === 'report_seen') window.__sent.push(d);
     if (d && d.type) window.__types.push(d.type);
     if (d && d.type === 'stop' && window.__dropStop) return;  // 止める合図が本体に届かなかった（届いた印を出さないかを見る）
     return o.call(this, m);
@@ -276,9 +277,12 @@ with sync_playwright() as pw:
     # 報告の本文を出したときだけ、本体に受け取りを返す（件名だけの知らせ・顔の表示で会話が隠れている・履歴を読めない・描いた最後の報告が別、では返さない。
     # codex-review 84a1855・a2a e0d36243 の 4 回目）
     hist = {"mode": "ok", "text": ""}
+    held: list = []
 
     def fake_history(route):
-        if hist["mode"] == "fail":
+        if hist["mode"] == "hold":
+            held.append(route)  # 返すのを止めておく（あとで返す）
+        elif hist["mode"] == "fail":
             route.abort()
         else:
             route.fulfill(status=200, content_type="application/json",
@@ -287,7 +291,7 @@ with sync_playwright() as pw:
     pg.route("**/api/history*", fake_history)
 
     def seen_after(msg, face_on, then="", before=""):
-        pg.evaluate(f"faceOn = {'true' if face_on else 'false'}; applyInert(); window.__types.length = 0; {before}")
+        pg.evaluate(f"faceOn = {'true' if face_on else 'false'}; applyInert(); window.__types.length = 0; window.__sent.length = 0; {before}")
         pg.evaluate(f"({deliver})({json.dumps(msg, ensure_ascii=False)}); {then}")
         try:
             pg.wait_for_function("window.__types.includes('report_seen')", timeout=1500)
@@ -301,6 +305,7 @@ with sync_playwright() as pw:
     other = seen_after({**base, "rid": 15, "text": "別の相手を選んでいる画面の報告", "pane": "nope"}, False)
     on_face = seen_after({**base, "rid": 16, "text": "いまの相手の報告", "pane": hub}, True)
     shown = seen_after({**base, "rid": 17, "text": "いまの相手の報告", "pane": hub}, False)
+    shown_rid = pg.evaluate("window.__sent.map(d => d.rid)")
     # 読み込みの途中で、別の読み込みが始まった（会話の欄には、同じ本文の前の報告が出ている）
     superseded = seen_after({**base, "rid": 20, "text": "いまの相手の報告", "pane": hub}, False, then="loadThread()")
     # 会話の欄が隠れている・画面が裏に回っている（読み上げを切っている）。成果物の画面・読む表示は、会話の欄を操作できなくする印（inert）で表す
@@ -315,8 +320,47 @@ with sync_playwright() as pw:
     failed = seen_after({**base, "rid": 18, "text": "いまの相手の報告", "pane": hub}, False)
     hist["mode"], hist["text"] = "ok", "前の報告"
     stale = seen_after({**base, "rid": 19, "text": "いまの相手の報告", "pane": hub}, False)
+    # 書式のある報告は、見えない所がありうるので受け取りを返さない（畳む欄・描くと消える書き方・箇条書き）。書式の無い報告を直接描いたときは返す
+    pg.evaluate("muted = true")
+    direct = seen_after({**base, "rid": 24, "saved": False, "text": "直接描いた報告です。", "pane": hub}, False)
+    direct_rid = pg.evaluate("window.__sent.map(d => d.rid)")
+    folded = seen_after({**base, "rid": 25, "saved": False, "text": "<details><summary>要約</summary>proj を閉じていいですか？</details>", "pane": hub}, False)
+    vanish = seen_after({**base, "rid": 26, "saved": False, "text": "[閉じていいですか]: /manual", "pane": hub}, False)
+    hist["text"] = "- 項目\n- proj を閉じていいですか？"
+    listed = seen_after({**base, "rid": 27, "text": "- 項目\n- proj を閉じていいですか？", "pane": hub}, False)
+    hist["text"] = "【見出し】いまの相手の報告です。\n次の行です。"
+    lead = seen_after({**base, "rid": 28, "text": "【見出し】いまの相手の報告です。\n次の行です。", "pane": hub}, False)
+    # 履歴を読み込む間に、話し相手が替わった・接続が替わった（読み込みは、届いた報告と同じ本文で返す）
+    hist["text"] = "いまの相手の報告"
+
+    def held_case(rid, change, undo):
+        held.clear()
+        hist["mode"] = "hold"
+        pg.evaluate(f"window.__sent.length = 0; window.__fakeSent = []; faceOn = false; applyInert(); void ({deliver})({json.dumps({**base, 'rid': rid, 'text': 'いまの相手の報告', 'pane': hub}, ensure_ascii=False)})")  # 受け取りの処理の終わりを待たない（読み込みを止めている）
+        for _ in range(100):
+            if held:
+                break
+            pg.wait_for_timeout(30)
+        pg.evaluate(change)
+        hist["mode"] = "ok"
+        held[0].fulfill(status=200, content_type="application/json",
+                        body=json.dumps({"source": "hermes", "messages": [{"role": "ai", "text": "いまの相手の報告", "report": True, "about": "proj｜t", "at": 1}]}))
+        pg.wait_for_timeout(800)
+        sent = pg.evaluate("window.__sent.length + (window.__fakeSent || []).length")
+        pg.evaluate(undo)
+        return bool(held) and sent > 0
+
+    pane_moved = held_case(29, "const o = document.createElement('option'); o.value = 'w9:other'; o.id = 'optOther'; o.textContent = 'other';"
+                               "document.getElementById('agent').appendChild(o); document.getElementById('agent').value = 'w9:other'",
+                           f"document.getElementById('agent').value = {json.dumps(hub)}; document.getElementById('optOther').remove()")
+    sock_moved = held_case(30, "window.__realws = ws; ws = { readyState: 1, send: m => window.__fakeSent.push(m) }", "ws = window.__realws")
+    pg.evaluate(f"muted = {'true' if muted_before else 'false'}")
     pg.unroute("**/api/history*")
     pg.evaluate("faceOn = true; applyInert()")
+    check("顔: 報告の受け取りは、その報告の番号で返す（履歴から描いたとき・直接描いたとき）", (shown_rid, direct, direct_rid), ([17], True, [24]))
+    check("顔: 書式のある報告（畳む欄・描くと消える書き方・箇条書き）は受け取りを返さず、【見出し】と改行だけの報告は返す（a2a 524948fc）",
+          (folded, vanish, listed, lead), (False, False, False, True))
+    check("顔: 履歴を読み込む間に話し相手・接続が替わったら、受け取りを返さない", (pane_moved, sock_moved), (False, False))
     check("（前提）顔の表示の話し相手が決まっている", bool(hub), True)
     check("顔: 報告の受け取りは、本文を描いたときだけ返す（ほかの相手を選んでいる・顔で会話が隠れている・履歴を読めない・描いた最後の報告が別・読み込みが入れ替わった・会話の欄が隠れている・画面が裏に回っている、では返さない）",
           (other, on_face, shown, failed, stale, superseded, covered, hidden), (False, False, True, False, False, False, False, False))

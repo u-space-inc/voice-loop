@@ -505,6 +505,26 @@ function bubble(role, text, extra = '') {
   $('log').scrollTop = $('log').scrollHeight;
   return el;
 }
+// 報告の本文を、隠れる所の無い平らな文のまま描いたか（受け取りを返してよいか。a2a 524948fc）。段落・改行・【見出し】の印のほかに要素があれば
+// （書式・畳む欄・リンク・成果物など）、見えている文と本文がずれうるので false。見えている文（空白を詰めたもの）が、届いた本文と同じときだけ true
+function plainShown(el, text) {
+  const norm = s => String(s).replace(/\s+/g, ' ').trim();
+  const head = el.querySelector(':scope > .rep'); // 本体が付ける報告の見出し
+  let seen = '', ok = true;
+  const walk = n => {
+    for (const c of n.childNodes) {
+      if (!ok) return;
+      if (c === head) continue;
+      if (c.nodeType === 3) seen += c.data;
+      else if (c.nodeType === 1 && c.tagName === 'BR') seen += ' ';
+      else if (c.nodeType === 1 && c.tagName === 'P') { seen += ' '; walk(c); seen += ' '; }
+      else if (c.nodeType === 1 && c.tagName === 'SPAN' && c.className === 'lead') walk(c);
+      else ok = false;
+    }
+  };
+  walk(el);
+  return ok && norm(text) !== '' && norm(seen) === norm(text);
+}
 // 行の頭の【見出し】に印を付ける（PC の幅で太く出す。スマホでは見た目を変えない）。文字の節を分けるだけで、HTML は組み立てない
 function markLeads(root) {
   const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT), hits = [];
@@ -2152,13 +2172,14 @@ function connect() {
     else if (m.type === 'reply') {
       if (!m.quiet) speakingReport = m.report ? (m.rid ?? null) : null; // いま鳴らす報告の番号（別の画面からの停止は、この報告の音声にだけ効く）。文字だけの報告では変えない（codex-review 17f8e88）
       if (!here) { if (m.report) sys(A('ハブから報告が届きました: ') + m.about + (m.saved === false ? A('（記録に書けなかったので、ハブの履歴には出ません）') : A('（ハブを選ぶと読めます）'))); return; } // report = 頼んだ件についての、ハブからの自発的な報告
-      let shown = false; // この報告の本文を会話の欄に出したか（受け取りを返すかの確かめ）
-      if (m.saved === false) { bubble('ai', m.text); shown = true; sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); } // 描き直すと消えるので、そのまま足す
+      let shownEl = null; // この報告の本文を描いた吹き出し（受け取りを返すかの確かめ）
+      if (m.saved === false) { shownEl = bubble('ai', m.text); sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); } // 描き直すと消えるので、そのまま足す
       else {
         const drawn = await loadThread(); // 記録から描き直す（新しいセッションは、この時点で初めて記録ができている）
-        if (threadSource === 'none') { bubble('ai', m.text); localPush('ai', m.text); shown = true; }
-        else if (drawn) { const last = [...$('log').querySelectorAll('.msg.ai')].filter(e => e._report !== undefined).pop(); shown = !!last && last._report === m.text; } // 描き直した最後の報告が、届いた報告
+        if (threadSource === 'none') { shownEl = bubble('ai', m.text); localPush('ai', m.text); }
+        else if (drawn) { const last = [...$('log').querySelectorAll('.msg.ai')].filter(e => e._report !== undefined).pop(); if (last && last._report === m.text) shownEl = last; } // 描き直した最後の報告が、届いた報告
       }
+      const shown = !!shownEl && plainShown(shownEl, m.text); // 書式のある報告（見えない所がありうる）は、受け取りを返さない（↩ 返信か、聞き直しで答える）
       // 報告の本文を出したときだけ、本体に受け取りを返す（本体はこれを受けて、報告を聞いた文にする。codex-review 84a1855）。返さないのは、件名だけの知らせ・
       // 履歴を読めなかった・読み込みが入れ替わった・待つ間に接続や相手が替わった・会話の欄が隠れている（顔の表示・成果物の画面・読む表示）・
       // 画面が裏に回っているとき（a2a e0d36243 の 4・5 回目）
