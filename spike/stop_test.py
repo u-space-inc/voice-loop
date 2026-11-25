@@ -447,6 +447,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
 
         real_speak2 = s.speak_to
         s.speak_to = count_speak
+        s.REPORT_SPEECH.clear()  # 前の確かめの報告（90 秒残る）を外し、この報告だけで見る（a2a e0d36243 の 2）
         try:
             hm.ask_hermes = slow_report
             fut = c.portal.start_task_soon(s._report, dict(REPORT_D), "done")
@@ -468,12 +469,12 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             if m.get("type") == "error":
                 break
         check("文字だけで届けた報告のあとに「止めた」を送らない（そのあとの別の返事を止めない。codex-review 17f8e88）", "stopped" in after_rep, False)
-        for ev in [e for e, info in list(s.REPORT_SPEECH.items()) if info.get("ring")]:  # 前の確かめで読み上げの形で届けた報告（90 秒残る）を外す。いまの報告だけで見る
-            s.REPORT_SPEECH.pop(ev, None)
+        check("（前提）文字だけで届けた報告が、止める宛先の一覧に残っている（取り除かずに確かめる）", len(s.REPORT_SPEECH), 1)
         with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as other3:  # 別の画面で止めても、文字だけで受けた画面には送らない（a2a e0d36243 の 4）
             other3.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "w-other-0003"}))
             other3.send_text(json.dumps({"type": "stop"}))
             receive_until(other3, "stopped")
+            time.sleep(0.5)  # ほかの画面へ止めたを送る仕事（期限つきの別の仕事）が終わるのを待ってから区切る
             w.send_text(json.dumps({"type": "text", "text": "区切り", "pane": "w9:nope", "speaker": 0}))
             after_other = []
             for _ in range(50):
@@ -687,6 +688,24 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         asked_row = next((r for r in list(hm.HERMES_TURNS) if r[1] == "送る途中の問い"), None)
         check("本物の流れ: 画面に送る途中で次の「はい」を受け付けたら、送れていない問いは「はい」の聞いた文にも、台帳の返事の欄にも入らない",
               (yes[3] if yes else None, asked_row[2] if asked_row else None), ("", ""))
+
+
+# 報告の話し終わり（done）に報告の番号を付ける（画面は、その報告を話し終えたときにだけ番号を消す。a2a e0d36243）
+class Rec:
+    voice = False
+
+    def __init__(self):
+        self.got = []
+
+    async def send(self, **msg):
+        self.got.append(msg)
+
+
+r1, r2 = Rec(), Rec()
+asyncio.run(s.speak_to([r1], "報告です", asyncio.Event(), report=21))
+asyncio.run(s.speak_to([r2], "ふつうの返事です", asyncio.Event()))
+check("報告の話し終わりには報告の番号を付け、ふつうの返事の話し終わりには付けない",
+      ([m.get("report") for m in r1.got if m.get("type") == "done"], ["report" in m for m in r2.got if m.get("type") == "done"]), ([21], [False]))
 
 bad = [r for r in results if not r[1]]
 for name, ok, got, want in results:

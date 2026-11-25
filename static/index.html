@@ -1104,7 +1104,7 @@ player.addEventListener('ended', () => { if (nowSilent) { nowSilent = false; if 
 player.addEventListener('error', () => { if (nowSilent || !playing) return; clog('audio error code=' + (player.error && player.error.code)); playNext(); });
 $('tap').onclick = () => { showTap(false); playNext(); };
 function stopPlayback() { gen++; queue = []; playing = false; accepting = false; cueing = false; player.pause(); showTap(false); if (speakingEl) speakingEl.classList.remove('speaking'); speakingEl = null; face('idle'); } // 止めたら口を閉じる（録音中なら、face が聞いている顔のままにする）
-function finishSpeaking(msg = muted ? '返答が届きました（文字だけ）' : '話し終わりました') { speakingReport = null; if (speakingEl) speakingEl.classList.remove('speaking'); speakingEl = null; setStatus(msg); face('idle'); } // 話し終えたら、鳴らしていた報告の番号を消す（あとの別の画面からの止めたで、次の発言の待ちを止めない。codex-review 39b30fa）
+function finishSpeaking(msg = muted ? '返答が届きました（文字だけ）' : '話し終わりました') { if (speakingReport != null && speakingReport === reportDone) speakingReport = null; if (speakingEl) speakingEl.classList.remove('speaking'); speakingEl = null; setStatus(msg); face('idle'); } // その報告の話し終わり（番号つきの done）が届いていて、鳴らし終えたら、報告の番号を消す（あとの別の画面からの止めたで、次の発言の待ちを止めない。codex-review 39b30fa）。前の返事の話し終わりでは消さない（a2a e0d36243）
 
 // ---------- 読み上げの切り替え（🔇） ----------
 // 端末ごとに覚える。切ると、鳴っている声をその場で止め、本体にも音声を送らないよう伝える（返答の文字はこれまでどおり出る）。
@@ -2160,8 +2160,8 @@ function connect() {
     else if (m.type === 'speaking') { accepting = !muted; serverDone = false; } // 切っている間に届いた音声は鳴らさない（本体も送らないが、切った直後の分が届くことがある）
     else if (m.type === 'error') { stopPlayback(); face('idle'); sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); setStatus(''); if (FACE) $('faceCap').textContent = '⚠ ' + m.text; if (m.gone) { agentsSig = ''; loadAgents(); } } // 相手が消えた・入れ替わった → 一覧を取り直す
     else if (m.type === 'notice') { sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); } // ハブから報告を受け取れなかった等（いまの話し相手とは別の知らせ）
-    else if (m.type === 'done') { serverDone = true; turnDone = true; if (!playing && !queue.length) finishSpeaking(); loadAgents(); }
-    else if (m.type === 'stopped') { if (m.report != null && m.report !== speakingReport) return; speakingReport = null; stopPlayback(); setStatus('止めました'); if (faceAckWait) { faceAckWait = false; faceAck(); } } // 届いた印は、本体が止めたと返してから（codex-review 44b3c2e）
+    else if (m.type === 'done') { if (m.report != null) reportDone = m.report; serverDone = true; turnDone = true; if (!playing && !queue.length) finishSpeaking(); loadAgents(); }
+    else if (m.type === 'stopped') { if (m.report != null && m.report !== speakingReport) return; speakingReport = null; stopPlayback(); setStatus('止めました'); if (faceAckWait && m.report == null) { faceAckWait = false; faceAck(); } } // 届いた印は、本体がこの画面の停止に返してから（番号なしの止めた。別の画面からの番号つきでは出さない。codex-review 44b3c2e・a2a e0d36243）
     else if (m.type === 'blocked') loadAsks(); // 話している相手が承認で止まった → すぐ並べる
     else if (m.type === 'agent_notice') { loadSituation(); faceNotice(m); } // 代理からの知らせ。会話の欄には出さず、💡 の数と受け箱を取り直す（閉じていても）。顔の表示では縁と一言で知らせる
   };
@@ -2309,6 +2309,7 @@ Promise.race([Promise.allSettled([loadAgents(), ensureSpeakers()]).then(() => tr
 function face(s) { if (FACE) $('face').dataset.s = !linked() ? 'offline' : rec && rec.state === 'recording' ? 'listen' : s; }
 // 顔を押して止めたとき、届いた印（縁を白く一瞬）は、本体が止めたと返してから光らせる
 let faceAckWait = false;
+let reportDone = null; // 話し終わり（done）が届いた、いちばん新しい報告の番号
 let speakingReport = null; // いま鳴らしている報告の番号（別の画面からの「止めた」は、番号が合うときだけ再生を止める。codex-review cfb561a）
 function faceAck() { if (!FACE) return; const f = $('face'); f.classList.remove('ack'); void f.offsetWidth; f.classList.add('ack'); setTimeout(() => f.classList.remove('ack'), 600); }
 // 縁の琥珀色: 急ぎ。承認・入力待ちがあるか、代理（Hermes）からの新しい知らせをまだ聞いていないとき。顔の表示では受け箱が見えず、

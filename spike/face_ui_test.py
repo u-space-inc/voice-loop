@@ -231,9 +231,20 @@ with sync_playwright() as pw:
     check("顔: 文字だけで届いた別の報告は、いま鳴らしている報告の番号を変えない（その報告への止めたは効く。codex-review 17f8e88）",
           pg.evaluate(f"({once})({{type: 'stopped', report: 9}})"), 1)
     pg.evaluate(f"({deliver})({{type: 'reply', report: true, rid: 11, text: '報告4', about: 'proj｜t', pane: 'nope'}})")
-    pg.evaluate("finishSpeaking()")  # 報告を最後まで話し終えた
+    pg.evaluate(f"({deliver})({{type: 'done', sentences: 0, report: 11}})")  # 報告を最後まで話し終えた（その報告の番号つきの話し終わり）
     check("顔: 報告を話し終えたあとは、その報告への別の画面からの止めたで止めない（次の発言の待ちを止めない。codex-review 39b30fa）",
           pg.evaluate(f"({once})({{type: 'stopped', report: 11}})"), 0)
+    pg.evaluate(f"({deliver})({{type: 'reply', report: true, rid: 12, text: '報告5', about: 'proj｜t', pane: 'nope'}})")
+    pg.evaluate(f"({deliver})({{type: 'done', sentences: 0}})")  # 前のふつうの返事の話し終わりが、報告の文字のあとに届いた
+    check("顔: 前の返事の話し終わりでは、これから鳴らす報告の番号を消さない（その報告への止めたは効く。a2a e0d36243）",
+          pg.evaluate(f"({once})({{type: 'stopped', report: 12}})"), 1)
+    pg.evaluate(f"faceAckWait = true; ({deliver})({{type: 'reply', report: true, rid: 13, text: '報告6', about: 'proj｜t', pane: 'nope'}})")
+    pg.evaluate(f"({deliver})({{type: 'stopped', report: 13}})")  # この画面の停止への返事（番号なし）より先に、別の画面からの番号つきの止めたが届いた
+    check("顔: 別の画面からの番号つきの止めたでは、この画面の停止の届いた印を出さない（a2a e0d36243）",
+          (pg.evaluate("faceAckWait"), pg.evaluate("document.getElementById('face').classList.contains('ack')")), (True, False))
+    pg.evaluate(f"({deliver})({{type: 'stopped'}})")
+    check("顔: …この画面の停止への返事（番号なし）が届いたら、届いた印を出す", (pg.evaluate("faceAckWait"), pg.evaluate("document.getElementById('face').classList.contains('ack')")), (False, True))
+    pg.wait_for_timeout(800)  # 届いた印が消えてから次の確かめへ
     pg.evaluate("stopPlayback = window._sp")
     # 止める合図が本体に届かなかったら、届いた印を出さず、「止めました」とも言わない（手元の再生は止める。codex-review 44b3c2e）
     pg.evaluate("window.__dropStop = true; face('speak')")

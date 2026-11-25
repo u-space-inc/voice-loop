@@ -1491,11 +1491,13 @@ async def plain_sentences(text: str, cancel: asyncio.Event):
             yield part.strip()
 
 
-async def speak_to(clients: list[Client], text: str, cancel: asyncio.Event, plain: bool = False):
+async def speak_to(clients: list[Client], text: str, cancel: asyncio.Event, plain: bool = False, report: int | None = None):
     """話し言葉に直し、文ごとに合成して画面へ送る。声は画面ごとの選択に従う。切れた画面は飛ばす。
     読み上げを切った画面には音声を送らない（文字は先に reply で届いている）。聞く画面が無ければ、語り手も合成も呼ばない。
-    plain なら語り手を通さず、文のまま合成する（本体の決まった答え。語り手の待ち・失敗に左右されない）。"""
+    plain なら語り手を通さず、文のまま合成する（本体の決まった答え。語り手の待ち・失敗に左右されない）。
+    report は報告の番号。話し終わり（done）に付け、画面はその報告の番号を、その報告を話し終えたときにだけ消す（a2a e0d36243）。"""
     alive = list(clients)
+    tag = {"report": report} if report is not None else {}
 
     async def each(fn):
         for c in list(alive):
@@ -1523,7 +1525,7 @@ async def speak_to(clients: list[Client], text: str, cancel: asyncio.Event, plai
                 body = lambda c: (opus.get(voice[c]) or wavs[voice[c]]) if getattr(c, "audio", "wav") == "opus" else wavs[voice[c]]
                 await each(lambda c: c.sock.send_bytes(body(c)) if c in voice and c.voice else asyncio.sleep(0))
                 n += 1
-    await each(lambda c: c.send(type="done", sentences=n))
+    await each(lambda c: c.send(type="done", sentences=n, **tag))
 
 
 # 報告の声を鳴らすのは 1 か所（設計書 R1・課題 K9。2026-11-23 本人「推奨で」）。文字はすべての画面に出し、声は最後に話しかけた窓だけで鳴らす。
@@ -2326,7 +2328,7 @@ async def _report_body(d: dict, kind: str, notify, mark: int, speech: asyncio.Ev
             # 文字はすべての窓に届いている。読み直すと、文字だけで届けた窓に読み上げの印が付かず（a2a 8f05ef33）、
             # 語り手・合成そのものの失敗では窓の数だけ作り直して、ハブの順番を長く止める（codex-review）
             try:
-                await speak_to(ring, reply, speech)
+                await speak_to(ring, reply, speech, report=seq)
             except Exception as e:
                 hlog(f"報告の声を送り終えられませんでした（{type(e).__name__}）。文字はすべての窓に届いています", flush=True)
         return "ok"

@@ -219,7 +219,7 @@ TARGET = {"pane": "w9:p1", "cwd": "/x/proj", "kind": "claude", "session": "s9", 
 spoken: list[float] = []
 
 
-async def slow_speak(clients, text, cancel):
+async def slow_speak(clients, text, cancel, **k):
     await asyncio.sleep(1.0)
     spoken.append(time.time())
 
