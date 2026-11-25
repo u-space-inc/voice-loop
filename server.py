@@ -947,7 +947,9 @@ async def hub_accepted(talker, text: str, pane: str, reply_at: float | None, fil
             extra, why = await attachment_lines(files, talker, pane)
         kw = {"said": said} if said is not None else {}  # 辞書で直した声の発言だけ、直す前の言葉を守りの台帳に渡す
         if why:
-            await talker.refused(text, why, **kw, **({"via": via} if via else {}))  # 断った発言も、機械からなら機械の印で台帳に載せる
+            # 断った発言も、機械からなら機械の印で台帳に載せる。番号は受け付けたその場のもの（順番待ちの間に止めたら、その発言は
+            # もういまの発言ではない。止めたあとに断る答え（Esc）も送らせない。a2a 3752b7a5）
+            await talker.refused(text, why, **kw, **({"via": via} if via else {}), **({"admitted": admitted} if admitted is not None else {}))
             return "", why, True
         # via は機械からの発言のときだけ渡す（画面からの往復は、これまでの頭の約束の形のまま）
         # admitted: 受け付けたその場の番号（添付の用意・順番待ちの間に止めた・話しかけたなら、返事を「利用者が聞いた文」にしない。a2a 30fd5b94）
@@ -1571,8 +1573,10 @@ def quick_snapshot() -> dict:
             "inbox_problem": bool(box.get("problem")), "inbox_partial": bool(box.get("partial"))}
 
 
-async def hub_quick(talker, kind: str, text: str, pane: str, said: str | None = None, via: str = "") -> tuple[str, str, bool]:
-    """決まった問いに本体が答える（頭に送らない）。受け取った順（ACCEPT_LOCKS）に、発言と答えを頭の台帳と記録に載せる。(答え, 理由, 記録に書けたか)。"""
+async def hub_quick(talker, kind: str, text: str, pane: str, said: str | None = None, via: str = "",
+                    admitted: int | None = None) -> tuple[str, str, bool]:
+    """決まった問いに本体が答える（頭に送らない）。受け取った順（ACCEPT_LOCKS）に、発言と答えを頭の台帳と記録に載せる。(答え, 理由, 記録に書けたか)。
+    admitted は受け付けたその場の番号（台帳にはこの番号で載せる。順番待ちの間に止めたら、その発言はもういまの発言ではない）。"""
     async with ACCEPT_LOCKS.setdefault(pane, asyncio.Lock()):
         kw = {"said": said} if said is not None else {}
         try:
@@ -1581,9 +1585,9 @@ async def hub_quick(talker, kind: str, text: str, pane: str, said: str | None = 
         except Exception as e:  # 状態を読めなかった。断りとして台帳に載せ、前の確認を失効させる（失敗の知らせのあとの発言を、古い確認への答えにしない。codex-review）
             traceback.print_exc()
             why = f"いまの状態を読めませんでした（{type(e).__name__}）。少しおいて、もう一度聞いてください"
-            await talker.refused(text, why, **kw, **({"via": via} if via else {}))
+            await talker.refused(text, why, **kw, **({"via": via} if via else {}), **({"admitted": admitted} if admitted is not None else {}))
             return "", why, True
-        saved = await talker.answered_here(text, answer, **kw, **({"via": via} if via else {}))
+        saved = await talker.answered_here(text, answer, **kw, **({"via": via} if via else {}), **({"admitted": admitted} if admitted is not None else {}))
         hlog(f"すぐ答えた（{kind}）: {len(answer)}字", flush=True)
         return answer, "", saved
 
@@ -3469,27 +3473,32 @@ async def ws(sock: WebSocket):
         cancel = asyncio.Event()
         job = None
         quick_kind = None
-        if admitted is None:
+        if admitted is None:  # 文字の発言（声は、発言の頭が届いたときに済ませている）
             admitted = admit_now()  # 相手がハブでなくても進める（別のセッションに話しかけ直したら、前のハブの往復の許可は失効。codex-review bcd26ac）
+            left_hub(pane)
         if via is None:
             via = "device" if client.kind == "device" else ""
         talker = TALKERS.get(pane)
-        if not (talker and talker.on()):
-            # ハブ以外に話した。ハブの直前の問いは、次にハブへ言う発言の直前に聞いた文ではない（止めたのと同じに、聞いた文と台帳の最新の
-            # 返事を空にする。別のセッションへの指示をはさんだ「はい」で、前の問いの承認・閉じるを通さない。a2a 3752b7a5）
-            for t in TALKERS.values():
-                t.stopped()
-        else:
+        if talker and talker.on():
             # ハブが受け取った発言は、受け取ったその場で（待つものをはさまずに）1 つの仕事にする（hub_accepted: 添付を置く・断る・往復する）。
             # 画面のターン（current）は次の発言で止めるが、この仕事は止めない。受け取った順に作るので、受け取った順に進む
             # （画面のターンの中で作ると、状態の知らせを送る間や、ターンが動き出す前に次の発言が来たとき、前の発言が消える）
             # 添付が無い（空の一覧）ときだけ。形の壊れた添付（None）は、ふつうの道で断る（a2a 8f05ef33）
             kind = quick_kind = quick.match(text, AGENT) if QUICK and isinstance(files, list) and not files and reply_at is None and item is None else None
             # 決まった問いは本体が答える（返信・添付つき・受け箱の件への返信は、いつも頭へ）
-            job = asyncio.create_task(hub_quick(talker, kind, text, pane, said, via) if kind else hub_accepted(talker, text, pane, reply_at, files, item, said, via=via, admitted=admitted))
+            job = asyncio.create_task(hub_quick(talker, kind, text, pane, said, via, admitted) if kind else hub_accepted(talker, text, pane, reply_at, files, item, said, via=via, admitted=admitted))
             _tasks.add(job)
             job.add_done_callback(_tasks.discard)
         current = asyncio.create_task(turn(text, pane, cancel, key, reply_at, files, job, plain=bool(quick_kind), admitted=admitted))
+
+    def left_hub(pane: str):
+        # ハブ以外に話した（声は発言の頭が届いたとき。聞き取りが空・失敗でも）。ハブの直前の問いは、次にハブへ言う発言の直前に聞いた文
+        # ではない（止めたのと同じに、聞いた文と台帳の最新の返事を空にする。別のセッションへの発言をはさんだ「はい」で、前の問いの
+        # 承認・閉じるを通さない。a2a 3752b7a5）
+        talker = TALKERS.get(pane)
+        if not (talker and talker.on()):
+            for t in TALKERS.values():
+                t.stopped()
 
     pending: dict = {}
     try:
@@ -3531,6 +3540,7 @@ async def ws(sock: WebSocket):
                 pending = d  # {"type":"turn", pane, speaker, filename} → 次のバイナリが音声
                 if d["type"] == "turn":  # 声の発言の頭が届いた。受け付けの番号はここで取る（聞き取りの間に届いた前の往復の返事を、聞いた文にしない）
                     pending = {**d, "_admitted": admit_now(), "_via": "device" if client.kind == "device" else ""}
+                    left_hub(str(d.get("pane", "")))
                 if d["type"] == "text":
                     start_turn(d["text"], d["pane"], int(d["speaker"]), d.get("key"), reply_at_of(d), attachments_of(d), reply_item_of(d))
                 continue

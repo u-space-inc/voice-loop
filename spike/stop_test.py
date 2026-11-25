@@ -126,6 +126,28 @@ for name, between in [("次の発言を受け付けた", s.HUB.admit), ("止め�
     s.HUB.delivered(adm)  # 遅れて送り終えても
     check(f"画面に送り終える前に{name}ら、あとで送り終えても聞いた文にしない", (hm.HERMES_HEARD["text"], s.hub_reply_to(s.hub_human_turn())), ("", ""))
 
+# ---- 受け付けたその場で、直前に聞いた文をその発言に引き渡す（あとから受け付けた発言は、前の発言より前の問いを使わない。
+#      声の聞き取りの間に別の画面から言った「はい」など。codex-review 9c14f08）
+hm.ask_hermes = lambda text: "わかりました"
+hm.HERMES_HEARD["text"] = Q
+s.HUB.admit()  # 声の発言の頭（聞き取りの途中）
+adm = s.HUB.admit()  # その間に、別の画面から「はい」
+asyncio.run(hm.hermes_exchange("はい（別の画面から）", admitted=adm))
+heard_b = list(hm.HERMES_TURNS)[-1][3]
+hm.HERMES_HEARD["text"] = Q
+adm = s.HUB.admit()
+asyncio.run(hm.hermes_exchange("はい（問いのすぐあと）", admitted=adm))
+heard_c = list(hm.HERMES_TURNS)[-1][3]
+check("受け付けたその場で聞いた文を引き渡す: 前の発言のあとに受け付けた「はい」は前の問いを使わず、問いのすぐあとの「はい」は使う", (heard_b, heard_c), ("", Q))
+
+# ---- 報告ができたら、画面に送る途中の返事も聞いた文にしない（報告と前後して届くので、どちらを最後に聞いたか分からない。codex-review 9c14f08）
+hm.ask_hermes = lambda text: Q
+adm = s.HUB.admit()
+asyncio.run(hm.hermes_exchange("proj を閉じて", admitted=adm))  # 返事は、画面に送る途中
+asyncio.run(s.HUB.report_end("done", "別件の報告です。", "other｜t", True))
+s.HUB.delivered(adm)  # 報告のあとに、遅れて送り終えた
+check("報告ができたら、画面に送る途中の返事は、あとで送り終えても聞いた文にしない", (hm.HERMES_HEARD["text"], s.hub_reply_to(s.hub_human_turn())), ("", ""))
+
 # ---- 承認に答える・閉じるの直前に見る「その発言のあとに止めていないか」
 turn = hm.hermes_turn_begin("はい")
 check("発言のすぐあとは、いまの発言", s.HUB.current(turn), True)
@@ -135,6 +157,31 @@ turn = hm.hermes_turn_begin("はい")
 s.HUB.admit()
 check("次の発言を受け付けても、前の発言はいまの発言ではない", s.HUB.current(turn), False)
 check("台帳に無い発言は、いまの発言ではない（断る側）", s.HUB.current("hzzzzzzzzzzzz"), False)
+
+# ---- 本体がその場で答えた・断った発言も、受け付けたその場の番号で台帳に載せる（順番待ちの間に止めたら、もういまの発言ではない。
+#      止めたあとに断る答え（Esc）も送らせない。a2a 3752b7a5）
+async def held_accept(run):
+    s.ACCEPT_LOCKS.pop(hm.HERMES_PANE, None)  # 鍵はイベントループに結び付くので、回すたびに作り直す
+    lock = s.ACCEPT_LOCKS.setdefault(hm.HERMES_PANE, asyncio.Lock())
+    async with lock:  # 前の発言の順番待ち
+        adm = s.HUB.admit()
+        task = asyncio.create_task(run(adm))
+        await asyncio.sleep(0.05)
+        s.HUB.stopped()
+    await task
+    return s.HUB.current(s.hub_human_turn())
+
+
+talker = s.TALKERS[hm.HERMES_PANE]
+real_snap, real_answer = s.quick_snapshot, s.quick.answer
+s.quick_snapshot, s.quick.answer = (lambda: {}), (lambda kind, snap, cur, now: "いまは 3 件です")
+try:
+    quick_cur = asyncio.run(held_accept(lambda adm: s.hub_quick(talker, "status", "いまどう？", hm.HERMES_PANE, None, "", adm)))
+finally:
+    s.quick_snapshot, s.quick.answer = real_snap, real_answer
+refused_cur = asyncio.run(held_accept(lambda adm: s.hub_accepted(talker, "添付つきのはい", hm.HERMES_PANE, None, None, admitted=adm)))
+check("本体がその場で答えた・断った発言も、順番待ちの間に止めたら、もういまの発言ではない（止めたあとに答えを送らない）", (quick_cur, refused_cur), (False, False))
+s.ACCEPT_LOCKS.clear()  # 鍵はこのイベントループに結び付いたので、あとの本物の流れのために捨てる
 
 # ---- 起動し直し
 hm.HERMES_TURNS.clear()
@@ -334,6 +381,18 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.transcribe = real_transcribe
         check("声の発言元は頭の時点で決める（頭のあとに画面と名乗り直しても、顔で録った発言は機械から）", s.hub_via(face_row[0]) if face_row else None, "device")
         w.send_text(json.dumps({"type": "hello", "speaker": 0}))
+        # ハブ以外への声の発言は、頭が届いたときに前の問いを消す（聞き取りが空・失敗でも。a2a 3752b7a5 の 2 回目）
+        hub_turn = hm.hermes_turn_begin("ハブへの前の発言（声）")
+        hm.hermes_turn_end(hub_turn, Q)
+        s.transcribe = lambda audio, filename: ""
+        try:
+            w.send_text(json.dumps({"type": "turn", "pane": "w9:p1", "speaker": 0, "filename": "a.webm"}))
+            w.send_bytes(b"0" * 4000)
+            empty = receive_until(w, "error")
+        finally:
+            s.transcribe = real_transcribe
+        check("ハブ以外への声の発言は、聞き取れなくても、頭が届いたときにハブの前の問いを聞いた文と返事の欄から外す",
+              (empty and empty.get("text"), hm.HERMES_HEARD["text"], s.hub_reply_to(hub_turn)), ("聞き取れませんでした", "", ""))
         # 声の発言の頭のあと、声の本体の前に止めたら、あとから届いた声は聞き取らずに捨てる（「止めました」のあとに送らない。codex-review 7793a44）
         heard_calls = []
         s.transcribe = lambda audio, filename: (heard_calls.append(1), "止めたあとに届いた声")[1]

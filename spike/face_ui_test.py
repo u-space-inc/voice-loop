@@ -354,6 +354,28 @@ with sync_playwright() as pw:
     check("録音: （前提）顔を閉じたあとも話し相手は顔のときのまま", pg.evaluate("Boolean(window.__hv[0]) && window.__hv[0] === window.__hv[1]"), True)
     check("録音: ふつうに止めたら送る（前提）・「停止」で止めたら送らない・顔で録っている途中に顔を閉じたら送らない",
           (sent_plain, sent_stop, sent_close), (True, False, False))
+    # 顔で録った声の終わりを処理する前に、ふつうの画面で次の録音を始めても、顔で録った声は送らない（録音ごとに顔の表示を控える。a2a 3752b7a5 の 2 回目）
+    pg.goto(BASE + "/?face")
+    pg.wait_for_function("document.getElementById('face').dataset.s === 'idle'", timeout=10000)
+    pg.evaluate(PICK)
+    pg.evaluate("window.__types.length = 0; startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    pg.wait_for_timeout(1500)
+    pg.evaluate("(() => { const a = document.getElementById('agent'), hv = a.value; window.__r1 = rec; document.getElementById('faceBack').click(); a.value = hv; startRec(); })()")
+    pg.wait_for_function("window.__r1.state === 'inactive' && rec !== window.__r1 && rec && rec.state === 'recording'", timeout=5000)
+    pg.wait_for_timeout(800)
+    overlap = pg.evaluate("window.__types.includes('turn')")
+    pg.evaluate("document.getElementById('stop').click()")  # 次の録音は「停止」で捨てる
+    pg.wait_for_function("rec.state === 'inactive'", timeout=5000)
+    check("録音: 顔で録った声の処理の前に次の録音を始めても、顔で録った声は送らない", overlap, False)
+    # マイクの許可を待つ間に何度押しても始めるのは 1 つ。待つ間に「停止」を押したら、許可が返っても録音を始めない（a2a 3752b7a5 の 2 回目）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__gum = 0; const g = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);"
+                "navigator.mediaDevices.getUserMedia = c => { window.__gum++; return new Promise(r => setTimeout(r, 500)).then(() => g(c)); };"
+                "window.__r0 = rec; window.__types.length = 0; startRec(); startRec(); document.getElementById('stop').click()")
+    pg.wait_for_timeout(1500)
+    check("録音: 許可を待つ間に重ねて押しても始めるのは 1 つで、待つ間に止めたら録音を始めない",
+          (pg.evaluate("window.__gum"), pg.evaluate("rec === window.__r0 || !rec || rec.state !== 'recording'"), pg.evaluate("window.__types.includes('turn')")), (1, True, False))
     # 再生にタップが要るとき（報告を聞くだけの使い方）のタップでも、画面を消さない許可を頼む
     pg.goto(BASE + "/?face")
     pg.wait_for_function("document.getElementById('face').dataset.s === 'idle'", timeout=10000)

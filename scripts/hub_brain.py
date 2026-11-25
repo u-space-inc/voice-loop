@@ -157,16 +157,17 @@ class Talker:
         extra は本体が発言の末尾に足す行（添付の場所）。相手に渡す文と記録には付けるが、承認・閉じるの守りが見る発言は利用者の言葉（text）のまま。"""
         raise NotImplementedError
 
-    async def refused(self, text: str, why: str, via: str = ""):
+    async def refused(self, text: str, why: str, via: str = "", admitted: int | None = None):
         """利用者の発言 text を、本体が送らずに断った（via は発言の来た所。機械なら "device"）（添付の形・宛先など。理由 why）。断った発言も台帳と記録に載せ、承認・閉じるの文脈を失効させる
-        （利用者が最後に聞いたのは本体の断り。前の問い・確認への答えに、次の発言を使わせない）。"""
+        （利用者が最後に聞いたのは本体の断り。前の問い・確認への答えに、次の発言を使わせない）。admitted は admit の番号（台帳にはこの番号で載せる。
+        順番待ちの間に止めたら、その発言はもういまの発言ではない）。"""
         raise NotImplementedError
 
-    async def answered_here(self, text: str, answer: str, via: str = "") -> bool:
+    async def answered_here(self, text: str, answer: str, via: str = "", admitted: int | None = None) -> bool:
         """利用者の発言 text に、本体が決まった問いとしてその場で答えた（answer。LLM・頭を通していない。scripts/quick.py）。
         発言と答えを台帳と記録に載せる（「すぐ次の発言」を進める）。利用者が最後に聞いたのは本体の答えなので、次の発言の「聞いた文」は空にする
         （本体の答えのあとの「はい」を、その前に聞いた頭の問いへの答えに使わせない）。頭が次に受け取る発言には、本体が答えたことを添えて文脈を保つ。
-        記録に書けたかを返す。"""
+        admitted は refused と同じ。記録に書けたかを返す。"""
         raise NotImplementedError
 
     def delivered(self, admitted: int):

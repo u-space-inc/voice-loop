@@ -228,7 +228,7 @@ class FakeTalker:
         EXCHANGED.append(text)
         return "わかりました", "", True
 
-    async def refused(self, text, why):
+    async def refused(self, text, why, **k):
         EXCHANGED.append("断った:" + text)
 
 
