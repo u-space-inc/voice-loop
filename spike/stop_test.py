@@ -707,6 +707,52 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             tr_go12.set()
             s.transcribe, s.herdr, s.list_agents, s.jsonl_path, s.fix_heard = real_transcribe, real_herdr, real_agents, real_jsonl, real_fix
         check("聞き取りの間に送るを押した直接の指示は、その間の別の画面の停止で送らずに知らせる（補正に時間がかかっても）", (prompts12, any("送っていません" in x for t, x in seen12)), ([], True))
+        # 声が続いて届いていても、聞き取りの間に届いていた合図は、最初に止まり始めた時点のものとして扱う（あとの声の処理で上書きしない）。
+        # 合図の無い更新前の画面の文字の指示も、聞き取りで受信が止まっていた間に届いていたなら、その間の停止で送らない（a2a 4135f4c2 の 4 回目）
+        for label in ("声が続いたあとの文字の指示", "更新前の画面の文字の指示"):
+            check(f"（前提）前の試験の直接の指示が片づいている（{label}）", wait_idle(), True)
+            calls15, gate15, in15 = {"n": 0}, threading.Event(), threading.Event()
+
+            def first_slow(audio, filename, calls15=calls15, gate15=gate15, in15=in15):
+                calls15["n"] += 1
+                if calls15["n"] == 1:
+                    in15.set()
+                    gate15.wait(5)
+                return f"続いた声 {calls15['n']}"
+
+            prompts15 = []
+            s.transcribe, s.jsonl_path = first_slow, (lambda a: None)
+            s.herdr = lambda *a, **k: (prompts15.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
+            s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+            seen15 = []
+            try:
+                with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                    wa.send_text(json.dumps({"type": "begin", "b": 960, "pane": hm.HERMES_PANE, "hid": -1}))
+                    wa.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm", "hid": -1, "begin": 960}))
+                    wa.send_bytes(b"0" * 4000)
+                    check(f"（前提）1 つ目の声を聞き取っている（{label}）", in15.wait(5), True)
+                    if label.startswith("声が続いた"):
+                        wa.send_text(json.dumps({"type": "begin", "b": 961, "pane": hm.HERMES_PANE, "hid": -1}))
+                        wa.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm", "hid": -1, "begin": 961}))
+                        wa.send_bytes(b"0" * 4000)
+                        wa.send_text(json.dumps({"type": "begin", "b": 962, "pane": "w9:p1", "hid": -1}))
+                        wa.send_text(json.dumps({"type": "text", "text": label, "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 962}))
+                    else:
+                        wa.send_text(json.dumps({"type": "text", "text": label, "pane": "w9:p1", "speaker": 0}))  # 合図も番号も無い（更新前の画面）
+                    with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+                        wb.send_text(json.dumps({"type": "stop", "n": 1}))
+                        receive_until(wb, "stopped")
+                    gate15.set()
+                    for _ in range(80):
+                        m = json.loads(wa.receive_text())
+                        seen15.append((m.get("type"), m.get("text", "")))
+                        if m.get("type") == "error" and any(k in m.get("text", "") for k in WAITED):
+                            break
+                    wait_idle()
+            finally:
+                gate15.set()
+                s.transcribe, s.herdr, s.list_agents, s.jsonl_path = real_transcribe, real_herdr, real_agents, real_jsonl
+            check(f"聞き取りの間の別の画面の停止で、{label}は送らずに知らせる", (prompts15, any("送っていません" in x for t, x in seen15)), ([], True))
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]

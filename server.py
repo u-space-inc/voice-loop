@@ -3607,7 +3607,12 @@ async def ws(sock: WebSocket):
         task.add_done_callback(_tasks.discard)
 
     begins: dict[int, dict] = {}  # 画面が発言を始めた合図の番号 → {"stop": そのときの停止の回数, "adm": 受け付けの番号}（新しいものから 32 件）
-    blocked = {"stop": 0, "until": 0.0}  # 声の聞き取りで受信が止まっていた間の、止まり始めたときの停止の回数（その間に届いていた合図に使う）
+    # 声の聞き取りで受信が止まっていた間の、止まり始めたとき・止まり終えたときの停止の回数と、窓の終わり（止まっていた間に届いていた合図に使う）
+    blocked = {"stop": 0, "end": 0, "until": 0.0}
+
+    def stopped_in_block() -> bool:
+        # 受信に戻ってからの窓の中で、止まっていた間にどこかの画面で止めていたか（窓の中で読んだ合図・文字は、止まっていた間に届いていたかもしれない）
+        return time.monotonic() <= blocked["until"] and blocked["end"] != blocked["stop"]
 
     def take_begin(d: dict) -> tuple[bool, int | None, bool]:
         # 発言の本文・声の頭に付いた合図（begin）を引く。(合図のあと届くまでに、どこかの画面で止めたか, 合図を受けたときの受け付けの番号, 合図が無いか)。
@@ -3616,7 +3621,8 @@ async def ws(sock: WebSocket):
         if b is None:
             # 合図の無い更新前の画面（機械も）。「↩ 返信」と添付つきの発言は、届くまでに止めたか分からないので、止めたものとして扱う
             # （承認に使わせない・ハブ以外へは送らずに読み込み直しを頼む。UPGRADE.md の案内どおり。a2a 4135f4c2）
-            return (d.get("reply_at") is not None or bool(d.get("attachments"))), None, True
+            # 声の聞き取りで受信が止まっていた間に届いていた文字も、その間にどこかで止めていたら、止めたものとして扱う（a2a 4135f4c2 の 4 回目）
+            return (d.get("reply_at") is not None or bool(d.get("attachments")) or stopped_in_block()), None, True
         if not isinstance(b, int) or isinstance(b, bool) or b not in begins:
             return True, None, False
         info = begins.pop(b)
@@ -3682,8 +3688,8 @@ async def ws(sock: WebSocket):
                     b = d.get("b")
                     if isinstance(b, int) and not isinstance(b, bool):
                         stop_now = STOP_GEN["n"]
-                        if time.monotonic() <= blocked["until"]:  # 聞き取りで受信が止まっていた間に届いていた合図。どちらが先か分からないので、止まり始めた時点のものにする
-                            stop_now = min(stop_now, blocked["stop"])
+                        if stopped_in_block():  # 聞き取りで受信が止まっていた間に届いていたかもしれない合図。その間に止めていたら、止まり始めた時点のものにする
+                            stop_now = blocked["stop"]
                         drop_direct()
                         adm = admit_now(heard_seen(d))
                         if d.get("pane"):  # 宛先が分かるときだけ（ハブ以外宛てなら前の問いを消す）
@@ -3719,7 +3725,8 @@ async def ws(sock: WebSocket):
                 head, pending = pending, {}
                 # 聞き取り・辞書の補正・知らせの送り出しの間は受信が止まる。その間に届いていた合図は、止まり始めた時点のものとして扱う
                 # （受信に戻ってから 0.5 秒の間に読んだ合図。溜まっていた合図はすぐに読まれる。a2a 4135f4c2 の 2・3 回目）
-                stop_at_block = STOP_GEN["n"]
+                # 前の声の窓がまだ開いている（声が続いて届いていた）なら、早いほうの値を引き継ぐ（あとの声の処理で上書きしない。a2a 4135f4c2 の 4 回目）
+                stop_at_block = blocked["stop"] if stopped_in_block() else STOP_GEN["n"]
                 try:
                     await send(type="status", text="聞き取り中…")
                     try:
@@ -3737,7 +3744,7 @@ async def ws(sock: WebSocket):
                                reply_item_of(head), said if text != said else None, admitted=head["_admitted"], via=head["_via"], stopgen=head["_stopgen"],
                                crossed=head["_crossed"], legacy=head["_legacy"], legacy_drop=head["_legacy_drop"])
                 finally:
-                    blocked.update(stop=stop_at_block, until=time.monotonic() + 0.5)  # 受信に戻る時点から数える
+                    blocked.update(stop=stop_at_block, end=STOP_GEN["n"], until=time.monotonic() + 0.5)  # 受信に戻る時点から数える
     except WebSocketDisconnect:
         pass
     finally:
