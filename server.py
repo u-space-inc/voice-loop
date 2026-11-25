@@ -815,11 +815,11 @@ def admit_now(seen: int | None = None) -> int | None:
     return HUB.admit(seen) if seen is not None else HUB.admit()
 
 
-def heard_seen(d: dict) -> int | None:
-    """声の発言の頭に付いた「録音を始めたときに受け取っていた返事の番号」。付いていなければ None（確かめない）。形が違えば -1（どれとも合わない）。"""
-    if "hid" not in d:
-        return None
-    v = d["hid"]
+def heard_seen(d: dict) -> int:
+    """画面の発言に付いた「発言を始めたとき（声は録音を始めたとき、文字は送るを押したとき）に受け取っていた返事の番号」。
+    付いていない（更新前の画面・機械）・形が違えば -1（どれとも合わない。聞いた文を引き渡さないので、その発言では承認に答えない・閉じない。
+    発言そのものは届き、ハブが聞き直す。a2a 3752b7a5 の 5 回目）。"""
+    v = d.get("hid")
     return v if isinstance(v, int) and not isinstance(v, bool) else -1
 
 
@@ -3465,16 +3465,19 @@ async def ws(sock: WebSocket):
         SENT_GEN[pane] = SENT_GEN.get(pane, 0) + 1  # 画面・声からの直接の指示も、前の件の Slack への報告に新しい結果を載せない（送る前に進める）
         async with pane_lock(pane):  # ハブが自動通知に応答している最中なら、それが終わってから送る
             SENT_GEN[pane] = SENT_GEN.get(pane, 0) + 1  # 順番を待つ間に、ハブ経由の件が送られていることがある。実際に送る直前にも進める
-            topics.mark_direct(agent.get("session") or "")  # 直接送った話の問いを、前の件のリンクで見せない
             # 返事が来るまで（止められても、送る処理が裏で終わるまで）に送られたハブ経由の件は、重なった件として扱う
+            session, loop = agent.get("session") or "", asyncio.get_running_loop()
+
             def commit():
-                if direct is None:
-                    return True
-                with direct["lock"]:
-                    if direct["dropped"]:
-                        return False
-                    direct["sent"] = True
-                    return True
+                if direct is not None:
+                    with direct["lock"]:
+                        if direct["dropped"]:
+                            return False
+                        direct["sent"] = True
+                # 直接送った話の問いを、前の件のリンクで見せない。印は送ると決めたときだけ付ける（送らずに取り消したら、前の件のリンクを
+                # 外さない。codex-review 3b75d56）。ワーカーのスレッドからなので、イベントループに頼む
+                loop.call_soon_threadsafe(topics.mark_direct, session)
+                return True
 
             tok = ASK_COMMIT.set(commit)
             try:
@@ -3497,7 +3500,7 @@ async def ws(sock: WebSocket):
                 await speak_to([client], reply, cancel)
 
     def start_turn(text: str, pane: str, speaker: int, key: str | None, reply_at: float | None = None, files: list[str] | None = None,
-                   item: int | None = None, said: str | None = None, admitted: int | None = None, via: str | None = None):
+                   item: int | None = None, said: str | None = None, admitted: int | None = None, via: str | None = None, seen: int | None = None):
         # said: 辞書で直す前の聞き取り（直したときだけ。ハブの守りの台帳に載せる）
         # admitted: 発言を受けたその場（声なら発言の頭が届いたとき）に取った受け付けの番号。無ければここで取る
         # via: 発言を受けたその場の発言元（機械なら "device"）。無ければいまの名乗りから決める（声は頭のときに控える。頭と声の間に
@@ -3512,8 +3515,9 @@ async def ws(sock: WebSocket):
         cancel = asyncio.Event()
         job = None
         quick_kind = None
+        # seen: 文字の発言を送るを押した時点で、画面が受け取っていた返事の番号（heard_seen）
         if admitted is None:  # 文字の発言（声は、発言の頭が届いたときに済ませている）
-            admitted = admit_now()  # 相手がハブでなくても進める（別のセッションに話しかけ直したら、前のハブの往復の許可は失効。codex-review bcd26ac）
+            admitted = admit_now(seen)  # 相手がハブでなくても進める（別のセッションに話しかけ直したら、前のハブの往復の許可は失効。codex-review bcd26ac）
             left_hub(pane)
         if via is None:
             via = "device" if client.kind == "device" else ""
@@ -3601,7 +3605,7 @@ async def ws(sock: WebSocket):
                     pending = {**d, "_admitted": admit_now(heard_seen(d)), "_via": "device" if client.kind == "device" else ""}
                     left_hub(str(d.get("pane", "")))
                 if d["type"] == "text":
-                    start_turn(d["text"], d["pane"], int(d["speaker"]), d.get("key"), reply_at_of(d), attachments_of(d), reply_item_of(d))
+                    start_turn(d["text"], d["pane"], int(d["speaker"]), d.get("key"), reply_at_of(d), attachments_of(d), reply_item_of(d), seen=heard_seen(d))
                 continue
             if msg.get("bytes") is not None and pending.get("type") == "dropped":
                 pending = {}

@@ -2166,7 +2166,8 @@ function connect() {
     else if (m.type === 'stopped') { // 届いた印は、本体が止めたと返してから（codex-review 44b3c2e）
       stopPlayback();
       // 返事が遅れて、次の録音を始めたあとに届いたら、「止めました」と出さず印も光らせない（録音は続いている。codex-review 6096e1d）
-      if ((rec && rec.state === 'recording') || recPending) faceAckWait = false;
+      // 録音（始めている途中を含む）が、最後の停止より後に始めたものなら、この返事はその前の停止への返事（許可待ちの間に止めた録音なら、表示する）
+      if (((rec && rec.state === 'recording') || recPending) && recLiveStops === recStops) faceAckWait = false;
       else { setStatus('止めました'); if (faceAckWait) { faceAckWait = false; faceAck(); } }
     }
     else if (m.type === 'blocked') loadAsks(); // 話している相手が承認で止まった → すぐ並べる
@@ -2196,9 +2197,11 @@ let recPending = false;  // 録音を始めている途中（マイクの許可�
 // 「停止」を押した回数。録音は、始めたときの回数と顔の表示を、録音ごとに控える（あとの録音に上書きされない）。停止を押した・顔の表示を
 // 切り替えたら、その録音は送らずに捨てる（「止めました」と出したあとの次のタップで送らない。顔で録った声を画面からの発言として送らない。a2a 3752b7a5）
 let recStops = 0;
+let recLiveStops = -1; // いま始めている・録っている録音を始めたときの停止の回数（本体の「止めた」が、その録音より前の停止への返事かを見分ける）
 async function startRec() { if (recPending) return; recPending = true; try { return await startRecInner(); } finally { recPending = false; } } // 始めるのは 1 つずつ
 async function startRecInner() {
   const stops0 = recStops, face0 = faceOn, hid0 = heardId; // hid0: 録音を始めたときに受け取っていた返事の番号
+  recLiveStops = stops0;
   if (playing || queue.length) { ws.send(JSON.stringify({ type: 'stop' })); stopPlayback(); } // 話し始めたら相手の声は止める
   prime();
   setSession('play-and-record');
@@ -2274,7 +2277,7 @@ $('typedForm').onsubmit = async e => {
   // 宛先・返信先（とその件の名前）・添付は押した時点で固定する。待つ間に欄が変わっても、ここで決めたものだけを送る
   cancelTopic();
   const pane = $('agent').value, key = curKey(), rf = replyFields(), about = rf.reply_at !== undefined ? replyTarget.about : '', list = attachFiles.slice();
-  const item = rf.reply_item;
+  const item = rf.reply_item, hid0 = heardId; // hid0: 押した時点で受け取っていた返事の番号（添付を送る間に届いた問いへの答えにしない）
   prime();  // 読み上げの許可は、押したその場で取る（添付を置き終えるのを待ってからでは、iPhone の Safari が押した操作と見ない）
   const files = await sendAttach(pane, list, '文と添付');
   if (!files) return;  // 送らないときは、文も添付も残す
@@ -2282,7 +2285,7 @@ $('typedForm').onsubmit = async e => {
   const shown = (t || (list.length ? '' : '（ことばなし）')) + (list.length ? (t ? '\n' : '') + '📎 ' + list.map(f => f.name).join('、') : '');
   if ($('typed').value.trim() === t) { $('typed').value = ''; fitTyped(); }  // 待つ間に打ち直した文は消さない
   decorate(bubble('me', shown, 'pending'), { role: 'me', reply_to: about, reply_item: item }); localPush('me', shown);
-  ws.send(JSON.stringify({ type: 'text', text: t, pane, key, speaker: $('speaker').value, ...rf, ...(files.length ? { attachments: files } : {}) }));
+  ws.send(JSON.stringify({ type: 'text', text: t, pane, key, speaker: $('speaker').value, hid: hid0, ...rf, ...(files.length ? { attachments: files } : {}) }));
   if (sameTarget(rf)) setReplyTarget(null);
   paintSend();
   dropSent(list);

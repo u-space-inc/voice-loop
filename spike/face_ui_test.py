@@ -93,6 +93,7 @@ CATCH = """(() => { window.__hello = []; window.__types = []; const o = WebSocke
     if (d && d.type) window.__types.push(d.type);
     if (m instanceof ArrayBuffer) (window.__bins = window.__bins || []).push(m.byteLength);  // 送った声の大きさ
     if (d && d.type === 'turn') window.__turn = d;  // 声の発言の頭
+    if (d && d.type === 'text') window.__text = d;  // 文字の発言
     if (d && d.type === 'stop' && window.__dropStop) return;  // 止める合図が本体に届かなかった（届いた印を出さないかを見る）
     return o.call(this, m);
   }; })()"""
@@ -379,8 +380,9 @@ with sync_playwright() as pw:
                 "window.__r0 = rec; window.__types.length = 0; startRec(); startRec(); document.getElementById('stop').click()")
     pg.wait_for_timeout(1500)
     pg.evaluate("delete navigator.mediaDevices.getUserMedia")  # 差し替えを外して、もとのマイクに戻す
-    check("録音: 許可を待つ間に重ねて押しても始めるのは 1 つで、待つ間に止めたら録音を始めない",
-          (pg.evaluate("window.__gum"), pg.evaluate("rec === window.__r0 || !rec || rec.state !== 'recording'"), pg.evaluate("window.__types.includes('turn')")), (1, True, False))
+    check("録音: 許可を待つ間に重ねて押しても始めるのは 1 つで、待つ間に止めたら録音を始めず、「止めました」と出る",
+          (pg.evaluate("window.__gum"), pg.evaluate("rec === window.__r0 || !rec || rec.state !== 'recording'"), pg.evaluate("window.__types.includes('turn')"),
+           pg.evaluate("document.getElementById('statusText').textContent")), (1, True, False, "止めました"))
     # 声の本体を用意する間に「停止」を押したら、頭も声も送らない（頭と本体は、止めていないのを確かめてから続けて送る。a2a 3752b7a5 の 3 回目）
     pg.wait_for_timeout(600)
     pg.evaluate("window.__types.length = 0; window.__bins = []; startRec()")
@@ -416,6 +418,14 @@ with sync_playwright() as pw:
     pg.evaluate("stopRec()")
     pg.wait_for_function("window.__turn", timeout=5000)
     check("録音: 返事の番号を控え、声の頭には録音を始めたときの番号を付ける", (got_hid, pg.evaluate("window.__turn.hid")), (5, 5))
+    # 文字の発言には、送るを押した時点で受け取っていた返事の番号を付ける（添付を送る間に届いた返事の番号ではない。a2a 3752b7a5 の 5 回目）
+    pg.wait_for_timeout(300)
+    pg.evaluate("heardId = 5; window.__text = null; window.__sa = sendAttach;"
+                "sendAttach = async (...a) => { heardId = 9; return window.__sa(...a); };"  # 添付を送る間に、次の返事が届いた
+                "document.getElementById('typed').value = 'はい（文字）'; document.getElementById('typedForm').requestSubmit()")
+    pg.wait_for_function("window.__text", timeout=5000)
+    pg.evaluate("() => { sendAttach = window.__sa; }")
+    check("文字: 送るを押した時点で受け取っていた返事の番号を付ける", pg.evaluate("[window.__text.hid, heardId]"), [5, 9])
     # 前の「止めた」への返事が、次の録音を始めたあとに届いても、「止めました」と出さず印も光らせない（録音は続いている。codex-review 6096e1d）
     pg.wait_for_timeout(600)
     pg.evaluate("startRec()")

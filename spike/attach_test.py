@@ -150,9 +150,10 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     # 承認の守りが見る発言は、利用者の言葉のまま（本体が足す添付の行は入れない）。相手の位置: 名前を「はい」にしたファイルだけを付けた発言
     import consent  # noqa: E402
     s.hermes.HERMES_HEARD["text"] = "proj の「テスト」が許可を求めています。許可しますか？"
+    s.hermes.HEARD_ID["n"] = 9001  # 画面に送り終えた返事の番号（画面は、送るを押した時点で受け取っていた番号を付ける）
     hy = up("写真.png", PNG, pane=s.hermes.HERMES_PANE).json()["id"]
     with c.websocket_connect("ws://127.0.0.1:8790/ws") as w:
-        my = say(w, s.hermes.HERMES_PANE, "はい", [hy])
+        my = say(w, s.hermes.HERMES_PANE, "はい", [hy], hid=9001)
     row = list(s.hermes.HERMES_TURNS)[-1]
     rec_me = [json.loads(l) for l in s.hermes.HERMES_LOG.read_text().splitlines() if '"role": "me"' in l][-1]
     check("守り: 「はい」に添付を付けても、承認の守りが見る発言は「はい」（台帳には添付の行を入れない）。Hermes に送る文と記録には添付の行を付ける",

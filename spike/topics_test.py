@@ -283,6 +283,10 @@ async def fake_target():
 
 
 async def fake_ask(hub, note):
+    commit = s.ASK_COMMIT.get()  # 本物の ask と同じく、送る直前に確かめる（画面の直接の指示は、ここで直接送った印を付ける）
+    if commit is not None and not commit():
+        return ("cancelled", "")
+    await asyncio.sleep(0)  # 印はイベントループで付く
     return ("done", "内訳は次のとおりです")
 
 

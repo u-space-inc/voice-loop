@@ -438,6 +438,21 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.transcribe = real_transcribe
         check("声の発言: 録音を始めたときに受け取っていた返事が問いなら引き渡し、録音を始めたあとに届いた問いは引き渡さない",
               (type(hid1) is int and type(hid2) is int and hid1 != hid2, after[3] if after else None, before[3] if before else None), (True, Q, ""))
+        # 文字の発言も、送るを押した時点で受け取っていた返事の番号で照らす。番号の無い発言（更新前の画面・機械）には聞いた文を渡さない
+        # （添付を送る間に届いた問いへの答えにしない。a2a 3752b7a5 の 5 回目）
+        texts = {}
+        for label, extra_of in [("合う", lambda h: {"hid": h}), ("古い", lambda h: {"hid": h - 1}), ("無い", lambda h: {})]:
+            hm.ask_hermes = lambda text: Q
+            w.send_text(json.dumps({"type": "text", "text": f"問いをください（{label}）", "pane": hm.HERMES_PANE, "speaker": 0}))
+            h = (reply_of(Q) or {}).get("hid", 0)
+            hm.ask_hermes = lambda text: "わかりました"
+            said = f"はい（文字・番号が{label}）"
+            w.send_text(json.dumps({"type": "text", "text": said, "pane": hm.HERMES_PANE, "speaker": 0, **extra_of(h)}))
+            reply_of("わかりました")
+            row = next((r for r in list(hm.HERMES_TURNS) if r[1] == said), None)
+            texts[label] = row[3] if row else None
+        check("文字の発言: 送るを押した時点の返事の番号が合えば問いを引き渡し、古い・無い（更新前の画面）なら引き渡さない",
+              (texts["合う"], texts["古い"], texts["無い"]), (Q, "", ""))
         # ハブ以外への指示を送り始める前に止めたら、送っていないと画面に知らせる（「送りました」のまま黙って消さない。codex-review e460a4f）
         gate2 = threading.Event()
 
@@ -481,7 +496,9 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                 prompts.append(a[3])
             return {"result": {"agent": {"agent_status": "idle"}}}
 
+        marks, real_mark = [], s.topics.mark_direct
         s._if_still, s.herdr, s.jsonl_path = waiting_if_still, fake_herdr, (lambda a: None)
+        s.topics.mark_direct = lambda session: marks.append(session)  # 直接送った印（前の件のリンクを外す）
         s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
         seen3 = []
         try:
@@ -498,11 +515,20 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                     break
             gate3.set()
             time.sleep(0.3)
+            marks_cancelled = list(marks)
+            s._if_still = real_if  # 取り消さずに送るとき
+            w.send_text(json.dumps({"type": "text", "text": "セッションへのふつうの指示", "pane": "w9:p1", "speaker": 0}))
+            for _ in range(100):
+                if prompts:
+                    break
+                time.sleep(0.05)
+            time.sleep(0.2)
         finally:
             gate3.set()
-            s._if_still, s.herdr, s.list_agents, s.jsonl_path = real_if, real_herdr, real_agents, real_jsonl
-        check("ハブ以外への指示を、送るスレッドの空きを待つ間に止めたら、送らずに送っていないと知らせる",
-              (prompts, any(t == "error" and "送っていません" in x for t, x in seen3)), ([], True))
+            s._if_still, s.herdr, s.list_agents, s.jsonl_path, s.topics.mark_direct = real_if, real_herdr, real_agents, real_jsonl, real_mark
+        check("ハブ以外への指示を、送るスレッドの空きを待つ間に止めたら、送らずに送っていないと知らせ、件のリンクの印も付けない",
+              (prompts[:-1], any(t == "error" and "送っていません" in x for t, x in seen3), marks_cancelled), ([], True, []))
+        check("取り消さずに送った直接の指示には、送ると決めたときに件のリンクの印を付ける", (prompts, marks), (["セッションへのふつうの指示"], ["s1"]))
         check("声の頭と本体の間に止めたら、届いた声は聞き取らず、ハブにも台帳にも送らない",
               (first is not None, second and second.get("type"), heard_calls, any(r[1] == "止めたあとに届いた声" for r in list(hm.HERMES_TURNS))), (True, "stopped", [], False))
         # 画面に送る途中で、次の発言を受け付けた（a2a 30fd5b94 の 2 回目の再現: 送れていない問いが、次の「はい」の行に「聞いた文」として写った）
