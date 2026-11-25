@@ -10,7 +10,8 @@
   - 止めたあとに受け付けた往復の返事は、ふつうに聞いた文になる
   - 時計が戻っても、順を取り違えない（時計を使わない）
   - 起動し直したら、台帳の返事の欄は記録から戻さない（閉じるのは聞き直してから）
-  - 報告: 頼んだあとに止めた・話しかけたら、届いた報告は聞いた文にしない（どちらも無ければ聞いた文）。本物の _report で、鍵の順番待ちの間に止めても同じ
+  - 報告: 頼んだあとに止めた・話しかけたら、届いた報告は聞いた文にしない（どちらも無ければ聞いた文）。本物の _report で、鍵の順番待ちの間に止めても同じ。
+    聞いた文にするのは、本文を出した画面が受け取り（report_seen）を返したときだけ（番号違い・本文を送っていない画面からの受け取りでは、しない）
   - 画面の「停止」（WebSocket の stop）で、話し相手に止めたことが伝わる
 本物の Hermes・herdr・コンテナには触れない（頭の往復は差し替える。VL_HERMES_URL は何も待ち受けていないポート）。
 使い方: uv run spike/stop_test.py"""
@@ -227,7 +228,21 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         hm.HERMES_HEARD["text"] = ""
         hm.ask_hermes = lambda text: "proj の報告です。閉じていいですか？"
         c.portal.call(s._report, dict(REPORT_D), "done")
-        check("本物の流れ: 開いている画面に届いた報告は、聞いた文になる", hm.HERMES_HEARD["text"], "proj の報告です。閉じていいですか？")
+        got_r = receive_until(w, "reply")
+        check("本物の流れ: 画面に送れただけでは、報告を聞いた文にしない（本文を出したかは画面が返す。codex-review 84a1855）", hm.HERMES_HEARD["text"], "")
+        w.send_text(json.dumps({"type": "report_seen", "rid": (got_r or {}).get("rid", 0) + 1000}))
+        with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as stranger:  # 報告の本文を送っていない画面
+            stranger.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "w-stranger-01"}))
+            stranger.send_text(json.dumps({"type": "report_seen", "rid": (got_r or {}).get("rid")}))
+            time.sleep(0.3)
+        time.sleep(0.2)
+        check("本物の流れ: 番号違いの受け取り・本文を送っていない画面からの受け取りでは、報告を聞いた文にしない", hm.HERMES_HEARD["text"], "")
+        w.send_text(json.dumps({"type": "report_seen", "rid": (got_r or {}).get("rid")}))
+        for _ in range(50):
+            if hm.HERMES_HEARD["text"]:
+                break
+            time.sleep(0.02)
+        check("本物の流れ: 本文を出した画面が受け取りを返したら、届いた報告は聞いた文になる", hm.HERMES_HEARD["text"], "proj の報告です。閉じていいですか？")
         hm.ask_hermes = lambda text: Q
         # 受け付けたあと、添付の用意の間に止める（a2a 30fd5b94 の 1 の再現）
         w.send_text(json.dumps({"type": "text", "text": "添付つきで proj を閉じて", "pane": hm.HERMES_PANE, "speaker": 0, "attachments": ["a1"]}))
@@ -430,6 +445,17 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                 if m.get("type") == "stopped":
                     break
             check("声の列の件数が上限を超えたら、大きさに余裕があっても断る", over_n is not None, True)
+            w.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm"}))
+            w.send_bytes(b"0" * 100)  # 止めたあと（聞き取り中の 1 件はまだ終わっていない）に話し直す
+            w.send_text(json.dumps({"type": "stop"}))
+            refused = None
+            for _ in range(50):
+                m = json.loads(w.receive_text())
+                if m.get("type") == "error" and m.get("text", "").startswith("前の発言を聞き取っています"):
+                    refused = m
+                if m.get("type") == "stopped":
+                    break
+            check("満杯の列で止めたら、まだ取り出していない発言を外す（止めたあとに話し直した発言を、上限で断らない。codex-review 84a1855）", refused is None, True)
         finally:
             cnt_go.set()
             s.transcribe, s.TURN_QUEUE_MAX = real_transcribe, real_max
@@ -511,7 +537,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             slow_go.set()
         finally:
             s.REPORT_SPEECH.pop(fake_ev, None)
-        # 鳴らす画面に送った時点で、報告を聞いた文にする（ほかの画面への文字が滞っても待たない。codex-review ce5be84）
+        # 鳴らす画面が受け取りを返したら、ほかの画面への文字が滞っていても待たずに、報告を聞いた文にする（codex-review ce5be84・84a1855）
         quiet_go = threading.Event()
 
         class SlowQuiet:
@@ -535,16 +561,35 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             hm.ask_hermes = lambda text: "鳴らす画面に先に届く報告です。"
             fut = c.portal.start_task_soon(s._report, dict(REPORT_D), "done")
             got_rep = receive_until(w, "reply")
+            w.send_text(json.dumps({"type": "report_seen", "rid": (got_rep or {}).get("rid")}))
             for _ in range(100):
                 if hm.HERMES_HEARD["text"]:
                     break
                 time.sleep(0.02)
-            check("鳴らす画面に送った時点で、報告を聞いた文にする（ほかの画面への文字を待たない）", (hm.HERMES_HEARD["text"], quiet_go.is_set()), ("鳴らす画面に先に届く報告です。", False))
+            check("鳴らす画面が受け取りを返したら、報告を聞いた文にする（ほかの画面への文字を待たない）", (hm.HERMES_HEARD["text"], quiet_go.is_set()), ("鳴らす画面に先に届く報告です。", False))
             quiet_go.set()
             fut.result(timeout=10)
         finally:
             s.CLIENTS.discard(slow_client)
             s.speak_to = real_speak4
+        # 本物の報告の流れで、報告の話し終わり（done）に、その報告の番号が付く（a2a e0d36243 の 3 回目の 2）
+        real_narr = s.narrate
+
+        async def no_sentences(text, cancel):
+            return
+            yield
+
+        s.narrate = no_sentences
+        s.REPORT_SPEECH.clear()
+        try:
+            hm.ask_hermes = lambda text: "番号を確かめる報告です。"
+            c.portal.call(s._report, dict(REPORT_D), "done")
+            rep_msg = receive_until(w, "reply")
+            done_msg = receive_until(w, "done")
+        finally:
+            s.narrate = real_narr
+        check("本物の報告の流れで、報告の話し終わりに、その報告の番号が付く",
+              (rep_msg is not None and rep_msg.get("rid") is not None, (done_msg or {}).get("report") == (rep_msg or {}).get("rid")), (True, True))
         # 別の画面で止めても、報告を鳴らしている画面にも止めたと送る
         speech2, real_speak3 = {}, s.speak_to
 

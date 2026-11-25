@@ -1438,6 +1438,7 @@ REPORT_IDLE: asyncio.Event | None = None  # 報告が終わったときに立つ
 SLACK_QUEUE_WAIT = 45.0  # Slack から来た送信が、報告の終わりを待つ上限（秒）。送り（herdr の上限 30 秒）と合わせて hubctl send の待ち（100 秒）に収める
 REPORT_SEQ = 0  # 報告の通し番号（報告を始めるたびに進む）
 REPORT_STOP_GRACE = 90  # 報告の声を送り終えたあと、鳴らした画面を「停止」の宛先に残す秒数（受け取った声の再生が続くあいだ）
+REPORT_ACK: dict = {}  # 本文を出した画面からの受け取りを待つ報告 {"rid": 報告の番号, "mark": 受け付けの番号, "to": 本文を送った画面}。いちばん新しい報告だけ
 REPORT_SPEECH: dict = {}  # 作っている・読み上げている報告の止める合図 → 鳴らす画面（画面の「停止」で合図を立て、鳴らす画面にも止めたと送る。codex-review bcd26ac・fb69347）
 REPORT_FAILED: dict[int, bool] = {}  # 番号ごとに、報告が失敗・時間切れで終わったか（直近の分だけ持つ）
 LAST_DONE: dict[str, tuple] = {}  # セッションごとの、最後に報告した (ターンの目印, 返答)。同じ返答を二度知らせないため
@@ -2287,6 +2288,7 @@ async def _report_body(d: dict, kind: str, notify, mark: int, speech: asyncio.Ev
         seen = SEEN_PROMPT.get(d["pane"]) if kind == "blocked" else None
         ask_link = ({"fp": seen[0], "session": seen[2]}
                     if seen and len(seen) > 2 and seen[2] and seen[2] == now.get("session") and SEEN_AT.get(d["pane"], 0) >= asked_from else None)
+        REPORT_ACK.clear()  # 前の報告の受け取りは、この報告を聞いた文の候補にしない（候補は report_end が置き換える）
         saved = await HUB.report_end(state, reply, label, saved, str(d.get("pane", "")), str(d.get("topic") or ""), ask=ask_link, mark=mark)
         if state != "done" or not reply.strip():
             relay_slack(d, label, headline, "", ask=kind == "blocked")
@@ -2312,10 +2314,14 @@ async def _report_body(d: dict, kind: str, notify, mark: int, speech: asyncio.Ev
                 except Exception:
                     clients.remove(c)
         if ring:
-            HUB.report_delivered(mark)  # 鳴らす窓に送り終えた時点で確定（ほかの窓への文字を待たない。codex-review ce5be84）。頼んだあとに話しかけた・止めていなければ、聞いた文にする
+            # 聞いた文にするのは、本文を出した画面が受け取りを返したとき（report_seen）。送れただけでは確定しない: 読み上げを切って別の相手を
+            # 選んでいる画面には件名しか出ない（codex-review 84a1855）。ほかの窓への文字を待たずに受け付ける（codex-review ce5be84）
+            REPORT_ACK.update(rid=seq, mark=mark, to=list(ring))
         for c in [c for c in clients if c not in ring]:  # ほかの窓には文字だけ（quiet: 読み上げの印を付けない）
             try:
                 await c.send(**msg, quiet=True)
+                if REPORT_ACK.get("rid") == seq:
+                    REPORT_ACK["to"].append(c)  # 文字だけの窓でも、本文を出したなら受け取りを返す
             except Exception:
                 clients.remove(c)
         if ring:
@@ -3599,9 +3605,19 @@ async def ws(sock: WebSocket):
                     client.visible = d.get("visible") is True and client.kind == "screen"
                     client.seen = time.time()
                     continue
+                if d["type"] == "report_seen":  # 画面が報告の本文を出した。いちばん新しい報告で、本文を送った画面からなら、聞いた文にする（codex-review 84a1855）
+                    r = dict(REPORT_ACK)
+                    if r and type(d.get("rid")) is int and d["rid"] == r.get("rid") and client in r.get("to", []):
+                        REPORT_ACK.clear()
+                        HUB.report_delivered(r["mark"])  # 頼んだあとに話しかけた・止めていれば、ここでも聞いた文にしない
+                    continue
                 if d["type"] == "stop":
                     # 最初の await より前に、許可を失効させ、すべての報告に止めたことを反映する（ほかの画面へ送るのが滞っても、前の許可を残さない。codex-review ce5be84）
                     stops["n"] += 1  # 聞き取り中・並んでいる発言は送らない
+                    while not turn_q.empty():  # まだ取り出していない発言は列から外し、件数と大きさを戻す（取り出した 1 件は、終わるまで数える。codex-review 84a1855）
+                        dropped = turn_q.get_nowait()
+                        queued["n"] -= 1
+                        queued["bytes"] -= len(dropped.get("bytes") or b"")
                     cancel.set()
                     if current:
                         current.cancel()

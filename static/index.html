@@ -2131,6 +2131,7 @@ function connect() {
   ws.binaryType = 'arraybuffer';
   const sock = ws, giveUp = setTimeout(() => { if (sock.readyState === 0) sock.close(); }, 5000); // 通信が止まって待たされるときは見切る
   ws.onopen = () => {
+    speakingReport = null; reportDone = null; // 報告の番号は接続ごと（本体を起動し直すと 1 から数え直す。a2a e0d36243）
     clearTimeout(giveUp); $('conn').classList.add('on'); setStatus('準備できました'); face('idle'); applyTarget(); hello(); clog('connected ' + navigator.userAgent);
     if (away || !agentsSig || !$('speaker').options.length || pendingTopic) { away = false; catchUp(); } // 起動時に読めなかったもの（開けなかった件も）を取り直す
   };
@@ -2153,6 +2154,7 @@ function connect() {
         await loadThread(); // 記録から描き直す（新しいセッションは、この時点で初めて記録ができている）
         if (threadSource === 'none') { bubble('ai', m.text); localPush('ai', m.text); }
       }
+      if (m.report && m.rid != null) { try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'report_seen', rid: m.rid })); } catch {} } // 報告の本文を出した（件名だけの知らせでは返さない）。本体はこれを受けて、報告を聞いた文にする（codex-review 84a1855）
       if (muted || m.quiet) return; // 読み上げないので、読んでいる印はつけない（quiet: 報告の声は、最後に話しかけた別の窓で鳴らした）
       const ai = $('log').querySelectorAll('.msg.ai'); speakingEl = ai[ai.length - 1] || null; if (speakingEl) speakingEl.classList.add('speaking');
     }
@@ -2160,7 +2162,7 @@ function connect() {
     else if (m.type === 'speaking') { accepting = !muted; serverDone = false; } // 切っている間に届いた音声は鳴らさない（本体も送らないが、切った直後の分が届くことがある）
     else if (m.type === 'error') { stopPlayback(); face('idle'); sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); setStatus(''); if (FACE) $('faceCap').textContent = '⚠ ' + m.text; if (m.gone) { agentsSig = ''; loadAgents(); } } // 相手が消えた・入れ替わった → 一覧を取り直す
     else if (m.type === 'notice') { sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); } // ハブから報告を受け取れなかった等（いまの話し相手とは別の知らせ）
-    else if (m.type === 'done') { if (m.report != null) reportDone = m.report; serverDone = true; turnDone = true; if (!playing && !queue.length) finishSpeaking(); loadAgents(); }
+    else if (m.type === 'done') { if (m.report != null) { reportDone = m.report; if (m.report !== speakingReport) return; } serverDone = true; turnDone = true; if (!playing && !queue.length) finishSpeaking(); loadAgents(); }
     else if (m.type === 'stopped') { if (m.report != null && m.report !== speakingReport) return; speakingReport = null; stopPlayback(); setStatus('止めました'); if (faceAckWait && m.report == null) { faceAckWait = false; faceAck(); } } // 届いた印は、本体がこの画面の停止に返してから（番号なしの止めた。別の画面からの番号つきでは出さない。codex-review 44b3c2e・a2a e0d36243）
     else if (m.type === 'blocked') loadAsks(); // 話している相手が承認で止まった → すぐ並べる
     else if (m.type === 'agent_notice') { loadSituation(); faceNotice(m); } // 代理からの知らせ。会話の欄には出さず、💡 の数と受け箱を取り直す（閉じていても）。顔の表示では縁と一言で知らせる

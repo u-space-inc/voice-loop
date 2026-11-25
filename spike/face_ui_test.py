@@ -245,6 +245,35 @@ with sync_playwright() as pw:
     pg.evaluate(f"({deliver})({{type: 'stopped'}})")
     check("顔: …この画面の停止への返事（番号なし）が届いたら、届いた印を出す", (pg.evaluate("faceAckWait"), pg.evaluate("document.getElementById('face').classList.contains('ack')")), (False, True))
     pg.wait_for_timeout(800)  # 届いた印が消えてから次の確かめへ
+    # 止めた報告の話し終わりは、いまの発言の状態を変えない（「止めました」を「話し終わりました」で上書きしない。codex-review 84a1855）
+    pg.evaluate(f"({deliver})({{type: 'reply', report: true, rid: 14, text: '報告7', about: 'proj｜t', pane: 'nope'}})")
+    pg.evaluate(f"({deliver})({{type: 'stopped', report: 14}})")
+    pg.evaluate(f"turnDone = false; ({deliver})({{type: 'done', sentences: 0, report: 14}})")
+    check("顔: 止めた報告の話し終わりでは、「止めました」のまま、いまの発言を終わりにしない",
+          (pg.evaluate("document.getElementById('faceCap').textContent"), pg.evaluate("turnDone")), ("止めました", False))
+    pg.evaluate("turnDone = true")
+    # 報告の本文を出したときだけ、本体に受け取りを返す（件名だけの知らせでは返さない。codex-review 84a1855）
+    pg.evaluate("window.__types.length = 0")
+    pg.evaluate(f"({deliver})({{type: 'reply', report: true, rid: 15, quiet: true, text: '別の相手を選んでいる画面の報告', about: 'proj｜t', pane: 'nope'}})")
+    pg.wait_for_timeout(300)
+    seen_other = pg.evaluate("window.__types.includes('report_seen')")
+    pg.evaluate(f"({deliver})({{type: 'reply', report: true, rid: 16, quiet: true, text: 'いまの相手の報告', about: 'proj｜t', pane: document.getElementById('agent').value}})")
+    seen_here = True
+    try:
+        pg.wait_for_function("window.__types.includes('report_seen')", timeout=3000)
+    except Exception:
+        seen_here = False
+    check("顔: 報告の受け取りは、本文を出したときだけ返す（ほかの相手を選んでいる画面の件名だけの知らせでは返さない）", (seen_other, seen_here), (False, True))
+    # つなぎ直したら、前の接続の報告の番号を持ち越さない（本体を起動し直すと番号を 1 から数え直す。a2a e0d36243）
+    pg.evaluate(f"({deliver})({{type: 'reply', report: true, rid: 1, text: '前の接続の報告', about: 'proj｜t', pane: 'nope'}})")
+    pg.evaluate(f"({deliver})({{type: 'done', sentences: 0, report: 1}})")
+    pg.evaluate("window.__oldws = ws; ws.close()")
+    pg.wait_for_function("ws !== window.__oldws && ws.readyState === 1 && document.getElementById('conn').classList.contains('on')", timeout=10000)
+    pg.wait_for_timeout(500)
+    pg.evaluate(f"({deliver})({{type: 'reply', report: true, rid: 1, text: '新しい接続の報告', about: 'proj｜t', pane: 'nope'}})")
+    pg.evaluate(f"({deliver})({{type: 'done', sentences: 0}})")  # 前のふつうの返事の話し終わり
+    check("顔: つなぎ直したあと、同じ番号の新しい報告への止めたは効く（前の接続の話し終わりの番号で消さない）",
+          pg.evaluate(f"({once})({{type: 'stopped', report: 1}})"), 1)
     pg.evaluate("stopPlayback = window._sp")
     # 止める合図が本体に届かなかったら、届いた印を出さず、「止めました」とも言わない（手元の再生は止める。codex-review 44b3c2e）
     pg.evaluate("window.__dropStop = true; face('speak')")

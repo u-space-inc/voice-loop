@@ -1808,7 +1808,7 @@ class Hermes(Brain, Talker):
     async def report_end(self, state: str, reply: str, about: str, saved: bool, pane: str = "", topic: str = "", ask: dict | None = None,
                          mark: int | None = None) -> bool:
         # 利用者が次に聞くのはこの報告（受け取れなければ本体の失敗の知らせ）。記録に書けたかに関係なく、ここで置き換える
-        # 報告は、鳴らす画面に送り終えてから聞いた文にする（report_delivered）。頼んだあとに利用者が話しかけた・止めたなら、届いても聞いた文にしない。
+        # 報告は、本文を出した画面が受け取りを返してから聞いた文にする（report_delivered。送れただけでは確定しない。codex-review 84a1855）。頼んだあとに利用者が話しかけた・止めたなら、届いても聞いた文にしない。
         # 開いている画面が無ければ聞いた文にしない（あとで履歴や通知で読んだなら「↩ 返信」で答える。ふつうの発言なら頭が聞き直す。a2a 30fd5b94 の 3 回目）
         ok = state == "done" and reply.strip() and (mark is None or HERMES_GEN["n"] == mark)
         REPORT_PENDING.clear()
