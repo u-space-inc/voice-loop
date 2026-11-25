@@ -529,6 +529,40 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         check("ハブ以外への指示を、送るスレッドの空きを待つ間に止めたら、送らずに送っていないと知らせ、件のリンクの印も付けない",
               (prompts[:-1], any(t == "error" and "送っていません" in x for t, x in seen3), marks_cancelled), ([], True, []))
         check("取り消さずに送った直接の指示には、送ると決めたときに件のリンクの印を付ける", (prompts, marks), (["セッションへのふつうの指示"], ["s1"]))
+        # 別の画面の「停止」でも、送る前のハブ以外への指示を取り消し、指示を出した画面に知らせる（a2a 38ef4720 の 3 回目）
+        prompts6, gate6, entered6 = [], threading.Event(), threading.Event()
+
+        def waiting_if_still6(still, fn, *a):
+            entered6.set()
+            gate6.wait(5)
+            return real_if(still, fn, *a)
+
+        def fake_herdr6(*a, **k):
+            if a[:2] == ("agent", "prompt"):
+                prompts6.append(a[3])
+            return {"result": {"agent": {"agent_status": "idle"}}}
+
+        s._if_still, s.herdr, s.jsonl_path = waiting_if_still6, fake_herdr6, (lambda a: None)
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        seen6 = []
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+                w.send_text(json.dumps({"type": "text", "text": "別の画面で止める指示", "pane": "w9:p1", "speaker": 0}))
+                check("（前提）送るスレッドの手前で待っている（別の画面の停止の前）", entered6.wait(5), True)
+                wb.send_text(json.dumps({"type": "stop"}))
+                receive_until(wb, "stopped")
+            for _ in range(60):  # 知らせが来なければ、送ったあとの「回答を読めませんでした」で終わる（待ち続けない）
+                m = json.loads(w.receive_text())
+                seen6.append((m.get("type"), m.get("text", "")))
+                if m.get("type") == "error":
+                    break
+            gate6.set()
+            time.sleep(0.3)
+        finally:
+            gate6.set()
+            s._if_still, s.herdr, s.list_agents, s.jsonl_path = real_if, real_herdr, real_agents, real_jsonl
+        check("別の画面で止めても、送る前のハブ以外への指示は送らず、指示を出した画面に送っていないと知らせる",
+              (prompts6, any(t == "error" and "送っていません" in x for t, x in seen6)), ([], True))
         # 送り始めたあとに次の発言でターンを取り消し、そのあとで相手が断ったら、送れなかったことを画面に知らせる（a2a 38ef4720）
         gate4, entered4 = threading.Event(), threading.Event()
 

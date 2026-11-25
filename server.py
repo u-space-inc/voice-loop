@@ -1438,6 +1438,7 @@ REPORTING = False  # ハブが自動通知に応答している最中か
 REPORT_IDLE: asyncio.Event | None = None  # 報告が終わったときに立つ（Slack から来た送信が、報告の終わりを待つのに使う）。イベントループの中で作る
 SLACK_QUEUE_WAIT = 45.0  # Slack から来た送信が、報告の終わりを待つ上限（秒）。送り（herdr の上限 30 秒）と合わせて hubctl send の待ち（100 秒）に収める
 REPORT_SEQ = 0  # 報告の通し番号（報告を始めるたびに進む）
+DIRECT_DROPS: set = set()  # 接続ごとの「送る前のハブ以外への指示を取り消す」処理（どの画面の「停止」でも、全部の接続の分を取り消す。a2a 38ef4720）
 REPORT_SPEECH: set = set()  # いま読み上げている報告の止める合図（画面の「停止」で立てる。codex-review bcd26ac）
 REPORT_FAILED: dict[int, bool] = {}  # 番号ごとに、報告が失敗・時間切れで終わったか（直近の分だけ持つ）
 LAST_DONE: dict[str, tuple] = {}  # セッションごとの、最後に報告した (ターンの目印, 返答)。同じ返答を二度知らせないため
@@ -3570,6 +3571,8 @@ async def ws(sock: WebSocket):
         _tasks.add(task)
         task.add_done_callback(_tasks.discard)
 
+    DIRECT_DROPS.add(drop_direct)
+
     def left_hub(pane: str):
         # ハブ以外に話した（声は発言の頭が届いたとき。聞き取りが空・失敗でも）。ハブの直前の問いは、次にハブへ言う発言の直前に聞いた文
         # ではない（止めたのと同じに、聞いた文と台帳の最新の返事を空にする。別のセッションへの発言をはさんだ「はい」で、前の問いの
@@ -3605,7 +3608,8 @@ async def ws(sock: WebSocket):
                     if pending.get("type") == "turn":  # 声の発言の頭のあと、声の本体の前に止めた。あとから届く声は聞き取らずに捨てる（「止めました」のあとに送らない。codex-review 7793a44）
                         pending = {"type": "dropped"}
                     cancel.set()
-                    drop_direct()
+                    for drop in list(DIRECT_DROPS):  # この画面とほかの画面の、送る前のハブ以外への指示を取り消し、それぞれの画面に知らせる
+                        drop()
                     if current:
                         current.cancel()
                     for ev in list(REPORT_SPEECH):  # 報告の読み上げも止める
@@ -3649,6 +3653,7 @@ async def ws(sock: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
+        DIRECT_DROPS.discard(drop_direct)
         CLIENTS.discard(client)
         if win_of(client) == client.cid:  # 印を名乗らなかった接続の「話しかけた時刻」は、切れたら消す（ほかの接続に引き継がない）
             WIN_SPOKE.pop(client.cid, None)
