@@ -560,7 +560,25 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             gate4.set()
             s.herdr, s.list_agents, s.jsonl_path = real_herdr, real_agents, real_jsonl
         check("ハブ以外への指示を送り始めたあとに次の発言をし、相手が断ったら、送れなかったことを画面に知らせる",
-              any(t == "error" and "前の指示は送れませんでした" in x for t, x in seen4), True)
+              sum(t == "error" and "送信できませんでした" in x for t, x in seen4), 1)
+        # 取り消さずに相手が断ったときも、知らせは 1 回（送る仕事の終わりの 1 か所で出す。ターンを取り消したのが断られたあとでも同じ所で出る）
+        s.herdr = lambda *a, **k: {"error": {"code": "agent_busy", "message": "受け付けません"}} if a[:2] == ("agent", "prompt") else {"result": {}}
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        s.jsonl_path = lambda a: None
+        seen5 = []
+        try:
+            w.send_text(json.dumps({"type": "text", "text": "すぐ断られる指示", "pane": "w9:p1", "speaker": 0}))
+            time.sleep(0.5)
+            w.send_text(json.dumps({"type": "stop"}))
+            for _ in range(60):
+                m = json.loads(w.receive_text())
+                seen5.append((m.get("type"), m.get("text", "")))
+                if m.get("type") == "stopped":
+                    break
+        finally:
+            s.herdr, s.list_agents, s.jsonl_path = real_herdr, real_agents, real_jsonl
+        check("ハブ以外への指示を相手が断ったら、取り消していなくても、送れなかった知らせは 1 回",
+              sum(t == "error" and "送信できませんでした" in x for t, x in seen5), 1)
         check("声の頭と本体の間に止めたら、届いた声は聞き取らず、ハブにも台帳にも送らない",
               (first is not None, second and second.get("type"), heard_calls, any(r[1] == "止めたあとに届いた声" for r in list(hm.HERMES_TURNS))), (True, "stopped", [], False))
         # 画面に送る途中で、次の発言を受け付けた（a2a 30fd5b94 の 2 回目の再現: 送れていない問いが、次の「はい」の行に「聞いた文」として写った）
