@@ -3580,7 +3580,8 @@ async def ws(sock: WebSocket):
             direct = direct_turn["d"] = DIRECT_PENDING[DIRECT_SEQ["n"]] = {
                 "key": DIRECT_SEQ["n"], "sent": False, "dropped": False, "handed": False, "lock": threading.Lock(), "notify": notify_unsent}
             if stopgen is not None and stopgen != STOP_GEN["n"]:  # 声の頭を受けたあと（聞き取りの間）に、どこかの画面で止めた
-                drop_pending(direct)
+                drop_pending(direct)  # 送っていないと知らせ、画面のターンは動かさない（「送りました・考え中」と出さない。codex-review dad00a5）
+                return
         current = asyncio.create_task(turn(text, pane, cancel, key, reply_at, files, job, plain=bool(quick_kind), admitted=admitted, direct=direct))
 
     direct_turn: dict = {"d": None}  # いまの画面のターンが、ハブ以外への指示ならその印 {"sent": 送り始めたか}
@@ -3632,20 +3633,26 @@ async def ws(sock: WebSocket):
                     client.seen = time.time()
                     continue
                 if d["type"] == "stop":
+                    # scope=talk: 話し始めるときに、画面が再生だけを止めた（この画面の分だけ。ほかの画面の送る前の指示は取り消さない。codex-review dad00a5）
+                    talk = d.get("scope") == "talk"
                     if pending.get("type") == "turn":  # 声の発言の頭のあと、声の本体の前に止めた。あとから届く声は聞き取らずに捨てる（「止めました」のあとに送らない。codex-review 7793a44）
                         pending = {"type": "dropped"}
                     cancel.set()
-                    STOP_GEN["n"] += 1
-                    direct_turn["d"] = None
-                    for pend in list(DIRECT_PENDING.values()):  # この画面とほかの画面（切れた画面も）の、送る前のハブ以外への指示を取り消し、それぞれに知らせる
-                        drop_pending(pend)
+                    if talk:
+                        drop_direct()
+                    else:
+                        STOP_GEN["n"] += 1
+                        direct_turn["d"] = None
+                        for pend in list(DIRECT_PENDING.values()):  # この画面とほかの画面（切れた画面も）の、送る前のハブ以外への指示を取り消し、それぞれに知らせる
+                            drop_pending(pend)
                     if current:
                         current.cancel()
                     for ev in list(REPORT_SPEECH):  # 報告の読み上げも止める
                         ev.set()
                     for t in TALKERS.values():  # 利用者は、読まれていた返事・まだ届いていない返事を聞いていない（承認に答える・閉じるの守り）
                         t.stopped()
-                    await send(type="stopped")
+                    n = d.get("n")  # 画面の停止の番号。返事に付けて返す（画面は、次の発言を始めたあとに届いた古い返事で表示を変えない）
+                    await send(type="stopped", **({"scope": "talk"} if talk else {}), **({"n": n} if isinstance(n, int) and not isinstance(n, bool) else {}))
                     continue
                 if d["type"] == "clientlog":  # 端末側（特にスマホ）の再生まわりの出来事を残す
                     print(f"[client] {str(d.get('msg'))[:300]}", flush=True)

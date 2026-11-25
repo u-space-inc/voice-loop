@@ -2164,11 +2164,10 @@ function connect() {
     else if (m.type === 'notice') { sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); } // ハブから報告を受け取れなかった等（いまの話し相手とは別の知らせ）
     else if (m.type === 'done') { serverDone = true; turnDone = true; if (!playing && !queue.length) finishSpeaking(); loadAgents(); }
     else if (m.type === 'stopped') { // 届いた印は、本体が止めたと返してから（codex-review 44b3c2e）
-      stopPlayback();
-      // 返事が遅れて、次の録音を始めたあとに届いたら、「止めました」と出さず印も光らせない（録音は続いている。codex-review 6096e1d）
-      // 録音（始めている途中を含む）が、最後の停止より後に始めたものなら、この返事はその前の停止への返事（許可待ちの間に止めた録音なら、表示する）
-      if (((rec && rec.state === 'recording') || recPending) && recLiveStops === recStops) faceAckWait = false;
-      else { setStatus('止めました'); if (faceAckWait) { faceAckWait = false; faceAck(); } }
+      // scope=talk: 話し始めるときに再生だけを止めた返事（表示は変えない）。n: 停止の番号。いまの発言を始める前の停止への返事なら、
+      // 返事が遅れて届いても「止めました」と出さず、顔も再生も変えない（新しい発言は止めていない。codex-review 6096e1d・dad00a5・f73d1be）
+      if (m.scope === 'talk' || (typeof m.n === 'number' && m.n <= utterStops)) faceAckWait = false;
+      else { stopPlayback(); setStatus('止めました'); if (faceAckWait) { faceAckWait = false; faceAck(); } }
     }
     else if (m.type === 'blocked') loadAsks(); // 話している相手が承認で止まった → すぐ並べる
     else if (m.type === 'agent_notice') { loadSituation(); faceNotice(m); } // 代理からの知らせ。会話の欄には出さず、💡 の数と受け箱を取り直す（閉じていても）。顔の表示では縁と一言で知らせる
@@ -2197,12 +2196,12 @@ let recPending = false;  // 録音を始めている途中（マイクの許可�
 // 「停止」を押した回数。録音は、始めたときの回数と顔の表示を、録音ごとに控える（あとの録音に上書きされない）。停止を押した・顔の表示を
 // 切り替えたら、その録音は送らずに捨てる（「止めました」と出したあとの次のタップで送らない。顔で録った声を画面からの発言として送らない。a2a 3752b7a5）
 let recStops = 0;
-let recLiveStops = -1; // いま始めている・録っている録音を始めたときの停止の回数（本体の「止めた」が、その録音より前の停止への返事かを見分ける）
+let utterStops = 0; // いまの発言（録音・文字）を始めたときの停止の回数（本体の「止めた」が、その発言より前の停止への返事かを見分ける）
 async function startRec() { if (recPending) return; recPending = true; try { return await startRecInner(); } finally { recPending = false; } } // 始めるのは 1 つずつ
 async function startRecInner() {
   const stops0 = recStops, face0 = faceOn, hid0 = heardId, ws0 = ws; // hid0: 録音を始めたときに受け取っていた返事の番号（その接続での番号）
-  recLiveStops = stops0;
-  if (playing || queue.length) { ws.send(JSON.stringify({ type: 'stop' })); stopPlayback(); } // 話し始めたら相手の声は止める
+  utterStops = stops0;
+  if (playing || queue.length) { ws.send(JSON.stringify({ type: 'stop', scope: 'talk' })); stopPlayback(); } // 話し始めたら相手の声は止める（ほかの画面の指示は取り消さない）
   prime();
   setSession('play-and-record');
   let stream;
@@ -2254,7 +2253,7 @@ $('stop').onclick = () => {
   if (attachJob) { attachJob.cancelled = true; attachJob.ctl.abort(); }  // 添付を送っている途中の発言も取り消す（送り終えてから発言が出ないように）
   recStops++; if (rec && rec.state === 'recording') stopRec(); // 録音中・録音を始めている途中の声は、送らずに捨てる
   // 手元の再生はすぐ止め、「止めました」は本体が止めたと返してから（届いたか分からないまま、止まったように見せない。codex-review 44b3c2e）
-  if (linked()) ws.send(JSON.stringify({ type: 'stop' })); stopPlayback(); setStatus(linked() ? '止めています…' : UNREACHABLE);
+  if (linked()) ws.send(JSON.stringify({ type: 'stop', n: recStops })); stopPlayback(); setStatus(linked() ? '止めています…' : UNREACHABLE);
 };
 // 文字の欄は、行の数に合わせて伸びる（上限は CSS の max-height。超えたら欄の中で送る）
 const fitTyped = () => { const el = $('typed'); el.style.height = 'auto'; el.style.height = (el.scrollHeight + 2) + 'px'; };
@@ -2278,6 +2277,7 @@ $('typedForm').onsubmit = async e => {
   cancelTopic();
   const pane = $('agent').value, key = curKey(), rf = replyFields(), about = rf.reply_at !== undefined ? replyTarget.about : '', list = attachFiles.slice();
   const item = rf.reply_item, hid0 = heardId, ws0 = ws; // hid0: 押した時点で受け取っていた返事の番号（添付を送る間に届いた問いへの答えにしない）
+  utterStops = recStops; // ここから新しい発言（これより前の停止への返事では、表示を変えない）
   prime();  // 読み上げの許可は、押したその場で取る（添付を置き終えるのを待ってからでは、iPhone の Safari が押した操作と見ない）
   const files = await sendAttach(pane, list, '文と添付');
   if (!files) return;  // 送らないときは、文も添付も残す

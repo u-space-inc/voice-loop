@@ -441,12 +441,25 @@ with sync_playwright() as pw:
     pg.wait_for_timeout(600)
     pg.evaluate("startRec()")
     pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
-    pg.evaluate("setStatus('録音中の目印'); faceAckWait = true; ws.onmessage({ data: JSON.stringify({ type: 'stopped' }) })")
+    pg.evaluate("setStatus('録音中の目印'); faceAckWait = true; ws.onmessage({ data: JSON.stringify({ type: 'stopped', n: utterStops }) })")  # 録音を始める前の停止への返事
     late = (pg.evaluate("document.getElementById('statusText').textContent"), pg.evaluate("faceAckWait"),
             pg.evaluate("document.getElementById('face').classList.contains('ack')"), pg.evaluate("rec.state"))
     pg.evaluate("document.getElementById('stop').click()")  # この録音は捨てる
     pg.wait_for_function("rec.state === 'inactive'", timeout=5000)
     check("録音: 録音の最中に前の「止めた」への返事が届いても、「止めました」と出さず印も光らせない", late, ("録音中の目印", False, False, "recording"))
+    # 停止の番号で見分ける: 次の発言を始めたあとの古い返事・話し始めるときの再生だけの停止への返事では、表示も顔も変えない。発言を始めたあとの停止への返事なら変える
+    # （codex-review 6096e1d・dad00a5・f73d1be）
+    pg.wait_for_timeout(600)
+    def stopped_case(payload):
+        pg.evaluate(f"setStatus('目印'); face('think'); ws.onmessage({{ data: JSON.stringify({payload}) }})")
+        return (pg.evaluate("document.getElementById('statusText').textContent"), pg.evaluate("document.getElementById('face').dataset.s"))
+    pg.evaluate("utterStops = recStops")
+    stale = stopped_case("{ type: 'stopped', n: utterStops }")
+    talkonly = stopped_case("{ type: 'stopped', scope: 'talk' }")
+    fresh = stopped_case("{ type: 'stopped', n: utterStops + 1 }")
+    check("止めた: 次の発言を始める前の停止・話し始めるときの停止への返事では変えず、発言を始めたあとの停止への返事なら止めました",
+          (stale, talkonly, fresh), (("目印", "think"), ("目印", "think"), ("止めました", "idle")))
+    pg.evaluate("face('idle')")
     # 再生にタップが要るとき（報告を聞くだけの使い方）のタップでも、画面を消さない許可を頼む
     pg.goto(BASE + "/?face")
     pg.wait_for_function("document.getElementById('face').dataset.s === 'idle'", timeout=10000)

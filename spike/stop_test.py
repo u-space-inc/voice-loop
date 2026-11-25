@@ -563,6 +563,37 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s._if_still, s.herdr, s.list_agents, s.jsonl_path = real_if, real_herdr, real_agents, real_jsonl
         check("別の画面で止めても、送る前のハブ以外への指示は送らず、指示を出した画面に送っていないと知らせる",
               (prompts6, any(t == "error" and "送っていません" in x for t, x in seen6)), ([], True))
+        # 話し始めるときに再生だけを止める停止（scope=talk）では、ほかの画面の送る前の指示は取り消さない（codex-review dad00a5）
+        prompts9, gate9, entered9 = [], threading.Event(), threading.Event()
+
+        def waiting_if_still9(still, fn, *a):
+            entered9.set()
+            gate9.wait(5)
+            return real_if(still, fn, *a)
+
+        def fake_herdr9(*a, **k):
+            if a[:2] == ("agent", "prompt"):
+                prompts9.append(a[3])
+            return {"result": {"agent": {"agent_status": "idle"}}}
+
+        s._if_still, s.herdr, s.jsonl_path = waiting_if_still9, fake_herdr9, (lambda a: None)
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+                w.send_text(json.dumps({"type": "text", "text": "話し始めの停止では消さない指示", "pane": "w9:p1", "speaker": 0}))
+                check("（前提）送るスレッドの手前で待っている（話し始めの停止の前）", entered9.wait(5), True)
+                wb.send_text(json.dumps({"type": "stop", "scope": "talk"}))
+                talk_reply = receive_until(wb, "stopped")
+            gate9.set()
+            for _ in range(100):
+                if prompts9:
+                    break
+                time.sleep(0.05)
+        finally:
+            gate9.set()
+            s._if_still, s.herdr, s.list_agents, s.jsonl_path = real_if, real_herdr, real_agents, real_jsonl
+        check("話し始めるときの停止（scope=talk）では、ほかの画面の送る前の指示を取り消さない（返事にも scope を付ける）",
+              (prompts9, (talk_reply or {}).get("scope")), (["話し始めの停止では消さない指示"], "talk"))
         # 別の画面の「停止」が、この画面の声（ハブ以外宛て）の聞き取りの間に来ても、聞き取ったあとの指示は送らずに知らせる（a2a 38ef4720 の 4 回目）
         prompts7, tr_in7, tr_go7 = [], threading.Event(), threading.Event()
 
@@ -596,8 +627,17 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         finally:
             tr_go7.set()
             s.transcribe, s.herdr, s.list_agents, s.jsonl_path = real_transcribe, real_herdr, real_agents, real_jsonl
-        check("別の画面の停止がこの画面の聞き取りの間に来たら、聞き取ったハブ以外への指示は送らず、送っていないと知らせる",
-              (prompts7, any(t == "error" and "送っていません" in x for t, x in seen7)), ([], True))
+        w.send_text(json.dumps({"type": "stop", "n": 41}))  # 知らせのあとに「送りました」と出ていないかを、止めたの返事まで読んで見る
+        for _ in range(30):
+            m = json.loads(w.receive_text())
+            seen7.append((m.get("type"), m.get("text", "")))
+            if m.get("type") == "stopped":
+                break
+        after = seen7[next(i for i, (t, x) in enumerate(seen7) if t == "error"):]
+        check("別の画面の停止がこの画面の聞き取りの間に来たら、聞き取ったハブ以外への指示は送らず、送っていないと知らせる（そのあと「送りました」と出さない）",
+              (prompts7, any(t == "error" and "送っていません" in x for t, x in seen7), any("エージェントに送りました" in x for t, x in after)), ([], True, False))
+        check("止めたの返事は、画面の停止の番号を付けて返す", seen7[-1], ("stopped", ""))
+        check("止めたの返事の番号", m.get("n"), 41)
         # 指示を出した画面が、送るスレッドの空きを待つ間に切れても、別の画面の停止で取り消す（切れた画面の指示も送らせない）
         prompts8, gate8, entered8 = [], threading.Event(), threading.Event()
 
