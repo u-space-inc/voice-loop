@@ -607,6 +607,19 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.herdr, s.list_agents, s.jsonl_path = real_herdr, real_agents, real_jsonl
         check("発言を始めたあと届くまでに別の画面で止めたら、ハブ以外への指示は送らず、送っていないと知らせる",
               (prompts10, any(t == "error" and "送っていません" in x for t, x in seen10)), ([], True))
+        # 合図（begin）の無い更新前の画面の「↩ 返信」は、停止をまたいだか分からないので、承認に使わせない（合図があれば、ふつうに受け付ける。a2a 4135f4c2）
+        legacy = {}
+        for label, extra in [("合図あり", {"begin": 904}), ("合図なし", {})]:
+            if extra:
+                w.send_text(json.dumps({"type": "begin", "b": 904}))
+            before_turn = s.hub_human_turn()
+            w.send_text(json.dumps({"type": "text", "text": f"はい（返信・{label}）", "pane": hm.HERMES_PANE, "speaker": 0, "hid": -1, "reply_at": 12345.5, **extra}))
+            for _ in range(100):  # 返信先の報告は無いので本体が断り、断った発言として台帳に載る
+                if s.hub_human_turn() != before_turn:
+                    break
+                time.sleep(0.05)
+            legacy[label] = s.HUB.current(s.hub_human_turn())
+        check("合図の無い更新前の画面の ↩ 返信は、もういまの発言ではない（承認に使わせない）。合図があればいまの発言", (legacy["合図あり"], legacy["合図なし"]), (True, False))
         # 次の声の発言の頭を受けたら、この画面の前の、まだ送っていないハブ以外への指示は送らずに知らせる（文字と同じ。codex-review c72fbbe）
         prompts11, gate11, entered11 = [], threading.Event(), threading.Event()
 

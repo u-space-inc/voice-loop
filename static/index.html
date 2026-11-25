@@ -2204,6 +2204,9 @@ function sendBegin() { const b = ++beginSeq; try { if (linked()) ws.send(JSON.st
 async function startRec() { if (recPending) return; recPending = true; try { return await startRecInner(); } finally { recPending = false; } } // 始めるのは 1 つずつ
 async function startRecInner() {
   const stops0 = recStops, face0 = faceOn, hid0 = heardId, ws0 = ws; // hid0: 録音を始めたときに受け取っていた返事の番号（その接続での番号）
+  // 録音を始めた合図（録音の間にどこかの画面で止めたら、本体が見分ける）と、始めたときの返信先（録音の途中で選んだ返信先には、始める前に
+  // 言った声を返信として結び付けない。a2a 4135f4c2）
+  const b0 = sendBegin(), rf0 = replyFields();
   utterStops = stops0;
   if (playing || queue.length) { ws.send(JSON.stringify({ type: 'stop', scope: 'talk' })); stopPlayback(); } // 話し始めたら相手の声は止める（ほかの画面の指示は取り消さない）
   prime();
@@ -2231,9 +2234,10 @@ async function startRecInner() {
     if (!$('agent').value) { setStatus('話し相手を選んでください'); return; }
     if (attachJob) { setStatus('添付を送っている途中なので、話した内容は送っていません'); return; }  // 前の発言の添付を送っている間は重ねない
     // 宛先・返信先・添付は話し終えた時点で固定する（添付を置いている間に相手や欄が変わっても、ずらさない）
-    const b0 = sendBegin(); // 録り終えた（ここから発言が本体に届くまでの停止を、本体が見分ける）
     cancelTopic();
-    const pane = $('agent').value, key = curKey(), rf = replyFields(), list = attachFiles.slice();
+    const rfNow = replyFields(); // 返信先は、録音を始めたときと同じものが選ばれているときだけ付ける（途中で選び直したら、ふつうの発言として送る）
+    const rf = rfNow.reply_at === rf0.reply_at && rfNow.reply_item === rf0.reply_item ? rfNow : {};
+    const pane = $('agent').value, key = curKey(), list = attachFiles.slice();
     const files = await sendAttach(pane, list, '話した内容');
     if (!files) return;
     // 声の本体は先に用意し、止めていない・顔の表示が同じ・つながっているのを確かめてから、頭と本体を待たずに続けて送る

@@ -3610,8 +3610,8 @@ async def ws(sock: WebSocket):
         # 発言を始めた合図のあと、この発言が届くまでに、どこかの画面で止めたか。合図の無い発言（更新前の画面・機械）は見ない。
         # 合図の番号が分からない（つなぎ直した）なら、止めたものとして扱う（断る側）
         b = d.get("begin")
-        if b is None:
-            return False
+        if b is None:  # 合図の無い更新前の画面の「↩ 返信」は、停止をまたいだか分からないので、承認に使わせない（UPGRADE.md の案内どおり。a2a 4135f4c2）
+            return d.get("reply_at") is not None
         if not isinstance(b, int) or isinstance(b, bool) or b not in begins:
             return True
         return begins.pop(b) != STOP_GEN["n"]

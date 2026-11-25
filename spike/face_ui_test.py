@@ -439,6 +439,24 @@ with sync_playwright() as pw:
     check("文字: 送るを押した時点で受け取っていた返事の番号を付ける", pg.evaluate("[window.__text.hid, heardId]"), [5, 9])
     check("文字: 送るを押した時点で、本文より前に発言を始めた合図（begin）を送り、本文にも同じ番号を付ける",
           pg.evaluate("[window.__types.indexOf('begin') >= 0 && window.__types.indexOf('begin') < window.__types.indexOf('text'), typeof window.__text.begin]"), [True, "number"])
+    # 録音を始めたときに合図（begin）を送り、返信先は始めたときのものに固定する（録音の前に選んだ返信先は付け、途中で選んだ返信先は付けない。a2a 4135f4c2）
+    def reply_rec(before, during):
+        pg.wait_for_timeout(600)
+        pg.evaluate(PICK)
+        pg.evaluate(f"window.__hubSaved = curAgent().hub; curAgent().hub = true; setReplyTarget({before}); window.__types.length = 0; window.__turn = null; startRec()")
+        pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+        began = pg.evaluate("window.__types.includes('begin')")
+        pg.evaluate(f"setReplyTarget({during})")
+        pg.wait_for_timeout(1500)
+        pg.evaluate("stopRec()")
+        pg.wait_for_function("window.__turn", timeout=5000)
+        got = pg.evaluate("[window.__turn.reply_at ?? null, typeof window.__turn.begin]")
+        pg.evaluate("setReplyTarget(null); curAgent().hub = window.__hubSaved")
+        return began, got
+    picked_before = reply_rec("{ at: 111.5, about: '前の報告' }", "{ at: 111.5, about: '前の報告' }")
+    picked_during = reply_rec("null", "{ at: 222.5, about: '録音の途中に届いた報告' }")
+    check("録音: 録音を始めたときに合図を送り、返信先は始める前に選んだものだけ付ける（途中で選んだ返信先は付けない）",
+          (picked_before, picked_during), ((True, [111.5, "number"]), (True, [None, "number"])))
     # 前の「止めた」への返事が、次の録音を始めたあとに届いても、「止めました」と出さず印も光らせない（録音は続いている。codex-review 6096e1d）
     pg.wait_for_timeout(600)
     pg.evaluate("startRec()")
