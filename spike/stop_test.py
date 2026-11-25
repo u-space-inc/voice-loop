@@ -305,15 +305,49 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             receive_until(w, "stopped")
             w.send_text(json.dumps({"type": "text", "text": "止めたあとすぐの文字の発言", "pane": hm.HERMES_PANE, "speaker": 0}))
             prompt = False
-            for _ in range(40):
+            for _ in range(10):
                 if any(r[1] == "止めたあとすぐの文字の発言" for r in list(hm.HERMES_TURNS)):
                     prompt = True
                     break
                 time.sleep(0.05)
-            check("聞き取りが遅いときに止めたら、その終わりを待たずに次の発言を送る", (prompt, slow_go2.is_set()), (True, False))
+            check("聞き取りが遅いときに止めたら、次の発言はその聞き取りが返るまで待つ（置き去りにしない。D-007）", (prompt, slow_go2.is_set()), (False, False))
+            slow_go2.set()
+            for _ in range(60):
+                if any(r[1] == "止めたあとすぐの文字の発言" for r in list(hm.HERMES_TURNS)):
+                    prompt = True
+                    break
+                time.sleep(0.05)
+            check("…聞き取りが返ったら、止めた発言は送らず、次の発言を送る", (prompt, any(r[1] == "遅い聞き取り" for r in list(hm.HERMES_TURNS))), (True, False))
         finally:
             slow_go2.set()
             s.transcribe = real_transcribe
+        # 「聞き取り中…」を送る間に止めたら、その声は聞き取りに回さない（a2a e0d36243 の 1）
+        real_send5 = s.Client.send
+        st_hold, st_holding, st_block = threading.Event(), threading.Event(), {"on": True}
+        called5 = {"n": 0}
+
+        async def held_status(self, **msg):
+            if msg.get("type") == "status" and msg.get("text") == "聞き取り中…" and st_block["on"]:
+                st_block["on"] = False
+                st_holding.set()
+                await asyncio.to_thread(st_hold.wait, 5)
+            return await real_send5(self, **msg)
+
+        s.Client.send = held_status
+        s.transcribe = lambda audio, filename: (called5.__setitem__("n", called5["n"] + 1), "聞き取り中に止めた声")[1]
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as w5:
+                w5.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm"}))
+                w5.send_bytes(b"0" * 4000)
+                check("（前提）「聞き取り中…」を送る途中で止めている", st_holding.wait(5), True)
+                w5.send_text(json.dumps({"type": "stop"}))
+                receive_until(w5, "stopped")
+                st_hold.set()
+                time.sleep(0.5)
+        finally:
+            s.Client.send = real_send5
+            s.transcribe = real_transcribe
+        check("「聞き取り中…」を送る間に止めたら、その声は聞き取りに回さない", called5["n"], 0)
         # 声の発言の頭が届いた時点で、前のハブの発言はいまの発言でなくなる（聞き取りを待たない）
         prev = hm.hermes_turn_begin("頭の前のハブの発言")
         w.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm"}))
@@ -376,6 +410,30 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         finally:
             s.transcribe, s.TURN_QUEUE_MAX, s.TURN_QUEUE_MAX_BYTES = real_transcribe, real_max, real_max_bytes
         check("止めたら、並んでいた声の発言は聞き取りに回さない（聞き取ったのは止める前の 1 つだけ）", calls_t["n"], 1)
+        # 件数の上限（大きさの上限には余裕があっても）。a2a e0d36243 の 5
+        cnt_in, cnt_go = threading.Event(), threading.Event()
+        s.transcribe = lambda audio, filename: (cnt_in.set(), cnt_go.wait(5), "件数の確かめ")[2]
+        s.TURN_QUEUE_MAX = 2
+        try:
+            for _ in range(2):
+                w.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm"}))
+                w.send_bytes(b"0" * 100)
+            cnt_in.wait(5)
+            w.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm"}))
+            w.send_bytes(b"0" * 100)  # 3 つ目は件数の上限（この試験では 2）を超える
+            w.send_text(json.dumps({"type": "stop"}))  # 停止の返事までに断りが来ていたかを見る（断りが無くても待ち続けない）
+            over_n = None
+            for _ in range(50):
+                m = json.loads(w.receive_text())
+                if m.get("type") == "error" and m.get("text", "").startswith("前の発言を聞き取っています"):
+                    over_n = m
+                if m.get("type") == "stopped":
+                    break
+            check("声の列の件数が上限を超えたら、大きさに余裕があっても断る", over_n is not None, True)
+        finally:
+            cnt_go.set()
+            s.transcribe, s.TURN_QUEUE_MAX = real_transcribe, real_max
+            time.sleep(0.5)
         # 報告を作っている間に止めたら、届いた報告は読み上げない（文字は届く）
         said_calls, rep_in, rep_go = [], threading.Event(), threading.Event()
 
@@ -410,6 +468,20 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             if m.get("type") == "error":
                 break
         check("文字だけで届けた報告のあとに「止めた」を送らない（そのあとの別の返事を止めない。codex-review 17f8e88）", "stopped" in after_rep, False)
+        for ev in [e for e, info in list(s.REPORT_SPEECH.items()) if info.get("ring")]:  # 前の確かめで読み上げの形で届けた報告（90 秒残る）を外す。いまの報告だけで見る
+            s.REPORT_SPEECH.pop(ev, None)
+        with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as other3:  # 別の画面で止めても、文字だけで受けた画面には送らない（a2a e0d36243 の 4）
+            other3.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "w-other-0003"}))
+            other3.send_text(json.dumps({"type": "stop"}))
+            receive_until(other3, "stopped")
+            w.send_text(json.dumps({"type": "text", "text": "区切り", "pane": "w9:nope", "speaker": 0}))
+            after_other = []
+            for _ in range(50):
+                m = json.loads(w.receive_text())
+                after_other.append(m.get("type"))
+                if m.get("type") == "error":
+                    break
+        check("別の画面で止めても、報告を文字だけで受けた画面には「止めた」を送らない", "stopped" in after_other, False)
         # 止めたら、ほかの画面へ「止めた」を送るより前に、許可を失効させる（送るのが滞っても前の許可を残さない。codex-review ce5be84）
         slow_go = threading.Event()
 

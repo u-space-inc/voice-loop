@@ -1104,7 +1104,7 @@ player.addEventListener('ended', () => { if (nowSilent) { nowSilent = false; if 
 player.addEventListener('error', () => { if (nowSilent || !playing) return; clog('audio error code=' + (player.error && player.error.code)); playNext(); });
 $('tap').onclick = () => { showTap(false); playNext(); };
 function stopPlayback() { gen++; queue = []; playing = false; accepting = false; cueing = false; player.pause(); showTap(false); if (speakingEl) speakingEl.classList.remove('speaking'); speakingEl = null; face('idle'); } // 止めたら口を閉じる（録音中なら、face が聞いている顔のままにする）
-function finishSpeaking(msg = muted ? '返答が届きました（文字だけ）' : '話し終わりました') { if (speakingEl) speakingEl.classList.remove('speaking'); speakingEl = null; setStatus(msg); face('idle'); }
+function finishSpeaking(msg = muted ? '返答が届きました（文字だけ）' : '話し終わりました') { speakingReport = null; if (speakingEl) speakingEl.classList.remove('speaking'); speakingEl = null; setStatus(msg); face('idle'); } // 話し終えたら、鳴らしていた報告の番号を消す（あとの別の画面からの止めたで、次の発言の待ちを止めない。codex-review 39b30fa）
 
 // ---------- 読み上げの切り替え（🔇） ----------
 // 端末ごとに覚える。切ると、鳴っている声をその場で止め、本体にも音声を送らないよう伝える（返答の文字はこれまでどおり出る）。

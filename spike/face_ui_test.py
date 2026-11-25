@@ -230,6 +230,10 @@ with sync_playwright() as pw:
     pg.evaluate(f"({deliver})({{type: 'reply', report: true, rid: 10, quiet: true, text: '文字だけの報告', about: 'proj｜t', pane: 'nope'}})")
     check("顔: 文字だけで届いた別の報告は、いま鳴らしている報告の番号を変えない（その報告への止めたは効く。codex-review 17f8e88）",
           pg.evaluate(f"({once})({{type: 'stopped', report: 9}})"), 1)
+    pg.evaluate(f"({deliver})({{type: 'reply', report: true, rid: 11, text: '報告4', about: 'proj｜t', pane: 'nope'}})")
+    pg.evaluate("finishSpeaking()")  # 報告を最後まで話し終えた
+    check("顔: 報告を話し終えたあとは、その報告への別の画面からの止めたで止めない（次の発言の待ちを止めない。codex-review 39b30fa）",
+          pg.evaluate(f"({once})({{type: 'stopped', report: 11}})"), 0)
     pg.evaluate("stopPlayback = window._sp")
     # 止める合図が本体に届かなかったら、届いた印を出さず、「止めました」とも言わない（手元の再生は止める。codex-review 44b3c2e）
     pg.evaluate("window.__dropStop = true; face('speak')")
