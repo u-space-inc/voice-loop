@@ -2298,11 +2298,15 @@ async def _report_body(d: dict, kind: str, notify, mark: int, speech: asyncio.Ev
         clients = list(CLIENTS)
         msg = dict(type="reply", pane=hub["pane"], text=reply, report=True, rid=seq, about=label, saved=saved, topic=str(d.get("topic") or ""))
         ring: list = REPORT_SPEECH.get(speech, {}).get("ring", [])  # 鳴らす画面（「停止」を押した画面がほかでも、ここに止めたと送る）
+        loud: list = []  # 読み上げの形（quiet なし）で送った窓
         while clients and not ring:  # 声は 1 か所（最後に話しかけた窓）。その窓に送れなければ（切れていた）、残りから選び直す（codex-review）
             for c in ring_targets(clients):
                 try:
-                    await c.send(**msg, **({"quiet": True} if speech.is_set() else {}))  # 作っている間に止めていたら、文字だけの形で（読み上げ中の印を付けない）
+                    quiet = speech.is_set()  # 作っている間に止めていたら、文字だけの形で（読み上げ中の印を付けない）
+                    await c.send(**msg, **({"quiet": True} if quiet else {}))
                     ring.append(c)
+                    if not quiet:
+                        loud.append(c)
                 except Exception:
                     clients.remove(c)
         if ring:
@@ -2313,10 +2317,10 @@ async def _report_body(d: dict, kind: str, notify, mark: int, speech: asyncio.Ev
             except Exception:
                 clients.remove(c)
         if ring:
-            if speech.is_set():  # 報告を作っている・送っている間に「停止」を押した。読み上げない（文字は届いている）。送る間に止めたなら、読み上げ中の印を外す
-                for c in ring:
+            if speech.is_set():  # 報告を作っている・送っている間に「停止」を押した。読み上げない（文字は届いている）
+                for c in loud:  # 読み上げの形で送ったあとに止めた窓だけ、この報告の番号つきで止めたと送る（読み上げ中の印を外す。ほかの返事は止めない。codex-review 17f8e88）
                     with contextlib.suppress(Exception):
-                        await c.send(type="stopped")
+                        await c.send(type="stopped", report=seq)
                 return "ok"
             # 読み上げの途中で鳴らす窓が切れても（1 対 1 の speak_to は失敗を投げる）、見張りには伝えない（codex-review）。別の窓では読み直さない:
             # 文字はすべての窓に届いている。読み直すと、文字だけで届けた窓に読み上げの印が付かず（a2a 8f05ef33）、
@@ -3516,6 +3520,7 @@ async def ws(sock: WebSocket):
     turn_q: asyncio.Queue = asyncio.Queue()
     queued = {"n": 0, "bytes": 0}  # 列に並べた・処理している発言の数と、声の大きさの合計（上限 TURN_QUEUE_MAX・TURN_QUEUE_MAX_BYTES）
     stops = {"n": 0}  # この接続で「停止」を受けた回数（並べたときの数と違えば、そのあとに止めた）
+    stop_ev = {"ev": asyncio.Event()}  # 止めたら立てる合図（立てたら次の合図に替える）。遅い聞き取りを待たずに次の発言へ進むため
 
     async def run_queued(item: dict):
         d = item["d"]
@@ -3524,8 +3529,16 @@ async def ws(sock: WebSocket):
                 await send(type="status", text="止めたので、聞き取った発言は送っていません")
                 return
             await send(type="status", text="聞き取り中…")
+            heard = asyncio.ensure_future(asyncio.to_thread(transcribe, item["bytes"], d.get("filename", "audio.webm")))
+            stopped = asyncio.ensure_future(stop_ev["ev"].wait())
+            await asyncio.wait({heard, stopped}, return_when=asyncio.FIRST_COMPLETED)
+            stopped.cancel()
+            if not heard.done():  # 聞き取りの間に止めた。遅い聞き取りの終わりを待たずに次の発言へ（結果は捨てる。codex-review 17f8e88）
+                heard.add_done_callback(lambda f: f.cancelled() or f.exception())  # 捨てた結果の例外を拾っておく
+                await send(type="status", text="止めたので、聞き取った発言は送っていません")
+                return
             try:
-                said = await asyncio.to_thread(transcribe, item["bytes"], d.get("filename", "audio.webm"))
+                said = heard.result()
             except (OSError, ValueError) as e:  # whisper が止まっている・答えの形が違う。接続は切らずに知らせる
                 print(f"[whisper] 聞き取りに失敗: {str(e)[:200]}", flush=True)
                 if stops["n"] == item["stops"]:  # 聞き取りの間に止めていたら、取り消した発言の失敗は知らせない（「止めました」を上書きしない。codex-review cfb561a）
@@ -3591,6 +3604,8 @@ async def ws(sock: WebSocket):
                 if d["type"] == "stop":
                     # 最初の await より前に、許可を失効させ、すべての報告に止めたことを反映する（ほかの画面へ送るのが滞っても、前の許可を残さない。codex-review ce5be84）
                     stops["n"] += 1  # 聞き取り中・並んでいる発言は送らない
+                    stop_ev["ev"].set()
+                    stop_ev["ev"] = asyncio.Event()
                     cancel.set()
                     if current:
                         current.cancel()

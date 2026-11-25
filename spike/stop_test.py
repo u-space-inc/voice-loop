@@ -293,6 +293,27 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         finally:
             s.speak_to = real_speak
         check("報告の読み上げの途中で「停止」を押したら、報告の読み上げも止める", speech.get("stopped"), True)
+        # 聞き取りが遅いときに止めたら、その終わりを待たずに次の発言へ進む（codex-review 17f8e88）
+        slow_in, slow_go2 = threading.Event(), threading.Event()
+        s.transcribe = lambda audio, filename: (slow_in.set(), slow_go2.wait(5), "遅い聞き取り")[2]
+        try:
+            hm.ask_hermes = lambda text: "わかりました"
+            w.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm"}))
+            w.send_bytes(b"0" * 4000)
+            slow_in.wait(5)
+            w.send_text(json.dumps({"type": "stop"}))
+            receive_until(w, "stopped")
+            w.send_text(json.dumps({"type": "text", "text": "止めたあとすぐの文字の発言", "pane": hm.HERMES_PANE, "speaker": 0}))
+            prompt = False
+            for _ in range(40):
+                if any(r[1] == "止めたあとすぐの文字の発言" for r in list(hm.HERMES_TURNS)):
+                    prompt = True
+                    break
+                time.sleep(0.05)
+            check("聞き取りが遅いときに止めたら、その終わりを待たずに次の発言を送る", (prompt, slow_go2.is_set()), (True, False))
+        finally:
+            slow_go2.set()
+            s.transcribe = real_transcribe
         # 声の発言の頭が届いた時点で、前のハブの発言はいまの発言でなくなる（聞き取りを待たない）
         prev = hm.hermes_turn_begin("頭の前のハブの発言")
         w.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm"}))
@@ -381,6 +402,14 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.speak_to = real_speak2
         check("報告を作っている間に止めたら、届いた報告は読み上げない（文字だけの形で届く。読み上げ中の印を付けない）",
               (got_reply and got_reply.get("text"), got_reply and got_reply.get("quiet"), said_calls), ("作っている間に止めた報告です。", True, []))
+        w.send_text(json.dumps({"type": "text", "text": "区切り", "pane": "w9:nope", "speaker": 0}))
+        after_rep = []
+        for _ in range(50):
+            m = json.loads(w.receive_text())
+            after_rep.append(m.get("type"))
+            if m.get("type") == "error":
+                break
+        check("文字だけで届けた報告のあとに「止めた」を送らない（そのあとの別の返事を止めない。codex-review 17f8e88）", "stopped" in after_rep, False)
         # 止めたら、ほかの画面へ「止めた」を送るより前に、許可を失効させる（送るのが滞っても前の許可を残さない。codex-review ce5be84）
         slow_go = threading.Event()
 
