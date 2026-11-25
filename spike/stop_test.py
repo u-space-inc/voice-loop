@@ -456,6 +456,21 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                 if m.get("type") == "stopped":
                     break
             check("満杯の列で止めたら、まだ取り出していない発言を外す（止めたあとに話し直した発言を、上限で断らない。codex-review 84a1855）", refused is None, True)
+            w.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm"}))  # 頭だけ届いた
+            w.send_text(json.dumps({"type": "stop"}))
+            receive_until(w, "stopped")
+            w.send_bytes(b"0" * 100)  # 止める前の頭の声が、止めたあとに届いた
+            w.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm"}))
+            w.send_bytes(b"0" * 100)  # 新しい発言
+            w.send_text(json.dumps({"type": "stop"}))
+            refused2 = None
+            for _ in range(50):
+                m = json.loads(w.receive_text())
+                if m.get("type") == "error" and m.get("text", "").startswith("前の発言を聞き取っています"):
+                    refused2 = m
+                if m.get("type") == "stopped":
+                    break
+            check("止める前に頭が届いた声は、止めたあとに届いても列に数えない（新しい発言を上限で断らない。a2a e0d36243 の 4 回目）", refused2 is None, True)
         finally:
             cnt_go.set()
             s.transcribe, s.TURN_QUEUE_MAX = real_transcribe, real_max
@@ -572,6 +587,49 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         finally:
             s.CLIENTS.discard(slow_client)
             s.speak_to = real_speak4
+        # 鳴らす画面への送りが終わる前に返った受け取りも、捨てずに聞いた文にする（a2a e0d36243 の 4 回目の 2）
+        real_send7, real_rt7, real_speak7 = s.Client.send, s.ring_targets, s.speak_to
+        hold7, held7 = threading.Event(), threading.Event()
+        EARLY = "送り終える前に受け取りが返る報告です。"
+
+        async def send_then_hold(self, **msg):
+            r = await real_send7(self, **msg)
+            if msg.get("type") == "reply" and msg.get("text") == EARLY and not held7.is_set():
+                held7.set()
+                await asyncio.to_thread(hold7.wait, 5)  # 画面には届いたが、本体の送りはまだ終わっていない
+            return r
+
+        async def no_speak7(*a, **k):
+            return None
+
+        s.Client.send = send_then_hold
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as w7:
+                w7.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "w-early-ack-01"}))
+                for _ in range(50):
+                    if any(getattr(x, "win", "") == "w-early-ack-01" for x in list(s.CLIENTS)):
+                        break
+                    time.sleep(0.02)
+                s.ring_targets = lambda cl: [x for x in cl if getattr(x, "win", "") == "w-early-ack-01"]
+                s.speak_to = no_speak7
+                hm.ask_hermes = lambda text: EARLY
+                hm.HERMES_HEARD["text"] = ""
+                fut7 = c.portal.start_task_soon(s._report, dict(REPORT_D), "done")
+                rep7 = receive_until(w7, "reply")
+                check("（前提）鳴らす画面に報告が届き、本体の送りはまだ終わっていない", held7.wait(5), True)
+                w7.send_text(json.dumps({"type": "report_seen", "rid": (rep7 or {}).get("rid")}))
+                for _ in range(50):
+                    if hm.HERMES_HEARD["text"]:
+                        break
+                    time.sleep(0.02)
+                check("送り終える前に返った受け取りでも、報告を聞いた文にする", (hm.HERMES_HEARD["text"], hold7.is_set()), (EARLY, False))
+                hold7.set()
+                fut7.result(timeout=10)
+        finally:
+            hold7.set()
+            s.Client.send, s.ring_targets, s.speak_to = real_send7, real_rt7, real_speak7
+        drained = receive_until(w, "reply")  # ほかの画面（w）に文字だけで届いたこの報告を読み捨てる（次の確かめが拾わないように）
+        check("（前提）ほかの画面には、この報告が文字だけで届いている", ((drained or {}).get("text"), (drained or {}).get("quiet")), (EARLY, True))
         # 本物の報告の流れで、報告の話し終わり（done）に、その報告の番号が付く（a2a e0d36243 の 3 回目の 2）
         real_narr = s.narrate
 

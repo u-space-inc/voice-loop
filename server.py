@@ -2303,25 +2303,25 @@ async def _report_body(d: dict, kind: str, notify, mark: int, speech: asyncio.Ev
         msg = dict(type="reply", pane=hub["pane"], text=reply, report=True, rid=seq, about=label, saved=saved, topic=str(d.get("topic") or ""))
         ring: list = []  # 鳴らす窓（届けた窓。聞いた文の確定と読み上げに使う）
         loud: list = REPORT_SPEECH.get(speech, {}).get("ring", [])  # 読み上げの形（quiet なし）で送った窓。別の画面で「停止」を押したら、ここにだけ止めたと送る（a2a e0d36243）
+        # 聞いた文にするのは、本文を出した画面が受け取りを返したとき（report_seen）。送れただけでは確定しない: 読み上げを切って別の相手を
+        # 選んでいる画面には件名しか出ない（codex-review 84a1855）。受け取りの対象には送る前に入れる（送り終える前に返った受け取りも捨てない。a2a e0d36243 の 4 回目）
+        REPORT_ACK.update(rid=seq, mark=mark, to=[])
+        acks: list = REPORT_ACK["to"]
         while clients and not ring:  # 声は 1 か所（最後に話しかけた窓）。その窓に送れなければ（切れていた）、残りから選び直す（codex-review）
             for c in ring_targets(clients):
                 try:
                     quiet = speech.is_set()  # 作っている間に止めていたら、文字だけの形で（読み上げ中の印を付けない）
+                    acks.append(c)
                     await c.send(**msg, **({"quiet": True} if quiet else {}))
                     ring.append(c)
                     if not quiet:
                         loud.append(c)
                 except Exception:
                     clients.remove(c)
-        if ring:
-            # 聞いた文にするのは、本文を出した画面が受け取りを返したとき（report_seen）。送れただけでは確定しない: 読み上げを切って別の相手を
-            # 選んでいる画面には件名しか出ない（codex-review 84a1855）。ほかの窓への文字を待たずに受け付ける（codex-review ce5be84）
-            REPORT_ACK.update(rid=seq, mark=mark, to=list(ring))
-        for c in [c for c in clients if c not in ring]:  # ほかの窓には文字だけ（quiet: 読み上げの印を付けない）
+        for c in [c for c in clients if c not in ring]:  # ほかの窓には文字だけ（quiet: 読み上げの印を付けない）。本文を出したなら、受け取りを返す
             try:
+                acks.append(c)
                 await c.send(**msg, quiet=True)
-                if REPORT_ACK.get("rid") == seq:
-                    REPORT_ACK["to"].append(c)  # 文字だけの窓でも、本文を出したなら受け取りを返す
             except Exception:
                 clients.remove(c)
         if ring:
@@ -3614,6 +3614,7 @@ async def ws(sock: WebSocket):
                 if d["type"] == "stop":
                     # 最初の await より前に、許可を失効させ、すべての報告に止めたことを反映する（ほかの画面へ送るのが滞っても、前の許可を残さない。codex-review ce5be84）
                     stops["n"] += 1  # 聞き取り中・並んでいる発言は送らない
+                    pending = {}  # 止める前に届いた発言の頭は捨てる（あとから届くその声を、列に入れない。a2a e0d36243 の 4 回目）
                     while not turn_q.empty():  # まだ取り出していない発言は列から外し、件数と大きさを戻す（取り出した 1 件は、終わるまで数える。codex-review 84a1855）
                         dropped = turn_q.get_nowait()
                         queued["n"] -= 1
@@ -3655,6 +3656,9 @@ async def ws(sock: WebSocket):
                         start_turn(d["text"], d["pane"], int(d["speaker"]), d.get("key"), reply_at_of(d), attachments_of(d), reply_item_of(d))
                 continue
             if msg.get("bytes") is not None and pending.get("type") == "turn":
+                if pending["_stops"] != stops["n"]:  # 頭のあとに止めた声。数えずに捨てる（列の上限を使わない）
+                    pending = {}
+                    continue
                 if queued["n"] >= TURN_QUEUE_MAX or queued["bytes"] + len(msg["bytes"]) > TURN_QUEUE_MAX_BYTES:  # 聞き取りが追いつかない。溜め込まない
                     pending = {}
                     await send(type="error", text="前の発言を聞き取っています。終わってから話してください（いまの発言は送っていません）")
