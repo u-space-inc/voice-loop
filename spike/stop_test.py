@@ -630,6 +630,48 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.Client.send, s.ring_targets, s.speak_to = real_send7, real_rt7, real_speak7
         drained = receive_until(w, "reply")  # ほかの画面（w）に文字だけで届いたこの報告を読み捨てる（次の確かめが拾わないように）
         check("（前提）ほかの画面には、この報告が文字だけで届いている", ((drained or {}).get("text"), (drained or {}).get("quiet")), (EARLY, True))
+        # 文字だけで受けた画面が、本体の送りが終わる前に返した受け取りも、聞いた文にする（鳴らす画面は受け取りを返さない。a2a e0d36243 の 5 回目の 2）
+        real_send8, real_rt8, real_speak8 = s.Client.send, s.ring_targets, s.speak_to
+        hold8, held8 = threading.Event(), threading.Event()
+        QUIET = "文字だけの画面が先に受け取りを返す報告です。"
+
+        async def send_then_hold8(self, **msg):
+            r = await real_send8(self, **msg)
+            if msg.get("type") == "reply" and msg.get("text") == QUIET and msg.get("quiet") and getattr(self, "win", "") == "w-quiet-ack-08" and not held8.is_set():
+                held8.set()
+                await asyncio.to_thread(hold8.wait, 5)  # 文字だけの画面には届いたが、本体の送りはまだ終わっていない
+            return r
+
+        s.Client.send = send_then_hold8
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as w8r, c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as w8q:
+                w8r.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "w-ring-ack-08"}))
+                w8q.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "w-quiet-ack-08"}))
+                for _ in range(50):
+                    wins = {getattr(x, "win", "") for x in list(s.CLIENTS)}
+                    if {"w-ring-ack-08", "w-quiet-ack-08"} <= wins:
+                        break
+                    time.sleep(0.02)
+                s.ring_targets = lambda cl: [x for x in cl if getattr(x, "win", "") == "w-ring-ack-08"]
+                s.speak_to = no_speak7
+                hm.ask_hermes = lambda text: QUIET
+                hm.HERMES_HEARD["text"] = ""
+                fut8 = c.portal.start_task_soon(s._report, dict(REPORT_D), "done")
+                rep8 = receive_until(w8q, "reply")
+                check("（前提）文字だけの画面に報告が届き、本体の送りはまだ終わっていない", (held8.wait(5), (rep8 or {}).get("quiet")), (True, True))
+                w8q.send_text(json.dumps({"type": "report_seen", "rid": (rep8 or {}).get("rid")}))
+                for _ in range(50):
+                    if hm.HERMES_HEARD["text"]:
+                        break
+                    time.sleep(0.02)
+                check("文字だけで受けた画面が送りの終わる前に返した受け取りでも、報告を聞いた文にする", (hm.HERMES_HEARD["text"], hold8.is_set()), (QUIET, False))
+                hold8.set()
+                fut8.result(timeout=10)
+        finally:
+            hold8.set()
+            s.Client.send, s.ring_targets, s.speak_to = real_send8, real_rt8, real_speak8
+        drained8 = receive_until(w, "reply")
+        check("（前提）ほかの画面（w）にも、この報告が文字だけで届いている", (drained8 or {}).get("text"), QUIET)
         # 本物の報告の流れで、報告の話し終わり（done）に、その報告の番号が付く（a2a e0d36243 の 3 回目の 2）
         real_narr = s.narrate
 

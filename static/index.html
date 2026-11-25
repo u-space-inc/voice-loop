@@ -2160,8 +2160,9 @@ function connect() {
         else if (drawn) { const last = [...$('log').querySelectorAll('.msg.ai')].filter(e => e._report !== undefined).pop(); shown = !!last && last._report === m.text; } // 描き直した最後の報告が、届いた報告
       }
       // 報告の本文を出したときだけ、本体に受け取りを返す（本体はこれを受けて、報告を聞いた文にする。codex-review 84a1855）。返さないのは、件名だけの知らせ・
-      // 履歴を読めなかった・読み込みが入れ替わった・待つ間に接続や相手が替わった・顔の表示で会話の欄が隠れているとき（a2a e0d36243 の 4 回目）
-      if (m.report && m.rid != null && shown && !faceOn && sock === ws && ws.readyState === 1 && (!m.pane || m.pane === $('agent').value)) { try { ws.send(JSON.stringify({ type: 'report_seen', rid: m.rid })); } catch {} }
+      // 履歴を読めなかった・読み込みが入れ替わった・待つ間に接続や相手が替わった・会話の欄が隠れている（顔の表示・成果物の画面・読む表示）・
+      // 画面が裏に回っているとき（a2a e0d36243 の 4・5 回目）
+      if (m.report && m.rid != null && shown && !faceOn && !reading && !viewer && !$('log').inert && !document.hidden && sock === ws && ws.readyState === 1 && (!m.pane || m.pane === $('agent').value)) { try { ws.send(JSON.stringify({ type: 'report_seen', rid: m.rid })); } catch {} }
       if (muted || m.quiet) return; // 読み上げないので、読んでいる印はつけない（quiet: 報告の声は、最後に話しかけた別の窓で鳴らした）
       const ai = $('log').querySelectorAll('.msg.ai'); speakingEl = ai[ai.length - 1] || null; if (speakingEl) speakingEl.classList.add('speaking');
     }

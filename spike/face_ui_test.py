@@ -194,6 +194,16 @@ with sync_playwright() as pw:
           (pg.evaluate("window.__tap"), pg.evaluate("window.__types.includes('stop')")), (0, True))
     pg.evaluate("stopPlayback()")
     pg.wait_for_timeout(600)  # 止めたことへの本体の返事が届き終わってから
+    pg.evaluate("window.__talk = 0; window.__tap = 0; window.__types.length = 0; face('think');"
+                "const op = player.play; player.play = function () { player.play = op; return Promise.reject(new DOMException('blocked', 'NotAllowedError')); };"
+                "queue.push(new ArrayBuffer(8)); playNext()")
+    pg.wait_for_function("document.getElementById('tap').style.display === 'inline-block'", timeout=5000)
+    rejected_face = pg.evaluate("document.getElementById('face').dataset.s")
+    pg.locator("#face svg").click()
+    check("顔: 考え中に自動の再生を断られたら、ふつうの顔に戻り、押すと再生を始める（止めない。a2a e0d36243 の 5 回目）",
+          (rejected_face, pg.evaluate("window.__tap"), pg.evaluate("window.__types.includes('stop')")), ("idle", 1, False))
+    pg.evaluate("stopPlayback()")
+    pg.wait_for_timeout(300)
 
     # 「停止」（PC では Esc）で再生を止めたら、口を閉じる（codex-review b5a95ff）
     pg.evaluate("face('speak'); document.getElementById('stop').click()")
@@ -276,8 +286,8 @@ with sync_playwright() as pw:
 
     pg.route("**/api/history*", fake_history)
 
-    def seen_after(msg, face_on, then=""):
-        pg.evaluate(f"faceOn = {'true' if face_on else 'false'}; window.__types.length = 0")
+    def seen_after(msg, face_on, then="", before=""):
+        pg.evaluate(f"faceOn = {'true' if face_on else 'false'}; applyInert(); window.__types.length = 0; {before}")
         pg.evaluate(f"({deliver})({json.dumps(msg, ensure_ascii=False)}); {then}")
         try:
             pg.wait_for_function("window.__types.includes('report_seen')", timeout=1500)
@@ -293,15 +303,23 @@ with sync_playwright() as pw:
     shown = seen_after({**base, "rid": 17, "text": "いまの相手の報告", "pane": hub}, False)
     # 読み込みの途中で、別の読み込みが始まった（会話の欄には、同じ本文の前の報告が出ている）
     superseded = seen_after({**base, "rid": 20, "text": "いまの相手の報告", "pane": hub}, False, then="loadThread()")
+    # 会話の欄が隠れている・画面が裏に回っている（読み上げを切っている）。成果物の画面・読む表示は、会話の欄を操作できなくする印（inert）で表す
+    muted_before = pg.evaluate("muted")
+    pg.evaluate("muted = true")
+    covered = seen_after({**base, "rid": 22, "text": "いまの相手の報告", "pane": hub}, False, before="document.getElementById('log').inert = true")
+    pg.evaluate("applyInert(); Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })")
+    hidden = seen_after({**base, "rid": 23, "text": "いまの相手の報告", "pane": hub}, False)
+    pg.evaluate(f"delete document.hidden; muted = {'true' if muted_before else 'false'}")
+    check("（前提）作り物の「裏に回った」を外した", pg.evaluate("document.hidden"), False)
     hist["mode"] = "fail"
     failed = seen_after({**base, "rid": 18, "text": "いまの相手の報告", "pane": hub}, False)
     hist["mode"], hist["text"] = "ok", "前の報告"
     stale = seen_after({**base, "rid": 19, "text": "いまの相手の報告", "pane": hub}, False)
     pg.unroute("**/api/history*")
-    pg.evaluate("faceOn = true")
+    pg.evaluate("faceOn = true; applyInert()")
     check("（前提）顔の表示の話し相手が決まっている", bool(hub), True)
-    check("顔: 報告の受け取りは、本文を描いたときだけ返す（ほかの相手を選んでいる・顔で会話が隠れている・履歴を読めない・描いた最後の報告が別・読み込みが入れ替わった、では返さない）",
-          (other, on_face, shown, failed, stale, superseded), (False, False, True, False, False, False))
+    check("顔: 報告の受け取りは、本文を描いたときだけ返す（ほかの相手を選んでいる・顔で会話が隠れている・履歴を読めない・描いた最後の報告が別・読み込みが入れ替わった・会話の欄が隠れている・画面が裏に回っている、では返さない）",
+          (other, on_face, shown, failed, stale, superseded, covered, hidden), (False, False, True, False, False, False, False, False))
     # 新しい発言で再生を捨てたら、鳴らしていた報告の番号も外す（あとで別の画面からその報告の止めたが届いても、新しい発言の待ちを止めない。codex-review 48ea24a）
     pg.evaluate(f"({deliver})({{type: 'reply', report: true, rid: 21, text: '報告8', about: 'proj｜t', pane: 'nope'}})")
     pg.evaluate("sendTurnStart()")
