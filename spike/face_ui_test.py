@@ -12,6 +12,8 @@
   - 通知・リンクで件・受け箱を開いたら、顔を閉じて中身を見せる
   - 録音中は、再生のタップ待ちがあっても、顔のタップで録音を止めて送る
   - 「停止」で再生を止めたら、口を閉じる。録音中は、再生の始まり・終わり・停止でも「聞いている」のまま
+  - 考えている・話している顔のときに押す（Esc でも）と止める（録音は始めない。本体が止めたと返したら届いた印に縁が光り、顔の下に「止めました」）。
+    再生のタップ待ちより先に止める。考え中に自動の再生を断られたら、ふつうの顔に戻る。録音中・ふつうの顔の Esc では止めない
   - タップのときに画面を消さない許可を頼み、外されたら画面に戻ったときに取り直す。顔を閉じたら手放し（頼んでいる途中でも）、取り直さない
   - 件・受け箱の場所つき（/?face#inbox など）で開いたときも、顔を閉じて中身を見せる
   - 顔の表示中は、裏の画面をフォーカス・操作できない（閉じたら戻る）
@@ -84,10 +86,12 @@ for _ in range(200):
     time.sleep(0.05)
 
 # 画面が送る hello を拾う
-CATCH = """(() => { window.__hello = []; const o = WebSocket.prototype.send;
+CATCH = """(() => { window.__hello = []; window.__types = []; const o = WebSocket.prototype.send;
   WebSocket.prototype.send = function (m) {
     let d = null; try { d = typeof m === 'string' ? JSON.parse(m) : null; } catch {}
     if (d && d.type === 'hello') window.__hello.push(d);
+    if (d && d.type) window.__types.push(d.type);
+    if (d && d.type === 'stop' && window.__dropStop) return;  // 止める合図が本体に届かなかった（届いた印を出さないかを見る）
     return o.call(this, m);
   }; })()"""
 
@@ -184,6 +188,23 @@ with sync_playwright() as pw:
     pg.locator("#face svg").click()
     check("顔: 再生にタップが要るときは、録音でなく再生を押す", (pg.evaluate("window.__tap"), pg.evaluate("window.__talk")), (1, 0))
     pg.evaluate("stopPlayback()")
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__talk = 0; window.__tap = 0; window.__types.length = 0; queue.push(new ArrayBuffer(8)); showTap(true); face('think')")
+    pg.locator("#face svg").click()
+    check("顔: 考え中の顔では、再生のタップ待ちがあっても、押したら止める（再生を始めない）",
+          (pg.evaluate("window.__tap"), pg.evaluate("window.__types.includes('stop')")), (0, True))
+    pg.evaluate("stopPlayback()")
+    pg.wait_for_timeout(600)  # 止めたことへの本体の返事が届き終わってから
+    pg.evaluate("window.__talk = 0; window.__tap = 0; window.__types.length = 0; face('think');"
+                "const op = player.play; player.play = function () { player.play = op; return Promise.reject(new DOMException('blocked', 'NotAllowedError')); };"
+                "queue.push(new ArrayBuffer(8)); playNext()")
+    pg.wait_for_function("document.getElementById('tap').style.display === 'inline-block'", timeout=5000)
+    rejected_face = pg.evaluate("document.getElementById('face').dataset.s")
+    pg.locator("#face svg").click()
+    check("顔: 考え中に自動の再生を断られたら、ふつうの顔に戻り、押すと再生を始める（止めない）",
+          (rejected_face, pg.evaluate("window.__tap"), pg.evaluate("window.__types.includes('stop')")), ("idle", 1, False))
+    pg.evaluate("stopPlayback()")
+    pg.wait_for_timeout(300)
 
     # 「停止」（PC では Esc）で再生を止めたら、口を閉じる（codex-review b5a95ff）
     pg.evaluate("face('speak'); document.getElementById('stop').click()")
@@ -193,6 +214,55 @@ with sync_playwright() as pw:
                 "f.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', repeat: true, bubbles: true }));"
                 "f.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', repeat: true, bubbles: true }))")
     check("顔: キーの長押しの繰り返しでは「話す」を押さない", pg.evaluate("window.__talk"), 0)
+
+    # 考えている・話しているときに顔を押すと止める（R12。録音は始めない。届いた印に縁が白く一瞬光る。2026-11-24）
+    for st in ("speak", "think"):
+        pg.wait_for_timeout(600)  # 前の「停止」への本体の返事（stopped。顔を「ふつう」に戻す）が届き終わってから
+        pg.evaluate(f"window.__talk = 0; window.__types.length = 0; face('{st}')")
+        check(f"顔: （前提）{st} の顔になっている", pg.evaluate("document.getElementById('face').dataset.s"), st)
+        pg.locator("#face svg").click()
+        acked = True
+        try:
+            pg.wait_for_function("document.getElementById('face').classList.contains('ack')", timeout=3000)  # 本体が止めたと返してから光る
+        except Exception:
+            acked = False
+        check(f"顔: {st} の顔のときに押すと止める（停止を送り、録音は始めず、本体が止めたと返したら届いた印が光る）",
+              (pg.evaluate("window.__types.includes('stop')"), pg.evaluate("window.__talk"), acked,
+               pg.evaluate("document.getElementById('face').dataset.s")), (True, 0, True, "idle"))
+    pg.wait_for_function("document.getElementById('faceCap').textContent === '止めました'", timeout=5000)
+    check("顔: 止めたら、顔の下に「止めました」", pg.evaluate("document.getElementById('faceCap').textContent"), "止めました")
+    gone = True
+    try:
+        pg.wait_for_function("!document.getElementById('face').classList.contains('ack')", timeout=3000)  # 決め打ちの時間で待たない（CI で揺れた）
+    except Exception:
+        gone = False
+    check("顔: 届いた印は一瞬で消える", gone, True)
+    # 止める合図が本体に届かなかったら、届いた印を出さず、「止めました」とも言わない（手元の再生は止める。codex-review 44b3c2e）
+    pg.evaluate("window.__dropStop = true; face('speak')")
+    pg.locator("#face svg").click()
+    pg.wait_for_timeout(150)
+    early = pg.evaluate("document.getElementById('face').classList.contains('ack')")
+    pg.wait_for_timeout(650)
+    check("顔: 止める合図に本体が返さなければ、届いた印を出さず「止めています…」のまま（手元の再生は止める）",
+          (early, pg.evaluate("document.getElementById('face').classList.contains('ack')"), pg.evaluate("document.getElementById('faceCap').textContent"),
+           pg.evaluate("document.getElementById('face').dataset.s")), (False, False, "止めています…", "idle"))
+    pg.evaluate("window.__dropStop = false; faceAckWait = false")
+    pg.evaluate("window.__talk = 0; window.__types.length = 0; face('think')")
+    check("顔: （前提）think の顔になっている", pg.evaluate("document.getElementById('face').dataset.s"), "think")
+    pg.locator("#face").press("Escape")
+    check("顔: 机の顔（PC の 3 列でない幅）でも、Esc で止める（録音は始めない）", (pg.evaluate("window.__types.includes('stop')"), pg.evaluate("window.__talk")), (True, 0))
+    pg.wait_for_timeout(600)  # 止めたことへの本体の返事が届き終わってから
+    # 録音中・ふつうの顔の Esc では止めない（止めたと出しても録音は続き、次のタップで送られてしまう。画面全体の Esc にも回さない。codex-review fde6e2e）
+    esc = {}
+    for label, setup in [("録音中", "rec = { state: 'recording', stop() {} }; face('think')"), ("ふつうの顔", "rec = null; face('idle')")]:
+        pg.evaluate(f"window.__talk = 0; window.__types.length = 0; faceAckWait = false; {setup}")
+        shown = pg.evaluate("document.getElementById('face').dataset.s")
+        pg.locator("#face").press("Escape")
+        pg.wait_for_timeout(200)
+        esc[label] = (shown, pg.evaluate("window.__types.includes('stop')"), pg.evaluate("faceAckWait"))
+    pg.evaluate("rec = null; face('idle')")
+    check("顔: 録音中（聞いている顔）・ふつうの顔の Esc では、止める合図を送らない",
+          (esc["録音中"], esc["ふつうの顔"]), (("listen", False, False), ("idle", False, False)))
 
     # 代理からの知らせは、縁と一言で示し、タップしたら聞いたことにする（前の「停止」への本体の返事が届き終わってから）
     pg.wait_for_timeout(500)
