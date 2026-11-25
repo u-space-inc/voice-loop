@@ -137,7 +137,7 @@ plains: list[bool] = []
 drop_once: set[str] = set()  # この窓への読み上げを 1 回だけ失敗させる（読み上げの途中で切れた）
 
 
-async def fake_speak_to(clients, text, cancel, plain=False):
+async def fake_speak_to(clients, text, cancel, plain=False, report=None):
     """声は出さず、どの窓で鳴らしたかを覚える。本物と同じく、終わりの合図（done）は送る。1 対 1 で失敗したら投げる（本物と同じ）。"""
     spoken.append(sorted(getattr(c, "win", "") or "-" for c in clients))
     plains.append(plain)

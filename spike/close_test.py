@@ -218,6 +218,45 @@ s.hermes.ask_hermes = real_ask
 check("断った発言: 前の往復が返事を待つ間に断っても、断りはそのあとに載せ、最後に聞いた文は空（古い問いを次の発言の「聞いた文」にしない）",
       (s.hermes.HERMES_HEARD["text"], [(r[1], r[2]) for r in list(s.hermes.HERMES_TURNS)[-2:]]), ("", [("テストのセッションを閉じて", ASK), ("", "")]))
 
+# 止めた（2026-11-24。顔を押す・停止）: 閉じていいかを聞いた返事を読んでいる途中・届く前に止めたら、利用者はその問いを聞いていない。
+# 「はい」のあとに止めたら、頭が回の途中で閉じない（操作の直前に確かめる。a2a 30fd5b94）
+agents[:] = [TARGET]
+s.list_agents = lambda: [dict(a) for a in agents]  # 上の立てる数の試験で差し替えた一覧を戻す
+asked()
+s.HUB.stopped()
+say("はい、閉じて")
+check("止める: 閉じていいかの問いを読んでいる途中で止めたら、次の「はい」で閉じない（聞き直し）", close(confirmed=True), ("not_asked", []))
+s.CLOSING.pop("w9:p1", None)
+asked()
+say("はい、閉じて")
+check("止める: 止めずに聞いた問いへの「はい」なら、これまでどおり閉じる", close(confirmed=True), ("ok", ["w9:p1"]))
+agents[:] = [TARGET]
+s.CLOSING.pop("w9:p1", None)
+asked()
+say("はい、閉じて")
+s.HUB.stopped()
+check("止める: 「はい」のあとに止めたら、頭が回の途中で閉じない", close(confirmed=True), ("stopped", []))
+s.CLOSING.pop("w9:p1", None)
+asked()
+say("はい、閉じて")
+real_reply_to = s.hub_reply_to
+s.hub_reply_to = lambda turn: (s.HUB.stopped(), real_reply_to(turn))[1]  # 入口で確かめたあと、閉じる前の読み取りの間に止めた（a2a 30fd5b94 の 3 回目）
+try:
+    got = close(confirmed=True)
+finally:
+    s.hub_reply_to = real_reply_to
+check("止める: 閉じる直前の読み取りの間に止めたら、閉じない", got, ("stopped", []))
+s.CLOSING.pop("w9:p1", None)
+asked()
+say("はい、閉じて")
+real_current, calls = s.hub_current, {"n": 0}
+s.hub_current = lambda turn: (calls.__setitem__("n", calls["n"] + 1), real_current(turn) if calls["n"] < 3 else False)[1]  # 3 回目（ワーカーの中）でだけ止めたあと
+try:
+    got = close(confirmed=True)
+finally:
+    s.hub_current = real_current
+check("止める: ループで確かめたあと、ワーカーの空きを待つ間に止めたら閉じない（ワーカーの中で確かめる。codex-review bcd26ac）", (got, calls["n"]), (("stopped", []), 3))
+
 bad = [f"{name}: {g!r}（期待 {w!r}）" for name, ok, g, w in results if not ok]
 print("\n".join(bad) or f"{len(results)} 例、すべて期待どおり")
 sys.exit(1 if bad else 0)

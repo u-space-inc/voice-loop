@@ -247,6 +247,7 @@ check("ハブ経由の答えは、画面のボタンの返答の鍵が空くま�
 s.hub_turns = lambda n=1: [("t2", "はい")]  # 利用者の最後の発言（本体は引数なしでも呼ぶ: hub_human_turn）
 s.hub_heard = lambda turn: "proj の承認、許可しますか？"  # その直前に利用者が聞いたハブの返答
 s.hub_via = lambda turn: ""  # その発言は画面から（台帳に無い発言は、本体が「機械から」とみなして断る）
+s.hub_current = lambda turn: True  # その発言のあとに、利用者は止めていない・次の発言をしていない（台帳に無い発言は、本体が断る）
 s.jsonl_path = lambda a: None
 s.start_watch = lambda *a, **k: None
 
@@ -265,6 +266,14 @@ for order in ("ハブ → ボタン", "ボタン → ハブ"):
     check(f"{order}: 画面が古い問いのままでも、送るのは 1 回だけ", (first.get("ok"), second.get("reason"), state["sent"]), (True, "answered", ["1"]))
     s.SEEN_PROMPT["w9:p1"] = (fp, "t1", "sess-1")
     check(f"{order}: そのあとハブが断る（いいえ）も、同じ問いには送らない", (hub("no").get("reason"), state["sent"]), ("answered", ["1"]))
+s.ANSWERED.clear()
+# 答えに使う発言のあとに、利用者が止めた・次の発言をしたら、頭が回の途中で答えを送らない（a2a 30fd5b94）
+case("止めたあと", screen=PERMISSION)
+fp = prompt()["fp"]
+s.SEEN_PROMPT["w9:p1"] = (fp, "t1", "sess-1"); state["sent"].clear(); s._answer_lock = asyncio.Lock()
+s.hub_current = lambda turn: False
+check("止めたあと: 答えに使う発言のあとに止めた・次の発言をしたなら、答えを送らない", (hub("yes").get("reason"), state["sent"]), ("stopped", []))
+s.hub_current = lambda turn: True
 s.ANSWERED.clear()
 
 # セッションの立て直し（key はセッション ID で見分ける）

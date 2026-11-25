@@ -112,7 +112,7 @@ async def fake_ask(hub, note):
     return ANSWER
 
 
-async def fake_end(state, reply, about, saved, pane="", topic="", ask=None):
+async def fake_end(state, reply, about, saved, pane="", topic="", ask=None, mark=None):
     return False
 
 

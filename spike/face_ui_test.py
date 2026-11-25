@@ -12,6 +12,7 @@
   - 通知・リンクで件・受け箱を開いたら、顔を閉じて中身を見せる
   - 録音中は、再生のタップ待ちがあっても、顔のタップで録音を止めて送る
   - 「停止」で再生を止めたら、口を閉じる。録音中は、再生の始まり・終わり・停止でも「聞いている」のまま
+  - 考えている・話している顔のときに押す（Esc でも）と止める（録音は始めない。届いた印に縁が光り、顔の下に「止めました」）
   - タップのときに画面を消さない許可を頼み、外されたら画面に戻ったときに取り直す。顔を閉じたら手放し（頼んでいる途中でも）、取り直さない
   - 件・受け箱の場所つき（/?face#inbox など）で開いたときも、顔を閉じて中身を見せる
   - 顔の表示中は、裏の画面をフォーカス・操作できない（閉じたら戻る）
@@ -84,10 +85,13 @@ for _ in range(200):
     time.sleep(0.05)
 
 # 画面が送る hello を拾う
-CATCH = """(() => { window.__hello = []; const o = WebSocket.prototype.send;
+CATCH = """(() => { window.__hello = []; window.__types = []; window.__sent = []; const o = WebSocket.prototype.send;
   WebSocket.prototype.send = function (m) {
     let d = null; try { d = typeof m === 'string' ? JSON.parse(m) : null; } catch {}
     if (d && d.type === 'hello') window.__hello.push(d);
+    if (d && d.type === 'report_seen') window.__sent.push(d);
+    if (d && d.type) window.__types.push(d.type);
+    if (d && d.type === 'stop' && window.__dropStop) return;  // 止める合図が本体に届かなかった（届いた印を出さないかを見る）
     return o.call(this, m);
   }; })()"""
 
@@ -184,6 +188,23 @@ with sync_playwright() as pw:
     pg.locator("#face svg").click()
     check("顔: 再生にタップが要るときは、録音でなく再生を押す", (pg.evaluate("window.__tap"), pg.evaluate("window.__talk")), (1, 0))
     pg.evaluate("stopPlayback()")
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__talk = 0; window.__tap = 0; window.__types.length = 0; queue.push(new ArrayBuffer(8)); showTap(true); face('think')")
+    pg.locator("#face svg").click()
+    check("顔: 考え中の顔では、再生のタップ待ちがあっても、押したら止める（再生を始めない。codex-review 48ea24a）",
+          (pg.evaluate("window.__tap"), pg.evaluate("window.__types.includes('stop')")), (0, True))
+    pg.evaluate("stopPlayback()")
+    pg.wait_for_timeout(600)  # 止めたことへの本体の返事が届き終わってから
+    pg.evaluate("window.__talk = 0; window.__tap = 0; window.__types.length = 0; face('think');"
+                "const op = player.play; player.play = function () { player.play = op; return Promise.reject(new DOMException('blocked', 'NotAllowedError')); };"
+                "queue.push(new ArrayBuffer(8)); playNext()")
+    pg.wait_for_function("document.getElementById('tap').style.display === 'inline-block'", timeout=5000)
+    rejected_face = pg.evaluate("document.getElementById('face').dataset.s")
+    pg.locator("#face svg").click()
+    check("顔: 考え中に自動の再生を断られたら、ふつうの顔に戻り、押すと再生を始める（止めない。a2a e0d36243 の 5 回目）",
+          (rejected_face, pg.evaluate("window.__tap"), pg.evaluate("window.__types.includes('stop')")), ("idle", 1, False))
+    pg.evaluate("stopPlayback()")
+    pg.wait_for_timeout(300)
 
     # 「停止」（PC では Esc）で再生を止めたら、口を閉じる（codex-review b5a95ff）
     pg.evaluate("face('speak'); document.getElementById('stop').click()")
@@ -193,6 +214,187 @@ with sync_playwright() as pw:
                 "f.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', repeat: true, bubbles: true }));"
                 "f.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', repeat: true, bubbles: true }))")
     check("顔: キーの長押しの繰り返しでは「話す」を押さない", pg.evaluate("window.__talk"), 0)
+
+    # 考えている・話しているときに顔を押すと止める（R12。録音は始めない。届いた印に縁が白く一瞬光る。2026-11-24）
+    for st in ("speak", "think"):
+        pg.wait_for_timeout(600)  # 前の「停止」への本体の返事（stopped。顔を「ふつう」に戻す）が届き終わってから
+        pg.evaluate(f"window.__talk = 0; window.__types.length = 0; face('{st}')")
+        check(f"顔: （前提）{st} の顔になっている", pg.evaluate("document.getElementById('face').dataset.s"), st)
+        pg.locator("#face svg").click()
+        acked = True
+        try:
+            pg.wait_for_function("document.getElementById('face').classList.contains('ack')", timeout=3000)  # 本体が止めたと返してから光る
+        except Exception:
+            acked = False
+        check(f"顔: {st} の顔のときに押すと止める（停止を送り、録音は始めず、本体が止めたと返したら届いた印が光る）",
+              (pg.evaluate("window.__types.includes('stop')"), pg.evaluate("window.__talk"), acked,
+               pg.evaluate("document.getElementById('face').dataset.s")), (True, 0, True, "idle"))
+    pg.wait_for_function("document.getElementById('faceCap').textContent === '止めました'", timeout=5000)
+    check("顔: 止めたら、顔の下に「止めました」", pg.evaluate("document.getElementById('faceCap').textContent"), "止めました")
+    gone = True
+    try:
+        pg.wait_for_function("!document.getElementById('face').classList.contains('ack')", timeout=3000)  # 決め打ちの時間で待たない（CI で揺れた）
+    except Exception:
+        gone = False
+    check("顔: 届いた印は一瞬で消える", gone, True)
+    # 別の画面からの「止めた」は、いま鳴らしている報告の番号が合うときだけ再生を止める（別の返事に移っていれば止めない。codex-review cfb561a）
+    pg.wait_for_timeout(700)  # 前の確かめで押した停止への本体の返事が届き終わってから数える
+    pg.evaluate("window.__sp = 0; window._sp = stopPlayback; stopPlayback = function () { window.__sp++; return window._sp.apply(this, arguments); }")
+    deliver = "msg => ws.onmessage({ data: JSON.stringify(msg) })"
+    pg.evaluate(f"({deliver})({{type: 'reply', report: true, rid: 7, text: '報告', about: 'proj｜t', pane: 'nope'}})")
+    pg.evaluate(f"({deliver})({{type: 'reply', text: 'ふつうの返事', pane: 'nope'}})")
+    # 数えるのは「止めた」を渡した同じ実行の中だけ（本体からあとで届くほかの知らせを数えない。「止めた」の受け取りは同期で動く）
+    once = "msg => { window.__sp = 0; ws.onmessage({ data: JSON.stringify(msg) }); return window.__sp; }"
+    check("顔: 別の画面からの「止めた」は、もう別の返事を鳴らしていれば止めない", pg.evaluate(f"({once})({{type: 'stopped', report: 7}})"), 0)
+    pg.evaluate(f"({deliver})({{type: 'reply', report: true, rid: 8, text: '報告2', about: 'proj｜t', pane: 'nope'}})")
+    check("顔: 別の画面からの「止めた」は、その報告を鳴らしていれば止める", pg.evaluate(f"({once})({{type: 'stopped', report: 8}})"), 1)
+    pg.evaluate(f"({deliver})({{type: 'reply', report: true, rid: 9, text: '報告3', about: 'proj｜t', pane: 'nope'}})")
+    pg.evaluate(f"({deliver})({{type: 'reply', report: true, rid: 10, quiet: true, text: '文字だけの報告', about: 'proj｜t', pane: 'nope'}})")
+    check("顔: 文字だけで届いた別の報告は、いま鳴らしている報告の番号を変えない（その報告への止めたは効く。codex-review 17f8e88）",
+          pg.evaluate(f"({once})({{type: 'stopped', report: 9}})"), 1)
+    pg.evaluate(f"({deliver})({{type: 'reply', report: true, rid: 11, text: '報告4', about: 'proj｜t', pane: 'nope'}})")
+    pg.evaluate(f"({deliver})({{type: 'done', sentences: 0, report: 11}})")  # 報告を最後まで話し終えた（その報告の番号つきの話し終わり）
+    check("顔: 報告を話し終えたあとは、その報告への別の画面からの止めたで止めない（次の発言の待ちを止めない。codex-review 39b30fa）",
+          pg.evaluate(f"({once})({{type: 'stopped', report: 11}})"), 0)
+    pg.evaluate(f"({deliver})({{type: 'reply', report: true, rid: 12, text: '報告5', about: 'proj｜t', pane: 'nope'}})")
+    pg.evaluate(f"({deliver})({{type: 'done', sentences: 0}})")  # 前のふつうの返事の話し終わりが、報告の文字のあとに届いた
+    check("顔: 前の返事の話し終わりでは、これから鳴らす報告の番号を消さない（その報告への止めたは効く。a2a e0d36243）",
+          pg.evaluate(f"({once})({{type: 'stopped', report: 12}})"), 1)
+    pg.evaluate(f"faceAckWait = true; ({deliver})({{type: 'reply', report: true, rid: 13, text: '報告6', about: 'proj｜t', pane: 'nope'}})")
+    pg.evaluate(f"({deliver})({{type: 'stopped', report: 13}})")  # この画面の停止への返事（番号なし）より先に、別の画面からの番号つきの止めたが届いた
+    check("顔: 別の画面からの番号つきの止めたでは、この画面の停止の届いた印を出さない（a2a e0d36243）",
+          (pg.evaluate("faceAckWait"), pg.evaluate("document.getElementById('face').classList.contains('ack')")), (True, False))
+    pg.evaluate(f"({deliver})({{type: 'stopped'}})")
+    check("顔: …この画面の停止への返事（番号なし）が届いたら、届いた印を出す", (pg.evaluate("faceAckWait"), pg.evaluate("document.getElementById('face').classList.contains('ack')")), (False, True))
+    pg.wait_for_timeout(800)  # 届いた印が消えてから次の確かめへ
+    # 止めた報告の話し終わりは、いまの発言の状態を変えない（「止めました」を「話し終わりました」で上書きしない。codex-review 84a1855）
+    pg.evaluate(f"({deliver})({{type: 'reply', report: true, rid: 14, text: '報告7', about: 'proj｜t', pane: 'nope'}})")
+    pg.evaluate(f"({deliver})({{type: 'stopped', report: 14}})")
+    pg.evaluate(f"turnDone = false; ({deliver})({{type: 'done', sentences: 0, report: 14}})")
+    check("顔: 止めた報告の話し終わりでは、「止めました」のまま、いまの発言を終わりにしない",
+          (pg.evaluate("document.getElementById('faceCap').textContent"), pg.evaluate("turnDone")), ("止めました", False))
+    pg.evaluate("turnDone = true")
+    # 報告の本文を出したときだけ、本体に受け取りを返す（件名だけの知らせ・顔の表示で会話が隠れている・履歴を読めない・描いた最後の報告が別、では返さない。
+    # codex-review 84a1855・a2a e0d36243 の 4 回目）
+    hist = {"mode": "ok", "text": ""}
+    held: list = []
+
+    def fake_history(route):
+        if hist["mode"] == "hold":
+            held.append(route)  # 返すのを止めておく（あとで返す）
+        elif hist["mode"] == "fail":
+            route.abort()
+        else:
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"source": "hermes", "messages": [{"role": "ai", "text": hist["text"], "report": True, "about": "proj｜t", "at": 1}]}))
+
+    pg.route("**/api/history*", fake_history)
+
+    def seen_after(msg, face_on, then="", before=""):
+        pg.evaluate(f"faceOn = {'true' if face_on else 'false'}; applyInert(); window.__types.length = 0; window.__sent.length = 0; {before}")
+        pg.evaluate(f"({deliver})({json.dumps(msg, ensure_ascii=False)}); {then}")
+        try:
+            pg.wait_for_function("window.__types.includes('report_seen')", timeout=1500)
+            return True
+        except Exception:
+            return False
+
+    hub = pg.evaluate("document.getElementById('agent').value")
+    base = {"type": "reply", "report": True, "quiet": True, "about": "proj｜t"}
+    hist["text"] = "いまの相手の報告"
+    other = seen_after({**base, "rid": 15, "text": "別の相手を選んでいる画面の報告", "pane": "nope"}, False)
+    on_face = seen_after({**base, "rid": 16, "text": "いまの相手の報告", "pane": hub}, True)
+    shown = seen_after({**base, "rid": 17, "text": "いまの相手の報告", "pane": hub}, False)
+    shown_rid = pg.evaluate("window.__sent.map(d => d.rid)")
+    # 読み込みの途中で、別の読み込みが始まった（会話の欄には、同じ本文の前の報告が出ている）
+    superseded = seen_after({**base, "rid": 20, "text": "いまの相手の報告", "pane": hub}, False, then="loadThread()")
+    # 会話の欄が隠れている・画面が裏に回っている（読み上げを切っている）。成果物の画面・読む表示は、会話の欄を操作できなくする印（inert）で表す
+    muted_before = pg.evaluate("muted")
+    pg.evaluate("muted = true")
+    covered = seen_after({**base, "rid": 22, "text": "いまの相手の報告", "pane": hub}, False, before="document.getElementById('log').inert = true")
+    pg.evaluate("applyInert(); Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })")
+    hidden = seen_after({**base, "rid": 23, "text": "いまの相手の報告", "pane": hub}, False)
+    pg.evaluate(f"delete document.hidden; muted = {'true' if muted_before else 'false'}")
+    check("（前提）作り物の「裏に回った」を外した", pg.evaluate("document.hidden"), False)
+    hist["mode"] = "fail"
+    failed = seen_after({**base, "rid": 18, "text": "いまの相手の報告", "pane": hub}, False)
+    hist["mode"], hist["text"] = "ok", "前の報告"
+    stale = seen_after({**base, "rid": 19, "text": "いまの相手の報告", "pane": hub}, False)
+    # 書式のある報告は、見えない所がありうるので受け取りを返さない（畳む欄・描くと消える書き方・箇条書き）。書式の無い報告を直接描いたときは返す
+    pg.evaluate("muted = true")
+    direct = seen_after({**base, "rid": 24, "saved": False, "text": "直接描いた報告です。", "pane": hub}, False)
+    direct_rid = pg.evaluate("window.__sent.map(d => d.rid)")
+    folded = seen_after({**base, "rid": 25, "saved": False, "text": "<details><summary>要約</summary>proj を閉じていいですか？</details>", "pane": hub}, False)
+    vanish = seen_after({**base, "rid": 26, "saved": False, "text": "[閉じていいですか]: /manual", "pane": hub}, False)
+    hist["text"] = "- 項目\n- proj を閉じていいですか？"
+    listed = seen_after({**base, "rid": 27, "text": "- 項目\n- proj を閉じていいですか？", "pane": hub}, False)
+    hist["text"] = "【見出し】いまの相手の報告です。\n次の行です。"
+    lead = seen_after({**base, "rid": 28, "text": "【見出し】いまの相手の報告です。\n次の行です。", "pane": hub}, False)
+    # 履歴を読み込む間に、話し相手が替わった・接続が替わった（読み込みは、届いた報告と同じ本文で返す）
+    hist["text"] = "いまの相手の報告"
+
+    def held_case(rid, change, undo):
+        held.clear()
+        hist["mode"] = "hold"
+        pg.evaluate(f"window.__sent.length = 0; window.__fakeSent = []; faceOn = false; applyInert(); void ({deliver})({json.dumps({**base, 'rid': rid, 'text': 'いまの相手の報告', 'pane': hub}, ensure_ascii=False)})")  # 受け取りの処理の終わりを待たない（読み込みを止めている）
+        for _ in range(100):
+            if held:
+                break
+            pg.wait_for_timeout(30)
+        pg.evaluate(change)
+        hist["mode"] = "ok"
+        held[0].fulfill(status=200, content_type="application/json",
+                        body=json.dumps({"source": "hermes", "messages": [{"role": "ai", "text": "いまの相手の報告", "report": True, "about": "proj｜t", "at": 1}]}))
+        pg.wait_for_timeout(800)
+        sent = pg.evaluate("window.__sent.length + (window.__fakeSent || []).length")
+        pg.evaluate(undo)
+        return bool(held) and sent > 0
+
+    pane_moved = held_case(29, "const o = document.createElement('option'); o.value = 'w9:other'; o.id = 'optOther'; o.textContent = 'other';"
+                               "document.getElementById('agent').appendChild(o); document.getElementById('agent').value = 'w9:other'",
+                           f"document.getElementById('agent').value = {json.dumps(hub)}; document.getElementById('optOther').remove()")
+    sock_moved = held_case(30, "window.__realws = ws; ws = { readyState: 1, send: m => window.__fakeSent.push(m) }", "ws = window.__realws")
+    pg.evaluate(f"muted = {'true' if muted_before else 'false'}")
+    pg.unroute("**/api/history*")
+    pg.evaluate("faceOn = true; applyInert()")
+    check("顔: 報告の受け取りは、その報告の番号で返す（履歴から描いたとき・直接描いたとき）", (shown_rid, direct, direct_rid), ([17], True, [24]))
+    check("顔: 書式のある報告（畳む欄・描くと消える書き方・箇条書き）は受け取りを返さず、【見出し】と改行だけの報告は返す（a2a 524948fc）",
+          (folded, vanish, listed, lead), (False, False, False, True))
+    check("顔: 履歴を読み込む間に話し相手・接続が替わったら、受け取りを返さない", (pane_moved, sock_moved), (False, False))
+    check("（前提）顔の表示の話し相手が決まっている", bool(hub), True)
+    check("顔: 報告の受け取りは、本文を描いたときだけ返す（ほかの相手を選んでいる・顔で会話が隠れている・履歴を読めない・描いた最後の報告が別・読み込みが入れ替わった・会話の欄が隠れている・画面が裏に回っている、では返さない）",
+          (other, on_face, shown, failed, stale, superseded, covered, hidden), (False, False, True, False, False, False, False, False))
+    # 新しい発言で再生を捨てたら、鳴らしていた報告の番号も外す（あとで別の画面からその報告の止めたが届いても、新しい発言の待ちを止めない。codex-review 48ea24a）
+    pg.evaluate(f"({deliver})({{type: 'reply', report: true, rid: 21, text: '報告8', about: 'proj｜t', pane: 'nope'}})")
+    pg.evaluate("sendTurnStart()")
+    check("顔: 新しい発言で再生を捨てたあとは、前の報告への別の画面からの止めたで止めない",
+          pg.evaluate(f"({once})({{type: 'stopped', report: 21}})"), 0)
+    # つなぎ直したら、前の接続の報告の番号を持ち越さない（本体を起動し直すと番号を 1 から数え直す。a2a e0d36243）
+    pg.evaluate(f"({deliver})({{type: 'reply', report: true, rid: 1, text: '前の接続の報告', about: 'proj｜t', pane: 'nope'}})")
+    pg.evaluate(f"({deliver})({{type: 'done', sentences: 0, report: 1}})")
+    pg.evaluate("window.__oldws = ws; ws.close()")
+    pg.wait_for_function("ws !== window.__oldws && ws.readyState === 1 && document.getElementById('conn').classList.contains('on')", timeout=10000)
+    pg.wait_for_timeout(500)
+    pg.evaluate(f"({deliver})({{type: 'reply', report: true, rid: 1, text: '新しい接続の報告', about: 'proj｜t', pane: 'nope'}})")
+    pg.evaluate(f"({deliver})({{type: 'done', sentences: 0}})")  # 前のふつうの返事の話し終わり
+    check("顔: つなぎ直したあと、同じ番号の新しい報告への止めたは効く（前の接続の話し終わりの番号で消さない）",
+          pg.evaluate(f"({once})({{type: 'stopped', report: 1}})"), 1)
+    pg.evaluate("stopPlayback = window._sp")
+    # 止める合図が本体に届かなかったら、届いた印を出さず、「止めました」とも言わない（手元の再生は止める。codex-review 44b3c2e）
+    pg.evaluate("window.__dropStop = true; face('speak')")
+    pg.locator("#face svg").click()
+    pg.wait_for_timeout(150)
+    early = pg.evaluate("document.getElementById('face').classList.contains('ack')")
+    pg.wait_for_timeout(650)
+    check("顔: 止める合図に本体が返さなければ、届いた印を出さず「止めています…」のまま（手元の再生は止める）",
+          (early, pg.evaluate("document.getElementById('face').classList.contains('ack')"), pg.evaluate("document.getElementById('faceCap').textContent"),
+           pg.evaluate("document.getElementById('face').dataset.s")), (False, False, "止めています…", "idle"))
+    pg.evaluate("window.__dropStop = false; faceAckWait = false")
+    pg.evaluate("window.__talk = 0; window.__types.length = 0; face('think')")
+    check("顔: （前提）think の顔になっている", pg.evaluate("document.getElementById('face').dataset.s"), "think")
+    pg.locator("#face").press("Escape")
+    check("顔: 机の顔（PC の 3 列でない幅）でも、Esc で止める（録音は始めない）", (pg.evaluate("window.__types.includes('stop')"), pg.evaluate("window.__talk")), (True, 0))
+    pg.evaluate("face('idle')")
 
     # 代理からの知らせは、縁と一言で示し、タップしたら聞いたことにする（前の「停止」への本体の返事が届き終わってから）
     pg.wait_for_timeout(500)

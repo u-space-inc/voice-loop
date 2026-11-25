@@ -50,6 +50,7 @@ ring_ui_test.py
 sent_log_test.py
 slack_merge_test.py
 slack_report_test.py
+stop_test.py
 tasks_test.py
 teams_watch_test.py
 topics_test.py

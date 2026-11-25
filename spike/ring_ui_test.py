@@ -54,12 +54,12 @@ async def nothing(*a, **k):
     return None
 
 
-async def no_voice(clients, text, cancel, plain=False):  # 声は合成しない。合図は本物と同じく、話し始め（speaking）と終わり（done）を送る
+async def no_voice(clients, text, cancel, plain=False, report=None):  # 声は合成しない。合図は本物と同じく、話し始め（speaking）と終わり（done）を送る
     for c in clients:
         await c.send(type="speaking")
     await asyncio.sleep(0.6)  # 本物は声の合成に時間がかかる（画面が会話を読み直して、読み上げの印を付けてから終わる）
     for c in clients:
-        await c.send(type="done", sentences=0)
+        await c.send(type="done", sentences=0, **({"report": report} if report is not None else {}))
 
 
 s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.hermes.watch_hermes_skills = nothing
