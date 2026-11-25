@@ -450,7 +450,7 @@ const FACE = new URLSearchParams(location.search).has('face');
 let faceOn = FACE; // 顔を閉じたら（通知で件を開いた・「画面に戻る」）、ふだんの画面として名乗り直す
 const FACE_HASH = location.hash; // 開いたときの場所。件・受け箱の処理が場所を消す前に控える（件の場所つきで開いたら、顔を閉じて中身を見せる）
 const setStatus = t => { $('statusText').textContent = t; if (FACE) $('faceCap').textContent = t; };
-let ws, rec, chunks = [], mime = '', ext = 'webm';
+let ws, rec, mime = '', ext = 'webm';
 let agents = [], agentsSig = '', threadSource = 'jsonl', loadSeq = 0;
 
 // 端末側の出来事をサーバーのログに残す（スマホの再生不具合を後から追えるように）
@@ -2202,7 +2202,7 @@ async function startRecInner() {
   for (const m of ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']) if (MediaRecorder.isTypeSupported(m)) { mime = m; break; }
   ext = mime.includes('mp4') ? 'mp4' : 'webm';
   rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
-  chunks = [];
+  const chunks = []; // 録音ごとの音声片（捨てた前の録音の最後の片が、次の録音に混ざらないように。a2a 3752b7a5 の 3 回目）
   rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
   rec.onstop = async () => {
     stream.getTracks().forEach(t => t.stop());
@@ -2210,6 +2210,7 @@ async function startRecInner() {
     setSession('playback'); // マイクを離したら再生用に戻す（受話口から小さく鳴るのを防ぐ）
     if (!linked()) { setStatus(UNREACHABLE); return; } // 話しているあいだに届かなくなった（短い録音でも、こちらの案内を残す）
     if (recStops !== stops0) return; // 「停止」で止めた録音は送らない（「止めました」は本体の返事で出る）
+    if (faceOn !== face0) { setStatus('顔の表示を切り替えたので、話した内容は送っていません'); return; } // 件の読み込み・添付の送り出しより前に見る（通知で開いた件を取り消さない）
     const blob = new Blob(chunks, { type: mime || 'audio/webm' });
     if (blob.size < 2000) { setStatus('短すぎました'); return; }
     sendTurnStart();
@@ -2220,11 +2221,16 @@ async function startRecInner() {
     const pane = $('agent').value, key = curKey(), rf = replyFields(), list = attachFiles.slice();
     const files = await sendAttach(pane, list, '話した内容');
     if (!files) return;
-    if (faceOn !== face0) { setStatus('顔の表示を切り替えたので、話した内容は送っていません'); return; } // 発言の頭を送る直前に見る（本体は頭の時点の名乗りで発言元を決める）
+    // 声の本体は先に用意し、止めていない・顔の表示が同じ・つながっているのを確かめてから、頭と本体を待たずに続けて送る
+    // （頭と本体の間に「停止」や次の録音の頭が入ると、止めた声が次の発言として聞き取られる。a2a 3752b7a5 の 3 回目）
+    const audio = await blob.arrayBuffer();
+    if (recStops !== stops0) return; // 用意する間に止めた（「止めました」は本体の返事で出る）
+    if (faceOn !== face0) { setStatus('顔の表示を切り替えたので、話した内容は送っていません'); return; } // 本体は頭の時点の名乗りで発言元を決める
+    if (!linked()) { setStatus(UNREACHABLE); return; }
     ws.send(JSON.stringify({ type: 'turn', pane, key, speaker: $('speaker').value, filename: 'rec.' + ext, ...rf, ...(files.length ? { attachments: files } : {}) }));
+    ws.send(audio);
     if (sameTarget(rf)) setReplyTarget(null);
     dropSent(list);
-    ws.send(await blob.arrayBuffer());
     setStatus('聞き取り中…'); face('think');
   };
   rec.start(); face('listen');

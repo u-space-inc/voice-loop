@@ -3360,7 +3360,7 @@ async def ws(sock: WebSocket):
     send = client.send
 
     async def turn(text: str, pane: str, cancel: asyncio.Event, key: str | None, reply_at: float | None = None, files: list[str] | None = None,
-                   job: asyncio.Task | None = None, plain: bool = False, admitted: int | None = None):
+                   job: asyncio.Task | None = None, plain: bool = False, admitted: int | None = None, direct: dict | None = None):
         try:
             talker = TALKERS.get(pane)
             if talker:  # herdr のセッションではなく、本体の外の話し相手（ハブ）。job は受け取ったその場で作った仕事（start_turn）
@@ -3373,7 +3373,7 @@ async def ws(sock: WebSocket):
             if why:  # 送らずに断る
                 await send(type="error", text=why)
                 return
-            await run_turn(text, pane, cancel, key, extra)
+            await run_turn(text, pane, cancel, key, extra, direct)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # 語り手・音声合成・herdr の失敗を黙って止めず、画面とログに出す
@@ -3428,8 +3428,9 @@ async def ws(sock: WebSocket):
             talker.delivered(admitted)
         await speak_to([client], reply, cancel, **({"plain": True} if plain else {}))  # 本体の答えのときだけ渡す（これまでの呼び方は変えない）
 
-    async def run_turn(text: str, pane: str, cancel: asyncio.Event, key: str | None, extra: str = ""):
+    async def run_turn(text: str, pane: str, cancel: asyncio.Event, key: str | None, extra: str = "", direct: dict | None = None):
         # extra: 本体が足す添付の行（セッションに渡す文の末尾に付ける）
+        # direct: この指示を送り始めたかの印（送り始める直前に立てる。立つ前に止める・次の発言で取り消したら、画面に送っていないと知らせる）
         agent = next((a for a in list_agents() if a["pane"] == pane), None)
         if not agent:
             await send(type="error", gone=True, text="話し相手のセッションが見つかりません。選び直してください。")
@@ -3443,6 +3444,8 @@ async def ws(sock: WebSocket):
             SENT_GEN[pane] = SENT_GEN.get(pane, 0) + 1  # 順番を待つ間に、ハブ経由の件が送られていることがある。実際に送る直前にも進める
             topics.mark_direct(agent.get("session") or "")  # 直接送った話の問いを、前の件のリンクで見せない
             # 返事が来るまで（止められても、送る処理が裏で終わるまで）に送られたハブ経由の件は、重なった件として扱う
+            if direct is not None:
+                direct["sent"] = True
             state, reply = await asyncio.shield(track_send(pane, ask(agent, text + extra)))
             if cancel.is_set():
                 return
@@ -3468,6 +3471,7 @@ async def ws(sock: WebSocket):
         client.speaker = speaker
         WIN_SPOKE[win_of(client)] = client.last_turn = time.time()  # この窓に最後に話しかけた（報告の声はここで鳴らす）
         cancel.set()  # 前のターンの読み上げが残っていれば止める
+        drop_direct()
         if current and not current.done():
             current.cancel()
         cancel = asyncio.Event()
@@ -3489,7 +3493,21 @@ async def ws(sock: WebSocket):
             job = asyncio.create_task(hub_quick(talker, kind, text, pane, said, via, admitted) if kind else hub_accepted(talker, text, pane, reply_at, files, item, said, via=via, admitted=admitted))
             _tasks.add(job)
             job.add_done_callback(_tasks.discard)
-        current = asyncio.create_task(turn(text, pane, cancel, key, reply_at, files, job, plain=bool(quick_kind), admitted=admitted))
+        direct = None
+        if job is None and not (talker and talker.on()):  # ハブ以外への指示。送るのは画面のターンの中なので、送り始めたかを控える
+            direct = direct_turn["d"] = {"sent": False}
+        current = asyncio.create_task(turn(text, pane, cancel, key, reply_at, files, job, plain=bool(quick_kind), admitted=admitted, direct=direct))
+
+    direct_turn: dict = {"d": None}  # いまの画面のターンが、ハブ以外への指示ならその印 {"sent": 送り始めたか}
+
+    def drop_direct():
+        # 画面のターンを止める・次の発言で取り消す前に呼ぶ。ハブ以外への指示をまだ送り始めていなければ、送っていないと画面に知らせる
+        # （「送りました」と出たまま、黙って消さない。聞き取りの間に止めたときも同じ。codex-review e460a4f）
+        d, direct_turn["d"] = direct_turn["d"], None
+        if d is not None and not d["sent"] and current and not current.done():
+            task = asyncio.create_task(send(type="error", text="送る前に取り消したので、セッションへの前の指示は送っていません"))
+            _tasks.add(task)
+            task.add_done_callback(_tasks.discard)
 
     def left_hub(pane: str):
         # ハブ以外に話した（声は発言の頭が届いたとき。聞き取りが空・失敗でも）。ハブの直前の問いは、次にハブへ言う発言の直前に聞いた文
@@ -3526,6 +3544,7 @@ async def ws(sock: WebSocket):
                     if pending.get("type") == "turn":  # 声の発言の頭のあと、声の本体の前に止めた。あとから届く声は聞き取らずに捨てる（「止めました」のあとに送らない。codex-review 7793a44）
                         pending = {"type": "dropped"}
                     cancel.set()
+                    drop_direct()
                     if current:
                         current.cancel()
                     for ev in list(REPORT_SPEECH):  # 報告の読み上げも止める

@@ -405,6 +405,35 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         finally:
             s.transcribe = real_transcribe
         time.sleep(0.2)
+        # ハブ以外への指示を送り始める前に止めたら、送っていないと画面に知らせる（「送りました」のまま黙って消さない。codex-review e460a4f）
+        gate2 = threading.Event()
+
+        async def held_attach(ids, talker, pane=""):  # 添付の用意で止めておく（送り始める前）
+            await asyncio.to_thread(gate2.wait, 5)
+            return "", ""
+
+        real_attach = s.attachment_lines
+        s.attachment_lines = held_attach
+        s.transcribe = lambda audio, filename: "セッションへの声の指示"
+        seen = []
+        try:
+            w.send_text(json.dumps({"type": "turn", "pane": "w9:p1", "speaker": 0, "filename": "a.webm"}))
+            w.send_bytes(b"0" * 4000)
+            w.send_text(json.dumps({"type": "stop"}))
+            w.send_text(json.dumps({"type": "stop"}))  # 2 つ目の止めたまで読む（知らせが来なくても待ち続けない）
+            n_stopped = 0
+            for _ in range(50):
+                m = json.loads(w.receive_text())
+                seen.append((m.get("type"), m.get("text", "")))
+                n_stopped += m.get("type") == "stopped"
+                if n_stopped == 2:
+                    break
+        finally:
+            gate2.set()
+            s.attachment_lines = real_attach
+            s.transcribe = real_transcribe
+        check("ハブ以外への声の指示を送り始める前に止めたら、送っていないと画面に知らせる",
+              (("transcript", "セッションへの声の指示") in seen, any(t == "error" and "送っていません" in x for t, x in seen)), (True, True))
         check("声の頭と本体の間に止めたら、届いた声は聞き取らず、ハブにも台帳にも送らない",
               (first is not None, second and second.get("type"), heard_calls, any(r[1] == "止めたあとに届いた声" for r in list(hm.HERMES_TURNS))), (True, "stopped", [], False))
         # 画面に送る途中で、次の発言を受け付けた（a2a 30fd5b94 の 2 回目の再現: 送れていない問いが、次の「はい」の行に「聞いた文」として写った）

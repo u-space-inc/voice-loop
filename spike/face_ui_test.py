@@ -91,6 +91,7 @@ CATCH = """(() => { window.__hello = []; window.__types = []; const o = WebSocke
     let d = null; try { d = typeof m === 'string' ? JSON.parse(m) : null; } catch {}
     if (d && d.type === 'hello') window.__hello.push(d);
     if (d && d.type) window.__types.push(d.type);
+    if (m instanceof ArrayBuffer) (window.__bins = window.__bins || []).push(m.byteLength);  // 送った声の大きさ
     if (d && d.type === 'stop' && window.__dropStop) return;  // 止める合図が本体に届かなかった（届いた印を出さないかを見る）
     return o.call(this, m);
   }; })()"""
@@ -349,8 +350,10 @@ with sync_playwright() as pw:
     sent_plain = rec_case("stopRec()")
     sent_stop = rec_case("document.getElementById('stop').click()")
     # 閉じた直後に話し相手を顔のときのまま戻す（話し相手が空で送られない、という別の理由で通らないように）
-    sent_close = rec_case("(() => { const a = document.getElementById('agent'), hv = a.value; document.getElementById('faceBack').click(); a.value = hv;"
+    sent_close = rec_case("(() => { window.__ct = 0; const ct = cancelTopic; cancelTopic = function () { window.__ct++; return ct.apply(this, arguments); };"
+                          " const a = document.getElementById('agent'), hv = a.value; document.getElementById('faceBack').click(); a.value = hv;"
                           " window.__hv = [hv, a.value]; })()", open_face=True)
+    check("録音: 顔で録っている途中に顔を閉じたら、捨てる録音のために件の読み込みを取り消さない", pg.evaluate("window.__ct"), 0)
     check("録音: （前提）顔を閉じたあとも話し相手は顔のときのまま", pg.evaluate("Boolean(window.__hv[0]) && window.__hv[0] === window.__hv[1]"), True)
     check("録音: ふつうに止めたら送る（前提）・「停止」で止めたら送らない・顔で録っている途中に顔を閉じたら送らない",
           (sent_plain, sent_stop, sent_close), (True, False, False))
@@ -374,8 +377,33 @@ with sync_playwright() as pw:
                 "navigator.mediaDevices.getUserMedia = c => { window.__gum++; return new Promise(r => setTimeout(r, 500)).then(() => g(c)); };"
                 "window.__r0 = rec; window.__types.length = 0; startRec(); startRec(); document.getElementById('stop').click()")
     pg.wait_for_timeout(1500)
+    pg.evaluate("delete navigator.mediaDevices.getUserMedia")  # 差し替えを外して、もとのマイクに戻す
     check("録音: 許可を待つ間に重ねて押しても始めるのは 1 つで、待つ間に止めたら録音を始めない",
           (pg.evaluate("window.__gum"), pg.evaluate("rec === window.__r0 || !rec || rec.state !== 'recording'"), pg.evaluate("window.__types.includes('turn')")), (1, True, False))
+    # 声の本体を用意する間に「停止」を押したら、頭も声も送らない（頭と本体は、止めていないのを確かめてから続けて送る。a2a 3752b7a5 の 3 回目）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__types.length = 0; window.__bins = []; startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    pg.wait_for_timeout(1500)
+    pg.evaluate("window.__ab = Blob.prototype.arrayBuffer; Blob.prototype.arrayBuffer = function () { const p = window.__ab.call(this);"
+                " return new Promise(r => setTimeout(() => r(p), 500)); }; stopRec(); setTimeout(() => document.getElementById('stop').click(), 150)")
+    pg.wait_for_timeout(1200)
+    pg.evaluate("() => { Blob.prototype.arrayBuffer = window.__ab; }")
+    check("録音: 声の本体を用意する間に止めたら、頭も声も送らない", (pg.evaluate("window.__types.includes('turn')"), len(pg.evaluate("window.__bins"))), (False, 0))
+    # 捨てた録音の最後の音声片が遅れて届いても、次の録音には混ざらない（音声片は録音ごと）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__types.length = 0; window.__bins = []; startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    pg.evaluate("window.__rA = rec; document.getElementById('stop').click()")
+    pg.wait_for_function("window.__rA.state === 'inactive'", timeout=5000)
+    pg.wait_for_timeout(600)
+    pg.evaluate("startRec()")
+    pg.wait_for_function("rec && rec !== window.__rA && rec.state === 'recording'", timeout=5000)
+    pg.evaluate("window.__rA.ondataavailable({ data: new Blob([new Uint8Array(300000)]) })")  # 前の録音の片が、次の録音の間に届いた
+    pg.wait_for_timeout(1500)
+    pg.evaluate("stopRec()")
+    pg.wait_for_function("window.__bins.length > 0", timeout=5000)
+    check("録音: 捨てた録音の音声片が遅れて届いても、次の録音の声には混ざらない", pg.evaluate("window.__bins[0] < 200000"), True)
     # 再生にタップが要るとき（報告を聞くだけの使い方）のタップでも、画面を消さない許可を頼む
     pg.goto(BASE + "/?face")
     pg.wait_for_function("document.getElementById('face').dataset.s === 'idle'", timeout=10000)
