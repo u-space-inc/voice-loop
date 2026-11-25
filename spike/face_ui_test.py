@@ -96,6 +96,7 @@ CATCH = """(() => { window.__hello = []; window.__types = []; const o = WebSocke
     if (m instanceof ArrayBuffer) (window.__bins = window.__bins || []).push(m.byteLength);  // 送った声の大きさ
     if (d && d.type === 'turn') window.__turn = d;  // 声の発言の頭
     if (d && d.type === 'text') window.__text = d;  // 文字の発言
+    if (d && d.type === 'begin') window.__begin = d;  // 発言を始めた合図
     if (d && d.type === 'stop' && window.__dropStop) return;  // 止める合図が本体に届かなかった（届いた印を出さないかを見る）
     return o.call(this, m);
   }; })()"""
@@ -439,6 +440,8 @@ with sync_playwright() as pw:
     check("文字: 送るを押した時点で受け取っていた返事の番号を付ける", pg.evaluate("[window.__text.hid, heardId]"), [5, 9])
     check("文字: 送るを押した時点で、本文より前に発言を始めた合図（begin）を送り、本文にも同じ番号を付ける",
           pg.evaluate("[window.__types.indexOf('begin') >= 0 && window.__types.indexOf('begin') < window.__types.indexOf('text'), typeof window.__text.begin]"), [True, "number"])
+    check("文字: 合図には宛先と、押した時点で受け取っていた返事の番号を付ける",
+          pg.evaluate("[window.__begin.b === window.__text.begin, window.__begin.pane === window.__text.pane, window.__begin.hid]"), [True, True, 5])
     # 録音を始めたときに合図（begin）を送り、返信先は始めたときのものに固定する（録音の前に選んだ返信先は付け、途中で選んだ返信先は付けない。a2a 4135f4c2）
     def reply_rec(before, during):
         pg.wait_for_timeout(600)

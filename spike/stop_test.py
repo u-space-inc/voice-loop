@@ -620,6 +620,77 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                 time.sleep(0.05)
             legacy[label] = s.HUB.current(s.hub_human_turn())
         check("合図の無い更新前の画面の ↩ 返信は、もういまの発言ではない（承認に使わせない）。合図があればいまの発言", (legacy["合図あり"], legacy["合図なし"]), (True, False))
+        # 発言は合図（begin）を受けたときに受け付ける。別の画面で発言を始めた（添付を送っている）間に、この画面で言った「はい」は、前の問いを使わない
+        # （別の画面の宛先がハブでも、ハブ以外でも）。ひとりなら、ふつうに使う（a2a 4135f4c2 の 2 回目）
+        hm.ask_hermes = lambda text: "わかりました"
+
+        def heard_after(other_pane, label):
+            t0 = hm.hermes_turn_begin(f"問いを聞いた発言（{label}）")
+            hm.hermes_turn_end(t0, Q)
+            hm.HEARD_ID["n"] = 777  # 画面が受け取った問いの番号
+            if other_pane is not None:
+                with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+                    wb.send_text(json.dumps({"type": "begin", "b": 1, "pane": other_pane, "hid": -1}))  # 別の画面で送るを押した（添付を送っている）
+                    time.sleep(0.2)
+            b = 920 + len(label)
+            w.send_text(json.dumps({"type": "begin", "b": b, "pane": hm.HERMES_PANE, "hid": 777}))
+            w.send_text(json.dumps({"type": "text", "text": f"はい（{label}）", "pane": hm.HERMES_PANE, "speaker": 0, "hid": 777, "begin": b}))
+            r = row_of(f"はい（{label}）")
+            return r[3] if r else None
+
+        alone = heard_after(None, "ひとり")
+        after_other = heard_after("w9:p1", "別の画面がハブ以外に")
+        after_hub = heard_after(hm.HERMES_PANE, "別の画面がハブに")
+        check("別の画面で発言を始めたあとの「はい」は、前の問いを使わない（ひとりなら使う）", (alone, after_other, after_hub), (Q, "", ""))
+        # 声の聞き取りで受信が止まっていた間に届いていた合図は、止まり始めた時点のものとして扱う（その間の別の画面の停止で、あとの直接の指示を送らない）
+        prompts12, tr_in12, tr_go12 = [], threading.Event(), threading.Event()
+
+        def slow_transcribe12(audio, filename):
+            tr_in12.set()
+            tr_go12.wait(5)
+            return "聞き取りの間の前の声"
+
+        s.transcribe, s.jsonl_path = slow_transcribe12, (lambda a: None)
+        s.herdr = lambda *a, **k: (prompts12.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        seen12 = []
+        try:
+            w.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm", "hid": -1}))
+            w.send_bytes(b"0" * 4000)
+            check("（前提）前の声を聞き取っている", tr_in12.wait(5), True)
+            w.send_text(json.dumps({"type": "begin", "b": 940, "pane": "w9:p1", "hid": -1}))  # 聞き取りの間に送るを押した（本体はまだ読めない）
+            w.send_text(json.dumps({"type": "text", "text": "聞き取りの間に押した指示", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 940}))
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+                wb.send_text(json.dumps({"type": "stop", "n": 1}))
+                receive_until(wb, "stopped")
+            tr_go12.set()
+            for _ in range(60):
+                m = json.loads(w.receive_text())
+                seen12.append((m.get("type"), m.get("text", "")))
+                if m.get("type") == "error" and "送っていません" in m.get("text", ""):
+                    break
+            time.sleep(0.3)
+        finally:
+            tr_go12.set()
+            s.transcribe, s.herdr, s.list_agents, s.jsonl_path = real_transcribe, real_herdr, real_agents, real_jsonl
+        check("聞き取りの間に送るを押した直接の指示は、その間の別の画面の停止で送らずに知らせる", (prompts12, any("送っていません" in x for t, x in seen12)), ([], True))
+        # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
+        prompts13 = []
+        s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        seen13 = []
+        try:
+            w.send_text(json.dumps({"type": "text", "text": "古い画面の添付つきの指示", "pane": "w9:p1", "speaker": 0, "attachments": ["a1"]}))
+            time.sleep(0.3)
+            w.send_text(json.dumps({"type": "stop", "n": 2}))  # 前の試験の読み残しも含めて、止めたの返事までを全部見る
+            for _ in range(60):
+                m = json.loads(w.receive_text())
+                seen13.append((m.get("type"), m.get("text", "")))
+                if m.get("type") == "stopped":
+                    break
+        finally:
+            s.herdr, s.list_agents = real_herdr, real_agents
+        check("合図の無い更新前の画面の添付つきの直接の指示は送らず、読み込み直しを頼む", (prompts13, any("読み込み直して" in x for t, x in seen13)), ([], True))
         # 次の声の発言の頭を受けたら、この画面の前の、まだ送っていないハブ以外への指示は送らずに知らせる（文字と同じ。codex-review c72fbbe）
         prompts11, gate11, entered11 = [], threading.Event(), threading.Event()
 

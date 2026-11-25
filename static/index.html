@@ -2200,13 +2200,14 @@ let utterStops = 0; // いまの発言（録音・文字）を始めたときの
 // 発言を始めた（送るを押した・録り終えた）合図。本体はそのときの停止の回数を控え、発言が届くまで（添付を送る間・声の本体を用意する間）に
 // どこかの画面で止めていたら、その発言では承認に答えない・閉じない（ハブ以外への指示なら送らない。codex-review c72fbbe）
 let beginSeq = 0;
-function sendBegin() { const b = ++beginSeq; try { if (linked()) ws.send(JSON.stringify({ type: 'begin', b })); } catch {} return b; }
+// pane は宛先、hid は受け取っていた返事の番号（本体は合図を受けたときに受け付け、聞いた文を引き渡す）
+function sendBegin(pane, hid) { const b = ++beginSeq; try { if (linked()) ws.send(JSON.stringify({ type: 'begin', b, pane, hid })); } catch {} return b; }
 async function startRec() { if (recPending) return; recPending = true; try { return await startRecInner(); } finally { recPending = false; } } // 始めるのは 1 つずつ
 async function startRecInner() {
   const stops0 = recStops, face0 = faceOn, hid0 = heardId, ws0 = ws; // hid0: 録音を始めたときに受け取っていた返事の番号（その接続での番号）
   // 録音を始めた合図（録音の間にどこかの画面で止めたら、本体が見分ける）と、始めたときの返信先（録音の途中で選んだ返信先には、始める前に
   // 言った声を返信として結び付けない。a2a 4135f4c2）
-  const b0 = sendBegin(), rf0 = replyFields();
+  const b0 = sendBegin($('agent').value, hid0), rf0 = replyFields();
   utterStops = stops0;
   if (playing || queue.length) { ws.send(JSON.stringify({ type: 'stop', scope: 'talk' })); stopPlayback(); } // 話し始めたら相手の声は止める（ほかの画面の指示は取り消さない）
   prime();
@@ -2287,7 +2288,7 @@ $('typedForm').onsubmit = async e => {
   const pane = $('agent').value, key = curKey(), rf = replyFields(), about = rf.reply_at !== undefined ? replyTarget.about : '', list = attachFiles.slice();
   const item = rf.reply_item, hid0 = heardId, ws0 = ws; // hid0: 押した時点で受け取っていた返事の番号（添付を送る間に届いた問いへの答えにしない）
   utterStops = recStops; // ここから新しい発言（これより前の停止への返事では、表示を変えない）
-  const b0 = sendBegin(); // 送るを押した（ここから発言が本体に届くまでの停止を、本体が見分ける）
+  const b0 = sendBegin($('agent').value, hid0); // 送るを押した（本体はここで受け付け、届くまでの停止を見分ける）
   prime();  // 読み上げの許可は、押したその場で取る（添付を置き終えるのを待ってからでは、iPhone の Safari が押した操作と見ない）
   const files = await sendAttach(pane, list, '文と添付');
   if (!files) return;  // 送らないときは、文も添付も残す
