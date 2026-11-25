@@ -219,6 +219,8 @@ async def both_reports():  # 鍵は 1 つのイベントループに結び付く
 
 
 stopped_heard, plain_heard = asyncio.run(both_reports())
+s.PANE_LOCKS.clear()  # 鍵はこの実行のイベントループに結び付いたので、あとの本物の流れ（別のループ）のために捨てる
+s.ACCEPT_LOCKS.clear()
 check("本物の報告の流れ: 鍵の順番待ちの間に止めたら、届いた報告は聞いた文にしない", stopped_heard, "")
 check("本物の報告の流れ: 開いている画面が無ければ、止めなくても、届いた報告は聞いた文にしない（あとで読んだなら ↩ 返信か、頭が聞き直す）", plain_heard, "")
 
@@ -405,6 +407,37 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         finally:
             s.transcribe = real_transcribe
         time.sleep(0.2)
+        # 録音を始めたときに画面が受け取っていた返事の番号が、聞いた文の返事と合うときだけ、その問いを声の発言に引き渡す
+        # （録り終えた「はい」を本体が受け付ける前に届いた問いへの答えにしない。a2a 3752b7a5 の 4 回目）
+        def reply_of(text):
+            for _ in range(50):
+                m = json.loads(w.receive_text())
+                if m.get("type") == "reply" and m.get("text") == text:
+                    return m
+            return None
+
+        def voice_row(said, hid):
+            s.transcribe = lambda audio, filename: said
+            w.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm", "hid": hid}))
+            w.send_bytes(b"0" * 4000)
+            reply_of("わかりました")  # この発言への返事が届くまで（台帳に載り終える）
+            return next((r for r in list(hm.HERMES_TURNS) if r[1] == said), None)
+
+        try:
+            hm.ask_hermes = lambda text: Q
+            w.send_text(json.dumps({"type": "text", "text": "proj はどうする？", "pane": hm.HERMES_PANE, "speaker": 0}))
+            hid1 = (reply_of(Q) or {}).get("hid")
+            hm.ask_hermes = lambda text: "わかりました"
+            after = voice_row("はい（問いを受け取ったあとに録音）", hid1)
+            hm.ask_hermes = lambda text: Q
+            w.send_text(json.dumps({"type": "text", "text": "もう一度、proj はどうする？", "pane": hm.HERMES_PANE, "speaker": 0}))
+            hid2 = (reply_of(Q) or {}).get("hid")
+            hm.ask_hermes = lambda text: "わかりました"
+            before = voice_row("はい（問いが届く前に録音）", hid1)  # 録音を始めたのは、2 つ目の問いが届く前
+        finally:
+            s.transcribe = real_transcribe
+        check("声の発言: 録音を始めたときに受け取っていた返事が問いなら引き渡し、録音を始めたあとに届いた問いは引き渡さない",
+              (type(hid1) is int and type(hid2) is int and hid1 != hid2, after[3] if after else None, before[3] if before else None), (True, Q, ""))
         # ハブ以外への指示を送り始める前に止めたら、送っていないと画面に知らせる（「送りました」のまま黙って消さない。codex-review e460a4f）
         gate2 = threading.Event()
 
@@ -434,6 +467,42 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.transcribe = real_transcribe
         check("ハブ以外への声の指示を送り始める前に止めたら、送っていないと画面に知らせる",
               (("transcript", "セッションへの声の指示") in seen, any(t == "error" and "送っていません" in x for t, x in seen)), (True, True))
+        # 送るスレッドの空きを待つ間に止めたら、セッションに送らず、送っていないと知らせる（送ったかの印は、スレッドの中で送る直前に立てる。codex-review 6096e1d）
+        prompts, gate3, entered3 = [], threading.Event(), threading.Event()
+        real_if, real_herdr, real_agents, real_jsonl = s._if_still, s.herdr, s.list_agents, s.jsonl_path
+
+        def waiting_if_still(still, fn, *a):
+            entered3.set()
+            gate3.wait(5)  # スレッドの空きを待っている間
+            return real_if(still, fn, *a)
+
+        def fake_herdr(*a, **k):
+            if a[:2] == ("agent", "prompt"):
+                prompts.append(a[3])
+            return {"result": {"agent": {"agent_status": "idle"}}}
+
+        s._if_still, s.herdr, s.jsonl_path = waiting_if_still, fake_herdr, (lambda a: None)
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        seen3 = []
+        try:
+            w.send_text(json.dumps({"type": "text", "text": "セッションへの文字の指示", "pane": "w9:p1", "speaker": 0}))
+            check("（前提）送るスレッドの手前で待っている", entered3.wait(5), True)
+            w.send_text(json.dumps({"type": "stop"}))
+            w.send_text(json.dumps({"type": "stop"}))
+            n_stopped = 0
+            for _ in range(50):
+                m = json.loads(w.receive_text())
+                seen3.append((m.get("type"), m.get("text", "")))
+                n_stopped += m.get("type") == "stopped"
+                if n_stopped == 2:
+                    break
+            gate3.set()
+            time.sleep(0.3)
+        finally:
+            gate3.set()
+            s._if_still, s.herdr, s.list_agents, s.jsonl_path = real_if, real_herdr, real_agents, real_jsonl
+        check("ハブ以外への指示を、送るスレッドの空きを待つ間に止めたら、送らずに送っていないと知らせる",
+              (prompts, any(t == "error" and "送っていません" in x for t, x in seen3)), ([], True))
         check("声の頭と本体の間に止めたら、届いた声は聞き取らず、ハブにも台帳にも送らない",
               (first is not None, second and second.get("type"), heard_calls, any(r[1] == "止めたあとに届いた声" for r in list(hm.HERMES_TURNS))), (True, "stopped", [], False))
         # 画面に送る途中で、次の発言を受け付けた（a2a 30fd5b94 の 2 回目の再現: 送れていない問いが、次の「はい」の行に「聞いた文」として写った）

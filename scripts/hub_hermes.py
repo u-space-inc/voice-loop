@@ -287,6 +287,10 @@ HERMES_PENDING: dict[int, tuple[str, str]] = {}
 # 「聞いた文」は空にする（あとから受け付けた発言が、前の発言より前に聞いた問いを使わない。声の聞き取りの間に別の画面から言った「はい」など。
 # codex-review 9c14f08）
 HEARD_AT: dict[int, str] = {}
+# 「聞いた文」がどの受け付けの返事か（画面に送り終えた返事なら、その受け付けの番号。画面を通らずに置いた返事は None）。画面は、返事の番号を
+# 受け取って控え、声の発言の頭に「録音を始めたときに受け取っていた返事の番号」を付ける。番号が合わなければ、聞いた文は引き渡さない
+# （録り終えた「はい」を本体が受け付ける前に届いた問いへの答えにしない。a2a 3752b7a5 の 4 回目）
+HEARD_ID: dict = {"n": None}
 # 発言ごとの受け付けの番号（Brain.current が引く）。台帳（deque）をワーカーのスレッドで回すと、ループが行を足す間に壊れるので、辞書で引く。
 # 新しい発言から TURN_GEN_MAX 件だけ持つ（古い発言はもう「いまの発言」ではない）
 TURN_GEN: dict[str, int] = {}
@@ -352,6 +356,7 @@ def hermes_turn_end(turn: str, reply: str, heard: bool = True):
     """heard=False は、受け付けたあとに利用者が話しかけた・止めた往復の返事。利用者は聞いていない（読まれない）ので、直前に聞いた文と
     台帳の返事の欄（閉じるの守りが問いとして読む）に置かず、直前に聞いた文は空にする（その前に聞いた問いへの答えにも使わせない）。記録には残す（画面の履歴では読める）。"""
     HERMES_HEARD["text"] = reply if heard else ""
+    HEARD_ID["n"] = None  # 画面を通らずに置いた返事（画面の番号とは合わない）
     for row in HERMES_TURNS:
         if row[0] == turn:
             row[2] = reply if heard else ""
@@ -359,11 +364,13 @@ def hermes_turn_end(turn: str, reply: str, heard: bool = True):
         _unsaved.add(turn)
 
 
-def hermes_admit() -> int:
+def hermes_admit(seen: int | None = None) -> int:
+    """seen は、画面が発言を始めたときに受け取っていた返事の番号（付いていなければ確かめない）。"""
     HERMES_GEN["n"] += 1
     HERMES_PENDING.clear()  # 送り終える前に次の発言が来た返事は、読まれない
     HEARD_AT.clear()
-    HEARD_AT[HERMES_GEN["n"]] = HERMES_HEARD["text"]  # 直前に聞いた文は、この発言のもの（次の発言には渡さない）
+    # 直前に聞いた文は、この発言のもの（次の発言には渡さない）。画面が発言を始めたあとに届いた返事なら渡さない
+    HEARD_AT[HERMES_GEN["n"]] = HERMES_HEARD["text"] if seen is None or seen == HEARD_ID["n"] else ""
     HERMES_HEARD["text"] = ""
     return HERMES_GEN["n"]
 
@@ -374,6 +381,7 @@ def hermes_delivered(admitted: int):
         return
     turn, reply = p
     HERMES_HEARD["text"] = reply
+    HEARD_ID["n"] = admitted
     for row in HERMES_TURNS:
         if row[0] == turn:
             row[2] = reply
@@ -1702,8 +1710,8 @@ class Hermes(Brain, Talker):
                        said: str | None = None, via: str = "", admitted: int | None = None) -> tuple[str, str, bool]:
         return await hermes_exchange(text, reply_at, extra, item, said=said, via=via, admitted=admitted)
 
-    def admit(self) -> int:
-        return hermes_admit()
+    def admit(self, seen: int | None = None) -> int:
+        return hermes_admit(seen)
 
     def delivered(self, admitted: int):
         hermes_delivered(admitted)

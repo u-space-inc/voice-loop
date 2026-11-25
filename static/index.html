@@ -451,6 +451,7 @@ let faceOn = FACE; // 顔を閉じたら（通知で件を開いた・「画面�
 const FACE_HASH = location.hash; // 開いたときの場所。件・受け箱の処理が場所を消す前に控える（件の場所つきで開いたら、顔を閉じて中身を見せる）
 const setStatus = t => { $('statusText').textContent = t; if (FACE) $('faceCap').textContent = t; };
 let ws, rec, mime = '', ext = 'webm';
+let heardId = -1; // 最後に受け取ったハブの返事の番号（本体が付ける）。声の発言の頭に、録音を始めたときの番号を付ける（言い終えたあとに届いた問いへの答えにしない）
 let agents = [], agentsSig = '', threadSource = 'jsonl', loadSeq = 0;
 
 // 端末側の出来事をサーバーのログに残す（スマホの再生不具合を後から追えるように）
@@ -2132,6 +2133,7 @@ function connect() {
   const sock = ws, giveUp = setTimeout(() => { if (sock.readyState === 0) sock.close(); }, 5000); // 通信が止まって待たされるときは見切る
   ws.onopen = () => {
     clearTimeout(giveUp); $('conn').classList.add('on'); setStatus('準備できました'); face('idle'); applyTarget(); hello(); clog('connected ' + navigator.userAgent);
+    heardId = -1; // つなぎ直したら、前の接続の返事の番号は使わない
     if (away || !agentsSig || !$('speaker').options.length || pendingTopic) { away = false; catchUp(); } // 起動時に読めなかったもの（開けなかった件も）を取り直す
   };
   ws.onclose = () => {
@@ -2146,6 +2148,7 @@ function connect() {
     if (m.type === 'status') setStatus(m.text);
     else if (m.type === 'transcript') { if (here) { bubble('me', m.text, 'pending'); localPush('me', m.text); } setStatus('エージェントに送りました。考え中…'); }
     else if (m.type === 'reply') {
+      if (here && typeof m.hid === 'number') heardId = m.hid; // いまの相手のハブの返事を受け取った
       if (!here) { if (m.report) sys(A('ハブから報告が届きました: ') + m.about + (m.saved === false ? A('（記録に書けなかったので、ハブの履歴には出ません）') : A('（ハブを選ぶと読めます）'))); return; } // report = 頼んだ件についての、ハブからの自発的な報告
       if (m.saved === false) { bubble('ai', m.text); sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); } // 描き直すと消えるので、そのまま足す
       else {
@@ -2160,7 +2163,12 @@ function connect() {
     else if (m.type === 'error') { stopPlayback(); face('idle'); sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); setStatus(''); if (FACE) $('faceCap').textContent = '⚠ ' + m.text; if (m.gone) { agentsSig = ''; loadAgents(); } } // 相手が消えた・入れ替わった → 一覧を取り直す
     else if (m.type === 'notice') { sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); } // ハブから報告を受け取れなかった等（いまの話し相手とは別の知らせ）
     else if (m.type === 'done') { serverDone = true; turnDone = true; if (!playing && !queue.length) finishSpeaking(); loadAgents(); }
-    else if (m.type === 'stopped') { stopPlayback(); setStatus('止めました'); if (faceAckWait) { faceAckWait = false; faceAck(); } } // 届いた印は、本体が止めたと返してから（codex-review 44b3c2e）
+    else if (m.type === 'stopped') { // 届いた印は、本体が止めたと返してから（codex-review 44b3c2e）
+      stopPlayback();
+      // 返事が遅れて、次の録音を始めたあとに届いたら、「止めました」と出さず印も光らせない（録音は続いている。codex-review 6096e1d）
+      if ((rec && rec.state === 'recording') || recPending) faceAckWait = false;
+      else { setStatus('止めました'); if (faceAckWait) { faceAckWait = false; faceAck(); } }
+    }
     else if (m.type === 'blocked') loadAsks(); // 話している相手が承認で止まった → すぐ並べる
     else if (m.type === 'agent_notice') { loadSituation(); faceNotice(m); } // 代理からの知らせ。会話の欄には出さず、💡 の数と受け箱を取り直す（閉じていても）。顔の表示では縁と一言で知らせる
   };
@@ -2190,7 +2198,7 @@ let recPending = false;  // 録音を始めている途中（マイクの許可�
 let recStops = 0;
 async function startRec() { if (recPending) return; recPending = true; try { return await startRecInner(); } finally { recPending = false; } } // 始めるのは 1 つずつ
 async function startRecInner() {
-  const stops0 = recStops, face0 = faceOn;
+  const stops0 = recStops, face0 = faceOn, hid0 = heardId; // hid0: 録音を始めたときに受け取っていた返事の番号
   if (playing || queue.length) { ws.send(JSON.stringify({ type: 'stop' })); stopPlayback(); } // 話し始めたら相手の声は止める
   prime();
   setSession('play-and-record');
@@ -2227,7 +2235,7 @@ async function startRecInner() {
     if (recStops !== stops0) return; // 用意する間に止めた（「止めました」は本体の返事で出る）
     if (faceOn !== face0) { setStatus('顔の表示を切り替えたので、話した内容は送っていません'); return; } // 本体は頭の時点の名乗りで発言元を決める
     if (!linked()) { setStatus(UNREACHABLE); return; }
-    ws.send(JSON.stringify({ type: 'turn', pane, key, speaker: $('speaker').value, filename: 'rec.' + ext, ...rf, ...(files.length ? { attachments: files } : {}) }));
+    ws.send(JSON.stringify({ type: 'turn', pane, key, speaker: $('speaker').value, filename: 'rec.' + ext, hid: hid0, ...rf, ...(files.length ? { attachments: files } : {}) }));
     ws.send(audio);
     if (sameTarget(rf)) setReplyTarget(null);
     dropSent(list);

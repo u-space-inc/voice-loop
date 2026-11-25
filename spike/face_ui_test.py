@@ -92,6 +92,7 @@ CATCH = """(() => { window.__hello = []; window.__types = []; const o = WebSocke
     if (d && d.type === 'hello') window.__hello.push(d);
     if (d && d.type) window.__types.push(d.type);
     if (m instanceof ArrayBuffer) (window.__bins = window.__bins || []).push(m.byteLength);  // 送った声の大きさ
+    if (d && d.type === 'turn') window.__turn = d;  // 声の発言の頭
     if (d && d.type === 'stop' && window.__dropStop) return;  // 止める合図が本体に届かなかった（届いた印を出さないかを見る）
     return o.call(this, m);
   }; })()"""
@@ -404,6 +405,27 @@ with sync_playwright() as pw:
     pg.evaluate("stopRec()")
     pg.wait_for_function("window.__bins.length > 0", timeout=5000)
     check("録音: 捨てた録音の音声片が遅れて届いても、次の録音の声には混ざらない", pg.evaluate("window.__bins[0] < 200000"), True)
+    # 声の発言の頭には、録音を始めたときに受け取っていた返事の番号を付ける（録音の途中に届いた返事の番号ではない。a2a 3752b7a5 の 4 回目）
+    pg.wait_for_timeout(600)
+    pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'reply', pane: document.getElementById('agent').value, text: '問いです', hid: 5, saved: false }) })")
+    got_hid = pg.evaluate("heardId")
+    pg.evaluate("window.__turn = null; startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'reply', pane: document.getElementById('agent').value, text: '録音の途中に届いた問い', hid: 9, saved: false }) })")
+    pg.wait_for_timeout(1500)
+    pg.evaluate("stopRec()")
+    pg.wait_for_function("window.__turn", timeout=5000)
+    check("録音: 返事の番号を控え、声の頭には録音を始めたときの番号を付ける", (got_hid, pg.evaluate("window.__turn.hid")), (5, 5))
+    # 前の「止めた」への返事が、次の録音を始めたあとに届いても、「止めました」と出さず印も光らせない（録音は続いている。codex-review 6096e1d）
+    pg.wait_for_timeout(600)
+    pg.evaluate("startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    pg.evaluate("setStatus('録音中の目印'); faceAckWait = true; ws.onmessage({ data: JSON.stringify({ type: 'stopped' }) })")
+    late = (pg.evaluate("document.getElementById('statusText').textContent"), pg.evaluate("faceAckWait"),
+            pg.evaluate("document.getElementById('face').classList.contains('ack')"), pg.evaluate("rec.state"))
+    pg.evaluate("document.getElementById('stop').click()")  # この録音は捨てる
+    pg.wait_for_function("rec.state === 'inactive'", timeout=5000)
+    check("録音: 録音の最中に前の「止めた」への返事が届いても、「止めました」と出さず印も光らせない", late, ("録音中の目印", False, False, "recording"))
     # 再生にタップが要るとき（報告を聞くだけの使い方）のタップでも、画面を消さない許可を頼む
     pg.goto(BASE + "/?face")
     pg.wait_for_function("document.getElementById('face').dataset.s === 'idle'", timeout=10000)

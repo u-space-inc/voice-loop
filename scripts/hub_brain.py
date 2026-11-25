@@ -143,8 +143,10 @@ class Talker:
         """送ったときの状態の文。"""
         raise NotImplementedError
 
-    def admit(self) -> int:
+    def admit(self, seen: int | None = None) -> int:
         """利用者の新しい発言を受け付けた（添付の用意・順番待ちの前に、受けたその場で呼ぶ）。受け付けの番号を進めて返す。exchange の admitted に渡す。
+        seen は、画面が発言を始めたときに受け取っていた返事の番号（delivered の admitted。付いていなければ確かめない）。直前に聞いた文が、
+        その返事でなければ、この発言には引き渡さない（言い終えたあとに届いた問いへの答えにしない）。
         これより前に受け付けた往復の返事は、あとで届いても「利用者が聞いた文」にしない（利用者は次の発言に移り、その返事は読まれない）。"""
         return 0
 

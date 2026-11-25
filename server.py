@@ -13,6 +13,8 @@
 import asyncio
 import concurrent.futures
 import contextlib
+import contextvars
+import functools
 import base64
 import hashlib
 import io
@@ -805,10 +807,20 @@ def hub_current(turn: str | None) -> bool:
     return HUB.current(turn) if turn else False
 
 
-def admit_now() -> int | None:
+def admit_now(seen: int | None = None) -> int | None:
     """利用者の発言を受けた（相手がハブでなくても）。ハブが使えるなら受け付けの番号を進めて返す（それより前のハブの往復の許可と、
-    まだ画面に届いていない返事・報告を失効させる）。"""
-    return HUB.admit() if HUB.on() else None
+    まだ画面に届いていない返事・報告を失効させる）。seen は、画面が発言を始めたときに受け取っていた返事の番号（Talker.admit）。"""
+    if not HUB.on():
+        return None
+    return HUB.admit(seen) if seen is not None else HUB.admit()
+
+
+def heard_seen(d: dict) -> int | None:
+    """声の発言の頭に付いた「録音を始めたときに受け取っていた返事の番号」。付いていなければ None（確かめない）。形が違えば -1（どれとも合わない）。"""
+    if "hid" not in d:
+        return None
+    v = d["hid"]
+    return v if isinstance(v, int) and not isinstance(v, bool) else -1
 
 
 def _if_still(still, fn, *args):
@@ -1436,8 +1448,15 @@ def pane_lock(pane: str) -> asyncio.Lock:
     return PANE_LOCKS.setdefault(pane, asyncio.Lock())
 
 
+# ask がワーカーのスレッドの中で送る直前に呼ぶ確かめ（False なら送らずに ("cancelled", "")）。画面の直接の指示で、スレッドの空きを待つ間に
+# 止めた・次の発言をしたら送らない（codex-review 6096e1d）。送る仕事を作るときに値が写るので、その指示の分だけに効く
+ASK_COMMIT: contextvars.ContextVar = contextvars.ContextVar("ask_commit", default=None)
+
+
 async def ask(agent: dict, text: str) -> tuple[str, str]:
-    """セッションに送り、返信が出そろうまで待つ。("done", 返信) / ("blocked", 画面の末尾) / ("error", 理由) を返す。"""
+    """セッションに送り、返信が出そろうまで待つ。("done", 返信) / ("blocked", 画面の末尾) / ("error", 理由) を返す。
+    ASK_COMMIT が置かれていれば、送る直前にスレッドの中で確かめ、False なら送らずに ("cancelled", "")。"""
+    commit = ASK_COMMIT.get()
     talker = TALKERS.get(agent["pane"])
     if talker:  # herdr の外の話し相手。止まる（blocked）ことはない
         try:
@@ -1448,7 +1467,9 @@ async def ask(agent: dict, text: str) -> tuple[str, str]:
     path = jsonl_path(agent)
     offset = path.stat().st_size if path and path.exists() else 0  # 新しいセッションは最初の発言まで記録が無い
     # --wait: 送信後に working を観測してから idle/done/blocked を待つ（送信直後の idle に反応しない）
-    r = await asyncio.to_thread(herdr, "agent", "prompt", pane, text, "--wait", "--timeout", "600000", timeout=610)
+    r = await asyncio.to_thread(_if_still, commit, functools.partial(herdr, timeout=610), "agent", "prompt", pane, text, "--wait", "--timeout", "600000")
+    if r is None:
+        return "cancelled", ""
     err = (r.get("error") or {}).get("code")
     if err == "agent_prompt_stalled":  # 5秒以内に working にならなかった。短い応答で見逃した可能性があるので通常待ちへ
         r = await asyncio.to_thread(herdr, "agent", "wait", pane, "--timeout", "600000", timeout=610)
@@ -3423,14 +3444,16 @@ async def ws(sock: WebSocket):
             return
         if cancel.is_set():
             return
-        await send(type="reply", pane=pane, text=reply, saved=saved)  # saved=False なら、画面は記録から描き直さずに足す
+        # saved=False なら、画面は記録から描き直さずに足す。hid は返事の番号（画面は控えて、次の声の発言の頭に付ける）
+        await send(type="reply", pane=pane, text=reply, saved=saved, **({"hid": admitted} if admitted is not None else {}))
         if admitted is not None:  # 画面に送り終えた。ここで初めて、返事を利用者が聞いた文にする（送る前に話しかけ直した・止めたなら、頭が捨てている）
             talker.delivered(admitted)
         await speak_to([client], reply, cancel, **({"plain": True} if plain else {}))  # 本体の答えのときだけ渡す（これまでの呼び方は変えない）
 
     async def run_turn(text: str, pane: str, cancel: asyncio.Event, key: str | None, extra: str = "", direct: dict | None = None):
         # extra: 本体が足す添付の行（セッションに渡す文の末尾に付ける）
-        # direct: この指示を送り始めたかの印（送り始める直前に立てる。立つ前に止める・次の発言で取り消したら、画面に送っていないと知らせる）
+        # direct: この指示を送ったかの印（ワーカーのスレッドの中で、送る直前に立てる。立つ前に止める・次の発言で取り消したら、送らずに
+        #         画面に送っていないと知らせる。立てるのと取り消すのは、印の鍵で 1 つずつ）
         agent = next((a for a in list_agents() if a["pane"] == pane), None)
         if not agent:
             await send(type="error", gone=True, text="話し相手のセッションが見つかりません。選び直してください。")
@@ -3444,10 +3467,22 @@ async def ws(sock: WebSocket):
             SENT_GEN[pane] = SENT_GEN.get(pane, 0) + 1  # 順番を待つ間に、ハブ経由の件が送られていることがある。実際に送る直前にも進める
             topics.mark_direct(agent.get("session") or "")  # 直接送った話の問いを、前の件のリンクで見せない
             # 返事が来るまで（止められても、送る処理が裏で終わるまで）に送られたハブ経由の件は、重なった件として扱う
-            if direct is not None:
-                direct["sent"] = True
-            state, reply = await asyncio.shield(track_send(pane, ask(agent, text + extra)))
-            if cancel.is_set():
+            def commit():
+                if direct is None:
+                    return True
+                with direct["lock"]:
+                    if direct["dropped"]:
+                        return False
+                    direct["sent"] = True
+                    return True
+
+            tok = ASK_COMMIT.set(commit)
+            try:
+                fut = track_send(pane, ask(agent, text + extra))  # 送る仕事は、作るときの ASK_COMMIT を持つ
+            finally:
+                ASK_COMMIT.reset(tok)
+            state, reply = await asyncio.shield(fut)
+            if cancel.is_set() or state == "cancelled":
                 return
             if state == "error":
                 await send(type="error", text=f"送信できませんでした: {reply}")
@@ -3495,7 +3530,7 @@ async def ws(sock: WebSocket):
             job.add_done_callback(_tasks.discard)
         direct = None
         if job is None and not (talker and talker.on()):  # ハブ以外への指示。送るのは画面のターンの中なので、送り始めたかを控える
-            direct = direct_turn["d"] = {"sent": False}
+            direct = direct_turn["d"] = {"sent": False, "dropped": False, "lock": threading.Lock()}
         current = asyncio.create_task(turn(text, pane, cancel, key, reply_at, files, job, plain=bool(quick_kind), admitted=admitted, direct=direct))
 
     direct_turn: dict = {"d": None}  # いまの画面のターンが、ハブ以外への指示ならその印 {"sent": 送り始めたか}
@@ -3504,10 +3539,15 @@ async def ws(sock: WebSocket):
         # 画面のターンを止める・次の発言で取り消す前に呼ぶ。ハブ以外への指示をまだ送り始めていなければ、送っていないと画面に知らせる
         # （「送りました」と出たまま、黙って消さない。聞き取りの間に止めたときも同じ。codex-review e460a4f）
         d, direct_turn["d"] = direct_turn["d"], None
-        if d is not None and not d["sent"] and current and not current.done():
-            task = asyncio.create_task(send(type="error", text="送る前に取り消したので、セッションへの前の指示は送っていません"))
-            _tasks.add(task)
-            task.add_done_callback(_tasks.discard)
+        if d is None or not current or current.done():
+            return
+        with d["lock"]:
+            if d["sent"]:
+                return
+            d["dropped"] = True  # ワーカーがまだ送っていなければ、送らせない
+        task = asyncio.create_task(send(type="error", text="送る前に取り消したので、セッションへの前の指示は送っていません"))
+        _tasks.add(task)
+        task.add_done_callback(_tasks.discard)
 
     def left_hub(pane: str):
         # ハブ以外に話した（声は発言の頭が届いたとき。聞き取りが空・失敗でも）。ハブの直前の問いは、次にハブへ言う発言の直前に聞いた文
@@ -3558,7 +3598,7 @@ async def ws(sock: WebSocket):
                     continue
                 pending = d  # {"type":"turn", pane, speaker, filename} → 次のバイナリが音声
                 if d["type"] == "turn":  # 声の発言の頭が届いた。受け付けの番号はここで取る（聞き取りの間に届いた前の往復の返事を、聞いた文にしない）
-                    pending = {**d, "_admitted": admit_now(), "_via": "device" if client.kind == "device" else ""}
+                    pending = {**d, "_admitted": admit_now(heard_seen(d)), "_via": "device" if client.kind == "device" else ""}
                     left_hub(str(d.get("pane", "")))
                 if d["type"] == "text":
                     start_turn(d["text"], d["pane"], int(d["speaker"]), d.get("key"), reply_at_of(d), attachments_of(d), reply_item_of(d))
