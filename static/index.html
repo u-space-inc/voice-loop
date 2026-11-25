@@ -2185,8 +2185,12 @@ function sendTurnStart() { stopPlayback(); serverDone = true; turnDone = false; 
 
 // ---------- 録音（タップ→話す→タップ） ----------
 let recPending = false;  // 録音を始めている途中（マイクの許可を待つ間など）。この間と録音中に届いた一言は鳴らさない
+// 「停止」を押した（録音中・録音を始めている途中）。その録音は送らずに捨てる（「止めました」と出したあとの次のタップで送らない。a2a 3752b7a5）
+let recDrop = false;
+let recFace = false; // 録音を始めたときに顔の表示だったか（表示を切り替えたら、その録音は送らない。顔で録った声を、画面からの発言として送らない）
 async function startRec() { recPending = true; try { return await startRecInner(); } finally { recPending = false; } }
 async function startRecInner() {
+  recDrop = false; recFace = faceOn;
   if (playing || queue.length) { ws.send(JSON.stringify({ type: 'stop' })); stopPlayback(); } // 話し始めたら相手の声は止める
   prime();
   setSession('play-and-record');
@@ -2194,6 +2198,7 @@ async function startRecInner() {
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
   catch (e) { setSession('auto'); stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
   if (!linked()) { stream.getTracks().forEach(t => t.stop()); setSession('playback'); setStatus(UNREACHABLE); return; } // マイクの許可を待つ間に届かなくなった
+  if (recDrop || recFace !== faceOn) { recDrop = false; stream.getTracks().forEach(t => t.stop()); setSession('playback'); return; } // マイクの許可を待つ間に止めた・顔の表示を切り替えた
   for (const m of ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']) if (MediaRecorder.isTypeSupported(m)) { mime = m; break; }
   ext = mime.includes('mp4') ? 'mp4' : 'webm';
   rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
@@ -2204,6 +2209,7 @@ async function startRecInner() {
     face('idle'); // 録音中に切れたときは、face が「つながっていない」の顔のままにする
     setSession('playback'); // マイクを離したら再生用に戻す（受話口から小さく鳴るのを防ぐ）
     if (!linked()) { setStatus(UNREACHABLE); return; } // 話しているあいだに届かなくなった（短い録音でも、こちらの案内を残す）
+    if (recDrop) { recDrop = false; return; } // 「停止」で止めた録音は送らない（「止めました」は本体の返事で出る）
     const blob = new Blob(chunks, { type: mime || 'audio/webm' });
     if (blob.size < 2000) { setStatus('短すぎました'); return; }
     sendTurnStart();
@@ -2214,6 +2220,7 @@ async function startRecInner() {
     const pane = $('agent').value, key = curKey(), rf = replyFields(), list = attachFiles.slice();
     const files = await sendAttach(pane, list, '話した内容');
     if (!files) return;
+    if (recFace !== faceOn) { setStatus('顔の表示を切り替えたので、話した内容は送っていません'); return; } // 発言の頭を送る直前に見る（本体は頭の時点の名乗りで発言元を決める）
     ws.send(JSON.stringify({ type: 'turn', pane, key, speaker: $('speaker').value, filename: 'rec.' + ext, ...rf, ...(files.length ? { attachments: files } : {}) }));
     if (sameTarget(rf)) setReplyTarget(null);
     dropSent(list);
@@ -2228,6 +2235,7 @@ function stopRec() { if (rec && rec.state !== 'inactive') rec.stop(); $('talk').
 $('talk').onclick = () => { if (!$('agent').value) return; if (rec && rec.state === 'recording') stopRec(); else if (attachJob) setStatus('添付を送っています。送り終えてから話してください'); else startRec().catch(e => { setStatus('マイクが使えません: ' + e.message); clog('mic failed: ' + e.name + ' ' + e.message); }); };
 $('stop').onclick = () => {
   if (attachJob) { attachJob.cancelled = true; attachJob.ctl.abort(); }  // 添付を送っている途中の発言も取り消す（送り終えてから発言が出ないように）
+  if (recPending || (rec && rec.state === 'recording')) { recDrop = true; stopRec(); } // 録音中・録音を始めている途中なら、その録音は送らずに捨てる
   // 手元の再生はすぐ止め、「止めました」は本体が止めたと返してから（届いたか分からないまま、止まったように見せない。codex-review 44b3c2e）
   if (linked()) ws.send(JSON.stringify({ type: 'stop' })); stopPlayback(); setStatus(linked() ? '止めています…' : UNREACHABLE);
 };
@@ -2354,6 +2362,7 @@ if (FACE) {
   const closeFace = () => {
     if (!faceOn) return;
     faceOn = false; $('face').hidden = true; applyInert(); faceAttn();
+    if (rec && rec.state === 'recording') stopRec(); // 顔で録っていた声は送らない（録音の終わりで、表示が切り替わったのを見て捨てる）。マイクも離す
     wantWake = false; if (wake) { const w = wake; wake = null; w.release().catch(() => {}); } // ふだんの画面では眠れるように、許可を手放す（頼んでいる途中の分は、届いたら手放す。codex-review bc775f6）
     try { history.replaceState(null, '', location.pathname + location.hash); } catch {}
     hello(); applyTarget(); // ハブが居ないときの案内から「画面に戻る」を外す

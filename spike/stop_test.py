@@ -310,9 +310,44 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         check("報告の読み上げの途中で「停止」を押したら、報告の読み上げも止める", speech.get("stopped"), True)
         # 別のセッションに話しかけ直したら、前のハブの発言はもういまの発言ではない
         hub_turn = hm.hermes_turn_begin("ハブへの前の発言")
+        hm.hermes_turn_end(hub_turn, Q)  # ハブの問いを聞いた
         w.send_text(json.dumps({"type": "text", "text": "別のセッションへ", "pane": "w9:p1", "speaker": 0}))
         receive_until(w, "error")  # 相手のセッションは無い（一覧が空）
         check("別のセッションに話しかけ直したら、前のハブの発言はいまの発言ではない（前の許可で答えない・閉じない）", s.HUB.current(hub_turn), False)
+        check("別のセッションに話したら、ハブの問いは次の「はい」の聞いた文にも、閉じるの守りが読む返事の欄にも残さない（a2a 3752b7a5）",
+              (hm.HERMES_HEARD["text"], s.hub_reply_to(hub_turn)), ("", ""))
+        # 声の発言元は、発言の頭が届いた時点で決める（頭と声の間に「画面に戻る」の名乗りが届いても、顔で録った発言は機械から。a2a 3752b7a5）
+        real_transcribe = s.transcribe
+        s.transcribe = lambda audio, filename: "顔で録ったはい"
+        try:
+            w.send_text(json.dumps({"type": "hello", "speaker": 0, "kind": "stackchan", "place": "home"}))
+            w.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm"}))
+            w.send_text(json.dumps({"type": "hello", "speaker": 0}))  # 頭のあと、声の前に「画面に戻る」
+            w.send_bytes(b"0" * 4000)
+            receive_until(w, "transcript")
+            for _ in range(100):
+                face_row = next((r for r in list(hm.HERMES_TURNS) if r[1] == "顔で録ったはい"), None)
+                if face_row:
+                    break
+                time.sleep(0.05)
+        finally:
+            s.transcribe = real_transcribe
+        check("声の発言元は頭の時点で決める（頭のあとに画面と名乗り直しても、顔で録った発言は機械から）", s.hub_via(face_row[0]) if face_row else None, "device")
+        w.send_text(json.dumps({"type": "hello", "speaker": 0}))
+        # 声の発言の頭のあと、声の本体の前に止めたら、あとから届いた声は聞き取らずに捨てる（「止めました」のあとに送らない。codex-review 7793a44）
+        heard_calls = []
+        s.transcribe = lambda audio, filename: (heard_calls.append(1), "止めたあとに届いた声")[1]
+        try:
+            w.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm"}))
+            w.send_text(json.dumps({"type": "stop"}))
+            first = receive_until(w, "stopped")
+            w.send_bytes(b"0" * 4000)
+            second = next((m for m in (json.loads(w.receive_text()) for _ in range(50)) if m.get("type") in ("stopped", "transcript")), None)  # 捨てたことを画面に返す（画面を「聞き取り中…」のままにしない）
+        finally:
+            s.transcribe = real_transcribe
+        time.sleep(0.2)
+        check("声の頭と本体の間に止めたら、届いた声は聞き取らず、ハブにも台帳にも送らない",
+              (first is not None, second and second.get("type"), heard_calls, any(r[1] == "止めたあとに届いた声" for r in list(hm.HERMES_TURNS))), (True, "stopped", [], False))
         # 画面に送る途中で、次の発言を受け付けた（a2a 30fd5b94 の 2 回目の再現: 送れていない問いが、次の「はい」の行に「聞いた文」として写った）
         real_send = s.Client.send
         hold, holding, block = threading.Event(), threading.Event(), {"on": True}

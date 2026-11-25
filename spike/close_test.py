@@ -73,7 +73,7 @@ check("もう一度 confirmed しても、聞き直しから", close(confirmed=T
 s.CLOSED.clear(); s.CLOSING.clear()
 asked()
 asyncio.run(s.TALKERS[s.hermes.HERMES_PANE].refused("はい", "添付が見つかりません。送っていません"))
-check("断った発言: 閉じるの確認の次に、本体が添付のせいで断った「はい」は、閉じる許可にならない（聞き直し）", close(confirmed=True), ("not_yes", []))
+check("断った発言: 閉じるの確認の次に、本体が添付のせいで断った「はい」は、閉じる許可にならない（直前に聞いたのは本体の断りなので聞き直し）", close(confirmed=True), ("not_asked", []))
 say("はい")
 check("断った発言: そのあとの「はい」も、断った発言をはさんだので閉じない（聞き直しから）", close(confirmed=True), ("not_asked", []))
 s.CLOSED.clear(); s.CLOSING.clear()
@@ -82,7 +82,7 @@ real_ref = s.hermes.report_ref
 s.hermes.report_ref = lambda at: ("", "", "")
 asyncio.run(s.hermes.hermes_exchange("はい", 99.5))  # 返信先の報告が見つからない → 送らずに断る
 s.hermes.report_ref = real_ref
-check("断った発言: 返信先が見つからずに断った「はい」も、閉じる許可にならない", close(confirmed=True), ("not_yes", []))
+check("断った発言: 返信先が見つからずに断った「はい」も、閉じる許可にならない（聞き直し）", close(confirmed=True), ("not_asked", []))
 check("断った発言: 記録には利用者の言葉を残す（台帳だけ空）", [json.loads(l)["text"] for l in s.hermes.HERMES_LOG.read_text().splitlines() if '"role": "me"' in l][-1], "はい")
 
 s.CLOSED.clear(); s.CLOSING.clear()
@@ -136,7 +136,8 @@ check("あいだに別の発言をはさんだら、閉じずに聞き直し", c
 asked()
 say("テストが完了しました", note=True)  # 聞いたあと、ユーザーが答える前に自動通知が届いた
 say("はい")
-check("あいだの自動通知は発言に数えない", close(confirmed=True), ("ok", ["w9:p1"]))
+# 自動通知は発言に数えない（上の hub_turns の確かめ）が、直前に聞いたのは閉じるの問いではないので、報告への「はい」で閉じない（a2a 3752b7a5）
+check("あいだに自動通知が届いたら、次の「はい」では閉じない（聞き直し）", close(confirmed=True), ("not_asked", []))
 
 asked()
 say("はい")
@@ -230,6 +231,12 @@ s.CLOSING.pop("w9:p1", None)
 asked()
 say("はい、閉じて")
 check("止める: 止めずに聞いた問いへの「はい」なら、これまでどおり閉じる", close(confirmed=True), ("ok", ["w9:p1"]))
+# 閉じていいかの問いのあとに、別件の報告が届いた。その報告への「はい」で、前の問いのセッションを閉じない（a2a 3752b7a5）
+s.CLOSING.pop("w9:p1", None)
+asked()
+asyncio.run(s.HUB.report_end("done", "別件の報告です。進めていいですか？", "other｜t", True))
+say("はい、閉じて")
+check("報告: 閉じていいかの問いのあとに報告が届いたら、次の「はい」で閉じない（聞き直し）", close(confirmed=True), ("not_asked", []))
 agents[:] = [TARGET]
 s.CLOSING.pop("w9:p1", None)
 asked()

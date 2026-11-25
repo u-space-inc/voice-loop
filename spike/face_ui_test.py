@@ -326,6 +326,34 @@ with sync_playwright() as pw:
     pg.wait_for_function("window.__released >= 1", timeout=5000)
     check("顔: 許可を頼んでいる途中で閉じても、届いたらすぐ手放す", pg.evaluate("window.__released"), 1)
     pg.evaluate("if (rec && rec.state === 'recording') stopRec()")
+    # 録音中に「停止」を押したら、その録音は送らない（「止めました」と出したあとの次のタップで送らない）。
+    # 顔で録っている途中に顔を閉じたら、その録音は送らない（顔で録った声を画面からの発言として送らない）。a2a 3752b7a5
+
+    def rec_case(act, open_face=False):
+        if open_face:
+            pg.goto(BASE + "/?face")
+            pg.wait_for_function("document.getElementById('face').dataset.s === 'idle'", timeout=10000)
+            pg.evaluate(PICK)  # この試験の環境にはハブが居ないので、録った声を送れる相手を選んでおく
+        pg.wait_for_function("!rec || rec.state === 'inactive'", timeout=5000)
+        pg.evaluate("window.__types.length = 0; startRec()")
+        pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+        pg.wait_for_timeout(1500)  # 短すぎて捨てられる長さ（2000 バイト未満）より長く録る
+        pg.evaluate(act)
+        pg.wait_for_function("rec.state === 'inactive'", timeout=5000)
+        pg.wait_for_timeout(600)
+        return pg.evaluate("window.__types.includes('turn')")
+
+    PICK = "(() => { const a = document.getElementById('agent'); a.value = [...a.options].map(o => o.value).find(v => v) || ''; return a.value; })()"
+    picked = pg.evaluate(PICK)
+    check("録音: （前提）ふつうの画面で話し相手を選んだ", bool(picked), True)
+    sent_plain = rec_case("stopRec()")
+    sent_stop = rec_case("document.getElementById('stop').click()")
+    # 閉じた直後に話し相手を顔のときのまま戻す（話し相手が空で送られない、という別の理由で通らないように）
+    sent_close = rec_case("(() => { const a = document.getElementById('agent'), hv = a.value; document.getElementById('faceBack').click(); a.value = hv;"
+                          " window.__hv = [hv, a.value]; })()", open_face=True)
+    check("録音: （前提）顔を閉じたあとも話し相手は顔のときのまま", pg.evaluate("Boolean(window.__hv[0]) && window.__hv[0] === window.__hv[1]"), True)
+    check("録音: ふつうに止めたら送る（前提）・「停止」で止めたら送らない・顔で録っている途中に顔を閉じたら送らない",
+          (sent_plain, sent_stop, sent_close), (True, False, False))
     # 再生にタップが要るとき（報告を聞くだけの使い方）のタップでも、画面を消さない許可を頼む
     pg.goto(BASE + "/?face")
     pg.wait_for_function("document.getElementById('face').dataset.s === 'idle'", timeout=10000)
