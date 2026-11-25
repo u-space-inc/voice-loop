@@ -3542,7 +3542,7 @@ async def ws(sock: WebSocket):
 
     def start_turn(text: str, pane: str, speaker: int, key: str | None, reply_at: float | None = None, files: list[str] | None = None,
                    item: int | None = None, said: str | None = None, admitted: int | None = None, via: str | None = None, seen: int | None = None,
-                   stopgen: int | None = None, crossed: bool = False, legacy: bool = False):
+                   stopgen: int | None = None, crossed: bool = False, legacy: bool = False, legacy_drop: bool = False):
         # said: 辞書で直す前の聞き取り（直したときだけ。ハブの守りの台帳に載せる）
         # admitted: 発言を受けたその場（声なら発言の頭が届いたとき）に取った受け付けの番号。無ければここで取る
         # via: 発言を受けたその場の発言元（機械なら "device"）。無ければいまの名乗りから決める（声は頭のときに控える。頭と声の間に
@@ -3582,9 +3582,9 @@ async def ws(sock: WebSocket):
             DIRECT_SEQ["n"] += 1
             direct = direct_turn["d"] = DIRECT_PENDING[DIRECT_SEQ["n"]] = {
                 "key": DIRECT_SEQ["n"], "sent": False, "dropped": False, "handed": False, "lock": threading.Lock(), "notify": notify_unsent}
-            if crossed or (stopgen is not None and stopgen != STOP_GEN["n"]):  # 発言を始めたあと・声の頭を受けたあと（聞き取りの間）に、どこかの画面で止めた
-                if crossed and legacy:  # 合図の無い更新前の画面の添付つきの指示。確かめられないので送らず、読み込み直しを頼む
-                    direct["notify"] = lambda: notify_unsent("この画面は古い版なので、添付つきの指示はセッションに送っていません。画面を読み込み直してから送り直してください")
+            if crossed or legacy_drop or (stopgen is not None and stopgen != STOP_GEN["n"]):  # 発言を始めたあと・声の頭を受けたあと（聞き取りの間）に、どこかの画面で止めた
+                if legacy and (crossed or legacy_drop):  # 合図の無い更新前の画面の添付つき・声の指示。確かめられないので送らず、読み込み直しを頼む
+                    direct["notify"] = lambda: notify_unsent("この画面は古い版なので、この指示はセッションに送っていません。画面を読み込み直してから送り直してください")
                 drop_pending(direct)  # 送っていないと知らせ、画面のターンは動かさない（「送りました・考え中」と出さない。codex-review dad00a5）
                 return
         current = asyncio.create_task(turn(text, pane, cancel, key, reply_at, files, job, plain=bool(quick_kind), admitted=admitted, direct=direct))
@@ -3699,7 +3699,9 @@ async def ws(sock: WebSocket):
                 if d["type"] == "turn":  # 声の発言の頭が届いた。受け付けの番号はここで取る（聞き取りの間に届いた前の往復の返事を、聞いた文にしない）
                     crossed, adm, legacy = take_begin(d)
                     pending = {**d, "_admitted": adm if adm is not None else admit_now(heard_seen(d)), "_via": "device" if client.kind == "device" else "",
-                               "_stopgen": STOP_GEN["n"], "_crossed": crossed, "_legacy": legacy}
+                               "_stopgen": STOP_GEN["n"], "_crossed": crossed, "_legacy": legacy,
+                               # 合図の無い更新前の画面の声（機械の口の接続は除く）は、録音を始めた時点が分からない。ハブ以外への直接の指示なら送らない（a2a 4135f4c2 の 3 回目）
+                               "_legacy_drop": legacy and not client.bound}
                     drop_direct()  # 次の発言を受け付けた。この画面の前の、まだ送っていないハブ以外への指示は送らずに知らせる（文字と同じ。codex-review c72fbbe）
                     left_hub(str(d.get("pane", "")))
                 if d["type"] == "text":
@@ -3715,23 +3717,27 @@ async def ws(sock: WebSocket):
                 # 聞き取りは受信の中で待つ。その間に押した「停止」は、聞き取った発言を送ったあとに読む（発言は相手に届くが、止めたことで
                 # 受け付けの番号が進むので、その発言で承認に答える・閉じるは通らない。.github/review-exceptions.md の D-007）
                 head, pending = pending, {}
-                await send(type="status", text="聞き取り中…")
-                stop_at_block = STOP_GEN["n"]  # 聞き取りの間は受信が止まる。その間に届いていた合図は、止まり始めた時点のものとして扱う（a2a 4135f4c2 の 2 回目）
+                # 聞き取り・辞書の補正・知らせの送り出しの間は受信が止まる。その間に届いていた合図は、止まり始めた時点のものとして扱う
+                # （受信に戻ってから 0.5 秒の間に読んだ合図。溜まっていた合図はすぐに読まれる。a2a 4135f4c2 の 2・3 回目）
+                stop_at_block = STOP_GEN["n"]
                 try:
-                    said = await asyncio.to_thread(transcribe, msg["bytes"], head.get("filename", "audio.webm"))
-                except (OSError, ValueError) as e:  # whisper が止まっている・答えの形が違う。接続は切らずに知らせる
-                    print(f"[whisper] 聞き取りに失敗: {str(e)[:200]}", flush=True)
-                    await send(type="error", text="聞き取りに失敗しました（聞き取りのサーバーを確かめてください）")
-                    continue
+                    await send(type="status", text="聞き取り中…")
+                    try:
+                        said = await asyncio.to_thread(transcribe, msg["bytes"], head.get("filename", "audio.webm"))
+                    except (OSError, ValueError) as e:  # whisper が止まっている・答えの形が違う。接続は切らずに知らせる
+                        print(f"[whisper] 聞き取りに失敗: {str(e)[:200]}", flush=True)
+                        await send(type="error", text="聞き取りに失敗しました（聞き取りのサーバーを確かめてください）")
+                        continue
+                    if not said:
+                        await send(type="error", text="聞き取れませんでした")
+                        continue
+                    text = await asyncio.to_thread(fix_heard, said)  # 画面とハブ・セッションに渡す文。守りの台帳には直す前の said を載せる
+                    await send(type="transcript", pane=head["pane"], text=text)
+                    start_turn(text, head["pane"], int(head["speaker"]), head.get("key"), reply_at_of(head), attachments_of(head),
+                               reply_item_of(head), said if text != said else None, admitted=head["_admitted"], via=head["_via"], stopgen=head["_stopgen"],
+                               crossed=head["_crossed"], legacy=head["_legacy"], legacy_drop=head["_legacy_drop"])
                 finally:
-                    blocked.update(stop=stop_at_block, until=time.monotonic() + 0.5)
-                if not said:
-                    await send(type="error", text="聞き取れませんでした")
-                    continue
-                text = await asyncio.to_thread(fix_heard, said)  # 画面とハブ・セッションに渡す文。守りの台帳には直す前の said を載せる
-                await send(type="transcript", pane=head["pane"], text=text)
-                start_turn(text, head["pane"], int(head["speaker"]), head.get("key"), reply_at_of(head), attachments_of(head),
-                           reply_item_of(head), said if text != said else None, admitted=head["_admitted"], via=head["_via"], stopgen=head["_stopgen"], crossed=head["_crossed"], legacy=head["_legacy"])
+                    blocked.update(stop=stop_at_block, until=time.monotonic() + 0.5)  # 受信に戻る時点から数える
     except WebSocketDisconnect:
         pass
     finally:

@@ -34,6 +34,13 @@ os.environ.pop("VL_HUB", None)
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import server as s  # noqa: E402
+
+
+async def plain_narrate(text, cancel):  # 本物の語り手（LLM）を呼ばない（CI には鍵が無く、手元でも外に出さない）
+    yield text
+
+
+s.narrate = plain_narrate
 from fastapi.testclient import TestClient  # noqa: E402
 
 hm = s.hermes
@@ -42,6 +49,9 @@ results = []
 
 def check(name, got, want):
     results.append((name, got == want, got, want))
+
+
+WAITED = ("送っていません", "回答を読めませんでした", "送信できませんでした")  # 試験が待つ知らせ（読み上げの失敗などのほかのエラーでは止まらない）
 
 
 def ai_rows(turn):
@@ -390,7 +400,12 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         try:
             w.send_text(json.dumps({"type": "turn", "pane": "w9:p1", "speaker": 0, "filename": "a.webm"}))
             w.send_bytes(b"0" * 4000)
-            empty = receive_until(w, "error")
+            empty = None
+            for _ in range(60):  # 聞き取れなかった知らせまで読む（前の発言の読み上げの失敗などのエラーでは止まらない）
+                m = json.loads(w.receive_text())
+                if m.get("type") == "error" and m.get("text") == "聞き取れませんでした":
+                    empty = m
+                    break
         finally:
             s.transcribe = real_transcribe
         check("ハブ以外への声の発言は、聞き取れなくても、頭が届いたときにハブの前の問いを聞いた文と返事の欄から外す",
@@ -465,7 +480,8 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         s.transcribe = lambda audio, filename: "セッションへの声の指示"
         seen = []
         try:
-            w.send_text(json.dumps({"type": "turn", "pane": "w9:p1", "speaker": 0, "filename": "a.webm"}))
+            w.send_text(json.dumps({"type": "begin", "b": 950, "pane": "w9:p1", "hid": -1}))  # いまの画面と同じく、録音を始めた合図を先に送る
+            w.send_text(json.dumps({"type": "turn", "pane": "w9:p1", "speaker": 0, "filename": "a.webm", "begin": 950}))
             w.send_bytes(b"0" * 4000)
             w.send_text(json.dumps({"type": "stop"}))
             w.send_text(json.dumps({"type": "stop"}))  # 2 つ目の止めたまで読む（知らせが来なくても待ち続けない）
@@ -554,7 +570,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             for _ in range(60):  # 知らせが来なければ、送ったあとの「回答を読めませんでした」で終わる（待ち続けない）
                 m = json.loads(w.receive_text())
                 seen6.append((m.get("type"), m.get("text", "")))
-                if m.get("type") == "error":
+                if m.get("type") == "error" and any(k in m.get("text", "") for k in WAITED):
                     break
             gate6.set()
             time.sleep(0.3)
@@ -600,7 +616,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             for _ in range(60):  # 知らせが来なければ、送ったあとの「回答を読めませんでした」で終わる
                 m = json.loads(w.receive_text())
                 seen10.append((m.get("type"), m.get("text", "")))
-                if m.get("type") == "error":
+                if m.get("type") == "error" and any(k in m.get("text", "") for k in WAITED):
                     break
             time.sleep(0.3)
         finally:
@@ -643,6 +659,16 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         after_hub = heard_after(hm.HERMES_PANE, "別の画面がハブに")
         check("別の画面で発言を始めたあとの「はい」は、前の問いを使わない（ひとりなら使う）", (alone, after_other, after_hub), (Q, "", ""))
         # 声の聞き取りで受信が止まっていた間に届いていた合図は、止まり始めた時点のものとして扱う（その間の別の画面の停止で、あとの直接の指示を送らない）
+        def wait_idle(limit=15.0):  # 前の試験の直接の指示が送り終わり、セッションの鍵が空くまで（あとの試験の知らせ・送りと混ざらないように）
+            end = time.time() + limit
+            while time.time() < end:
+                lock = s.PANE_LOCKS.get("w9:p1")
+                if not s.DIRECT_PENDING and not (lock and lock.locked()):
+                    return True
+                time.sleep(0.05)
+            return False
+
+        check("（前提）前の試験の直接の指示が片づいている", wait_idle(), True)
         prompts12, tr_in12, tr_go12 = [], threading.Event(), threading.Event()
 
         def slow_transcribe12(audio, filename):
@@ -650,30 +676,37 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             tr_go12.wait(5)
             return "聞き取りの間の前の声"
 
-        s.transcribe, s.jsonl_path = slow_transcribe12, (lambda a: None)
+        real_fix = s.fix_heard
+
+        def slow_fix12(said):  # 聞き取りのあとの辞書の補正に時間がかかる（受信に戻るのが遅れる）
+            time.sleep(0.8)
+            return real_fix(said)
+
+        s.transcribe, s.jsonl_path, s.fix_heard = slow_transcribe12, (lambda a: None), slow_fix12
         s.herdr = lambda *a, **k: (prompts12.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
         s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
         seen12 = []
         try:
-            w.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm", "hid": -1}))
-            w.send_bytes(b"0" * 4000)
-            check("（前提）前の声を聞き取っている", tr_in12.wait(5), True)
-            w.send_text(json.dumps({"type": "begin", "b": 940, "pane": "w9:p1", "hid": -1}))  # 聞き取りの間に送るを押した（本体はまだ読めない）
-            w.send_text(json.dumps({"type": "text", "text": "聞き取りの間に押した指示", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 940}))
-            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
-                wb.send_text(json.dumps({"type": "stop", "n": 1}))
-                receive_until(wb, "stopped")
-            tr_go12.set()
-            for _ in range(60):
-                m = json.loads(w.receive_text())
-                seen12.append((m.get("type"), m.get("text", "")))
-                if m.get("type") == "error" and "送っていません" in m.get("text", ""):
-                    break
-            time.sleep(0.3)
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:  # 新しい接続で（前の試験の読み残しと混ざらないように）
+                wa.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm", "hid": -1}))
+                wa.send_bytes(b"0" * 4000)
+                check("（前提）前の声を聞き取っている", tr_in12.wait(5), True)
+                wa.send_text(json.dumps({"type": "begin", "b": 940, "pane": "w9:p1", "hid": -1}))  # 聞き取りの間に送るを押した（本体はまだ読めない）
+                wa.send_text(json.dumps({"type": "text", "text": "聞き取りの間に押した指示", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 940}))
+                with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+                    wb.send_text(json.dumps({"type": "stop", "n": 1}))
+                    receive_until(wb, "stopped")
+                tr_go12.set()
+                for _ in range(60):  # 取り消したなら知らせ、送ったなら返事を待ったあとの「回答を読めませんでした」が届く
+                    m = json.loads(wa.receive_text())
+                    seen12.append((m.get("type"), m.get("text", "")))
+                    if m.get("type") == "error" and any(k in m.get("text", "") for k in WAITED):
+                        break
+                wait_idle()
         finally:
             tr_go12.set()
-            s.transcribe, s.herdr, s.list_agents, s.jsonl_path = real_transcribe, real_herdr, real_agents, real_jsonl
-        check("聞き取りの間に送るを押した直接の指示は、その間の別の画面の停止で送らずに知らせる", (prompts12, any("送っていません" in x for t, x in seen12)), ([], True))
+            s.transcribe, s.herdr, s.list_agents, s.jsonl_path, s.fix_heard = real_transcribe, real_herdr, real_agents, real_jsonl, real_fix
+        check("聞き取りの間に送るを押した直接の指示は、その間の別の画面の停止で送らずに知らせる（補正に時間がかかっても）", (prompts12, any("送っていません" in x for t, x in seen12)), ([], True))
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
@@ -691,6 +724,25 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         finally:
             s.herdr, s.list_agents = real_herdr, real_agents
         check("合図の無い更新前の画面の添付つきの直接の指示は送らず、読み込み直しを頼む", (prompts13, any("読み込み直して" in x for t, x in seen13)), ([], True))
+        # 合図の無い更新前の画面の声の直接の指示も、録音を始めた時点が分からないので送らず、読み込み直しを頼む（a2a 4135f4c2 の 3 回目）
+        prompts14 = []
+        s.herdr = lambda *a, **k: (prompts14.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        s.transcribe = lambda audio, filename: "古い画面の声の指示"
+        seen14 = []
+        try:
+            w.send_text(json.dumps({"type": "turn", "pane": "w9:p1", "speaker": 0, "filename": "a.webm"}))
+            w.send_bytes(b"0" * 4000)
+            time.sleep(0.3)
+            w.send_text(json.dumps({"type": "stop", "n": 3}))
+            for _ in range(60):
+                m = json.loads(w.receive_text())
+                seen14.append((m.get("type"), m.get("text", "")))
+                if m.get("type") == "stopped":
+                    break
+        finally:
+            s.herdr, s.list_agents, s.transcribe = real_herdr, real_agents, real_transcribe
+        check("合図の無い更新前の画面の声の直接の指示は送らず、読み込み直しを頼む", (prompts14, any("読み込み直して" in x for t, x in seen14)), ([], True))
         # 次の声の発言の頭を受けたら、この画面の前の、まだ送っていないハブ以外への指示は送らずに知らせる（文字と同じ。codex-review c72fbbe）
         prompts11, gate11, entered11 = [], threading.Event(), threading.Event()
 
@@ -712,7 +764,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             for _ in range(60):
                 m = json.loads(w.receive_text())
                 seen11.append((m.get("type"), m.get("text", "")))
-                if m.get("type") == "error":
+                if m.get("type") == "error" and any(k in m.get("text", "") for k in WAITED):
                     break
             gate11.set()
             w.send_bytes(b"0" * 4000)
@@ -771,7 +823,8 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
         seen7 = []
         try:
-            w.send_text(json.dumps({"type": "turn", "pane": "w9:p1", "speaker": 0, "filename": "a.webm", "hid": -1}))
+            w.send_text(json.dumps({"type": "begin", "b": 951, "pane": "w9:p1", "hid": -1}))
+            w.send_text(json.dumps({"type": "turn", "pane": "w9:p1", "speaker": 0, "filename": "a.webm", "hid": -1, "begin": 951}))
             w.send_bytes(b"0" * 4000)
             check("（前提）この画面の声を聞き取っている", tr_in7.wait(5), True)
             with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
@@ -781,7 +834,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             for _ in range(60):  # 知らせが来なければ、送ったあとの「回答を読めませんでした」で終わる
                 m = json.loads(w.receive_text())
                 seen7.append((m.get("type"), m.get("text", "")))
-                if m.get("type") == "error":
+                if m.get("type") == "error" and any(k in m.get("text", "") for k in WAITED):
                     break
             time.sleep(0.3)
         finally:
@@ -793,7 +846,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             seen7.append((m.get("type"), m.get("text", "")))
             if m.get("type") == "stopped":
                 break
-        after = seen7[next(i for i, (t, x) in enumerate(seen7) if t == "error"):]
+        after = seen7[next(i for i, (t, x) in enumerate(seen7) if t == "error" and "送っていません" in x):]
         check("別の画面の停止がこの画面の聞き取りの間に来たら、聞き取ったハブ以外への指示は送らず、送っていないと知らせる（そのあと「送りました」と出さない）",
               (prompts7, any(t == "error" and "送っていません" in x for t, x in seen7), any("エージェントに送りました" in x for t, x in after)), ([], True, False))
         check("止めたの返事は、画面の停止の番号を付けて返す", seen7[-1], ("stopped", ""))
