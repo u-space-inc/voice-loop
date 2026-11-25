@@ -74,6 +74,8 @@ async def nothing(*a, **k):
 
 s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.hermes.watch_hermes_skills = nothing
 s.list_agents = lambda: [{"pane": "w1:p1", "title": "記事", "cwd": "/x/blog", "kind": "claude", "session": "s1", "status": "idle", "name": "", "hub": False}]
+SENT_TO_HERDR: list = []
+s.herdr = lambda *a, **k: (SENT_TO_HERDR.append(a), {"error": {"code": "test", "message": "この試験では本物の herdr を呼ばない"}})[1]  # 文字の発言を送る確かめが、本物のセッションに届かないように（codex-review 7e79726）
 s.jsonl_path = lambda a: None
 s.transcribe = lambda audio, filename: ""  # 作り物の録音は聞き取りに出さない（聞き取れなかった扱い）
 
