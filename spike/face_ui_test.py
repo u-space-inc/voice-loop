@@ -418,6 +418,15 @@ with sync_playwright() as pw:
     pg.evaluate("stopRec()")
     pg.wait_for_function("window.__turn", timeout=5000)
     check("録音: 返事の番号を控え、声の頭には録音を始めたときの番号を付ける", (got_hid, pg.evaluate("window.__turn.hid")), (5, 5))
+    # 発言を始めた接続と送る接続が違えば（つなぎ直した。本体を起動し直すと番号を数え直す）、番号を付けない（-1。a2a 38ef4720）
+    pg.wait_for_timeout(300)
+    pg.evaluate("heardId = 5; window.__turn2 = null; startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    pg.wait_for_timeout(1500)
+    pg.evaluate("window.__realws = ws; ws = { readyState: 1, send: m => { try { const d = JSON.parse(m); if (d.type === 'turn') window.__turn2 = d; } catch {} } }; heardId = 5; stopRec()")
+    pg.wait_for_function("window.__turn2", timeout=5000)
+    pg.evaluate("() => { ws = window.__realws; }")
+    check("録音: 録音を始めた接続と送る接続が違えば、返事の番号を付けない", pg.evaluate("window.__turn2.hid"), -1)
     # 文字の発言には、送るを押した時点で受け取っていた返事の番号を付ける（添付を送る間に届いた返事の番号ではない。a2a 3752b7a5 の 5 回目）
     pg.wait_for_timeout(300)
     pg.evaluate("heardId = 5; window.__text = null; window.__sa = sendAttach;"

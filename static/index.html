@@ -2200,7 +2200,7 @@ let recStops = 0;
 let recLiveStops = -1; // いま始めている・録っている録音を始めたときの停止の回数（本体の「止めた」が、その録音より前の停止への返事かを見分ける）
 async function startRec() { if (recPending) return; recPending = true; try { return await startRecInner(); } finally { recPending = false; } } // 始めるのは 1 つずつ
 async function startRecInner() {
-  const stops0 = recStops, face0 = faceOn, hid0 = heardId; // hid0: 録音を始めたときに受け取っていた返事の番号
+  const stops0 = recStops, face0 = faceOn, hid0 = heardId, ws0 = ws; // hid0: 録音を始めたときに受け取っていた返事の番号（その接続での番号）
   recLiveStops = stops0;
   if (playing || queue.length) { ws.send(JSON.stringify({ type: 'stop' })); stopPlayback(); } // 話し始めたら相手の声は止める
   prime();
@@ -2238,7 +2238,7 @@ async function startRecInner() {
     if (recStops !== stops0) return; // 用意する間に止めた（「止めました」は本体の返事で出る）
     if (faceOn !== face0) { setStatus('顔の表示を切り替えたので、話した内容は送っていません'); return; } // 本体は頭の時点の名乗りで発言元を決める
     if (!linked()) { setStatus(UNREACHABLE); return; }
-    ws.send(JSON.stringify({ type: 'turn', pane, key, speaker: $('speaker').value, filename: 'rec.' + ext, hid: hid0, ...rf, ...(files.length ? { attachments: files } : {}) }));
+    ws.send(JSON.stringify({ type: 'turn', pane, key, speaker: $('speaker').value, filename: 'rec.' + ext, hid: ws === ws0 ? hid0 : -1, ...rf, ...(files.length ? { attachments: files } : {}) }));
     ws.send(audio);
     if (sameTarget(rf)) setReplyTarget(null);
     dropSent(list);
@@ -2277,7 +2277,7 @@ $('typedForm').onsubmit = async e => {
   // 宛先・返信先（とその件の名前）・添付は押した時点で固定する。待つ間に欄が変わっても、ここで決めたものだけを送る
   cancelTopic();
   const pane = $('agent').value, key = curKey(), rf = replyFields(), about = rf.reply_at !== undefined ? replyTarget.about : '', list = attachFiles.slice();
-  const item = rf.reply_item, hid0 = heardId; // hid0: 押した時点で受け取っていた返事の番号（添付を送る間に届いた問いへの答えにしない）
+  const item = rf.reply_item, hid0 = heardId, ws0 = ws; // hid0: 押した時点で受け取っていた返事の番号（添付を送る間に届いた問いへの答えにしない）
   prime();  // 読み上げの許可は、押したその場で取る（添付を置き終えるのを待ってからでは、iPhone の Safari が押した操作と見ない）
   const files = await sendAttach(pane, list, '文と添付');
   if (!files) return;  // 送らないときは、文も添付も残す
@@ -2285,7 +2285,7 @@ $('typedForm').onsubmit = async e => {
   const shown = (t || (list.length ? '' : '（ことばなし）')) + (list.length ? (t ? '\n' : '') + '📎 ' + list.map(f => f.name).join('、') : '');
   if ($('typed').value.trim() === t) { $('typed').value = ''; fitTyped(); }  // 待つ間に打ち直した文は消さない
   decorate(bubble('me', shown, 'pending'), { role: 'me', reply_to: about, reply_item: item }); localPush('me', shown);
-  ws.send(JSON.stringify({ type: 'text', text: t, pane, key, speaker: $('speaker').value, hid: hid0, ...rf, ...(files.length ? { attachments: files } : {}) }));
+  ws.send(JSON.stringify({ type: 'text', text: t, pane, key, speaker: $('speaker').value, hid: ws === ws0 ? hid0 : -1, ...rf, ...(files.length ? { attachments: files } : {}) }));
   if (sameTarget(rf)) setReplyTarget(null);
   paintSend();
   dropSent(list);

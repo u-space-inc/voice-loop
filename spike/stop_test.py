@@ -529,6 +529,38 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         check("ハブ以外への指示を、送るスレッドの空きを待つ間に止めたら、送らずに送っていないと知らせ、件のリンクの印も付けない",
               (prompts[:-1], any(t == "error" and "送っていません" in x for t, x in seen3), marks_cancelled), ([], True, []))
         check("取り消さずに送った直接の指示には、送ると決めたときに件のリンクの印を付ける", (prompts, marks), (["セッションへのふつうの指示"], ["s1"]))
+        # 送り始めたあとに次の発言でターンを取り消し、そのあとで相手が断ったら、送れなかったことを画面に知らせる（a2a 38ef4720）
+        gate4, entered4 = threading.Event(), threading.Event()
+
+        def refusing_herdr(*a, **k):
+            if a[:2] == ("agent", "prompt"):
+                entered4.set()
+                gate4.wait(5)  # 相手が受け付けるのを待っている間
+                return {"error": {"code": "agent_busy", "message": "受け付けません"}}
+            return {"result": {}}
+
+        s.herdr, s.jsonl_path = refusing_herdr, (lambda a: None)
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        seen4 = []
+        try:
+            w.send_text(json.dumps({"type": "text", "text": "断られる指示", "pane": "w9:p1", "speaker": 0}))
+            check("（前提）相手に送り始めている", entered4.wait(5), True)
+            hm.ask_hermes = lambda text: "わかりました"
+            w.send_text(json.dumps({"type": "text", "text": "次の発言", "pane": hm.HERMES_PANE, "speaker": 0}))
+            time.sleep(0.3)
+            gate4.set()
+            time.sleep(0.5)
+            w.send_text(json.dumps({"type": "stop"}))
+            for _ in range(60):
+                m = json.loads(w.receive_text())
+                seen4.append((m.get("type"), m.get("text", "")))
+                if m.get("type") == "stopped":
+                    break
+        finally:
+            gate4.set()
+            s.herdr, s.list_agents, s.jsonl_path = real_herdr, real_agents, real_jsonl
+        check("ハブ以外への指示を送り始めたあとに次の発言をし、相手が断ったら、送れなかったことを画面に知らせる",
+              any(t == "error" and "前の指示は送れませんでした" in x for t, x in seen4), True)
         check("声の頭と本体の間に止めたら、届いた声は聞き取らず、ハブにも台帳にも送らない",
               (first is not None, second and second.get("type"), heard_calls, any(r[1] == "止めたあとに届いた声" for r in list(hm.HERMES_TURNS))), (True, "stopped", [], False))
         # 画面に送る途中で、次の発言を受け付けた（a2a 30fd5b94 の 2 回目の再現: 送れていない問いが、次の「はい」の行に「聞いた文」として写った）

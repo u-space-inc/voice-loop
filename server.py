@@ -3484,6 +3484,22 @@ async def ws(sock: WebSocket):
                 fut = track_send(pane, ask(agent, text + extra))  # 送る仕事は、作るときの ASK_COMMIT を持つ
             finally:
                 ASK_COMMIT.reset(tok)
+
+            def failed_after_drop(f):
+                # 送り始めたあとに止める・次の発言でこのターンを取り消したなら、送れなかったことは裏の仕事の終わりで知らせる
+                # （このターンは返事を待っていないので、黙って消さない。a2a 38ef4720）
+                if not cancel.is_set() or f.cancelled():
+                    return
+                try:
+                    st, why = f.result()
+                except Exception as e:
+                    st, why = "error", f"{type(e).__name__}: {e}"
+                if st == "error":
+                    t = asyncio.ensure_future(send(type="error", text=f"前の指示は送れませんでした: {why}"[:300]))
+                    _tasks.add(t)
+                    t.add_done_callback(_tasks.discard)
+
+            fut.add_done_callback(failed_after_drop)
             state, reply = await asyncio.shield(fut)
             if cancel.is_set() or state == "cancelled":
                 return
