@@ -468,6 +468,22 @@ with sync_playwright() as pw:
     picked_during = reply_rec("null", "{ at: 222.5, about: '録音の途中に届いた報告' }")
     check("録音: 録音を始めたときに合図を送り、返信先は始める前に選んだものだけ付ける（途中で選んだ返信先は付けない）",
           (picked_before, picked_during), ((True, [111.5, "number"]), (True, [None, "number"])))
+    # 録り終えた声を本体に送っている間は、文字の発言を送らない（声の本体を用意する間に送った文字を、あとの古い声で取り消さない）。
+    # 発言を始めた合図には、本体から知らされた停止の回数を付ける（codex-review 6b2ddfe）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__types.length = 0; startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    sg_sent = pg.evaluate("window.__begin && window.__begin.sg")
+    pg.wait_for_timeout(1500)
+    pg.evaluate("window.__ab2 = Blob.prototype.arrayBuffer; Blob.prototype.arrayBuffer = function () { const p = window.__ab2.call(this);"
+                " return new Promise(r => setTimeout(() => r(p), 600)); }; stopRec();"
+                " setTimeout(() => { document.getElementById('typed').value = '声を送る間の文字'; document.getElementById('typedForm').requestSubmit(); }, 150)")
+    pg.wait_for_timeout(1200)
+    pg.evaluate("() => { Blob.prototype.arrayBuffer = window.__ab2; }")
+    check("録音: 声を送っている間は文字の発言を送らず（打った文は欄に残す）、合図には停止の回数を付ける",
+          (pg.evaluate("window.__types.includes('text')"), pg.evaluate("document.getElementById('typed').value"), type(sg_sent) is int and sg_sent >= 0),
+          (False, "声を送る間の文字", True))
+    pg.evaluate("document.getElementById('typed').value = ''")
     # 前の「止めた」への返事が、次の録音を始めたあとに届いても、「止めました」と出さず印も光らせない（録音は続いている。codex-review 6096e1d）
     pg.wait_for_timeout(600)
     pg.evaluate("startRec()")

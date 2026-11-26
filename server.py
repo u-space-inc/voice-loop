@@ -1438,6 +1438,13 @@ CLIENTS: set[Client] = set()
 UNSENT_NOTICES: dict[str, list[dict]] = {}
 
 
+async def tell_stop_gen(n: int):
+    """どこかの画面で止めた。停止の回数を全部の画面に知らせる（画面が切れていれば知らせない）。"""
+    for c in list(CLIENTS):
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(c.send(type="stopgen", n=n), 5)
+
+
 async def tell_window(win: str, **msg):
     """窓の印 win の画面に知らせる（つなぎ直した画面にも）。どの画面もつながっていなければ控え、次に名乗ったときに届ける。"""
     sent = False
@@ -3426,6 +3433,8 @@ async def ws(sock: WebSocket):
             extra = ""
             if not why:
                 extra, why = await attachment_lines(files, None, pane)
+            if direct is not None and direct["dropped"]:  # 添付の用意の間に止めた（「送っていません」と知らせ済み）。「送りました」で上書きしない（codex-review 6b2ddfe）
+                return
             if why:  # 送らずに断る（切れてつなぎ直した画面にも届ける）
                 await tell_window(win_of(client), type="error", text=why)
                 return
@@ -3499,6 +3508,8 @@ async def ws(sock: WebSocket):
             return
         if key and agent_key(agent) != key:  # 開きっぱなしの画面の一覧が古く、同じ場所に別のセッションが居る
             await tell_window(win_of(client), type="error", gone=True, text="話し相手が入れ替わっています。送らずに止めました。選び直してください。")
+            return
+        if direct is not None and direct["dropped"]:  # 取り消し済み（「送っていません」と知らせ済み）。送ったとは出さない
             return
         with contextlib.suppress(Exception):  # 画面が切れていても送りは止めない（「送りました」と出た指示を、切れただけで黙って消さない。a2a 6604a50a）
             await send(type="status", text="エージェントに送りました。考え中…")
@@ -3677,6 +3688,8 @@ async def ws(sock: WebSocket):
                     # visible を送らない古い画面は、見えていないものとして扱う（通知を止めない）。機械は見えている画面に数えない
                     client.visible = d.get("visible") is True and client.kind == "screen"
                     client.seen = time.time()
+                    with contextlib.suppress(Exception):  # いまの停止の回数（画面は発言を始めた合図に付ける）
+                        await send(type="stopgen", n=STOP_GEN["n"])
                     notes = UNSENT_NOTICES.pop(win_of(client), [])  # この窓に届けられずに控えていた、指示の行方の知らせ
                     for i, note in enumerate(notes):
                         try:
@@ -3698,12 +3711,18 @@ async def ws(sock: WebSocket):
                         direct_turn["d"] = None
                         for pend in list(DIRECT_PENDING.values()):  # この画面とほかの画面（切れた画面も）の、送る前のハブ以外への指示を取り消し、それぞれに知らせる
                             drop_pending(pend)
+                        # 停止の回数を全部の画面に知らせる（画面は発言を始めた合図に付けて送る。最新の停止を知らずに始めた発言は、通信が遅れて停止の
+                        # あとに届いても、停止をまたいだものとして見分ける。codex-review 6b2ddfe の P1）。送るのは別の仕事で（遅い画面に待たされない）
+                        task = asyncio.create_task(tell_stop_gen(STOP_GEN["n"]))
+                        _tasks.add(task)
+                        task.add_done_callback(_tasks.discard)
                     if current:
                         current.cancel()
                     for ev in list(REPORT_SPEECH):  # 報告の読み上げも止める
                         ev.set()
-                    for t in TALKERS.values():  # 利用者は、読まれていた返事・まだ届いていない返事を聞いていない（承認に答える・閉じるの守り）
-                        t.stopped()
+                    if not talk:  # 話し始めるときの再生だけの停止では、届いていた返事（聞いた文）は消さない（画面に出ている確認への「はい」を聞き直しにしない。codex-review 6b2ddfe）
+                        for t in TALKERS.values():  # 利用者は、読まれていた返事・まだ届いていない返事を聞いていない（承認に答える・閉じるの守り）
+                            t.stopped()
                     n = d.get("n")  # 画面の停止の番号。返事に付けて返す（画面は、次の発言を始めたあとに届いた古い返事で表示を変えない）
                     await send(type="stopped", **({"scope": "talk"} if talk else {}), **({"n": n} if isinstance(n, int) and not isinstance(n, bool) else {}))
                     continue
@@ -3714,8 +3733,11 @@ async def ws(sock: WebSocket):
                     b = d.get("b")
                     if isinstance(b, int) and not isinstance(b, bool):
                         stop_now = STOP_GEN["n"]
+                        sg = d.get("sg")  # 画面が発言を始めたときに知っていた停止の回数。最新でなければ、その回数を開始値にする（停止をまたいだと見分ける）
+                        if isinstance(sg, int) and not isinstance(sg, bool):
+                            stop_now = min(stop_now, sg)
                         if stopped_in_block():  # 聞き取りで受信が止まっていた間に届いていたかもしれない合図。その間に止めていたら、止まり始めた時点のものにする
-                            stop_now = blocked["stop"]
+                            stop_now = min(stop_now, blocked["stop"])
                         drop_direct()
                         adm = admit_now(heard_seen(d))
                         if d.get("pane"):  # 宛先が分かるときだけ（ハブ以外宛てなら前の問いを消す）

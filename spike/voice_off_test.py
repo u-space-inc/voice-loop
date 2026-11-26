@@ -74,7 +74,7 @@ class Sock:
         return {"type": "websocket.disconnect"}
 
     def types(self):
-        return [t["type"] for t in self.texts]
+        return [t["type"] for t in self.texts if t["type"] != "stopgen"]  # 名乗りへの返事の停止の回数は数えない（並びの確かめに関わらない）
 
 
 def client(voice=True, speaker=None):

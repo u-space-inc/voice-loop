@@ -967,6 +967,92 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             att_go20.set()
             s.attachment_lines, s.list_agents = real_attach20, real_agents
         check("本体が送る前に断った知らせも、切れてつなぎ直した画面に届ける", any("見つかりません" in x for t, x in got20), True)
+        # 停止の回数は、名乗りの返事と、どこかの画面の停止のたびに全部の画面へ届く。画面が最新の停止を知らずに始めた発言は（通信が遅れて
+        # 停止のあとに届いても）停止をまたいだものとして扱い、知っていれば、ふつうに受け付ける（codex-review 6b2ddfe の P1）
+        def recv_type(ws, kind, limit=30):
+            for _ in range(limit):
+                m = json.loads(ws.receive_text())
+                if m.get("type") == kind:
+                    return m
+            return None
+
+        hm.ask_hermes = lambda text: "わかりました"
+        with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+            wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winstopgen001"}))
+            g_hello = (recv_type(wa, "stopgen") or {}).get("n")
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+                wb.send_text(json.dumps({"type": "stop", "n": 11}))
+                receive_until(wb, "stopped")
+            g_after = (recv_type(wa, "stopgen") or {}).get("n")
+            wa.send_text(json.dumps({"type": "begin", "b": 1, "pane": hm.HERMES_PANE, "hid": -1, "sg": g_hello}))  # 停止を知る前に始めた（遅れて届いた）
+            wa.send_text(json.dumps({"type": "text", "text": "はい（停止を知る前に始めた）", "pane": hm.HERMES_PANE, "speaker": 0, "hid": -1, "begin": 1}))
+            stale = row_of("はい（停止を知る前に始めた）")
+            stale_cur = s.HUB.current(stale[0]) if stale else None
+            wa.send_text(json.dumps({"type": "begin", "b": 2, "pane": hm.HERMES_PANE, "hid": -1, "sg": g_after}))  # 停止を知ってから始めた
+            wa.send_text(json.dumps({"type": "text", "text": "はい（停止を知ってから始めた）", "pane": hm.HERMES_PANE, "speaker": 0, "hid": -1, "begin": 2}))
+            fresh = row_of("はい（停止を知ってから始めた）")
+            fresh_cur = s.HUB.current(fresh[0]) if fresh else None
+        check("停止の回数は名乗りの返事と別の画面の停止で届き、最新の停止を知らずに始めた発言は使えず、知ってから始めた発言は使える",
+              (type(g_hello) is int, g_after == (g_hello or 0) + 1, stale_cur, fresh_cur), (True, True, False, True))
+        # 話し始めるときの再生だけの停止（scope=talk）では、画面に届いていた問いを聞いた文から消さない（その問いへの声の「はい」を聞き直しにしない。codex-review 6b2ddfe）
+        with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+            wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "wintalkstop01"}))
+            g0 = (recv_type(wa, "stopgen") or {}).get("n")
+            hm.ask_hermes = lambda text: Q
+            wa.send_text(json.dumps({"type": "begin", "b": 1, "pane": hm.HERMES_PANE, "hid": -1, "sg": g0}))
+            wa.send_text(json.dumps({"type": "text", "text": "問いを聞く（再生だけの停止）", "pane": hm.HERMES_PANE, "speaker": 0, "hid": -1, "begin": 1}))
+            q_reply = None
+            for _ in range(40):
+                m = json.loads(wa.receive_text())
+                if m.get("type") == "reply" and m.get("text") == Q:
+                    q_reply = m
+                    break
+            time.sleep(0.2)
+            hm.ask_hermes = lambda text: "わかりました"
+            wa.send_text(json.dumps({"type": "stop", "scope": "talk"}))  # 読み上げの途中で話し始めた
+            recv_type(wa, "stopped")
+            hid_q = (q_reply or {}).get("hid", -1)
+            wa.send_text(json.dumps({"type": "begin", "b": 2, "pane": hm.HERMES_PANE, "hid": hid_q, "sg": g0}))
+            wa.send_text(json.dumps({"type": "text", "text": "はい（再生だけ止めて答えた）", "pane": hm.HERMES_PANE, "speaker": 0, "hid": hid_q, "begin": 2}))
+            talk_row = row_of("はい（再生だけ止めて答えた）")
+        check("話し始めるときの再生だけの停止では、届いていた問いを聞いた文から消さない", talk_row[3] if talk_row else None, Q)
+        # 添付の用意の間に別の画面で止めたら、「送っていません」のあとに「送りました」と出さない（codex-review 6b2ddfe）
+        check("（前提）前の試験の直接の指示が片づいている（添付の用意の間の停止）", wait_idle(), True)
+        att_go21, att_in21 = threading.Event(), threading.Event()
+
+        async def held_attach21(ids, talker, pane=""):
+            att_in21.set()
+            await asyncio.to_thread(att_go21.wait, 5)
+            return "", ""
+
+        real_attach21 = s.attachment_lines
+        s.attachment_lines = held_attach21
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        seen21 = []
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winattstop01"}))
+                g1 = (recv_type(wa, "stopgen") or {}).get("n")
+                wa.send_text(json.dumps({"type": "begin", "b": 1, "pane": "w9:p1", "hid": -1, "sg": g1}))
+                wa.send_text(json.dumps({"type": "text", "text": "添付の用意の間に止める指示", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 1}))
+                check("（前提）添付の用意で止めている", att_in21.wait(5), True)
+                with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+                    wb.send_text(json.dumps({"type": "stop", "n": 12}))
+                    receive_until(wb, "stopped")
+                att_go21.set()
+                time.sleep(0.5)
+                wa.send_text(json.dumps({"type": "stop", "n": 13}))  # 読み終わりの目印
+                for _ in range(40):
+                    m = json.loads(wa.receive_text())
+                    seen21.append((m.get("type"), m.get("text", "")))
+                    if m.get("type") == "stopped":
+                        break
+        finally:
+            att_go21.set()
+            s.attachment_lines, s.list_agents = real_attach21, real_agents
+        i21 = next((i for i, (t, x) in enumerate(seen21) if "送っていません" in x), None)
+        check("添付の用意の間に止めたら、「送っていません」のあとに「送りました」と出さない",
+              (i21 is not None, i21 is not None and any("エージェントに送りました" in x for t, x in seen21[i21:])), (True, False))
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]

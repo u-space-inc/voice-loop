@@ -2133,7 +2133,7 @@ function connect() {
   const sock = ws, giveUp = setTimeout(() => { if (sock.readyState === 0) sock.close(); }, 5000); // 通信が止まって待たされるときは見切る
   ws.onopen = () => {
     clearTimeout(giveUp); $('conn').classList.add('on'); setStatus('準備できました'); face('idle'); applyTarget(); hello(); clog('connected ' + navigator.userAgent);
-    heardId = -1; // つなぎ直したら、前の接続の返事の番号は使わない
+    heardId = -1; stopGen = -1; // つなぎ直したら、前の接続の返事の番号・停止の回数は使わない（名乗りの返事で取り直す）
     if (away || !agentsSig || !$('speaker').options.length || pendingTopic) { away = false; catchUp(); } // 起動時に読めなかったもの（開けなかった件も）を取り直す
   };
   ws.onclose = () => {
@@ -2163,6 +2163,7 @@ function connect() {
     else if (m.type === 'error') { stopPlayback(); face('idle'); sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); setStatus(''); if (FACE) $('faceCap').textContent = '⚠ ' + m.text; if (m.gone) { agentsSig = ''; loadAgents(); } } // 相手が消えた・入れ替わった → 一覧を取り直す
     else if (m.type === 'notice') { sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); } // ハブから報告を受け取れなかった等（いまの話し相手とは別の知らせ）
     else if (m.type === 'done') { serverDone = true; turnDone = true; if (!playing && !queue.length) finishSpeaking(); loadAgents(); }
+    else if (m.type === 'stopgen') { if (typeof m.n === 'number') stopGen = m.n; } // どこかの画面で止めた（発言を始めた合図に付ける）
     else if (m.type === 'stopped') { // 届いた印は、本体が止めたと返してから（codex-review 44b3c2e）
       // scope=talk: 話し始めるときに再生だけを止めた返事（表示は変えない）。n: 停止の番号。いまの発言を始める前の停止への返事なら、
       // 返事が遅れて届いても「止めました」と出さず、顔も再生も変えない（新しい発言は止めていない。codex-review 6096e1d・dad00a5・f73d1be）
@@ -2200,8 +2201,11 @@ let utterStops = 0; // いまの発言（録音・文字）を始めたときの
 // 発言を始めた（送るを押した・録り終えた）合図。本体はそのときの停止の回数を控え、発言が届くまで（添付を送る間・声の本体を用意する間）に
 // どこかの画面で止めていたら、その発言では承認に答えない・閉じない（ハブ以外への指示なら送らない。codex-review c72fbbe）
 let beginSeq = 0;
+let voiceSending = false; // 録り終えた声を本体に送っている途中（文字の発言は、送り終えてから）
 // pane は宛先、hid は受け取っていた返事の番号（本体は合図を受けたときに受け付け、聞いた文を引き渡す）
-function sendBegin(pane, hid) { const b = ++beginSeq; try { if (linked()) ws.send(JSON.stringify({ type: 'begin', b, pane, hid })); } catch {} return b; }
+// sg は、本体から知らされた最新の停止の回数（知らなければ -1。本体は、最新の停止を知らずに始めた発言を、停止をまたいだものとして扱う）
+let stopGen = -1;
+function sendBegin(pane, hid) { const b = ++beginSeq; try { if (linked()) ws.send(JSON.stringify({ type: 'begin', b, pane, hid, sg: stopGen })); } catch {} return b; }
 async function startRec() { if (recPending) return; recPending = true; try { return await startRecInner(); } finally { recPending = false; } } // 始めるのは 1 つずつ
 async function startRecInner() {
   const stops0 = recStops, face0 = faceOn, hid0 = heardId, ws0 = ws; // hid0: 録音を始めたときに受け取っていた返事の番号（その接続での番号）
@@ -2236,24 +2240,29 @@ async function startRecInner() {
     sendTurnStart();
     if (!$('agent').value) { setStatus('話し相手を選んでください'); return; }
     if (attachJob) { setStatus('添付を送っている途中なので、話した内容は送っていません'); return; }  // 前の発言の添付を送っている間は重ねない
-    // 宛先・返信先・添付は話し終えた時点で固定する（添付を置いている間に相手や欄が変わっても、ずらさない）
-    cancelTopic();
-    const rfNow = replyFields(); // 返信先は、録音を始めたときと同じものが選ばれているときだけ付ける（途中で選び直したら、ふつうの発言として送る）
-    const rf = rfNow.reply_at === rf0.reply_at && rfNow.reply_item === rf0.reply_item ? rfNow : {};
-    const pane = $('agent').value, key = curKey(), list = attachFiles.slice();
-    const files = await sendAttach(pane, list, '話した内容');
-    if (!files) return;
-    // 声の本体は先に用意し、止めていない・顔の表示が同じ・つながっているのを確かめてから、頭と本体を待たずに続けて送る
-    // （頭と本体の間に「停止」や次の録音の頭が入ると、止めた声が次の発言として聞き取られる。a2a 3752b7a5 の 3 回目）
-    const audio = await blob.arrayBuffer();
-    if (recStops !== stops0) return; // 用意する間に止めた（「止めました」は本体の返事で出る）
-    if (faceOn !== face0) { setStatus('顔の表示を切り替えたので、話した内容は送っていません'); return; } // 本体は頭の時点の名乗りで発言元を決める
-    if (!linked()) { setStatus(UNREACHABLE); return; }
-    ws.send(JSON.stringify({ type: 'turn', pane, key, speaker: $('speaker').value, filename: 'rec.' + ext, hid: ws === ws0 ? hid0 : -1, begin: b0, ...rf, ...(files.length ? { attachments: files } : {}) }));
-    ws.send(audio);
-    if (sameTarget(rf)) setReplyTarget(null);
-    dropSent(list);
-    setStatus('聞き取り中…'); face('think');
+    // 声を送り終えるまでは、文字の発言を送らない（声の本体を用意する間に送った新しい文字の指示を、あとから届く古い声が取り消さないように。
+    // 発言は本体に届いた順で扱う。codex-review 6b2ddfe）
+    voiceSending = true;
+    try {
+      // 宛先・返信先・添付は話し終えた時点で固定する（添付を置いている間に相手や欄が変わっても、ずらさない）
+      cancelTopic();
+      const rfNow = replyFields(); // 返信先は、録音を始めたときと同じものが選ばれているときだけ付ける（途中で選び直したら、ふつうの発言として送る）
+      const rf = rfNow.reply_at === rf0.reply_at && rfNow.reply_item === rf0.reply_item ? rfNow : {};
+      const pane = $('agent').value, key = curKey(), list = attachFiles.slice();
+      const files = await sendAttach(pane, list, '話した内容');
+      if (!files) return;
+      // 声の本体は先に用意し、止めていない・顔の表示が同じ・つながっているのを確かめてから、頭と本体を待たずに続けて送る
+      // （頭と本体の間に「停止」や次の録音の頭が入ると、止めた声が次の発言として聞き取られる。a2a 3752b7a5 の 3 回目）
+      const audio = await blob.arrayBuffer();
+      if (recStops !== stops0) return; // 用意する間に止めた（「止めました」は本体の返事で出る）
+      if (faceOn !== face0) { setStatus('顔の表示を切り替えたので、話した内容は送っていません'); return; } // 本体は頭の時点の名乗りで発言元を決める
+      if (!linked()) { setStatus(UNREACHABLE); return; }
+      ws.send(JSON.stringify({ type: 'turn', pane, key, speaker: $('speaker').value, filename: 'rec.' + ext, hid: ws === ws0 ? hid0 : -1, begin: b0, ...rf, ...(files.length ? { attachments: files } : {}) }));
+      ws.send(audio);
+      if (sameTarget(rf)) setReplyTarget(null);
+      dropSent(list);
+      setStatus('聞き取り中…'); face('think');
+    } finally { voiceSending = false; }
   };
   rec.start(); face('listen');
   $('talk').classList.add('rec'); $('talk').textContent = '話してください（タップで送る）';
@@ -2284,6 +2293,7 @@ $('typedForm').onsubmit = async e => {
   // Enter の requestSubmit() はボタンの無効を見ないので、ここでボタンと同じ可否（applyTarget）を確かめる。添付だけでも送れる
   // 添付を送っている間は、重ねて送らない（Enter・「送る」を続けて押しても 1 回だけ）
   e.preventDefault(); if (attachJob) return;
+  if (voiceSending) { setStatus('話した内容を送っています。送り終えてから送ってください'); return; } // 声を送り終える前に文字を重ねない（打った文は欄に残す）
   const t = $('typed').value.trim(); if ((!t && !attachFiles.length && !itemOnly()) || $('send').disabled || !$('agent').value || !linked()) return;
   // 宛先・返信先（とその件の名前）・添付は押した時点で固定する。待つ間に欄が変わっても、ここで決めたものだけを送る
   cancelTopic();
