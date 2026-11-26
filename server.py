@@ -173,11 +173,39 @@ def herdr(*args: str, timeout: float | None = 60) -> dict:
         p = subprocess.run(["herdr", *args], capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as e:
         return {"raw": str(e), "code": -1}
-    out = p.stdout.strip() or p.stderr.strip()
+    return _herdr_out(p.stdout, p.stderr, p.returncode)
+
+
+def _herdr_out(stdout: str, stderr: str, code: int) -> dict:
+    out = (stdout or "").strip() or (stderr or "").strip()
     try:
         return json.loads(out)
     except json.JSONDecodeError:
-        return {"raw": out, "code": p.returncode}
+        return {"raw": out, "code": code}
+
+
+_HERDR = herdr  # 本物の herdr（_if_still が、確かめと送り始めを停止と直列にするのに使う。試験の差し替えでは使わない）
+# 停止の確定（止めた番号を進める・送る前の指示を取り消す）と、操作の送り始め（承認のキー・閉じる・ハブ以外への指示）を直列にする鍵。
+# 送り始めたら放す（返事を待つ間は持たない）。「止めました」と出たあとに、止めた発言での操作を始めない（codex-review 635eea0 の P1）
+COMMIT_LOCK = threading.Lock()
+
+
+def _herdr_gated(still, args: tuple, timeout: float | None) -> dict | None:
+    """鍵の中で確かめ、herdr を起動したら鍵を放して、終わるのを待つ。確かめが False なら起動せずに None。"""
+    with COMMIT_LOCK:
+        if not still():
+            return None
+        try:
+            proc = subprocess.Popen(["herdr", *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        except OSError as e:
+            return {"raw": str(e), "code": -1}
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        proc.kill()
+        proc.communicate()
+        return {"raw": str(e), "code": -1}
+    return _herdr_out(out, err, proc.returncode)
 
 
 def read_screen(pane: str, lines: int) -> str:
@@ -851,7 +879,13 @@ def settled_now() -> bool:
 def _if_still(still, fn, *args):
     """ワーカーのスレッドの中で、操作を始める直前にもう一度確かめてから fn を呼ぶ（スレッドの空きを待つ間に止めた・次の発言をしたら、
     呼ばずに None を返す。codex-review bcd26ac）。still が None なら確かめない。"""
-    if still is not None and not still():
+    base = fn.func if isinstance(fn, functools.partial) else fn
+    if still is not None and base is _HERDR:  # 本物の herdr: 確かめと起動を、停止の確定と同じ鍵の中で行う
+        timeout = fn.keywords.get("timeout", 60) if isinstance(fn, functools.partial) else 60
+        return _herdr_gated(still, args, timeout)
+    with COMMIT_LOCK:
+        ok = still is None or still()
+    if not ok:
         return None
     return fn(*args)
 
@@ -3754,13 +3788,17 @@ async def ws(sock: WebSocket):
                     if pending.get("type") == "turn":  # 声の発言の頭のあと、声の本体の前に止めた。あとから届く声は聞き取らずに捨てる（「止めました」のあとに送らない。codex-review 7793a44）
                         pending = {"type": "dropped"}
                     cancel.set()
-                    if talk:
+                    if talk:  # 話し始めるときの再生だけの停止。この画面の送る前の指示だけ取り消し、届いていた返事（聞いた文）は消さない（codex-review 6b2ddfe）
                         drop_direct()
                     else:
-                        STOP_GEN["n"] += 1
-                        direct_turn["d"] = None
-                        for pend in list(DIRECT_PENDING.values()):  # この画面とほかの画面（切れた画面も）の、送る前のハブ以外への指示を取り消し、それぞれに知らせる
-                            drop_pending(pend)
+                        # 停止の確定は、操作の送り始めと同じ鍵の中で行う（送り始めた操作は止めた前のもの。ここから先は、止めた発言での操作を始めない）
+                        with COMMIT_LOCK:
+                            STOP_GEN["n"] += 1
+                            direct_turn["d"] = None
+                            for pend in list(DIRECT_PENDING.values()):  # この画面とほかの画面（切れた画面も）の、送る前のハブ以外への指示を取り消し、それぞれに知らせる
+                                drop_pending(pend)
+                            for t in TALKERS.values():  # 利用者は、読まれていた返事・まだ届いていない返事を聞いていない（承認に答える・閉じるの守り）
+                                t.stopped()
                         # 停止の回数を全部の画面に知らせる（画面は発言を始めた合図に付けて送る。最新の停止を知らずに始めた発言は、通信が遅れて停止の
                         # あとに届いても、停止をまたいだものとして見分ける。codex-review 6b2ddfe の P1）。送るのは別の仕事で（遅い画面に待たされない）
                         task = asyncio.create_task(tell_stop_gen(STOP_GEN["n"]))
@@ -3770,9 +3808,6 @@ async def ws(sock: WebSocket):
                         current.cancel()
                     for ev in list(REPORT_SPEECH):  # 報告の読み上げも止める
                         ev.set()
-                    if not talk:  # 話し始めるときの再生だけの停止では、届いていた返事（聞いた文）は消さない（画面に出ている確認への「はい」を聞き直しにしない。codex-review 6b2ddfe）
-                        for t in TALKERS.values():  # 利用者は、読まれていた返事・まだ届いていない返事を聞いていない（承認に答える・閉じるの守り）
-                            t.stopped()
                     n = d.get("n")  # 画面の停止の番号。返事に付けて返す（画面は、次の発言を始めたあとに届いた古い返事で表示を変えない）
                     await send(type="stopped", **({"scope": "talk"} if talk else {}), **({"n": n} if isinstance(n, int) and not isinstance(n, bool) else {}))
                     continue

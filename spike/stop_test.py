@@ -54,6 +54,23 @@ def check(name, got, want):
 WAITED = ("送っていません", "回答を読めませんでした", "送信できませんでした")  # 試験が待つ知らせ（読み上げの失敗などのほかのエラーでは止まらない）
 
 
+def read_notice(ws, pred, n0=40, tries=5):
+    """名乗ったあとの控えた知らせ（別の仕事で送る）を待つ。止めた返事を区切りに読み、目的の知らせが無ければ、少し待って止め直して読み続ける
+    （名乗りへの返事は、そのあとの停止への返事より遅れて届くことがある。codex-review 635eea0）。読んだ (種類, 文) の一覧を返す。"""
+    got = []
+    for k in range(tries):
+        ws.send_text(json.dumps({"type": "stop", "n": n0 + k}))
+        for _ in range(30):
+            m = json.loads(ws.receive_text())
+            got.append((m.get("type"), m.get("text", "")))
+            if m.get("type") == "stopped":
+                break
+        if any(pred(t, x) for t, x in got):
+            break
+        time.sleep(0.2)
+    return got
+
+
 def begin_and_wait(ws, payload, limit=5.0):
     """合図（begin）を送り、本体が受けた（受け付けの番号が進んだ）のを待つ（別の画面の停止と順が入れ替わらないように。codex-review bb7be2c の P3）。"""
     g0 = hm.HERMES_GEN["n"]
@@ -925,12 +942,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         got19 = []
         with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa2:
             wa2.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winrequeue01"}))
-            wa2.send_text(json.dumps({"type": "stop", "n": 9}))
-            for _ in range(30):
-                m = json.loads(wa2.receive_text())
-                got19.append((m.get("type"), m.get("text", "")))
-                if m.get("type") == "stopped":
-                    break
+            got19 = read_notice(wa2, lambda t, x: x.endswith("控えに戻す試験"), 60)
         check("控えた知らせを名乗った直後の切断で送れなかったら控えに戻し、次に名乗ったときに届ける",
               (failed19["n"], any(x.endswith("控えに戻す試験") for t, x in got19)), (1, True))
         # 本体が送る前に断った（相手のセッションが見つからない）知らせも、窓の印で届ける（断る前に画面が切れても、つなぎ直した画面に。a2a 6604a50a の 5 回目）
@@ -957,12 +969,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             time.sleep(0.5)  # 本体が断る（画面はつながっていないので控える）
             with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa2:
                 wa2.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winrefused001"}))
-                wa2.send_text(json.dumps({"type": "stop", "n": 10}))
-                for _ in range(30):
-                    m = json.loads(wa2.receive_text())
-                    got20.append((m.get("type"), m.get("text", "")))
-                    if m.get("type") == "stopped":
-                        break
+                got20 = read_notice(wa2, lambda t, x: "見つかりません" in x, 70)
         finally:
             att_go20.set()
             s.attachment_lines, s.list_agents = real_attach20, real_agents
@@ -1148,6 +1155,42 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         s.PANE_LOCKS.clear()
         s.ACCEPT_LOCKS.clear()
         check("名乗りへの返事の送りが詰まっていても、そのあと届いた停止を読む", slow.during, [True])
+        # 停止の確定は、操作の送り始め（確かめてから herdr を起動するまで）と同じ鍵の中で行う。送り始めの途中なら、停止はそれを待ってから番号を進める
+        # （「止めました」と出たあとに、止めた発言での操作を始めない。codex-review 635eea0 の P1）
+        g_lock = s.STOP_GEN["n"]
+        s.COMMIT_LOCK.acquire()  # 送り始めの途中
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wl:
+                wl.send_text(json.dumps({"type": "stop", "n": 91}))
+                time.sleep(0.4)
+                during_lock = s.STOP_GEN["n"] != g_lock
+                s.COMMIT_LOCK.release()
+                receive_until(wl, "stopped")
+                after_lock = s.STOP_GEN["n"] != g_lock
+        finally:
+            if s.COMMIT_LOCK.locked():
+                s.COMMIT_LOCK.release()
+        check("送り始めの途中の停止は、送り始めが終わってから番号を進める", (during_lock, after_lock), (False, True))
+        # 本物の herdr の道: 確かめと起動を、鍵の中で行い、起動したら放す（本物の herdr は起動しない。起動の道具を差し替える）
+        started = []
+
+        class FakeProc:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return '{"result": {}}', ""
+
+        real_popen, real_run = s.subprocess.Popen, s.subprocess.run
+        s.subprocess.Popen = lambda *a, **k: (started.append(s.COMMIT_LOCK.locked()), FakeProc())[1]
+        s.subprocess.run = lambda *a, **k: (started.append("run"), type("P", (), {"stdout": '{"result": {}}', "stderr": "", "returncode": 0})())[1]
+        try:
+            r_ok = s._if_still(lambda: True, s._HERDR, "agent", "send-keys", "w9:p1", "1")
+            r_no = s._if_still(lambda: False, s._HERDR, "agent", "send-keys", "w9:p1", "1")
+            r_ask = s._if_still(lambda: True, functools.partial(s._HERDR, timeout=610), "agent", "prompt", "w9:p1", "x")
+        finally:
+            s.subprocess.Popen, s.subprocess.run = real_popen, real_run
+        check("本物の herdr は、鍵の中で確かめて起動し、起動したら鍵を放す（確かめが False なら起動しない）",
+              (started, "result" in r_ok, r_no, "result" in r_ask, s.COMMIT_LOCK.locked()), ([True, True], True, None, True, False))
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
