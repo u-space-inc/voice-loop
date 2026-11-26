@@ -456,6 +456,14 @@ with sync_playwright() as pw:
         got = pg.evaluate("[window.__turn.reply_at ?? null, typeof window.__turn.begin]")
         pg.evaluate("setReplyTarget(null); curAgent().hub = window.__hubSaved")
         return began, got
+    # 再生中に録音を始めたら、再生だけを止める合図を、録音を始めた合図より先に送る（あとだと、この録音の受け付けまで失効させる。codex-review bb7be2c）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__types.length = 0; queue.push(new ArrayBuffer(8)); startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    order = pg.evaluate("[window.__types.indexOf('stop'), window.__types.indexOf('begin')]")
+    pg.evaluate("document.getElementById('stop').click()")
+    pg.wait_for_function("rec.state === 'inactive'", timeout=5000)
+    check("録音: 再生中に録音を始めたら、再生だけを止める合図を、録音を始めた合図より先に送る", order[0] >= 0 and order[0] < order[1], True)
     picked_before = reply_rec("{ at: 111.5, about: '前の報告' }", "{ at: 111.5, about: '前の報告' }")
     picked_during = reply_rec("null", "{ at: 222.5, about: '録音の途中に届いた報告' }")
     check("録音: 録音を始めたときに合図を送り、返信先は始める前に選んだものだけ付ける（途中で選んだ返信先は付けない）",

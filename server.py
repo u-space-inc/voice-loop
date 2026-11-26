@@ -3582,8 +3582,8 @@ async def ws(sock: WebSocket):
             admitted = admit_now(seen)  # 相手がハブでなくても進める（別のセッションに話しかけ直したら、前のハブの往復の許可は失効。codex-review bcd26ac）
             left_hub(pane)
         if crossed:  # 発言を始めた（送るを押した・録り終えた）あと、届くまでに、どこかの画面で止めた。発言は届けるが、承認に答える・閉じるには使わせない
-            for t in TALKERS.values():  # （受け付けの番号を進めて、この発言をもういまの発言でなくする。codex-review c72fbbe）
-                t.stopped()
+            # この発言だけを、いまの発言にならない受け付けの番号にする（ハブ全体を止め直すと、ほかの画面のあとの発言まで失効させる。codex-review c72fbbe・bb7be2c）
+            admitted = -1
         if via is None:
             via = "device" if client.kind == "device" else ""
         talker = TALKERS.get(pane)

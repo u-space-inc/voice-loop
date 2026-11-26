@@ -54,6 +54,16 @@ def check(name, got, want):
 WAITED = ("送っていません", "回答を読めませんでした", "送信できませんでした")  # 試験が待つ知らせ（読み上げの失敗などのほかのエラーでは止まらない）
 
 
+def begin_and_wait(ws, payload, limit=5.0):
+    """合図（begin）を送り、本体が受けた（受け付けの番号が進んだ）のを待つ（別の画面の停止と順が入れ替わらないように。codex-review bb7be2c の P3）。"""
+    g0 = hm.HERMES_GEN["n"]
+    ws.send_text(json.dumps(payload))
+    end = time.time() + limit
+    while time.time() < end and hm.HERMES_GEN["n"] == g0:
+        time.sleep(0.02)
+    return hm.HERMES_GEN["n"] != g0
+
+
 def ai_rows(turn):
     p = Path(hm.HERMES_LOG)
     return [d["text"] for d in (json.loads(x) for x in p.read_text().splitlines() if x.strip()) if d.get("role") == "ai" and d.get("turn") == turn]
@@ -594,7 +604,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         w.send_text(json.dumps({"type": "text", "text": "はい（またがない）", "pane": hm.HERMES_PANE, "speaker": 0, "hid": -1, "begin": 901}))
         plain_row = row_of("はい（またがない）")
         plain_cur = s.HUB.current(plain_row[0]) if plain_row else None
-        w.send_text(json.dumps({"type": "begin", "b": 902}))
+        check("（前提）合図を本体が受けた（902）", begin_and_wait(w, {"type": "begin", "b": 902}), True)
         with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
             wb.send_text(json.dumps({"type": "stop", "n": 1}))
             receive_until(wb, "stopped")
@@ -602,13 +612,26 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         crossed_row = row_of("はい（またいだ）")
         check("発言を始めたあと届くまでに別の画面で止めたら、その発言はハブに届くが、もういまの発言ではない（止めていなければいまの発言）",
               (plain_cur, crossed_row is not None, s.HUB.current(crossed_row[0]) if crossed_row else None), (True, True, False))
+        # 停止をまたいだ発言は、その発言だけを使えなくする（ハブ全体を止め直して、ほかの画面の停止のあとの発言まで失効させない。codex-review bb7be2c）
+        check("（前提）合図を本体が受けた（905）", begin_and_wait(w, {"type": "begin", "b": 905}), True)
+        with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+            wb.send_text(json.dumps({"type": "stop", "n": 1}))
+            receive_until(wb, "stopped")
+        with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wc:
+            check("（前提）停止のあとの別の画面の合図を本体が受けた", begin_and_wait(wc, {"type": "begin", "b": 1}), True)
+            wc.send_text(json.dumps({"type": "text", "text": "はい（停止のあとの別の画面）", "pane": hm.HERMES_PANE, "speaker": 0, "hid": -1, "begin": 1}))
+            later_row = row_of("はい（停止のあとの別の画面）")
+            w.send_text(json.dumps({"type": "text", "text": "はい（またいだ古い発言）", "pane": hm.HERMES_PANE, "speaker": 0, "hid": -1, "begin": 905}))
+            old_row = row_of("はい（またいだ古い発言）")
+            check("停止をまたいだ古い発言は使えず、停止のあとの別の画面の発言は失効させない",
+                  (s.HUB.current(old_row[0]) if old_row else None, s.HUB.current(later_row[0]) if later_row else None), (False, True))
         prompts10 = []
         s.herdr = lambda *a, **k: (prompts10.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
         s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
         s.jsonl_path = lambda a: None
         seen10 = []
         try:
-            w.send_text(json.dumps({"type": "begin", "b": 903}))
+            check("（前提）合図を本体が受けた（903）", begin_and_wait(w, {"type": "begin", "b": 903}), True)
             with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
                 wb.send_text(json.dumps({"type": "stop", "n": 1}))
                 receive_until(wb, "stopped")
@@ -646,8 +669,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             hm.HEARD_ID["n"] = 777  # 画面が受け取った問いの番号
             if other_pane is not None:
                 with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
-                    wb.send_text(json.dumps({"type": "begin", "b": 1, "pane": other_pane, "hid": -1}))  # 別の画面で送るを押した（添付を送っている）
-                    time.sleep(0.2)
+                    begin_and_wait(wb, {"type": "begin", "b": 1, "pane": other_pane, "hid": -1})  # 別の画面で送るを押した（添付を送っている）
             b = 920 + len(label)
             w.send_text(json.dumps({"type": "begin", "b": b, "pane": hm.HERMES_PANE, "hid": 777}))
             w.send_text(json.dumps({"type": "text", "text": f"はい（{label}）", "pane": hm.HERMES_PANE, "speaker": 0, "hid": 777, "begin": b}))
