@@ -3677,9 +3677,13 @@ async def ws(sock: WebSocket):
                     # visible を送らない古い画面は、見えていないものとして扱う（通知を止めない）。機械は見えている画面に数えない
                     client.visible = d.get("visible") is True and client.kind == "screen"
                     client.seen = time.time()
-                    for note in UNSENT_NOTICES.pop(win_of(client), []):  # この窓に届けられずに控えていた、指示の行方の知らせ
-                        with contextlib.suppress(Exception):
+                    notes = UNSENT_NOTICES.pop(win_of(client), [])  # この窓に届けられずに控えていた、指示の行方の知らせ
+                    for i, note in enumerate(notes):
+                        try:
                             await send(**note)
+                        except Exception:  # 名乗った直後にまた切れた。送れなかった分は控えに戻す（次に名乗ったときに届ける。a2a 6604a50a の 4 回目）
+                            UNSENT_NOTICES.setdefault(win_of(client), [])[:0] = notes[i:]
+                            break
                     continue
                 if d["type"] == "stop":
                     # scope=talk: 話し始めるときに、画面が再生だけを止めた（この画面の分だけ。ほかの画面の送る前の指示は取り消さない。codex-review dad00a5）

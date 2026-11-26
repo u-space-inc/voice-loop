@@ -883,6 +883,34 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             gate18.set()
             s._if_still, s.herdr, s.list_agents, s.jsonl_path = real_if, real_herdr, real_agents, real_jsonl
         check("切れてつなぎ直した画面にも、別の画面の停止で取り消した指示の知らせが届く", (prompts18, any("送っていません" in x for t, x in got18)), ([], True))
+        # 控えた知らせを、名乗った直後にまた切れて送れなかったら、控えに戻す（次に名乗ったときに届ける。a2a 6604a50a の 4 回目）
+        s.UNSENT_NOTICES["winrequeue01"] = [{"type": "error", "text": "送信できませんでした: 控えに戻す試験"}]
+        real_send19, failed19 = s.Client.send, {"n": 0}
+
+        async def failing_send19(self, **msg):
+            if msg.get("text", "").endswith("控えに戻す試験") and not failed19["n"]:
+                failed19["n"] += 1
+                raise RuntimeError("名乗った直後に切れた")
+            return await real_send19(self, **msg)
+
+        s.Client.send = failing_send19  # 画面の流れは、つないだときの send を控えるので、差し替えてから新しくつなぐ
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winrequeue01"}))
+                time.sleep(0.3)
+        finally:
+            s.Client.send = real_send19
+        got19 = []
+        with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa2:
+            wa2.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winrequeue01"}))
+            wa2.send_text(json.dumps({"type": "stop", "n": 9}))
+            for _ in range(30):
+                m = json.loads(wa2.receive_text())
+                got19.append((m.get("type"), m.get("text", "")))
+                if m.get("type") == "stopped":
+                    break
+        check("控えた知らせを名乗った直後の切断で送れなかったら控えに戻し、次に名乗ったときに届ける",
+              (failed19["n"], any(x.endswith("控えに戻す試験") for t, x in got19)), (1, True))
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
