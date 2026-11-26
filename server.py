@@ -190,8 +190,13 @@ _HERDR = herdr  # 本物の herdr（_if_still が、確かめと送り始めを�
 COMMIT_LOCK = threading.Lock()  # 鍵の中で受け付け・停止・送り始めを呼び合わない（入れ子にしない）
 
 
-def _herdr_gated(still, args: tuple, timeout: float | None) -> dict | None:
-    """鍵の中で確かめ、herdr を起動したら鍵を放して、終わるのを待つ。確かめが False なら起動せずに None。"""
+HELD_TIMEOUT = 15  # 鍵を持ったまま待つ操作（承認のキー・閉じる）の上限（秒）。ふつうはすぐ返る
+
+
+def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False) -> dict | None:
+    """鍵の中で確かめて herdr を起動する。確かめが False なら起動せずに None。hold なら、herdr が返る（操作を受け取って終える）まで鍵を持つ
+    （承認のキー・閉じる。起動しただけでは herdr がまだ受け取っていないことがあり、その間に「止めました」と出たあとで届かないように。
+    codex-review b7bf623 の P1）。hold でなければ（ハブ以外への指示。返事を待つまで長い）、起動したら鍵を放す（画面には先に「送りました」と出ている）。"""
     with COMMIT_LOCK:
         if not still():
             return None
@@ -199,6 +204,12 @@ def _herdr_gated(still, args: tuple, timeout: float | None) -> dict | None:
             proc = subprocess.Popen(["herdr", *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         except OSError as e:
             return {"raw": str(e), "code": -1}
+        if hold:
+            return _herdr_wait(proc, min(timeout or HELD_TIMEOUT, HELD_TIMEOUT))
+    return _herdr_wait(proc, timeout)
+
+
+def _herdr_wait(proc, timeout: float | None) -> dict:
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as e:
@@ -883,7 +894,8 @@ def _if_still(still, fn, *args):
     base = fn.func if isinstance(fn, functools.partial) else fn
     if still is not None and base is _HERDR:  # 本物の herdr: 確かめと起動を、停止の確定と同じ鍵の中で行う
         timeout = fn.keywords.get("timeout", 60) if isinstance(fn, functools.partial) else 60
-        return _herdr_gated(still, args, timeout)
+        # 承認のキー・閉じる（すぐ返る操作）は、herdr が返るまで鍵を持つ。返事を待つ指示（agent prompt）は、起動したら放す
+        return _herdr_gated(still, args, timeout, hold=args[:2] != ("agent", "prompt"))
     with COMMIT_LOCK:
         ok = still is None or still()
     if not ok:

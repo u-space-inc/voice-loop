@@ -1200,6 +1200,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             returncode = 0
 
             def communicate(self, timeout=None):
+                started.append(("wait", s.COMMIT_LOCK.locked()))  # 返るのを待つ間も鍵を持っているか
                 return '{"result": {}}', ""
 
         real_popen, real_run = s.subprocess.Popen, s.subprocess.run
@@ -1211,8 +1212,9 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             r_ask = s._if_still(lambda: True, functools.partial(s._HERDR, timeout=610), "agent", "prompt", "w9:p1", "x")
         finally:
             s.subprocess.Popen, s.subprocess.run = real_popen, real_run
-        check("本物の herdr は、鍵の中で確かめて起動し、起動したら鍵を放す（確かめが False なら起動しない）",
-              (started, "result" in r_ok, r_no, "result" in r_ask, s.COMMIT_LOCK.locked()), ([True, True], True, None, True, False))
+        check("本物の herdr は、鍵の中で確かめて起動し、承認のキー・閉じるは返るまで、指示は起動するまで鍵を持つ（確かめが False なら起動しない。codex-review b7bf623）",
+              (started, "result" in r_ok, r_no, "result" in r_ask, s.COMMIT_LOCK.locked()),
+              ([True, ("wait", True), True, ("wait", False)], True, None, True, False))
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
