@@ -1099,6 +1099,13 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             check("同期の合図を返す前に切れた発言では、答え・閉じるを断る", (type(sync2.get("n")) is int, asyncio.run(s.hub_settled())), (True, False))
         finally:
             s.SETTLE_LIMIT = limit0
+        # 録音中（受け付けたあと、往復にする前）に報告が届いたら、録音を始めたときに控えた前の問いは、その発言に引き渡さない（codex-review 2eccfb5 の P1）
+        hm.HERMES_HEARD["text"] = Q
+        hm.HEARD_ID["n"] = 9001  # 画面が受け取っていた返事の番号（試験の中だけの値）
+        g_rep = hm.hermes_admit(hm.HEARD_ID["n"])
+        held_before = hm.HEARD_AT.get(g_rep)
+        asyncio.run(hm.TALKER.report_end("done", "別件の報告です", "proj", True))
+        check("報告をまたいだ発言には、受け付けたときに控えた前の問いを引き渡さない", (held_before, hm.HEARD_AT.get(g_rep, "")), (Q, ""))
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]

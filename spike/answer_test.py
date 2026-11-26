@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 TMP = tempfile.mkdtemp()
@@ -302,10 +303,29 @@ s.SEEN_PROMPT["w9:p1"] = (fp, "t1", "sess-1"); state["sent"].clear(); s.ANSWERED
 sync_got.append(("途中で次の発言", hub("yes").get("reason"), list(state["sent"])))
 s._worker = real_worker
 s.SETTLING.pop(778, None)
+# 同期の待ちは、セッションと問いを読む前（待つ間に問いが進んでも、読むのは返事のあと。codex-review 2eccfb5 の P1）
+s.SETTLE_LIMIT, s.SETTLE_LAST["n"] = 2.0, 779
+late = [threading.Event(), None]
+s.SETTLING[779] = late
+
+
+def came_later():
+    time.sleep(0.2)
+    late[1] = True
+    late[0].set()
+
+
+read_after = []
+s._worker = lambda pane: (read_after.append(late[0].is_set()), real_worker(pane))[1]
+threading.Thread(target=came_later).start()
+s.SEEN_PROMPT["w9:p1"] = (fp, "t1", "sess-1"); state["sent"].clear(); s.ANSWERED.clear(); s._answer_lock = asyncio.Lock()
+sync_got.append(("待ちのあとに読む", hub("yes").get("reason"), list(state["sent"]), read_after[:1]))
+s._worker = real_worker
+s.SETTLING.pop(779, None)
 s.SETTLE_LIMIT, s.SETTLE_LAST["n"] = limit0, -1
 s.ANSWERED.clear()
 check("同期: 返事を待っている・返事の前に切れた発言では答えず、返事が来たら答える",
-      sync_got, [("返事を待っている", "stopped", []), ("返事の前に切れた", "stopped", []), ("返事が来た", None, ["1"]), ("途中で次の発言", "stopped", [])])
+      sync_got, [("返事を待っている", "stopped", []), ("返事の前に切れた", "stopped", []), ("返事が来た", None, ["1"]), ("途中で次の発言", "stopped", []), ("待ちのあとに読む", None, ["1"], [True])])
 
 # セッションの立て直し（key はセッション ID で見分ける）
 AGENT_RE = {**AGENT, "session": "old-session"}

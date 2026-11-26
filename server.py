@@ -833,11 +833,19 @@ SETTLE_LIMIT = 10.0  # 返事を待つ上限（秒）。返らなければ断る
 
 
 async def hub_settled() -> bool:
-    """いまの発言の画面が、同期の合図を返したか（返すまで待つ。上限を超えたら False）。合図を送っていない発言（機械・更新前の画面）は待たない。"""
+    """いまの発言の画面が、同期の合図を返したか（返すまで待つ。上限を超えたら False）。合図を送っていない発言（機械・更新前の画面）は待たない。
+    承認に答える・閉じるは、相手と問いを読む前にこれで待ち（待つ間に相手・問いが入れ替わらないように）、送る直前の確かめでは settled_now で
+    待たずに見る（途中で次の発言が入り、その画面がまだ返していなければ断る）。codex-review 2eccfb5 の P1"""
     v = SETTLING.get(SETTLE_LAST["n"])
     if v is None:
         return True
     return await asyncio.to_thread(v[0].wait, SETTLE_LIMIT) and v[1] is True
+
+
+def settled_now() -> bool:
+    """いまの発言の画面が、同期の合図をもう返したか（待たない）。"""
+    v = SETTLING.get(SETTLE_LAST["n"])
+    return v is None or (v[0].is_set() and v[1] is True)
 
 
 def _if_still(still, fn, *args):
@@ -2801,6 +2809,8 @@ async def _hub_answer(body: dict):
     if REPORTING:
         return JSONResponse({"ok": False, "reason": "reporting"})
     pane, answer, confirmed = str(body.get("pane", "")), str(body.get("answer", "")).strip().lower(), bool(body.get("confirmed"))
+    if not await hub_settled():  # いまの発言の画面が同期の合図を返すまで待つ（相手と問いを読む前に。待つ間に問いが進んでも、読むのはそのあと）
+        return JSONResponse({"ok": False, "reason": "stopped"})
     a = await asyncio.to_thread(_worker, pane)
     if not a:
         return JSONResponse({"ok": False, "reason": f"セッションが見つかりません: {pane}"}, status_code=404)
@@ -2876,8 +2886,8 @@ async def _hub_answer(body: dict):
         return JSONResponse({"ok": False, "reason": "answered"})
     # キーを送る直前に、答えに使う発言のあとに利用者が止めた・次の発言をしていないかを、もう一度確かめる（入口で確かめたあとの読み取りの
     # 待ちの間に止めることがある。ここから送るまで待ちを挟まない。確認の段は、キーを送る直前ごとに確かめる。a2a 30fd5b94 の 3 回目）
-    # その前に、いまの発言の画面が同期の合図を返すのを待つ（返事より前にその画面が送った停止を読み終えてから確かめる）
-    if not await hub_settled() or not hub_current(turn):
+    # 同期の合図は入口で待った。途中で次の発言が入り、その画面がまだ返していなければ断る（ここでは待たない）
+    if not settled_now() or not hub_current(turn):
         return JSONResponse({"ok": False, "reason": "stopped"})
     if key == "confirm":
         prev = ANSWERED.get(pane)
@@ -3270,6 +3280,8 @@ async def hub_close(body: dict):
     if REPORTING:
         return JSONResponse({"ok": False, "reason": "reporting"})
     pane, confirmed = str(body.get("pane", "")), bool(body.get("confirmed"))
+    if confirmed and not await hub_settled():  # いまの発言の画面が同期の合図を返すまで待つ（閉じる相手を読む前に。待つ間に入れ替わっても、読むのはそのあと）
+        return JSONResponse({"ok": False, "reason": "stopped"})
     held = CLOSING.get(pane)
     (now, said), (before, _) = (await asyncio.to_thread(hub_turns, 2) + [(None, "")] * 2)[:2]
     if confirmed and await asyncio.to_thread(hub_via, now) == "device":  # 機械からの発言では閉じない（閉じていいかは画面で答える）
@@ -3290,8 +3302,6 @@ async def hub_close(body: dict):
     if not a.get("session"):
         return JSONResponse({"ok": False, "reason": "unidentified"})
     who, project = (a["cwd"], a["session"]), a["cwd"].rsplit("/", 1)[-1]
-    if confirmed and not await hub_settled():  # いまの発言の画面が同期の合図を返すまで閉じない（その前にその画面が送った停止を読み終えてから確かめる）
-        return JSONResponse({"ok": False, "reason": "stopped"})
     why = "confirm"
     if confirmed and held and held is CLOSING.get(pane) and held[0] == who:
         if held[1] == now:  # 聞いたのと同じ発言の中 = ユーザーはまだ何を閉じるか聞いていない
@@ -3303,7 +3313,7 @@ async def hub_close(body: dict):
                 why = "not_asked"
             elif not consent.affirms(said, "close", project):
                 why = "not_yes"
-            elif not hub_current(now):  # 閉じる直前に、もう一度（読み取りの待ちの間に止めた・次の発言をした。ここから閉じるまで待ちを挟まない）
+            elif not settled_now() or not hub_current(now):  # 閉じる直前に、もう一度（読み取りの待ちの間に止めた・次の発言をした・その画面がまだ同期を返していない。ここから閉じるまで待ちを挟まない）
                 why = "stopped"
             else:
                 del CLOSING[pane]  # 閉じる前に外す（重ねて届いた同じ許可で、二度閉じない）

@@ -99,9 +99,31 @@ s._worker = worker_then_next
 sync_got.append(close(confirmed=True))
 s._worker = real_worker
 s.SETTLING.pop(s.SETTLE_LAST["n"], None)
+# 同期の待ちは、閉じる相手を読む前（待つ間にセッションが入れ替わっても、読むのは返事のあと。codex-review 2eccfb5 の P1）
+s.CLOSED.discard("w9:p1")
+asked()
+say("はい、閉じて")
+s.SETTLE_LIMIT, s.SETTLE_LAST["n"] = 2.0, s.hermes.HERMES_GEN["n"]
+late = [threading.Event(), None]
+s.SETTLING[s.SETTLE_LAST["n"]] = late
+
+
+def came_later():
+    import time
+    time.sleep(0.2)
+    late[1] = True
+    late[0].set()
+
+
+read_after = []
+s._worker = lambda pane: (read_after.append(late[0].is_set()), real_worker(pane))[1]
+threading.Thread(target=came_later).start()
+sync_got.append((*close(confirmed=True), read_after[:1]))
+s._worker = real_worker
+s.SETTLING.pop(s.SETTLE_LAST["n"], None)
 s.SETTLE_LIMIT, s.SETTLE_LAST["n"] = limit0, -1
 check("同期: 返事を待っている・返事の前に切れた発言では閉じず、返事が来たら閉じる。途中で次の発言が入ったら、その返事を待つ",
-      sync_got, [("stopped", []), ("stopped", []), ("ok", ["w9:p1"]), ("stopped", [])])
+      sync_got, [("stopped", []), ("stopped", []), ("ok", ["w9:p1"]), ("stopped", []), ("ok", ["w9:p1"], [True])])
 
 # 相手の位置: 本体が送らずに断った「はい」（添付の形・宛先・返信先が無い）を、乗せられたハブが閉じる許可に使う
 s.CLOSED.clear(); s.CLOSING.clear()
