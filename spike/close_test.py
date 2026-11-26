@@ -68,6 +68,40 @@ say("はい、閉じて")
 check("聞いた次の発言が「はい」なら閉じる", close(confirmed=True), ("ok", ["w9:p1"]))
 check("閉じたら、聞いている印を消し、閉じた pane として覚える", ("w9:p1" in s.CLOSING, "w9:p1" in s.CLOSED), (False, True))
 check("もう一度 confirmed しても、聞き直しから", close(confirmed=True), ("confirm", []))
+# いまの発言の画面が同期の合図を返すまでは閉じない。返す前に切れた発言でも閉じない。返したら閉じる（codex-review 62a9436・5fabc67 の P1）
+s.CLOSED.discard("w9:p1")
+asked()
+say("はい、閉じて")
+limit0, s.SETTLE_LIMIT = s.SETTLE_LIMIT, 0.2
+s.SETTLE_LAST["n"] = s.hermes.HERMES_GEN["n"]
+waiting, cut, came = [threading.Event(), None], [threading.Event(), False], [threading.Event(), True]
+cut[0].set(); came[0].set()
+sync_got = []
+for entry in (waiting, cut, came):
+    s.SETTLING[s.SETTLE_LAST["n"]] = entry
+    sync_got.append(close(confirmed=True))
+s.SETTLING.pop(s.SETTLE_LAST["n"], None)
+# 閉じるの途中（相手を読む間）に次の発言が入り、その発言の画面がまだ返していない。入口ではなく、使う発言が決まってから待つ
+s.CLOSED.discard("w9:p1")
+asked()
+say("はい、閉じて")
+real_worker = s._worker
+s.SETTLE_LAST["n"] = s.hermes.HERMES_GEN["n"]
+
+
+def worker_then_next(pane):
+    s.SETTLE_LAST["n"] += 1000
+    s.SETTLING[s.SETTLE_LAST["n"]] = [threading.Event(), None]
+    return real_worker(pane)
+
+
+s._worker = worker_then_next
+sync_got.append(close(confirmed=True))
+s._worker = real_worker
+s.SETTLING.pop(s.SETTLE_LAST["n"], None)
+s.SETTLE_LIMIT, s.SETTLE_LAST["n"] = limit0, -1
+check("同期: 返事を待っている・返事の前に切れた発言では閉じず、返事が来たら閉じる。途中で次の発言が入ったら、その返事を待つ",
+      sync_got, [("stopped", []), ("stopped", []), ("ok", ["w9:p1"]), ("stopped", [])])
 
 # 相手の位置: 本体が送らずに断った「はい」（添付の形・宛先・返信先が無い）を、乗せられたハブが閉じる許可に使う
 s.CLOSED.clear(); s.CLOSING.clear()

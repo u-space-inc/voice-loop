@@ -1081,19 +1081,22 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                 after = (asyncio.run(s.hub_settled()), s.HUB.current(row[0]) if row else None)
             check("同期の合図を返すまでは答えず、返したときには、その前に押した停止を読み終えている（その発言はもういまの発言ではない）",
                   (type(sync.get("n")) is int, before, after), (True, (False, True), (True, False)))
-            # 返事が無いうちは、承認に答える・閉じるが断る（止めたものとして扱う）
-            real_worker, real_current = s._worker, s.hub_current
-            s._worker = lambda pane: None  # 確かめを外したら「セッションが見つかりません」に進む（本物の herdr は呼ばない）
-            s.hub_current = lambda turn: True  # いまの発言のまま（あとの確かめで断らせず、同期の待ちだけで断るかを見る）
-            k = s.SETTLE_LAST["n"] = 10 ** 6
-            s.SETTLING[k] = threading.Event()
-            try:
-                ans = json.loads(asyncio.run(s._hub_answer({"pane": "w9:p1", "answer": "yes"})).body)
-                cls = json.loads(asyncio.run(s.hub_close({"pane": "w9:p1", "confirmed": True})).body)
-            finally:
-                s.SETTLING.pop(k, None)
-                s._worker, s.hub_current = real_worker, real_current
-            check("同期の返事が無いうちは、承認に答える・閉じるを断る", (ans.get("reason"), cls.get("reason")), ("stopped", "stopped"))
+            # 同期の合図を返す前に切れた発言は、送られた停止が届かずに消えたかもしれないので、答え・閉じるに使わない（codex-review 5fabc67 の P1）
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winsync00002", "sync": True}))
+                g3 = (recv_type(wa, "stopgen") or {}).get("n")
+                wa.send_text(json.dumps({"type": "begin", "b": 1, "pane": hm.HERMES_PANE, "hid": -1, "sg": g3}))
+                wa.send_text(json.dumps({"type": "text", "text": "はい（同期の前に切れる）", "pane": hm.HERMES_PANE, "speaker": 0, "hid": -1, "begin": 1}))
+                sync2 = {}
+                for _ in range(40):
+                    m = json.loads(wa.receive_text())
+                    if m.get("type") in ("sync", "reply"):
+                        sync2 = m if m.get("type") == "sync" else {}
+                        break
+            end = time.time() + 3
+            while time.time() < end and not (s.SETTLING.get(sync2.get("n")) or [threading.Event()])[0].is_set():
+                time.sleep(0.02)
+            check("同期の合図を返す前に切れた発言では、答え・閉じるを断る", (type(sync2.get("n")) is int, asyncio.run(s.hub_settled())), (True, False))
         finally:
             s.SETTLE_LIMIT = limit0
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む

@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 TMP = tempfile.mkdtemp()
@@ -275,6 +276,36 @@ s.hub_current = lambda turn: False
 check("止めたあと: 答えに使う発言のあとに止めた・次の発言をしたなら、答えを送らない", (hub("yes").get("reason"), state["sent"]), ("stopped", []))
 s.hub_current = lambda turn: True
 s.ANSWERED.clear()
+# いまの発言の画面が同期の合図を返すまでは答えない。返す前に切れた発言でも答えない。返したら答える（codex-review 62a9436・5fabc67 の P1）
+limit0, s.SETTLE_LIMIT, s.SETTLE_LAST["n"] = s.SETTLE_LIMIT, 0.2, 777
+sync_got = []
+for name, entry in (("返事を待っている", [threading.Event(), None]), ("返事の前に切れた", [threading.Event(), False]), ("返事が来た", [threading.Event(), True])):
+    if entry[1] is not None:
+        entry[0].set()
+    s.SETTLING[777] = entry
+    s.SEEN_PROMPT["w9:p1"] = (fp, "t1", "sess-1"); state["sent"].clear(); s.ANSWERED.clear(); s._answer_lock = asyncio.Lock()
+    sync_got.append((name, hub("yes").get("reason"), list(state["sent"])))
+s.SETTLING.pop(777, None)
+# 答えの途中（セッションを読む間）に次の発言が入り、その発言の画面がまだ返していない。入口ではなく、使う発言が決まってから待つ
+real_worker = s._worker
+
+
+def worker_then_next(pane):
+    s.SETTLE_LAST["n"] = 778
+    s.SETTLING[778] = [threading.Event(), None]
+    return real_worker(pane)
+
+
+s._worker = worker_then_next
+s.SETTLE_LAST["n"] = 777
+s.SEEN_PROMPT["w9:p1"] = (fp, "t1", "sess-1"); state["sent"].clear(); s.ANSWERED.clear(); s._answer_lock = asyncio.Lock()
+sync_got.append(("途中で次の発言", hub("yes").get("reason"), list(state["sent"])))
+s._worker = real_worker
+s.SETTLING.pop(778, None)
+s.SETTLE_LIMIT, s.SETTLE_LAST["n"] = limit0, -1
+s.ANSWERED.clear()
+check("同期: 返事を待っている・返事の前に切れた発言では答えず、返事が来たら答える",
+      sync_got, [("返事を待っている", "stopped", []), ("返事の前に切れた", "stopped", []), ("返事が来た", None, ["1"]), ("途中で次の発言", "stopped", [])])
 
 # セッションの立て直し（key はセッション ID で見分ける）
 AGENT_RE = {**AGENT, "session": "old-session"}
