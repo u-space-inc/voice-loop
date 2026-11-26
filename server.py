@@ -190,14 +190,22 @@ _HERDR = herdr  # 本物の herdr（_if_still が、確かめと送り始めを�
 COMMIT_LOCK = threading.Lock()  # 鍵の中で受け付け・停止・送り始めを呼び合わない（入れ子にしない）
 
 
-HELD_TIMEOUT = 15  # 鍵を持ったまま待つ操作（承認のキー・閉じる）の上限（秒）。ふつうはすぐ返る
+HELD_TIMEOUT = 15  # 送り途中の承認のキー・閉じるを、停止が待つ上限（秒）。ふつうはすぐ返る
+HELD_OPS: set[threading.Event] = set()  # 起動して、まだ返っていない承認のキー・閉じる（返ったら立つ印）
 
 
 def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False) -> dict | None:
-    """鍵の中で確かめて herdr を起動する。確かめが False なら起動せずに None。hold なら、herdr が返る（操作を受け取って終える）まで鍵を持つ
-    （承認のキー・閉じる。起動しただけでは herdr がまだ受け取っていないことがあり、その間に「止めました」と出たあとで届かないように。
-    codex-review b7bf623 の P1）。hold でなければ（ハブ以外への指示。返事を待つまで長い）、起動したら鍵を放す（画面には先に「送りました」と出ている）。"""
-    with COMMIT_LOCK:
+    """鍵の中で確かめて herdr を起動し、起動したら鍵を放す（鍵は短く持つ。停止・次の発言の受け付けを待たせない）。確かめが False なら起動せずに None。
+    hold（承認のキー・閉じる）なら、鍵が空いていなければ待たずに断る（待つ間に相手・問いが入れ替わらないように。codex-review e749b6a の P1）。
+    また、返るまで送り途中の印を持つ（停止は、送り途中の操作が返るのを待ってから「止めました」と返す。起動しただけでは herdr がまだ受け取って
+    いないことがあり、「止めました」のあとに届かないように。codex-review b7bf623 の P1）。hold でなければ（ハブ以外への指示）、鍵を待つ"""
+    if hold:
+        if not COMMIT_LOCK.acquire(blocking=False):
+            return None
+    else:
+        COMMIT_LOCK.acquire()
+    ev = None
+    try:
         if not still():
             return None
         try:
@@ -205,8 +213,23 @@ def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False) 
         except OSError as e:
             return {"raw": str(e), "code": -1}
         if hold:
-            return _herdr_wait(proc, min(timeout or HELD_TIMEOUT, HELD_TIMEOUT))
-    return _herdr_wait(proc, timeout)
+            ev = threading.Event()
+            HELD_OPS.add(ev)
+    finally:
+        COMMIT_LOCK.release()
+    try:
+        return _herdr_wait(proc, min(timeout or HELD_TIMEOUT, HELD_TIMEOUT) if hold else timeout)
+    finally:
+        if ev is not None:
+            ev.set()
+            HELD_OPS.discard(ev)
+
+
+def wait_inflight(evs: list) -> None:
+    """送り途中の承認のキー・閉じるが返るのを待つ（上限 HELD_TIMEOUT 秒。ワーカーのスレッドで呼ぶ）。"""
+    end = time.monotonic() + HELD_TIMEOUT
+    for ev in evs:
+        ev.wait(max(0.0, end - time.monotonic()))
 
 
 def _herdr_wait(proc, timeout: float | None) -> dict:
@@ -3817,6 +3840,9 @@ async def ws(sock: WebSocket):
                         task = asyncio.create_task(tell_stop_gen(STOP_GEN["n"]))
                         _tasks.add(task)
                         task.add_done_callback(_tasks.discard)
+                        inflight = list(HELD_OPS)
+                        if inflight:  # 止める前に起動した承認のキー・閉じるが返ってから「止めました」と返す（本体は止めずに待つ）
+                            await asyncio.to_thread(wait_inflight, inflight)
                     if current:
                         current.cancel()
                     for ev in list(REPORT_SPEECH):  # 報告の読み上げも止める

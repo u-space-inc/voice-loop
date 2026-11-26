@@ -1200,7 +1200,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             returncode = 0
 
             def communicate(self, timeout=None):
-                started.append(("wait", s.COMMIT_LOCK.locked()))  # 返るのを待つ間も鍵を持っているか
+                started.append(("wait", s.COMMIT_LOCK.locked(), len(s.HELD_OPS)))  # 返るのを待つ間に鍵を持っているか・送り途中の印があるか
                 return '{"result": {}}', ""
 
         real_popen, real_run = s.subprocess.Popen, s.subprocess.run
@@ -1210,11 +1210,36 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             r_ok = s._if_still(lambda: True, s._HERDR, "agent", "send-keys", "w9:p1", "1")
             r_no = s._if_still(lambda: False, s._HERDR, "agent", "send-keys", "w9:p1", "1")
             r_ask = s._if_still(lambda: True, functools.partial(s._HERDR, timeout=610), "agent", "prompt", "w9:p1", "x")
+            # 鍵が使われていたら: 承認のキー・閉じるは待たずに断る。ハブ以外への指示は空くのを待つ（codex-review e749b6a の P1）
+            s.COMMIT_LOCK.acquire()
+            threading.Timer(0.3, s.COMMIT_LOCK.release).start()
+            r_busy = s._if_still(lambda: True, s._HERDR, "agent", "send-keys", "w9:p1", "1")
+            r_wait = s._if_still(lambda: True, functools.partial(s._HERDR, timeout=610), "agent", "prompt", "w9:p1", "x")
         finally:
             s.subprocess.Popen, s.subprocess.run = real_popen, real_run
-        check("本物の herdr は、鍵の中で確かめて起動し、承認のキー・閉じるは返るまで、指示は起動するまで鍵を持つ（確かめが False なら起動しない。codex-review b7bf623）",
-              (started, "result" in r_ok, r_no, "result" in r_ask, s.COMMIT_LOCK.locked()),
-              ([True, ("wait", True), True, ("wait", False)], True, None, True, False))
+        check("本物の herdr は、鍵の中で確かめて起動したら鍵を放し、承認のキー・閉じるは返るまで送り途中の印を持つ（確かめが False なら起動しない。"
+              "鍵が使われていたら、承認のキー・閉じるは断り、指示は待つ。codex-review b7bf623・e749b6a）",
+              (started, "result" in r_ok, r_no, "result" in r_ask, r_busy, "result" in (r_wait or {}), s.COMMIT_LOCK.locked(), len(s.HELD_OPS)),
+              ([True, ("wait", False, 1), True, ("wait", False, 0), True, ("wait", False, 0)], True, None, True, None, True, False, 0))
+        # 停止は、送り途中の承認のキー・閉じるが返ってから「止めました」と返す。その間も、本体はほかの画面の相手を続ける（codex-review e749b6a の P2）
+        held_op = threading.Event()
+        s.HELD_OPS.add(held_op)
+        t0 = time.time()
+        threading.Timer(0.6, held_op.set).start()
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wl:
+                wl.send_text(json.dumps({"type": "stop", "n": 92}))
+                time.sleep(0.1)
+                with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wo:
+                    wo.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winother0001"}))
+                    recv_type(wo, "stopgen")
+                    other_at = time.time() - t0
+                receive_until(wl, "stopped")
+                stop_at = time.time() - t0
+        finally:
+            held_op.set()
+            s.HELD_OPS.discard(held_op)
+        check("停止は送り途中の承認のキー・閉じるが返ってから返し、その間もほかの画面の相手を続ける", (other_at < 0.55, stop_at >= 0.55), (True, True))
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
