@@ -911,6 +911,40 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                     break
         check("控えた知らせを名乗った直後の切断で送れなかったら控えに戻し、次に名乗ったときに届ける",
               (failed19["n"], any(x.endswith("控えに戻す試験") for t, x in got19)), (1, True))
+        # 本体が送る前に断った（相手のセッションが見つからない）知らせも、窓の印で届ける（断る前に画面が切れても、つなぎ直した画面に。a2a 6604a50a の 5 回目）
+        check("（前提）前の試験の直接の指示が片づいている（断りの知らせ）", wait_idle(), True)
+        att_go20, att_in20 = threading.Event(), threading.Event()
+
+        async def held_attach20(ids, talker, pane=""):  # 添付の用意で止めておく（断る前に画面が切れる）
+            att_in20.set()
+            await asyncio.to_thread(att_go20.wait, 5)
+            return "", ""
+
+        real_attach20 = s.attachment_lines
+        s.attachment_lines = held_attach20
+        s.list_agents = lambda: []  # 相手のセッションが見つからない
+        got20 = []
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winrefused001"}))
+                wa.send_text(json.dumps({"type": "begin", "b": 995, "pane": "w9:gone", "hid": -1}))
+                wa.send_text(json.dumps({"type": "text", "text": "いなくなったセッションへの指示", "pane": "w9:gone", "speaker": 0, "hid": -1, "begin": 995}))
+                check("（前提）添付の用意で止めている（断る前）", att_in20.wait(5), True)
+            time.sleep(0.3)  # 画面が切れた
+            att_go20.set()
+            time.sleep(0.5)  # 本体が断る（画面はつながっていないので控える）
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa2:
+                wa2.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winrefused001"}))
+                wa2.send_text(json.dumps({"type": "stop", "n": 10}))
+                for _ in range(30):
+                    m = json.loads(wa2.receive_text())
+                    got20.append((m.get("type"), m.get("text", "")))
+                    if m.get("type") == "stopped":
+                        break
+        finally:
+            att_go20.set()
+            s.attachment_lines, s.list_agents = real_attach20, real_agents
+        check("本体が送る前に断った知らせも、切れてつなぎ直した画面に届ける", any("見つかりません" in x for t, x in got20), True)
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]

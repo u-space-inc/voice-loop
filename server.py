@@ -3426,8 +3426,8 @@ async def ws(sock: WebSocket):
             extra = ""
             if not why:
                 extra, why = await attachment_lines(files, None, pane)
-            if why:  # 送らずに断る
-                await send(type="error", text=why)
+            if why:  # 送らずに断る（切れてつなぎ直した画面にも届ける）
+                await tell_window(win_of(client), type="error", text=why)
                 return
             await run_turn(text, pane, cancel, key, extra, direct)
         except asyncio.CancelledError:
@@ -3435,7 +3435,7 @@ async def ws(sock: WebSocket):
         except Exception as e:  # 語り手・音声合成・herdr の失敗を黙って止めず、画面とログに出す
             traceback.print_exc()
             with contextlib.suppress(Exception):  # 画面が切れていれば知らせない
-                await send(type="error", text=f"{type(e).__name__}: {e}"[:300])
+                await tell_window(win_of(client), type="error", text=f"{type(e).__name__}: {e}"[:300])
         finally:
             if direct is not None and not direct["handed"]:  # 送る仕事に渡さずに終わった（断った・相手がいない・取り消した）。一覧から外す
                 DIRECT_PENDING.pop(direct["key"], None)
@@ -3495,10 +3495,10 @@ async def ws(sock: WebSocket):
         #         画面に送っていないと知らせる。立てるのと取り消すのは、印の鍵で 1 つずつ）
         agent = next((a for a in list_agents() if a["pane"] == pane), None)
         if not agent:
-            await send(type="error", gone=True, text="話し相手のセッションが見つかりません。選び直してください。")
+            await tell_window(win_of(client), type="error", gone=True, text="話し相手のセッションが見つかりません。選び直してください。")  # 切れてつなぎ直した画面にも（a2a 6604a50a の 5 回目）
             return
         if key and agent_key(agent) != key:  # 開きっぱなしの画面の一覧が古く、同じ場所に別のセッションが居る
-            await send(type="error", gone=True, text="話し相手が入れ替わっています。送らずに止めました。選び直してください。")
+            await tell_window(win_of(client), type="error", gone=True, text="話し相手が入れ替わっています。送らずに止めました。選び直してください。")
             return
         with contextlib.suppress(Exception):  # 画面が切れていても送りは止めない（「送りました」と出た指示を、切れただけで黙って消さない。a2a 6604a50a）
             await send(type="status", text="エージェントに送りました。考え中…")
