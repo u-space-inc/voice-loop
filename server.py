@@ -185,9 +185,9 @@ def _herdr_out(stdout: str, stderr: str, code: int) -> dict:
 
 
 _HERDR = herdr  # 本物の herdr（_if_still が、確かめと送り始めを停止と直列にするのに使う。試験の差し替えでは使わない）
-# 停止の確定（止めた番号を進める・送る前の指示を取り消す）と、操作の送り始め（承認のキー・閉じる・ハブ以外への指示）を直列にする鍵。
+# 停止の確定（止めた番号を進める・送る前の指示を取り消す）・次の発言の受け付けと、操作の送り始め（承認のキー・閉じる・ハブ以外への指示）を直列にする鍵。
 # 送り始めたら放す（返事を待つ間は持たない）。「止めました」と出たあとに、止めた発言での操作を始めない（codex-review 635eea0 の P1）
-COMMIT_LOCK = threading.Lock()
+COMMIT_LOCK = threading.Lock()  # 鍵の中で受け付け・停止・送り始めを呼び合わない（入れ子にしない）
 
 
 def _herdr_gated(still, args: tuple, timeout: float | None) -> dict | None:
@@ -840,7 +840,8 @@ def admit_now(seen: int | None = None) -> int | None:
     まだ画面に届いていない返事・報告を失効させる）。seen は、画面が発言を始めたときに受け取っていた返事の番号（Talker.admit）。"""
     if not HUB.on():
         return None
-    return HUB.admit(seen) if seen is not None else HUB.admit()
+    with COMMIT_LOCK:  # 受け付けの番号を進めるのも、操作の送り始め（確かめてから起動するまで）と直列にする（codex-review f0b77a7 の P1）
+        return HUB.admit(seen) if seen is not None else HUB.admit()
 
 
 def heard_seen(d: dict) -> int:

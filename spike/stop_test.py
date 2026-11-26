@@ -1171,6 +1171,23 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             if s.COMMIT_LOCK.locked():
                 s.COMMIT_LOCK.release()
         check("送り始めの途中の停止は、送り始めが終わってから番号を進める", (during_lock, after_lock), (False, True))
+        # 次の発言の受け付け（受け付けの番号を進める）も、送り始めの途中なら、それを待ってから進める（codex-review f0b77a7 の P1）
+        h_lock = hm.HERMES_GEN["n"]
+        s.COMMIT_LOCK.acquire()  # 送り始めの途中
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wl:
+                wl.send_text(json.dumps({"type": "begin", "b": 1, "pane": hm.HERMES_PANE, "hid": -1}))
+                time.sleep(0.4)
+                adm_during = hm.HERMES_GEN["n"] != h_lock
+                s.COMMIT_LOCK.release()
+                end = time.time() + 3
+                while time.time() < end and hm.HERMES_GEN["n"] == h_lock:
+                    time.sleep(0.02)
+                adm_after = hm.HERMES_GEN["n"] != h_lock
+        finally:
+            if s.COMMIT_LOCK.locked():
+                s.COMMIT_LOCK.release()
+        check("送り始めの途中に受け付けた次の発言は、送り始めが終わってから受け付けの番号を進める", (adm_during, adm_after), (False, True))
         # 本物の herdr の道: 確かめと起動を、鍵の中で行い、起動したら放す（本物の herdr は起動しない。起動の道具を差し替える）
         started = []
 
