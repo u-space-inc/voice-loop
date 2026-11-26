@@ -3416,7 +3416,8 @@ async def ws(sock: WebSocket):
             raise
         except Exception as e:  # 語り手・音声合成・herdr の失敗を黙って止めず、画面とログに出す
             traceback.print_exc()
-            await send(type="error", text=f"{type(e).__name__}: {e}"[:300])
+            with contextlib.suppress(Exception):  # 画面が切れていれば知らせない
+                await send(type="error", text=f"{type(e).__name__}: {e}"[:300])
         finally:
             if direct is not None and not direct["handed"]:  # 送る仕事に渡さずに終わった（断った・相手がいない・取り消した）。一覧から外す
                 DIRECT_PENDING.pop(direct["key"], None)
@@ -3481,7 +3482,8 @@ async def ws(sock: WebSocket):
         if key and agent_key(agent) != key:  # 開きっぱなしの画面の一覧が古く、同じ場所に別のセッションが居る
             await send(type="error", gone=True, text="話し相手が入れ替わっています。送らずに止めました。選び直してください。")
             return
-        await send(type="status", text="エージェントに送りました。考え中…")
+        with contextlib.suppress(Exception):  # 画面が切れていても送りは止めない（「送りました」と出た指示を、切れただけで黙って消さない。a2a 6604a50a）
+            await send(type="status", text="エージェントに送りました。考え中…")
         SENT_GEN[pane] = SENT_GEN.get(pane, 0) + 1  # 画面・声からの直接の指示も、前の件の Slack への報告に新しい結果を載せない（送る前に進める）
         async with pane_lock(pane):  # ハブが自動通知に応答している最中なら、それが終わってから送る
             SENT_GEN[pane] = SENT_GEN.get(pane, 0) + 1  # 順番を待つ間に、ハブ経由の件が送られていることがある。実際に送る直前にも進める
@@ -3752,7 +3754,12 @@ async def ws(sock: WebSocket):
         if win_of(client) == client.cid:  # 印を名乗らなかった接続の「話しかけた時刻」は、切れたら消す（ほかの接続に引き継がない）
             WIN_SPOKE.pop(client.cid, None)
         cancel.set()
-        if current:
+        d = direct_turn["d"]
+        if d is not None and not d["handed"] and DIRECT_PENDING.get(d["key"]) is d:
+            # まだ送る仕事に渡していないハブ以外への指示（鍵・添付を待っている）。切れただけでは取り消さず、そのまま送る（画面には
+            # 「送りました」と出ている。cancel が立っているので、返事は画面に送らない。ほかの画面の停止では取り消す。a2a 6604a50a の 2 回目）
+            pass
+        elif current:
             current.cancel()
 
 

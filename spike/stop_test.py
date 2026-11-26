@@ -753,6 +753,42 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                 gate15.set()
                 s.transcribe, s.herdr, s.list_agents, s.jsonl_path = real_transcribe, real_herdr, real_agents, real_jsonl
             check(f"聞き取りの間の別の画面の停止で、{label}は送らずに知らせる", (prompts15, any("送っていません" in x for t, x in seen15)), ([], True))
+        # 「送りました」と出たハブ以外への指示は、セッションの鍵を待つ間に画面が切れても、取り消さずに送る（黙って消さない。a2a 6604a50a の 2 回目）
+        check("（前提）前の試験の直接の指示が片づいている（切れても送る）", wait_idle(), True)
+        prompts16, lock_go16, lock_in16 = [], threading.Event(), threading.Event()
+
+        async def hold_lock16():
+            async with s.pane_lock("w9:p1"):  # 前の送りがセッションの鍵を持っている
+                lock_in16.set()
+                await asyncio.to_thread(lock_go16.wait, 5)
+
+        s.herdr = lambda *a, **k: (prompts16.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        s.jsonl_path = lambda a: None
+        try:
+            held16 = c.portal.start_task_soon(hold_lock16)
+            check("（前提）セッションの鍵がふさがっている", lock_in16.wait(5), True)
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "begin", "b": 970, "pane": "w9:p1", "hid": -1}))
+                wa.send_text(json.dumps({"type": "text", "text": "鍵を待つ間に切れる指示", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 970}))
+                sent_shown = None
+                for _ in range(30):
+                    m = json.loads(wa.receive_text())
+                    if m.get("type") == "status" and "送りました" in m.get("text", ""):
+                        sent_shown = m
+                        break
+            time.sleep(0.3)  # 画面 A が切れた
+            lock_go16.set()
+            held16.result(timeout=10)
+            for _ in range(100):
+                if prompts16:
+                    break
+                time.sleep(0.05)
+            wait_idle()
+        finally:
+            lock_go16.set()
+            s.herdr, s.list_agents, s.jsonl_path = real_herdr, real_agents, real_jsonl
+        check("「送りました」と出たハブ以外への指示は、鍵を待つ間に画面が切れても送る", (sent_shown is not None, prompts16), (True, ["鍵を待つ間に切れる指示"]))
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
