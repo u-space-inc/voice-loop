@@ -1053,6 +1053,49 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         i21 = next((i for i, (t, x) in enumerate(seen21) if "送っていません" in x), None)
         check("添付の用意の間に止めたら、「送っていません」のあとに「送りました」と出さない",
               (i21 is not None, i21 is not None and any("エージェントに送りました" in x for t, x in seen21[i21:])), (True, False))
+        # 承認に答える・閉じるは、いまの発言の画面が同期の合図を返すまで待つ。返事より前にその画面が送った停止（聞き取りの間に押した
+        # 停止など）は、返事を読むまでに本体が読み終えているので、止めた発言では答えない（codex-review 62a9436 の P1）
+        check("（前提）前の試験の直接の指示が片づいている（同期）", wait_idle(), True)
+        hm.ask_hermes = lambda text: "わかりました"
+        limit0, s.SETTLE_LIMIT = s.SETTLE_LIMIT, 0.3
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winsync00001", "sync": True}))
+                g2 = (recv_type(wa, "stopgen") or {}).get("n")
+                wa.send_text(json.dumps({"type": "begin", "b": 1, "pane": hm.HERMES_PANE, "hid": -1, "sg": g2}))
+                wa.send_text(json.dumps({"type": "text", "text": "はい（同期の前に止める）", "pane": hm.HERMES_PANE, "speaker": 0, "hid": -1, "begin": 1}))
+                sync = {}
+                for _ in range(40):  # 同期の合図は、仕事にした直後（返事より先）に届く。返事が先なら届いていない
+                    m = json.loads(wa.receive_text())
+                    if m.get("type") == "sync" or m.get("type") == "reply":
+                        sync = m if m.get("type") == "sync" else {}
+                        break
+                row = row_of("はい（同期の前に止める）")
+                before = (asyncio.run(s.hub_settled()), s.HUB.current(row[0]) if row else None)
+                wa.send_text(json.dumps({"type": "stop", "n": 21}))  # 同期の合図を受け取る前に押した停止（返事より前に届く）
+                wa.send_text(json.dumps({"type": "sync", "n": sync.get("n")}))
+                recv_type(wa, "stopped")
+                end = time.time() + 3
+                while time.time() < end and sync.get("n") in s.SETTLING:
+                    time.sleep(0.02)
+                after = (asyncio.run(s.hub_settled()), s.HUB.current(row[0]) if row else None)
+            check("同期の合図を返すまでは答えず、返したときには、その前に押した停止を読み終えている（その発言はもういまの発言ではない）",
+                  (type(sync.get("n")) is int, before, after), (True, (False, True), (True, False)))
+            # 返事が無いうちは、承認に答える・閉じるが断る（止めたものとして扱う）
+            real_worker, real_current = s._worker, s.hub_current
+            s._worker = lambda pane: None  # 確かめを外したら「セッションが見つかりません」に進む（本物の herdr は呼ばない）
+            s.hub_current = lambda turn: True  # いまの発言のまま（あとの確かめで断らせず、同期の待ちだけで断るかを見る）
+            k = s.SETTLE_LAST["n"] = 10 ** 6
+            s.SETTLING[k] = threading.Event()
+            try:
+                ans = json.loads(asyncio.run(s._hub_answer({"pane": "w9:p1", "answer": "yes"})).body)
+                cls = json.loads(asyncio.run(s.hub_close({"pane": "w9:p1", "confirmed": True})).body)
+            finally:
+                s.SETTLING.pop(k, None)
+                s._worker, s.hub_current = real_worker, real_current
+            check("同期の返事が無いうちは、承認に答える・閉じるを断る", (ans.get("reason"), cls.get("reason")), ("stopped", "stopped"))
+        finally:
+            s.SETTLE_LIMIT = limit0
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]

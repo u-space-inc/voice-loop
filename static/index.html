@@ -1052,7 +1052,7 @@ try {
     else if (d.dup && d.dup === WIN) { WIN = makeWin(); try { sessionStorage.setItem('vl.win', WIN); } catch {} hello(); } };
   winBC.postMessage({ q: WIN });
 } catch {}
-const hello = (visible = !document.hidden) => { try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'hello', speaker: $('speaker').value, voice: !muted, visible, win: WIN, ...(faceOn ? { kind: 'stackchan', place: 'home' } : {}) })); } catch {} };
+const hello = (visible = !document.hidden) => { try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'hello', speaker: $('speaker').value, voice: !muted, visible, win: WIN, sync: true, ...(faceOn ? { kind: 'stackchan', place: 'home' } : {}) })); } catch {} };
 $('speaker').onchange = e => { localStorage.setItem('vl.speaker', e.target.value); hello(); };
 
 // ---------- 再生 ----------
@@ -2164,6 +2164,7 @@ function connect() {
     else if (m.type === 'notice') { sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); } // ハブから報告を受け取れなかった等（いまの話し相手とは別の知らせ）
     else if (m.type === 'done') { serverDone = true; turnDone = true; if (!playing && !queue.length) finishSpeaking(); loadAgents(); }
     else if (m.type === 'stopgen') { if (typeof m.n === 'number') stopGen = m.n; } // どこかの画面で止めた（発言を始めた合図に付ける）
+    else if (m.type === 'sync') { try { ev.target.send(JSON.stringify({ type: 'sync', n: m.n })); } catch {} } // 同期の合図はすぐ返す（本体は、これより前にこの画面が送ったもの（停止）を読み終えたと分かる）
     else if (m.type === 'stopped') { // 届いた印は、本体が止めたと返してから（codex-review 44b3c2e）
       // scope=talk: 話し始めるときに再生だけを止めた返事（表示は変えない）。n: 停止の番号。いまの発言を始める前の停止への返事なら、
       // 返事が遅れて届いても「止めました」と出さず、顔も再生も変えない（新しい発言は止めていない。codex-review 6096e1d・dad00a5・f73d1be）
@@ -2246,8 +2247,10 @@ async function startRecInner() {
     try {
       // 宛先・返信先・添付は話し終えた時点で固定する（添付を置いている間に相手や欄が変わっても、ずらさない）
       cancelTopic();
-      const rfNow = replyFields(); // 返信先は、録音を始めたときと同じものが選ばれているときだけ付ける（途中で選び直したら、ふつうの発言として送る）
-      const rf = rfNow.reply_at === rf0.reply_at && rfNow.reply_item === rf0.reply_item ? rfNow : {};
+      const rf = replyFields(); // 返信先は、録音を始めたときと同じものが選ばれているときだけ送る
+      // 録音の途中で返信先が変わった（選び直した・外れた・途中で選んだ）なら送らない。ふつうの発言として送ると、報告への「はい」が、
+      // 前に聞いた別の問いへの答えになりうる（codex-review 62a9436 の P1）
+      if (rf.reply_at !== rf0.reply_at || rf.reply_item !== rf0.reply_item) { setStatus('録音の途中で返信先が変わったので、話した内容は送っていません。返信先を確かめて録り直してください'); return; }
       const pane = $('agent').value, key = curKey(), list = attachFiles.slice();
       const files = await sendAttach(pane, list, '話した内容');
       if (!files) return;

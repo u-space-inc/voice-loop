@@ -823,6 +823,22 @@ def heard_seen(d: dict) -> int:
     return v if isinstance(v, int) and not isinstance(v, bool) else -1
 
 
+# 同期の合図（画面がすぐ返す）を返してもらうまでの発言（受け付けの番号 → 返ってきたら立つ印）。同じ接続の順で、返事より前に画面が送ったもの
+# （声の聞き取りの間に押した停止など）は、返事を読むまでに本体が読み終えている。承認に答える・閉じるは、いまの発言の返事を待ってから確かめる
+# （聞き取りのあと受信がまた待つ間に、停止を読む前に答えを送らない。codex-review 62a9436 の P1）
+SETTLING: dict[int, threading.Event] = {}
+SETTLE_LAST = {"n": -1}  # 本体が仕事にした発言のうち、いちばん新しい受け付けの番号
+SETTLE_LIMIT = 10.0  # 返事を待つ上限（秒）。返らなければ断る（止めたものとして扱う）
+
+
+async def hub_settled() -> bool:
+    """いまの発言の画面が、同期の合図を返したか（返すまで待つ。上限を超えたら False）。合図を送っていない発言（機械・更新前の画面）は待たない。"""
+    ev = SETTLING.get(SETTLE_LAST["n"])
+    if ev is None:
+        return True
+    return await asyncio.to_thread(ev.wait, SETTLE_LIMIT)
+
+
 def _if_still(still, fn, *args):
     """ワーカーのスレッドの中で、操作を始める直前にもう一度確かめてから fn を呼ぶ（スレッドの空きを待つ間に止めた・次の発言をしたら、
     呼ばずに None を返す。codex-review bcd26ac）。still が None なら確かめない。"""
@@ -1415,6 +1431,7 @@ class Client:
         self.speaker: int | None = None  # この画面で選ばれている声
         self.voice = True  # この画面で読み上げるか（画面の 🔇 で切ると、返答は文字だけになる）
         self.visible = False  # この画面がいま見えているか。見えている画面が1つでもあれば、プッシュ通知は送らない（画面に声と文字で届くため）
+        self.sync = False  # 同期の合図を返す画面か（名乗りで決まる）
         self.seen = 0.0  # 画面が最後に様子（hello）を知らせてきた時刻
         # 機械（スタックチャン）か。機械の口（VL_DEVICE_PORTS）で受けた接続は、名乗りに関係なく機械で、置き場所も口で決まる（origin_guard の device_place）。
         # 画面も hello で kind: "stackchan" と名乗れば機械として扱う（守りが強くなる側だけ）。機械は見えている画面に数えず、
@@ -2782,6 +2799,8 @@ async def _hub_answer(body: dict):
     取り消しにくい操作の「はい」は、聞き返してユーザーがもう一度発言してから（どちらの発言も上の確かめを通ること）。「今後は聞かずに許可」は選ばない。"""
     if REPORTING:
         return JSONResponse({"ok": False, "reason": "reporting"})
+    if not await hub_settled():  # いまの発言の画面が、それより前に送った停止を本体が読み終えたと分かるまで答えない
+        return JSONResponse({"ok": False, "reason": "stopped"})
     pane, answer, confirmed = str(body.get("pane", "")), str(body.get("answer", "")).strip().lower(), bool(body.get("confirmed"))
     a = await asyncio.to_thread(_worker, pane)
     if not a:
@@ -3251,6 +3270,8 @@ async def hub_close(body: dict):
     if REPORTING:
         return JSONResponse({"ok": False, "reason": "reporting"})
     pane, confirmed = str(body.get("pane", "")), bool(body.get("confirmed"))
+    if confirmed and not await hub_settled():  # いまの発言の画面が、それより前に送った停止を本体が読み終えたと分かるまで閉じない
+        return JSONResponse({"ok": False, "reason": "stopped"})
     held = CLOSING.get(pane)
     (now, said), (before, _) = (await asyncio.to_thread(hub_turns, 2) + [(None, "")] * 2)[:2]
     if confirmed and await asyncio.to_thread(hub_via, now) == "device":  # 機械からの発言では閉じない（閉じていいかは画面で答える）
@@ -3595,6 +3616,14 @@ async def ws(sock: WebSocket):
         if crossed:  # 発言を始めた（送るを押した・録り終えた）あと、届くまでに、どこかの画面で止めた。発言は届けるが、承認に答える・閉じるには使わせない
             # この発言だけを、いまの発言にならない受け付けの番号にする（ハブ全体を止め直すと、ほかの画面のあとの発言まで失効させる。codex-review c72fbbe・bb7be2c）
             admitted = -1
+        if isinstance(admitted, int) and admitted >= 0:
+            SETTLE_LAST["n"] = max(SETTLE_LAST["n"], admitted)
+            if client.sync and admitted not in SETTLING:  # 同期の合図を送り、返事を読むまで、この発言で承認に答えない・閉じない
+                SETTLING[admitted] = threading.Event()
+                my_settle.add(admitted)
+                task = asyncio.create_task(send(type="sync", n=admitted))  # 送るのは別の仕事で（受信を待たせない）
+                _tasks.add(task)
+                task.add_done_callback(_tasks.discard)
         if via is None:
             via = "device" if client.kind == "device" else ""
         talker = TALKERS.get(pane)
@@ -3621,6 +3650,7 @@ async def ws(sock: WebSocket):
         current = asyncio.create_task(turn(text, pane, cancel, key, reply_at, files, job, plain=bool(quick_kind), admitted=admitted, direct=direct))
 
     direct_turn: dict = {"d": None}  # いまの画面のターンが、ハブ以外への指示ならその印 {"sent": 送り始めたか}
+    my_settle: set[int] = set()  # この接続が同期の返事を返していない発言の受け付けの番号
 
     def drop_direct():
         # この接続の画面のターンを次の発言で取り消す前に呼ぶ。ハブ以外への指示をまだ送っていなければ、送らせず、送っていないと画面に知らせる
@@ -3687,6 +3717,7 @@ async def ws(sock: WebSocket):
                         client.win = w
                     # visible を送らない古い画面は、見えていないものとして扱う（通知を止めない）。機械は見えている画面に数えない
                     client.visible = d.get("visible") is True and client.kind == "screen"
+                    client.sync = d.get("sync") is True  # 同期の合図を返す画面か（更新前の画面・機械は返さない）
                     client.seen = time.time()
                     with contextlib.suppress(Exception):  # いまの停止の回数（画面は発言を始めた合図に付ける）
                         await send(type="stopgen", n=STOP_GEN["n"])
@@ -3746,6 +3777,15 @@ async def ws(sock: WebSocket):
                         while len(begins) > 32:
                             begins.pop(next(iter(begins)))
                     continue
+                if d["type"] == "sync":  # 画面が同期の合図を返した。それより前にこの画面が送ったもの（停止）は読み終えている
+                    k = d.get("n")
+                    if isinstance(k, int) and not isinstance(k, bool):
+                        for j in [j for j in my_settle if j <= k]:
+                            my_settle.discard(j)
+                            ev = SETTLING.pop(j, None)
+                            if ev is not None:
+                                ev.set()
+                    continue
                 if d["type"] == "clientlog":  # 端末側（特にスマホ）の再生まわりの出来事を残す
                     print(f"[client] {str(d.get('msg'))[:300]}", flush=True)
                     continue
@@ -3797,6 +3837,10 @@ async def ws(sock: WebSocket):
         pass
     finally:
         CLIENTS.discard(client)
+        for j in list(my_settle):  # 切れるまでに届いたもの（停止を含む）は読み終えた。待っている答え・閉じるを放す（いまの発言かは、そのあと確かめる）
+            ev = SETTLING.pop(j, None)
+            if ev is not None:
+                ev.set()
         if win_of(client) == client.cid:  # 印を名乗らなかった接続の「話しかけた時刻」は、切れたら消す（ほかの接続に引き継がない）
             WIN_SPOKE.pop(client.cid, None)
         cancel.set()

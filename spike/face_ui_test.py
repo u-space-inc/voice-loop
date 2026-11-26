@@ -452,8 +452,8 @@ with sync_playwright() as pw:
         pg.evaluate(f"setReplyTarget({during})")
         pg.wait_for_timeout(1500)
         pg.evaluate("stopRec()")
-        pg.wait_for_function("window.__turn", timeout=5000)
-        got = pg.evaluate("[window.__turn.reply_at ?? null, typeof window.__turn.begin]")
+        pg.wait_for_function("window.__turn || document.getElementById('statusText').textContent.includes('返信先が変わった')", timeout=5000)
+        got = pg.evaluate("window.__turn ? [window.__turn.reply_at ?? null, typeof window.__turn.begin] : '送らない'")
         pg.evaluate("setReplyTarget(null); curAgent().hub = window.__hubSaved")
         return began, got
     # 再生中に録音を始めたら、再生だけを止める合図を、録音を始めた合図より先に送る（あとだと、この録音の受け付けまで失効させる。codex-review bb7be2c）
@@ -466,8 +466,16 @@ with sync_playwright() as pw:
     check("録音: 再生中に録音を始めたら、再生だけを止める合図を、録音を始めた合図より先に送る", order[0] >= 0 and order[0] < order[1], True)
     picked_before = reply_rec("{ at: 111.5, about: '前の報告' }", "{ at: 111.5, about: '前の報告' }")
     picked_during = reply_rec("null", "{ at: 222.5, about: '録音の途中に届いた報告' }")
-    check("録音: 録音を始めたときに合図を送り、返信先は始める前に選んだものだけ付ける（途中で選んだ返信先は付けない）",
-          (picked_before, picked_during), ((True, [111.5, "number"]), (True, [None, "number"])))
+    picked_changed = reply_rec("{ at: 111.5, about: '前の報告' }", "{ at: 333.5, about: '別の報告' }")
+    picked_cleared = reply_rec("{ at: 111.5, about: '前の報告' }", "null")
+    check("録音: 録音を始めたときに合図を送り、返信先が録音の途中で変わったら（途中で選んだ・選び直した・外れた）送らない（codex-review 62a9436）",
+          (picked_before, picked_during, picked_changed, picked_cleared),
+          ((True, [111.5, "number"]), (True, "送らない"), (True, "送らない"), (True, "送らない")))
+    # 名乗りで同期に応じると伝え、本体からの同期の合図は、届いた接続にすぐ返す（codex-review 62a9436）
+    pg.evaluate("window.__types.length = 0; ws.onmessage({ data: JSON.stringify({ type: 'sync', n: 7 }), target: ws })")
+    pg.wait_for_timeout(200)
+    check("同期: 名乗りで同期に応じると伝え、同期の合図はすぐ返す",
+          (pg.evaluate("window.__hello.length > 0 && window.__hello[window.__hello.length - 1].sync === true"), pg.evaluate("window.__types.includes('sync')")), (True, True))
     # 録り終えた声を本体に送っている間は、文字の発言を送らない（声の本体を用意する間に送った文字を、あとの古い声で取り消さない）。
     # 発言を始めた合図には、本体から知らされた停止の回数を付ける（codex-review 6b2ddfe）
     pg.wait_for_timeout(600)
