@@ -468,9 +468,10 @@ with sync_playwright() as pw:
     picked_during = reply_rec("null", "{ at: 222.5, about: '録音の途中に届いた報告' }")
     picked_changed = reply_rec("{ at: 111.5, about: '前の報告' }", "{ at: 333.5, about: '別の報告' }")
     picked_cleared = reply_rec("{ at: 111.5, about: '前の報告' }", "null")
-    check("録音: 録音を始めたときに合図を送り、返信先が録音の途中で変わったら（途中で選んだ・選び直した・外れた）送らない（codex-review 62a9436）",
-          (picked_before, picked_during, picked_changed, picked_cleared),
-          ((True, [111.5, "number"]), (True, "送らない"), (True, "送らない"), (True, "送らない")))
+    picked_back = reply_rec("{ at: 111.5, about: '前の報告' }", "{ at: 444.5, about: '別の報告' }); setReplyTarget({ at: 111.5, about: '前の報告' }")
+    check("録音: 録音を始めたときに合図を送り、返信先が録音の途中で変わったら（途中で選んだ・選び直した・外れた・別のを選んで戻した）送らない（codex-review 62a9436・69257ea）",
+          (picked_before, picked_during, picked_changed, picked_cleared, picked_back),
+          ((True, [111.5, "number"]), (True, "送らない"), (True, "送らない"), (True, "送らない"), (True, "送らない")))
     # 名乗りで同期に応じると伝え、本体からの同期の合図は、届いた接続にすぐ返す（codex-review 62a9436）
     pg.evaluate("window.__types.length = 0; ws.onmessage({ data: JSON.stringify({ type: 'sync', n: 7 }), target: ws })")
     pg.wait_for_timeout(200)

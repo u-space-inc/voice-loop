@@ -782,7 +782,10 @@ const ibUndos = new Map();  // 戻せる件: 番号 → { n, title, until }（5 
 let inbox = null, ibSel = null, ibWant = null, ibProj = '', ibOther = false, ibOld = false, ibFyiOpen = false, ibAiOpen = true, ibMsg = null, ibSig = '';
 // 返信先。報告（{ at, about }）か、受け箱の判断待ち（{ item: 番号, about: 題 }）。ハブの会話のときだけ付けて送り、送ったら外す。相手を替えたら外す
 let replyTarget = null;
+let replyGen = 0; // 返信先を選び直した回数（録音の途中で選び直したら、元に戻しても送らない。codex-review 69257ea）
 function setReplyTarget(t) {
+  const same = (!replyTarget && !t) || (replyTarget && t && replyTarget.at === t.at && replyTarget.item === t.item);
+  if (!same) replyGen++;
   replyTarget = t;
   $('replyBar').hidden = !t;
   $('replyTo').textContent = !t ? '' : t.item ? `↩ 判断待ち [${t.item}]「${t.about}」に返信` : '↩ ' + t.about + ' の報告に返信';
@@ -2215,7 +2218,7 @@ async function startRecInner() {
   // 話し始めたら相手の声は止める（ほかの画面の指示は取り消さない）。録音を始めた合図より先に送る（あとに送ると、この録音の受け付けまで
   // 失効させ、読み上げを止めて声で「↩ 返信」した答えが承認に使えない。codex-review bb7be2c）
   if (playing || queue.length) { ws.send(JSON.stringify({ type: 'stop', scope: 'talk' })); stopPlayback(); }
-  const b0 = sendBegin($('agent').value, hid0), rf0 = replyFields();
+  const b0 = sendBegin($('agent').value, hid0), rf0 = replyFields(), rg0 = replyGen;
   utterStops = stops0;
   prime();
   setSession('play-and-record');
@@ -2250,7 +2253,7 @@ async function startRecInner() {
       const rf = replyFields(); // 返信先は、録音を始めたときと同じものが選ばれているときだけ送る
       // 録音の途中で返信先が変わった（選び直した・外れた・途中で選んだ）なら送らない。ふつうの発言として送ると、報告への「はい」が、
       // 前に聞いた別の問いへの答えになりうる（codex-review 62a9436 の P1）
-      if (rf.reply_at !== rf0.reply_at || rf.reply_item !== rf0.reply_item) { setStatus('録音の途中で返信先が変わったので、話した内容は送っていません。返信先を確かめて録り直してください'); return; }
+      if (replyGen !== rg0 || rf.reply_at !== rf0.reply_at || rf.reply_item !== rf0.reply_item) { setStatus('録音の途中で返信先が変わったので、話した内容は送っていません。返信先を確かめて録り直してください'); return; }
       const pane = $('agent').value, key = curKey(), list = attachFiles.slice();
       const files = await sendAttach(pane, list, '話した内容');
       if (!files) return;

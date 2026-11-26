@@ -875,12 +875,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                     wait_idle()  # 切れている間に断られた
                     with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa2:
                         wa2.send_text(json.dumps({"type": "hello", "speaker": 0, "win": win17}))  # あとでつないだ
-                        wa2.send_text(json.dumps({"type": "stop", "n": 6}))
-                        for _ in range(30):
-                            m = json.loads(wa2.receive_text())
-                            got17.append((m.get("type"), m.get("text", "")))
-                            if m.get("type") == "stopped":
-                                break
+                        got17 += read_notice(wa2, lambda t, x: t == "error" and "送信できませんでした" in x, 80)
             finally:
                 lock_go17.set()
                 s.herdr, s.list_agents, s.jsonl_path = real_herdr, real_agents, real_jsonl
@@ -1116,7 +1111,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         # 名乗りへの返事（停止の回数・控えた知らせ）の送りが詰まっても、受信は待たない（そのあと届いた停止を読む。codex-review f25d488 の P1）
         class SlowSock:
             def __init__(self, inbox):
-                self.inbox, self.texts, self.released, self.during = list(inbox), [], asyncio.Event(), []
+                self.inbox, self.texts, self.released, self.during, self.blocking = list(inbox), [], asyncio.Event(), [], asyncio.Event()
 
             async def accept(self):
                 pass
@@ -1125,6 +1120,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                 m = json.loads(t)
                 self.texts.append(m)
                 if m.get("type") == "stopgen" and not self.during:
+                    self.blocking.set()
                     try:  # 名乗りへの返事の送りが詰まっている（上限 1 秒）。詰まっている間に、本体が停止を読んだか
                         await asyncio.wait_for(self.released.wait(), 1)
                     except asyncio.TimeoutError:
@@ -1149,12 +1145,21 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             while s.STOP_GEN["n"] == g_slow and time.monotonic() < end:
                 await asyncio.sleep(0.02)
             slow.released.set()
+            end = time.monotonic() + 2
+            while not slow.during and time.monotonic() < end:  # 結果を控えるまで切らない
+                await asyncio.sleep(0.02)
 
-        slow = SlowSock([{"type": "hello", "speaker": 0, "win": "winslow00001", "sync": True}, {"type": "stop", "n": 31}, stop_read])
+        async def until_blocked():  # 名乗りへの送りが詰まってから、停止を届ける
+            try:
+                await asyncio.wait_for(slow.blocking.wait(), 2)
+            except asyncio.TimeoutError:
+                pass
+
+        slow = SlowSock([{"type": "hello", "speaker": 0, "win": "winslow00001", "sync": True}, until_blocked, {"type": "stop", "n": 31}, stop_read])
         asyncio.run(s.ws(slow))
         s.PANE_LOCKS.clear()
         s.ACCEPT_LOCKS.clear()
-        check("名乗りへの返事の送りが詰まっていても、そのあと届いた停止を読む", slow.during, [True])
+        check("名乗りへの返事の送りが詰まっていても、そのあと届いた停止を読む", (slow.blocking.is_set(), slow.during[:1]), (True, [True]))
         # 停止の確定は、操作の送り始め（確かめてから herdr を起動するまで）と同じ鍵の中で行う。送り始めの途中なら、停止はそれを待ってから番号を進める
         # （「止めました」と出たあとに、止めた発言での操作を始めない。codex-review 635eea0 の P1）
         g_lock = s.STOP_GEN["n"]
