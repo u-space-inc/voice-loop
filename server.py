@@ -3731,15 +3731,22 @@ async def ws(sock: WebSocket):
                     client.visible = d.get("visible") is True and client.kind == "screen"
                     client.sync = d.get("sync") is True  # 同期の合図を返す画面か（更新前の画面・機械は返さない）
                     client.seen = time.time()
-                    with contextlib.suppress(Exception):  # いまの停止の回数（画面は発言を始めた合図に付ける）
-                        await send(type="stopgen", n=STOP_GEN["n"])
                     notes = UNSENT_NOTICES.pop(win_of(client), [])  # この窓に届けられずに控えていた、指示の行方の知らせ
-                    for i, note in enumerate(notes):
-                        try:
-                            await send(**note)
-                        except Exception:  # 名乗った直後にまた切れた。送れなかった分は控えに戻す（次に名乗ったときに届ける。a2a 6604a50a の 4 回目）
-                            UNSENT_NOTICES.setdefault(win_of(client), [])[:0] = notes[i:]
-                            break
+
+                    async def greet(notes=notes, win=win_of(client)):
+                        with contextlib.suppress(Exception):  # いまの停止の回数（画面は発言を始めた合図に付ける）
+                            await send(type="stopgen", n=STOP_GEN["n"])
+                        for i, note in enumerate(notes):
+                            try:
+                                await send(**note)
+                            except Exception:  # 名乗った直後にまた切れた。送れなかった分は控えに戻す（次に名乗ったときに届ける。a2a 6604a50a の 4 回目）
+                                UNSENT_NOTICES.setdefault(win, [])[:0] = notes[i:]
+                                break
+                    # 名乗りへの返事は別の仕事で送る（送りが詰まっても、受信を待たせない。その間に届いた停止を読む前に、承認に答える・
+                    # 閉じるが進まないように。codex-review f25d488 の P1）
+                    task = asyncio.create_task(greet())
+                    _tasks.add(task)
+                    task.add_done_callback(_tasks.discard)
                     continue
                 if d["type"] == "stop":
                     # scope=talk: 話し始めるときに、画面が再生だけを止めた（この画面の分だけ。ほかの画面の送る前の指示は取り消さない。codex-review dad00a5）

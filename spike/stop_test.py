@@ -1106,6 +1106,48 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         held_before = hm.HEARD_AT.get(g_rep)
         asyncio.run(hm.TALKER.report_end("done", "別件の報告です", "proj", True))
         check("報告をまたいだ発言には、受け付けたときに控えた前の問いを引き渡さない", (held_before, hm.HEARD_AT.get(g_rep, "")), (Q, ""))
+        # 名乗りへの返事（停止の回数・控えた知らせ）の送りが詰まっても、受信は待たない（そのあと届いた停止を読む。codex-review f25d488 の P1）
+        class SlowSock:
+            def __init__(self, inbox):
+                self.inbox, self.texts, self.released, self.during = list(inbox), [], asyncio.Event(), []
+
+            async def accept(self):
+                pass
+
+            async def send_text(self, t):
+                m = json.loads(t)
+                self.texts.append(m)
+                if m.get("type") == "stopgen" and not self.during:
+                    try:  # 名乗りへの返事の送りが詰まっている（上限 1 秒）。詰まっている間に、本体が停止を読んだか
+                        await asyncio.wait_for(self.released.wait(), 1)
+                    except asyncio.TimeoutError:
+                        pass
+                    self.during.append(s.STOP_GEN["n"] != g_slow)
+
+            async def send_bytes(self, b):
+                pass
+
+            async def receive(self):
+                while self.inbox:
+                    m = self.inbox.pop(0)
+                    if not callable(m):
+                        return {"type": "websocket.receive", "text": json.dumps(m)}
+                    await m()
+                return {"type": "websocket.disconnect"}
+
+        g_slow, read_slow = s.STOP_GEN["n"], []
+
+        async def stop_read():
+            end = time.monotonic() + 2
+            while s.STOP_GEN["n"] == g_slow and time.monotonic() < end:
+                await asyncio.sleep(0.02)
+            slow.released.set()
+
+        slow = SlowSock([{"type": "hello", "speaker": 0, "win": "winslow00001", "sync": True}, {"type": "stop", "n": 31}, stop_read])
+        asyncio.run(s.ws(slow))
+        s.PANE_LOCKS.clear()
+        s.ACCEPT_LOCKS.clear()
+        check("名乗りへの返事の送りが詰まっていても、そのあと届いた停止を読む", slow.during, [True])
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
