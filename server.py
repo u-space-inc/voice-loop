@@ -1433,6 +1433,24 @@ class Client:
 
 
 CLIENTS: set[Client] = set()
+# 窓の印ごとの、まだ届けていない知らせ（ハブ以外への指示を送らなかった・送れなかった。その窓の画面がつながっていなかった）。
+# 次にその窓が名乗ったときに届ける（つなぎ直した・読み込み直した画面にも、指示の行方を伝える。a2a 6604a50a の 3 回目）
+UNSENT_NOTICES: dict[str, list[dict]] = {}
+
+
+async def tell_window(win: str, **msg):
+    """窓の印 win の画面に知らせる（つなぎ直した画面にも）。どの画面もつながっていなければ控え、次に名乗ったときに届ける。"""
+    sent = False
+    for c in [c for c in list(CLIENTS) if win_of(c) == win]:
+        with contextlib.suppress(Exception):
+            await c.send(**msg)
+            sent = True
+    if not sent:
+        q = UNSENT_NOTICES.setdefault(win, [])
+        q.append(msg)
+        del q[:-5]
+        while len(UNSENT_NOTICES) > 50:  # 古い窓の分から捨てる
+            UNSENT_NOTICES.pop(next(iter(UNSENT_NOTICES)))
 PANE_LOCKS: dict[str, asyncio.Lock] = {}  # ひとつのセッションへの「送って返信を読む」は同時に1件だけ
 REPORTING = False  # ハブが自動通知に応答している最中か
 REPORT_IDLE: asyncio.Event | None = None  # 報告が終わったときに立つ（Slack から来た送信が、報告の終わりを待つのに使う）。イベントループの中で作る
@@ -3517,7 +3535,7 @@ async def ws(sock: WebSocket):
                 exc = f.exception()
                 st, why = ("error", f"{type(exc).__name__}: {exc}") if exc is not None else f.result()
                 if st == "error":
-                    t = asyncio.ensure_future(send(type="error", text=f"送信できませんでした: {why}"[:300]))
+                    t = asyncio.ensure_future(tell_window(win_of(client), type="error", text=f"送信できませんでした: {why}"[:300]))  # 切れてつなぎ直した画面にも
                     _tasks.add(t)
                     t.add_done_callback(_tasks.discard)
 
@@ -3602,8 +3620,7 @@ async def ws(sock: WebSocket):
 
     def notify_unsent(text: str = "送る前に取り消したので、セッションへの前の指示は送っていません"):
         async def tell():
-            with contextlib.suppress(Exception):  # 画面が切れていれば知らせない
-                await send(type="error", text=text)
+            await tell_window(win_of(client), type="error", text=text)  # 窓の印で届ける（切れてつなぎ直した画面にも。つながっていなければ控える）
         task = asyncio.create_task(tell())
         _tasks.add(task)
         task.add_done_callback(_tasks.discard)
@@ -3660,6 +3677,9 @@ async def ws(sock: WebSocket):
                     # visible を送らない古い画面は、見えていないものとして扱う（通知を止めない）。機械は見えている画面に数えない
                     client.visible = d.get("visible") is True and client.kind == "screen"
                     client.seen = time.time()
+                    for note in UNSENT_NOTICES.pop(win_of(client), []):  # この窓に届けられずに控えていた、指示の行方の知らせ
+                        with contextlib.suppress(Exception):
+                            await send(**note)
                     continue
                 if d["type"] == "stop":
                     # scope=talk: 話し始めるときに、画面が再生だけを止めた（この画面の分だけ。ほかの画面の送る前の指示は取り消さない。codex-review dad00a5）

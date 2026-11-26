@@ -789,6 +789,100 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             lock_go16.set()
             s.herdr, s.list_agents, s.jsonl_path = real_herdr, real_agents, real_jsonl
         check("「送りました」と出たハブ以外への指示は、鍵を待つ間に画面が切れても送る", (sent_shown is not None, prompts16), (True, ["鍵を待つ間に切れる指示"]))
+        # 指示の行方の知らせ（送れなかった・送らなかった）は、窓の印で届ける。切れてつなぎ直した画面にも届き、どの画面もつながっていなければ
+        # 控えて、次にその窓が名乗ったときに届ける（a2a 6604a50a の 3 回目。D-009 の場合も同じ）
+        for label, reconnect_before in (("つなぎ直してから断られた", True), ("切れている間に断られた", False)):
+            check(f"（前提）前の試験の直接の指示が片づいている（{label}）", wait_idle(), True)
+            lock_go17, lock_in17 = threading.Event(), threading.Event()
+
+            async def hold_lock17(lock_go17=lock_go17, lock_in17=lock_in17):
+                async with s.pane_lock("w9:p1"):
+                    lock_in17.set()
+                    await asyncio.to_thread(lock_go17.wait, 5)
+
+            win17 = ("winreconnect01" if reconnect_before else "winqueued0001")
+            s.herdr = lambda *a, **k: {"error": {"code": "agent_busy", "message": "受け付けません"}} if a[:2] == ("agent", "prompt") else {"result": {}}
+            s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+            s.jsonl_path = lambda a: None
+            got17 = []
+            try:
+                held17 = c.portal.start_task_soon(hold_lock17)
+                check(f"（前提）セッションの鍵がふさがっている（{label}）", lock_in17.wait(5), True)
+                with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                    wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": win17}))
+                    wa.send_text(json.dumps({"type": "begin", "b": 980, "pane": "w9:p1", "hid": -1}))
+                    wa.send_text(json.dumps({"type": "text", "text": f"断られる指示（{label}）", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 980}))
+                    for _ in range(30):
+                        m = json.loads(wa.receive_text())
+                        if m.get("type") == "status" and "送りました" in m.get("text", ""):
+                            break
+                time.sleep(0.3)  # 画面 A が切れた
+                if reconnect_before:
+                    with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa2:
+                        wa2.send_text(json.dumps({"type": "hello", "speaker": 0, "win": win17}))  # 同じ窓でつなぎ直した
+                        time.sleep(0.3)
+                        lock_go17.set()
+                        held17.result(timeout=10)
+                        wait_idle()  # 断られるまで（ここで止めると、断られる前に取り消してしまう）
+                        wa2.send_text(json.dumps({"type": "stop", "n": 5}))  # 読み終わりの目印
+                        for _ in range(30):
+                            m = json.loads(wa2.receive_text())
+                            got17.append((m.get("type"), m.get("text", "")))
+                            if m.get("type") == "stopped":
+                                break
+                else:
+                    lock_go17.set()
+                    held17.result(timeout=10)
+                    wait_idle()  # 切れている間に断られた
+                    with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa2:
+                        wa2.send_text(json.dumps({"type": "hello", "speaker": 0, "win": win17}))  # あとでつないだ
+                        wa2.send_text(json.dumps({"type": "stop", "n": 6}))
+                        for _ in range(30):
+                            m = json.loads(wa2.receive_text())
+                            got17.append((m.get("type"), m.get("text", "")))
+                            if m.get("type") == "stopped":
+                                break
+            finally:
+                lock_go17.set()
+                s.herdr, s.list_agents, s.jsonl_path = real_herdr, real_agents, real_jsonl
+            check(f"指示の行方の知らせは窓の印で届ける（{label}）", any(t == "error" and "送信できませんでした" in x for t, x in got17), True)
+        # 切れてつなぎ直した画面にも、別の画面の停止で取り消した指示の知らせが届く（もとの D-009 の場合。窓の印で届ける）
+        check("（前提）前の試験の直接の指示が片づいている（つなぎ直した画面への取り消しの知らせ）", wait_idle(), True)
+        prompts18, gate18, entered18 = [], threading.Event(), threading.Event()
+
+        def waiting_if_still18(still, fn, *a):
+            entered18.set()
+            gate18.wait(5)
+            return real_if(still, fn, *a)
+
+        s._if_still, s.jsonl_path = waiting_if_still18, (lambda a: None)
+        s.herdr = lambda *a, **k: (prompts18.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        got18 = []
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winreconnect02"}))
+                wa.send_text(json.dumps({"type": "begin", "b": 990, "pane": "w9:p1", "hid": -1}))
+                wa.send_text(json.dumps({"type": "text", "text": "つなぎ直した画面で取り消す指示", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 990}))
+                check("（前提）送るスレッドの手前で待っている（つなぎ直す前）", entered18.wait(5), True)
+            time.sleep(0.3)
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa2:
+                wa2.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winreconnect02"}))
+                time.sleep(0.2)
+                with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+                    wb.send_text(json.dumps({"type": "stop", "n": 7}))
+                    receive_until(wb, "stopped")
+                gate18.set()
+                wa2.send_text(json.dumps({"type": "stop", "n": 8}))  # 読み終わりの目印
+                for _ in range(30):
+                    m = json.loads(wa2.receive_text())
+                    got18.append((m.get("type"), m.get("text", "")))
+                    if m.get("type") == "stopped":
+                        break
+        finally:
+            gate18.set()
+            s._if_still, s.herdr, s.list_agents, s.jsonl_path = real_if, real_herdr, real_agents, real_jsonl
+        check("切れてつなぎ直した画面にも、別の画面の停止で取り消した指示の知らせが届く", (prompts18, any("送っていません" in x for t, x in got18)), ([], True))
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
