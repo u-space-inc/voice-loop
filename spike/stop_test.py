@@ -2036,6 +2036,13 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.UNSURE_UNTIL["t"] = 0.0
         check("herdr の返事の欄の形が違っても、送り途中の印は外し、確かめられないとする",
               (len(odd_held), odd_held[0].is_set() if odd_held else None, getattr(odd_held[0], "ok", None) if odd_held else None, len(s.HELD_OPS)), (1, True, False, 0))
+        # 止めたら、取り消しにくい操作の聞き返し・閉じるの聞き返しの記録も消す（止める前の聞き返しで、止めたあとの「はい」を 2 段目として通さない。codex-review c84b1f5 の P1）
+        s.CONFIRMING["w9:p1"] = ("fp-before-stop", "t-before-stop")
+        s.CLOSING["w9:p1"] = (("/x/proj", "s1"), "t-before-stop")
+        with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wl:
+            wl.send_text(json.dumps({"type": "stop", "n": 150}))
+            receive_until(wl, "stopped")
+        check("止めたら、取り消しにくい操作の聞き返し・閉じるの聞き返しの記録を消す", ("w9:p1" in s.CONFIRMING, "w9:p1" in s.CLOSING), (False, False))
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
@@ -2052,7 +2059,8 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                     break
         finally:
             s.herdr, s.list_agents = real_herdr, real_agents
-        check("合図の無い更新前の画面の添付つきの直接の指示は送らず、読み込み直しを頼む", (prompts13, any("読み込み直して" in x for t, x in seen13)), ([], True))
+        check("合図の無い更新前の画面の添付つきの直接の指示は送らず、読み込み直しを error で頼む（状態の欄を戻す。codex-review c84b1f5）",
+              (prompts13, any(t == "error" and "読み込み直して" in x for t, x in seen13)), ([], True))
         # 合図の無い更新前の画面の声の直接の指示も、録音を始めた時点が分からないので送らず、読み込み直しを頼む（a2a 4135f4c2 の 3 回目）
         prompts14 = []
         s.herdr = lambda *a, **k: (prompts14.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]

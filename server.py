@@ -3965,7 +3965,8 @@ async def ws(sock: WebSocket):
         async def tell():
             # 窓の印で届ける（切れてつなぎ直した画面にも。つながっていなければ控える）。notice は会話の欄に出すだけで、停止の結果の表示（止めました・
             # 確かめの頼み）を消さない（codex-review 5fff07e）
-            await tell_window(win_of(client), type="notice", text=text, **({"b": b} if b is not None else {}), **({"pg": pg} if pg else {}))
+            # 合図の番号を送らない更新前の画面には、これまでどおり error で知らせる（状態の欄を戻す。notice では「考え中」が残る。codex-review c84b1f5）
+            await tell_window(win_of(client), type="notice" if b is not None else "error", text=text, **({"b": b} if b is not None else {}), **({"pg": pg} if pg else {}))
         task = asyncio.create_task(tell())
         _tasks.add(task)
         task.add_done_callback(_tasks.discard)
@@ -4060,6 +4061,10 @@ async def ws(sock: WebSocket):
                                 drop_pending(pend)
                             for t in TALKERS.values():  # 利用者は、読まれていた返事・まだ届いていない返事を聞いていない（承認に答える・閉じるの守り）
                                 t.stopped()
+                            # 取り消しにくい操作の聞き返し・閉じるの聞き返しの記録も消す（止める前の聞き返しで、止めたあとの「はい」を 2 段目として
+                            # 通さない。止めたあとは最初から確かめる。codex-review c84b1f5 の P1）
+                            CONFIRMING.clear()
+                            CLOSING.clear()
                         # 停止の回数を全部の画面に知らせる（画面は発言を始めた合図に付けて送る。最新の停止を知らずに始めた発言は、通信が遅れて停止の
                         # あとに届いても、停止をまたいだものとして見分ける。codex-review 6b2ddfe の P1）。送るのは別の仕事で（遅い画面に待たされない）
                         task = asyncio.create_task(tell_stop_gen(STOP_GEN["n"]))
