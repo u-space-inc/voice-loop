@@ -1495,6 +1495,114 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         check("指示を送るのは、待たずに送り、そのあと working を待ってから終わりを待つ", (calls_ask, got_ask[0]),
               ([("agent", "prompt", "w9:p1", "送る指示"), ("agent", "wait", "w9:p1", "--until", "working", "--until", "blocked", "--timeout", "5000"),
                 ("agent", "wait", "w9:p1", "--timeout", "600000")], "done"))
+        # 合図の無い発言が受け付けの鍵を待つ間に止めたら、その指示は送らずに知らせ、ハブへの「はい」もいまの発言にしない。合図の無い次の発言は、
+        # 鍵を待つ前に前の指示を取り消す（codex-review 31c9e1c）
+        check("（前提）前の試験の直接の指示が片づいている（受け付けの鍵の待ち）", wait_idle(), True)
+        real_admit31 = s.admit_async
+        gate31, slow31 = threading.Event(), {"on": False}
+
+        async def slow_admit31(seen=None):
+            if slow31["on"]:
+                await asyncio.to_thread(gate31.wait, 5)
+            return await real_admit31(seen)
+
+        prompts31 = []
+        real_herdr31, real_attach31 = s.herdr, s.attachment_lines
+        s.admit_async = slow_admit31
+        s.herdr = lambda *a, **k: (prompts31.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        got31, hub_cur31, dropped_before31, voice_cur31 = [], None, None, None
+        try:
+            slow31["on"] = True
+            gate31.clear()
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winlegacy0001"}))
+                wa.send_text(json.dumps({"type": "text", "text": "鍵を待つ間に止める指示", "pane": "w9:p1", "speaker": 0}))  # 合図の無い文字の指示
+                time.sleep(0.2)
+                with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+                    wb.send_text(json.dumps({"type": "stop", "n": 101}))
+                    receive_until(wb, "stopped")
+                gate31.set()
+                time.sleep(0.3)
+                wait_idle()  # 送る仕事が終わるまで待つ（送ってしまう作りなら、ここで送られる。知らせを読む停止で取り消させない）
+                got31 = read_notice(wa, lambda t, x: "送っていません" in x, 110)
+            check("（前提）鍵を待つ間に止めた指示が片づいた", wait_idle(), True)
+            gate31.clear()
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "text", "text": "はい（鍵を待つ間に止める）", "pane": hm.HERMES_PANE, "speaker": 0}))
+                time.sleep(0.2)
+                with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+                    wb.send_text(json.dumps({"type": "stop", "n": 102}))
+                    receive_until(wb, "stopped")
+                gate31.set()
+                row31 = row_of("はい（鍵を待つ間に止める）")
+                hub_cur31 = s.HUB.current(row31[0]) if row31 else None
+            # 声も同じ（合図の無い声の頭が受け付けの鍵を待つ間に止めたら、その声の「はい」はいまの発言にしない）
+            gate31.clear()
+            real_transcribe31 = s.transcribe
+            s.transcribe = lambda audio, filename: "はい（声で鍵を待つ間に止める）"
+            try:
+                with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                    wa.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm"}))
+                    wa.send_bytes(b"0" * 4000)
+                    time.sleep(0.2)
+                    with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+                        wb.send_text(json.dumps({"type": "stop", "n": 103}))
+                        receive_until(wb, "stopped")
+                    gate31.set()
+                    receive_until(wa, "transcript")
+                    vrow31 = row_of("はい（声で鍵を待つ間に止める）")
+                    voice_cur31 = s.HUB.current(vrow31[0]) if vrow31 else None
+            finally:
+                s.transcribe = real_transcribe31
+            check("（前提）前の試験の直接の指示が片づいている（前の指示の取り消し）", wait_idle(), True)
+            slow31["on"] = False
+            att_go31, att_in31 = threading.Event(), threading.Event()
+
+            async def held_attach31(ids, talker, pane=""):
+                att_in31.set()
+                await asyncio.to_thread(att_go31.wait, 5)
+                return "", ""
+
+            s.attachment_lines = held_attach31
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winlegacy0002"}))
+                wa.send_text(json.dumps({"type": "begin", "b": 1, "pane": "w9:p1", "hid": -1}))
+                wa.send_text(json.dumps({"type": "text", "text": "前の指示（添付を用意中）", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 1}))
+                check("（前提）前の指示が添付の用意で止まっている", att_in31.wait(5), True)
+                entry31 = next(iter(s.DIRECT_PENDING.values()), None)
+                slow31["on"] = True
+                gate31.clear()
+                wa.send_text(json.dumps({"type": "text", "text": "次の合図の無い発言", "pane": "w9:p1", "speaker": 0}))
+                time.sleep(0.2)
+                dropped_before31 = entry31["dropped"] if entry31 else None
+                gate31.set()
+                att_go31.set()
+                time.sleep(0.3)
+        finally:
+            gate31.set()
+            s.admit_async, s.herdr, s.attachment_lines, s.list_agents = real_admit31, real_herdr31, real_attach31, real_agents
+        check("合図の無い発言が受け付けの鍵を待つ間に止めたら、指示は送らずに知らせ、ハブへの「はい」もいまの発言にしない。次の合図の無い発言は、鍵を待つ前に前の指示を取り消す",
+              (any("鍵を待つ間に止める指示" in x for x in prompts31), any("送っていません" in x for t, x in got31), hub_cur31, voice_cur31, dropped_before31),
+              (False, True, False, False, True))
+        # 指示の送りの、確定待ちの停止の上限は、鍵を取る前から数える（ほかの操作が鍵を長く持っていても、上限で送らずに返る。codex-review 31c9e1c）
+        dl_started = []
+        real_popen5 = s.subprocess.Popen
+        s.subprocess.Popen = lambda *a, **k: (dl_started.append(1), None)[1]
+        s.COMMIT_LOCK.acquire()
+        rel5 = threading.Timer(1.0, s.COMMIT_LOCK.release)
+        rel5.start()
+        s.PENDING["stop"], wait5 = 1, s.PENDING_WAIT
+        s.PENDING_WAIT = 0.2
+        t5 = time.time()
+        try:
+            r_dl = s._if_still(lambda: True, functools.partial(s._HERDR, timeout=30), "agent", "prompt", "w9:p1", "x")
+        finally:
+            el5 = time.time() - t5
+            s.PENDING_WAIT, s.PENDING["stop"] = wait5, 0
+            rel5.join()
+            s.subprocess.Popen = real_popen5
+        check("指示の送りの上限は鍵を取る前から数え、上限で送らずに返る", ((r_dl or {}).get("error", {}).get("code"), el5 < 0.6, dl_started), ("stop_pending", True, []))
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]

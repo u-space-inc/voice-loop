@@ -233,23 +233,30 @@ UNSURE_UNTIL = {"t": 0.0}
 HELD_OPS: set[threading.Event] = set()  # 起動して、まだ返っていない承認のキー・閉じる（返ったら立つ印）
 
 
+def _acquire_for_send(end: float) -> bool:
+    """指示を送るための鍵を取る。確定待ちの停止がある間は取らずに待ち、期限（end）を過ぎても確定待ちの停止があれば False（鍵は持たない）。"""
+    while True:
+        if COMMIT_LOCK.acquire(timeout=0.1):
+            if not PENDING["stop"]:
+                return True
+            COMMIT_LOCK.release()
+            if time.monotonic() >= end:
+                return False
+            time.sleep(0.02)
+        elif PENDING["stop"] and time.monotonic() >= end:
+            return False
+
+
 def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False, wait_lock: bool = False) -> dict | None:
     """鍵の中で確かめて herdr を起動し、起動したら鍵を放す（鍵は短く持つ。停止・次の発言の受け付けを待たせない）。確かめが False なら起動せずに None。
     wait_lock でなければ（承認のキー・閉じる）、鍵が空いていなければ待たずに断る（待つ間に相手・問いが入れ替わらないように。codex-review e749b6a の P1）。
     wait_lock なら（ハブ以外への指示を送る）、鍵が空くのを待つ。hold なら、返るまで送り途中の印を持つ（停止は、送り途中の操作が返るのを待ってから
     「止めました」と返す。起動しただけでは herdr がまだ受け取っていないことがあり、「止めました」のあとに届かないように。codex-review b7bf623・57c6291 の P1）"""
     if wait_lock:
-        COMMIT_LOCK.acquire()
         # 確定待ちの停止があれば、鍵をいったん放して確定を待つ（停止の側が送る前の指示を取り消して「送っていません」と知らせる。ここで黙って
-        # 送らずに終えると、知らせがどこからも出ない。codex-review a1fa82c）。上限を過ぎても確定しなければ送らず、送れなかったと返す（送る仕事の
-        # 終わりで「送信できませんでした」と知らせる。codex-review 070146f）
-        end = time.monotonic() + PENDING_WAIT
-        while PENDING["stop"] and time.monotonic() < end:
-            COMMIT_LOCK.release()
-            time.sleep(0.02)
-            COMMIT_LOCK.acquire()
-        if PENDING["stop"]:
-            COMMIT_LOCK.release()
+        # 送らずに終えると、知らせがどこからも出ない。codex-review a1fa82c）。上限（鍵を取る前から数える）を過ぎても確定しなければ送らず、
+        # 送れなかったと返す（送る仕事の終わりで「送信できませんでした」と知らせる。codex-review 070146f・31c9e1c）
+        if not _acquire_for_send(time.monotonic() + PENDING_WAIT):
             return {"error": {"code": "stop_pending", "message": "止める操作の確定を待ちきれなかったので、送っていません"}}
     elif not COMMIT_LOCK.acquire(blocking=False):
         return None
@@ -3989,19 +3996,24 @@ async def ws(sock: WebSocket):
                 pending = d  # {"type":"turn", pane, speaker, filename} → 次のバイナリが音声
                 if d["type"] == "turn":  # 声の発言の頭が届いた。受け付けの番号はここで取る（聞き取りの間に届いた前の往復の返事を、聞いた文にしない）
                     crossed, adm, legacy = take_begin(d)
+                    sg0 = STOP_GEN["n"]  # 受け付けの鍵を待つ前に、停止の回数を控える（待つ間に止めたら、この発言のハブ以外への指示は送らない。codex-review 31c9e1c）
+                    drop_direct()  # 次の発言を読んだ。この画面の前の、まだ送っていないハブ以外への指示は、鍵を待つ前に送らずに知らせる（codex-review c72fbbe・31c9e1c）
                     pending = {**d, "_admitted": adm if adm is not None else await admit_async(heard_seen(d)), "_via": "device" if client.kind == "device" else "",
-                               "_stopgen": STOP_GEN["n"], "_crossed": crossed, "_legacy": legacy,
+                               # 受け付けの鍵を待つ間に止めたら、停止をまたいだ発言にする（ハブへの「はい」でも、承認に答える・閉じるに使わない）
+                               "_stopgen": sg0, "_crossed": crossed or STOP_GEN["n"] != sg0, "_legacy": legacy,
                                # 合図の無い更新前の画面の声（機械の口の接続は除く）は、録音を始めた時点が分からない。ハブ以外への直接の指示なら送らない（a2a 4135f4c2 の 3 回目）
                                "_legacy_drop": legacy and not client.bound}
-                    drop_direct()  # 次の発言を受け付けた。この画面の前の、まだ送っていないハブ以外への指示は送らずに知らせる（文字と同じ。codex-review c72fbbe）
                     left_hub(str(d.get("pane", "")))
                 if d["type"] == "text":
                     crossed, adm, legacy = take_begin(d)  # 合図があれば、受け付けは合図を受けたときのもの（前の問いの取り消しも済んでいる）
+                    sg0 = STOP_GEN["n"]  # 受け付けの鍵を待つ前に、停止の回数を控える（待つ間に止めたら、この発言のハブ以外への指示は送らない。codex-review 31c9e1c）
                     if adm is None and HUB.on():  # 合図の無い文字の発言。受け付けはここで（鍵の空きを、イベントループを止めずに待つ）
+                        drop_direct()  # 前の、まだ送っていないハブ以外への指示は、鍵を待つ前に送らずに知らせる（codex-review 31c9e1c）
                         adm = await admit_async(heard_seen(d))
                         left_hub(str(d.get("pane", "")))
+                        crossed = crossed or STOP_GEN["n"] != sg0  # 鍵を待つ間に止めたら、停止をまたいだ発言にする（ハブへの「はい」でも、承認に答える・閉じるに使わない）
                     start_turn(d["text"], d["pane"], int(d["speaker"]), d.get("key"), reply_at_of(d), attachments_of(d), reply_item_of(d), seen=heard_seen(d),
-                               crossed=crossed, admitted=adm, legacy=legacy)
+                               crossed=crossed, admitted=adm, legacy=legacy, stopgen=sg0)
                 continue
             if msg.get("bytes") is not None and pending.get("type") == "dropped":
                 pending = {}
