@@ -323,6 +323,17 @@ sync_got.append(("待ちのあとに読む", hub("yes").get("reason"), list(stat
 s._worker = real_worker
 s.SETTLING.pop(779, None)
 s.SETTLE_LIMIT, s.SETTLE_LAST["n"] = limit0, -1
+# 取り消しにくい操作の聞き返しは、登録する直前にもいまの発言か確かめる（読み取りの間に止めたら、止める前の要求で登録し直さない。codex-review ab8a5e5 の P1）
+case("取り消しにくい承認（読み取りの間に止めた）", screen=RISKY)
+fp_r = prompt()["fp"]
+s.SEEN_PROMPT["w9:p1"] = (fp_r, "t1", "sess-1"); state["sent"].clear(); s.ANSWERED.clear(); s._answer_lock = asyncio.Lock()
+s.CONFIRMING.pop("w9:p1", None)
+cur_calls = []
+s.hub_current = lambda turn: (cur_calls.append(1), len(cur_calls) == 1)[1]  # 1 回目（入口の後）はいまの発言、そのあと止めた
+risky_got = (hub("yes").get("reason"), "w9:p1" in s.CONFIRMING, list(state["sent"]))
+s.hub_current = lambda turn: True
+check("取り消しにくい操作の聞き返しは、登録する直前に止めていたら登録しない", risky_got, ("stopped", False, []))
+case("止めたあと", screen=PERMISSION)  # 続く試験の画面に戻す
 # 画面との同期は、画面のボタンと共有する鍵を取る前に待つ（待つ間に、ほかの画面のボタンを止めない。codex-review 8093b0b）
 s.SETTLE_LIMIT, s.SETTLE_LAST["n"] = 0.6, 780
 s.SETTLING[780] = [threading.Event(), None]

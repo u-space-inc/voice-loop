@@ -122,6 +122,12 @@ sync_got.append((*close(confirmed=True), read_after[:1]))
 s._worker = real_worker
 s.SETTLING.pop(s.SETTLE_LAST["n"], None)
 s.SETTLE_LIMIT, s.SETTLE_LAST["n"] = limit0, -1
+# 閉じるの聞き返しは、登録する直前にもいまの発言か確かめる（止める前の要求で登録し直さない。codex-review ab8a5e5）
+s.CLOSED.discard("w9:p1")
+say("テストのセッションを閉じて", ASK)
+s.CLOSING.pop("w9:p1", None)
+s.hermes.hermes_admit()  # 読み取りの間に止めた・次の発言をした（その発言はもういまの発言ではない）
+check("閉じるの聞き返しは、いまの発言でなくなっていたら登録しない", (close()[0], "w9:p1" in s.CLOSING), ("stopped", False))
 # ほかの操作の途中（鍵が使われている）で閉じなかったら、止めたのではなく busy と返す（codex-review 5fff07e）
 s.CLOSED.discard("w9:p1")
 asked()

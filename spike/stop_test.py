@@ -1651,31 +1651,48 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         check("受け付けは読んだ順に 1 つずつ確定する（先に読んだ発言の番号が小さい）", asyncio.run(order_case()), (1, True))
         # 指示の送りは、確定待ちの停止が無いのを見て送ると決めるまでを、停止を読んだ印と並べる。見たあとに停止を読んだら、送らずに確定を待つ
         # （codex-review 27fc1d4 の P2）
-        real_afs, inject = s._acquire_for_send, {"done": False}
+        inject = {"done": False}
         still_calls = []
 
-        def afs_then_stop(end):
-            ok = real_afs(end)
-            if ok and not inject["done"]:  # 鍵を取った直後に、本体が停止を読んだ
-                inject["done"] = True
-                s.PENDING["stop"] = 1
+        class InjectLock:  # 鍵を取った直後に、本体が停止を読んだ（鍵をすぐ取れた道でも）
+            def __init__(self, real):
+                self.real = real
 
-                def finish():
-                    time.sleep(0.3)
-                    s.PENDING["stop"] = 0
+            def acquire(self, blocking=True, timeout=-1):
+                ok = self.real.acquire(blocking, timeout) if blocking else self.real.acquire(False)
+                if ok and not inject["done"]:
+                    inject["done"] = True
+                    s.PENDING["stop"] = 1
 
-                threading.Thread(target=finish).start()
-            return ok
+                    def finish():
+                        time.sleep(0.3)
+                        s.PENDING["stop"] = 0
+
+                    threading.Thread(target=finish).start()
+                return ok
+
+            def release(self):
+                self.real.release()
+
+            def locked(self):
+                return self.real.locked()
+
+            def __enter__(self):
+                self.acquire()
+                return self
+
+            def __exit__(self, *a):
+                self.release()
 
         sent6 = []
-        real_popen6 = s.subprocess.Popen
+        real_popen6, real_lock6 = s.subprocess.Popen, s.COMMIT_LOCK
         s.subprocess.Popen = lambda *a, **k: (sent6.append(1), None)[1]
-        s._acquire_for_send = afs_then_stop
+        s.COMMIT_LOCK = InjectLock(real_lock6)
         t6 = time.time()
         try:
             r6 = s._if_still(lambda: (still_calls.append(round(time.time() - t6, 2)), False)[1], functools.partial(s._HERDR, timeout=30), "agent", "prompt", "w9:p1", "x")
         finally:
-            s._acquire_for_send, s.subprocess.Popen = real_afs, real_popen6
+            s.COMMIT_LOCK, s.subprocess.Popen = real_lock6, real_popen6
             s.PENDING["stop"] = 0
         check("送ると決める前に停止を読んだら、送りを確定せずに停止の確定を待ってから確かめる",
               (r6, sent6, len(still_calls), bool(still_calls) and still_calls[0] >= 0.25), (None, [], 1, True))
@@ -1783,6 +1800,16 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             got16 = asyncio.run(s.ask({"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}, "送る指示"))
         finally:
             s.herdr, s.jsonl_path = real_herdr16, real_jsonl16
+        # 送って見届ける待ちが時間切れ・中身の分からない返事なら、届いたか分からない（unknown）。はっきり断ったなら error（codex-review ab8a5e5）
+        outs17 = []
+        for resp in ({"error": {"code": "timeout"}}, {"raw": "中身の分からない返事", "code": 0}, {"error": {"code": "agent_blocked"}}):
+            s.herdr = lambda *a, resp=resp, **k: resp if a[:2] == ("agent", "prompt") else {"result": {"agent": {"agent_status": "idle"}}}
+            s.jsonl_path = lambda a: None
+            try:
+                outs17.append(asyncio.run(s.ask({"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}, "送る指示"))[0])
+            finally:
+                s.herdr, s.jsonl_path = real_herdr16, real_jsonl16
+        check("送って見届ける待ちが時間切れ・中身の分からない返事なら unknown、はっきり断ったなら error", outs17, ["unknown", "unknown", "error"])
         check("送ったあと返事を待てなかったら、unanswered を返す", (got16[0], calls16), ("unanswered", [("agent", "prompt"), ("agent", "wait")]))
         check("（前提）前の試験の仕事が片づいている（返事を確かめられない知らせ）", wait_idle(), True)
 
@@ -1978,7 +2005,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         outside = list(verify_seen)
         verify_seen.clear()
         s.COMMIT_LOCK.acquire()
-        relq = threading.Timer(0.8, s.COMMIT_LOCK.release)  # 鍵がほかで長く使われている
+        relq = threading.Timer(0.2, s.COMMIT_LOCK.release)  # 鍵がほかで使われている（短くても、待ったら確かめ直す。codex-review ab8a5e5）
         relq.start()
         try:
             r_q = s._if_still(lambda: True, functools.partial(s._HERDR, timeout=30), "agent", "prompt", "w9:p1", "x")
@@ -1986,7 +2013,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.ASK_VERIFY.reset(tokq)
             relq.join()
             s.subprocess.Popen = real_popen_q
-        check("送り先の確かめは鍵の外で行い、鍵を取るまでが長かったら確かめ直す",
+        check("送り先の確かめは鍵の外で行い、鍵をすぐ取れなかったら（待ったのが短くても）確かめ直す",
               (outside, "result" in (r_q or {}), len(verify_seen) >= 2), ([False], True, True))
         # 送り先の確かめ・いまの発言の確かめで例外が出ても、鍵は必ず放す（codex-review 7266c12 の P1）
         def boom():

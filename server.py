@@ -254,7 +254,6 @@ async def invalidating(kind: str, order: asyncio.Lock | None = None):
                 PENDING[kind] -= 1
 
 
-VERIFY_FRESH = 0.5  # 送り先を確かめてから鍵を取るまでが、これより長かったら確かめ直す（秒）
 HELD_TIMEOUT = 15  # 返事を待たない操作（承認のキー・閉じる・指示を送る）を herdr が返すのを待つ上限（秒）。ふつうはすぐ返る
 HELD_MARGIN = 5  # 停止が送り途中の操作を待つのは、HELD_TIMEOUT よりこれだけ長く
 UNSURE_HOLD = 60  # herdr の待ちを打ち切ってから、これだけの間の停止は、止めたか確かめられないと返す（打ち切っても herdr があとで操作することがある）
@@ -300,14 +299,16 @@ def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False, 
                     return {"error": {"code": "check_failed", "message": f"送り先を確かめられなかったので、送っていません: {type(e).__name__}"}}
                 if not same:  # 送り先の場所のセッションが入れ替わった
                     return {"error": {"code": "session_changed", "message": "送る前に話し相手が入れ替わったので、送っていません"}}
-            t_verified = time.monotonic()
-            if not _acquire_for_send(end):
-                return {"error": {"code": "stop_pending", "message": "止める操作の確定を待ちきれなかったので、送っていません"}}
-            if verify is not None and time.monotonic() - t_verified > VERIFY_FRESH:
-                COMMIT_LOCK.release()
-                if time.monotonic() >= end:
-                    return {"error": {"code": "check_failed", "message": "送り先を確かめ直せなかったので、送っていません"}}
-                continue
+            if not COMMIT_LOCK.acquire(blocking=False):
+                # 鍵がほかで使われていた。空くのを待ち（確定待ちの停止も待つ）、送り先を確かめ直してから取り直す（待った間に入れ替わったかもしれない。
+                # codex-review ab8a5e5）
+                if not _acquire_for_send(end):
+                    return {"error": {"code": "stop_pending", "message": "止める操作の確定を待ちきれなかったので、送っていません"}}
+                if verify is not None:
+                    COMMIT_LOCK.release()
+                    if time.monotonic() >= end:
+                        return {"error": {"code": "check_failed", "message": "送り先を確かめ直せなかったので、送っていません"}}
+                    continue
             try:  # 鍵を取ったら、確かめで例外が出ても必ず放す（取り残すと、全部の画面の停止と受け付けが詰まる。codex-review 7266c12）
                 with PENDING_LOCK:  # 確定待ちの停止が無いのを見て、送ると決めるまでを、停止を読んだ印と順に並べる（codex-review 27fc1d4）
                     again = bool(PENDING["stop"])
@@ -318,6 +319,10 @@ def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False, 
             if not again:
                 break
             COMMIT_LOCK.release()
+            while PENDING["stop"] and time.monotonic() < end:  # 確定待ちの停止の確定を、鍵を持たずに待つ（そのあと送り先から確かめ直す）
+                time.sleep(0.02)
+            if PENDING["stop"]:
+                return {"error": {"code": "stop_pending", "message": "止める操作の確定を待ちきれなかったので、送っていません"}}
     elif not COMMIT_LOCK.acquire(blocking=False):
         return BUSY  # ほかの操作の途中（止めたのではない。ハブには、少し待って言い直してもらうよう伝える。codex-review 5fff07e）
     else:
@@ -1785,6 +1790,10 @@ async def ask(agent: dict, text: str) -> tuple[str, str]:
     if r is None:
         return "cancelled", ""
     err = (r.get("error") or {}).get("code")
+    if r.get("timeout") or err == "timeout" or (not err and "result" not in r):
+        # 待ちの時間切れ・中身の分からない返事。届いたかは分からない（送れなかったと言うと、送り直して二重になる。codex-review ab8a5e5）。
+        # herdr がはっきり断った（ほかの error）なら、送れなかったと知らせる
+        return "unknown", json.dumps(r, ensure_ascii=False)[:200]
     if err and err != "agent_prompt_stalled" or (not err and "result" not in r):
         return "error", json.dumps(r, ensure_ascii=False)[:200]
     if _agent_state(r) != "blocked":  # 承認待ちで止まったのを見たら、その結果を使う（待ち直すと、別の画面で答えたあとの状態を読む。codex-review 711ce71）
@@ -3134,6 +3143,8 @@ async def _hub_answer(body: dict):
             if RISKY.search(asked) and not (len(target) == 1 and q1 and consent.same_name(q1[1], target[0]) and risky_named(asked, heard)):
                 held = CONFIRMING.get(pane)
                 if not (confirmed and held and held[0] == fp and held[1] != turn):
+                    if not hub_current(turn):  # 読み取りの間に止めた・次の発言をした。止める前の要求で聞き返しを登録し直さない（codex-review ab8a5e5 の P1）
+                        return JSONResponse({"ok": False, "reason": "stopped"})
                     CONFIRMING[pane] = (fp, turn) if not (held and held[0] == fp) else held
                     return JSONResponse({"ok": False, "reason": "confirm", "screen": text})
             key, said = ("confirm", "はい（Yes を選んだ）") if conf else ("1", "はい（今回だけ許可）")
@@ -3596,6 +3607,8 @@ async def hub_close(body: dict):
                 SEEN_PROMPT.pop(pane, None)
                 CONFIRMING.pop(pane, None)
                 return JSONResponse({"ok": True, "project": project, "title": a["title"]})
+    if now and not hub_current(now):  # 読み取りの間に止めた・次の発言をした。止める前の要求で閉じるの聞き返しを登録し直さない（codex-review ab8a5e5）
+        return JSONResponse({"ok": False, "reason": "stopped"})
     CLOSING[pane] = (who, now)  # ここから聞く（聞き直す）。閉じてよいのは、ユーザーの次の発言の中だけ
     path = jsonl_path(a)
     user = last_exchange(read_lines(path, tail_bytes=600_000))[0] if path and path.exists() else ""
@@ -3852,13 +3865,15 @@ async def ws(sock: WebSocket):
                     return
                 exc = f.exception()
                 st, why = ("error", f"{type(exc).__name__}: {exc}") if exc is not None else f.result()
-                if st in ("error", "unanswered"):
+                if st in ("error", "unanswered", "unknown"):
                     # notice で知らせる（遅れて届いても、停止の結果の表示を消さない。いま表示している発言なら、画面が状態の欄を直す。codex-review e6e6b96）
                     sent_ok = st == "unanswered"  # 送れたが、返事を確かめられなかった（「送信できませんでした」と言うと、送り直して二重になる）
-                    shown = "送りました（返事は確かめられません）" if sent_ok else "送信できませんでした"
+                    unknown = st == "unknown"  # 送れたかも分からない
+                    shown = "送りました（返事は確かめられません）" if sent_ok else "送れたか確かめられません" if unknown else "送信できませんでした"
                     mark = {"b": direct["b"], "pg": direct["pg"], "status": shown} if direct is not None and direct.get("b") is not None else {}
                     # 合図の番号を送らない更新前の画面には、これまでどおり error で知らせる（状態の欄を戻す。notice では「考え中」が残る。codex-review e6c4298）
                     text = (f"送りましたが、返事を確かめられませんでした。送り直す前に、セッションの画面で確かめてください: {why}" if sent_ok
+                            else f"送れたか確かめられませんでした。送り直す前に、セッションの画面で確かめてください: {why}" if unknown
                             else f"送信できませんでした: {why}")[:300]
                     t = asyncio.ensure_future(tell_window(win_of(client), type="notice" if mark else "error", text=text, **mark))  # 切れてつなぎ直した画面にも
                     _tasks.add(t)
@@ -3873,7 +3888,7 @@ async def ws(sock: WebSocket):
                 raise
             except Exception:
                 return  # 知らせは report_failure が出す
-            if cancel.is_set() or state in ("cancelled", "error", "unanswered"):  # error・unanswered の知らせは report_failure が出す
+            if cancel.is_set() or state in ("cancelled", "error", "unanswered", "unknown"):  # error・unanswered・unknown の知らせは report_failure が出す
                 return
             if state == "blocked":
                 await send(type="status", text="承認待ちです")
