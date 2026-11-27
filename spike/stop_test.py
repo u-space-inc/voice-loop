@@ -1348,6 +1348,69 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                 busy_after = s.STOP_GEN["n"] != g_busy
         finally:
             busy_release.join()
+        # 本体が読んだが確定していない停止があれば、承認のキー・閉じる・指示の送りを始めない。確定待ちの次の発言の受け付けがあれば、
+        # 承認のキー・閉じるは始めない（指示の送りは始める）。codex-review bee122f の P1
+        pend_started = []
+
+        class PendProc:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return '{"result": {}}', ""
+
+        real_popen4 = s.subprocess.Popen
+        s.subprocess.Popen = lambda *a, **k: (pend_started.append(a[0][1:3]), PendProc())[1]
+        try:
+            s.PENDING["stop"] = 1
+            p_stop = (s._if_still(lambda: True, s._HERDR, "agent", "send-keys", "w9:p1", "1"),
+                      s._if_still(lambda: True, functools.partial(s._HERDR, timeout=30), "agent", "prompt", "w9:p1", "x"))
+            s.PENDING["stop"], s.PENDING["admit"] = 0, 1
+            p_admit = (s._if_still(lambda: True, s._HERDR, "agent", "send-keys", "w9:p1", "1"),
+                       "result" in (s._if_still(lambda: True, functools.partial(s._HERDR, timeout=30), "agent", "prompt", "w9:p1", "x") or {}))
+        finally:
+            s.PENDING["stop"] = s.PENDING["admit"] = 0
+            s.subprocess.Popen = real_popen4
+        check("確定待ちの停止があれば何も始めず、確定待ちの受け付けがあれば承認のキー・閉じるだけ始めない",
+              (p_stop, p_admit, pend_started), ((None, None), (None, True), [["agent", "prompt"]]))
+        # 停止は、読んだその場で確定待ちに数え、鍵を取って確定したら外す
+        s.COMMIT_LOCK.acquire()
+        rel = threading.Timer(0.5, s.COMMIT_LOCK.release)
+        rel.start()
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wl:
+                wl.send_text(json.dumps({"type": "stop", "n": 99}))
+                time.sleep(0.2)
+                pend_during = s.PENDING["stop"]
+                receive_until(wl, "stopped")
+                pend_after = s.PENDING["stop"]
+        finally:
+            rel.join()
+        check("停止は、読んだその場で確定待ちに数え、確定したら外す", (pend_during, pend_after), (1, 0))
+        # 鍵を待つ間に取り消されても、あとで取れた鍵はその場で放す（全部の画面の受け付けと停止を詰まらせない。codex-review bee122f）
+
+        async def cancel_case():
+            s.COMMIT_LOCK.acquire()
+
+            async def enter():
+                async with s.invalidating("admit"):
+                    pass
+
+            t = asyncio.create_task(enter())
+            await asyncio.sleep(0.1)
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+            s.COMMIT_LOCK.release()
+            await asyncio.sleep(0.3)
+            return s.COMMIT_LOCK.locked(), s.PENDING["admit"]
+
+        cancel_got = asyncio.run(cancel_case())
+        if s.COMMIT_LOCK.locked():  # 取り残した（直しを外したとき）。あとの試験を詰まらせない
+            s.COMMIT_LOCK.release()
+        s.PENDING["admit"] = 0
+        check("鍵を待つ間に取り消されても、あとで取れた鍵は放し、確定待ちからも外す", cancel_got, (False, 0))
         check("鍵が使われている間に停止が来ても、ほかの画面の相手を続け、停止は鍵が空いてから確定する",
               (busy_other < 0.5, busy_during, busy_after), (True, False, True))
         # 止めたあとに届いた声を捨てたときは、最後の停止と同じ返事（番号・確かめられない）をする（番号の無い「止めました」で確かめの頼みを上書きしない。codex-review e7ab276）

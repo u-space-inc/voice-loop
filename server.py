@@ -190,6 +190,37 @@ _HERDR = herdr  # 本物の herdr（_if_still が、確かめと送り始めを�
 COMMIT_LOCK = threading.Lock()  # 鍵の中で受け付け・停止・送り始めを呼び合わない（入れ子にしない）
 
 
+# 本体が読んだが、まだ確定していない停止・次の発言の受け付けの数（読んだその場で数え、鍵の中で確定したら戻す）。承認のキー・閉じるは、確定待ちの
+# 停止・受け付けがあれば始めない。ハブ以外への指示を送るのは、確定待ちの停止があれば始めない（鍵を待つ間に、先に待っていた古い操作が始まらない。
+# codex-review bee122f の P1）
+PENDING = {"stop": 0, "admit": 0}
+
+
+async def _acquire_commit():
+    """COMMIT_LOCK の空きを、イベントループを止めずに待って取る。待つ間に取り消されたら、あとで取れた鍵はその場で放す（取り残さない。codex-review bee122f）"""
+    fut = asyncio.get_running_loop().run_in_executor(None, COMMIT_LOCK.acquire)
+    try:
+        await asyncio.shield(fut)
+    except asyncio.CancelledError:
+        fut.add_done_callback(lambda f: COMMIT_LOCK.release() if not f.cancelled() and f.exception() is None and f.result() else None)
+        raise
+
+
+@contextlib.asynccontextmanager
+async def invalidating(kind: str):
+    """停止（kind="stop"）・次の発言の受け付け（"admit"）を確定する。読んだその場で確定待ちに数え、鍵を取ってから確定し、確定待ちから外して鍵を放す。"""
+    PENDING[kind] += 1
+    held = False
+    try:
+        await _acquire_commit()
+        held = True
+        yield
+    finally:
+        PENDING[kind] -= 1
+        if held:
+            COMMIT_LOCK.release()
+
+
 HELD_TIMEOUT = 15  # 返事を待たない操作（承認のキー・閉じる・指示を送る）を herdr が返すのを待つ上限（秒）。ふつうはすぐ返る
 HELD_MARGIN = 5  # 停止が送り途中の操作を待つのは、HELD_TIMEOUT よりこれだけ長く
 UNSURE_HOLD = 60  # herdr の待ちを打ち切ってから、これだけの間の停止は、止めたか確かめられないと返す（打ち切っても herdr があとで操作することがある）
@@ -208,7 +239,8 @@ def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False, 
         return None
     ev = None
     try:
-        if not still():
+        # 本体が読んだが確定していない停止があれば始めない。承認のキー・閉じるは、確定待ちの次の発言の受け付けがあっても始めない
+        if PENDING["stop"] or (not wait_lock and PENDING["admit"]) or not still():
             return None
         try:
             proc = subprocess.Popen(["herdr", *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -905,11 +937,8 @@ async def admit_async(seen: int | None = None) -> int | None:
     """admit_now と同じ。鍵の空きを、イベントループを止めずに待つ（herdr の起動待ちで鍵が使われていても、ほかの画面の相手を続ける。codex-review 711ce71）"""
     if not HUB.on():
         return None
-    await asyncio.to_thread(COMMIT_LOCK.acquire)
-    try:
+    async with invalidating("admit"):
         return HUB.admit(seen) if seen is not None else HUB.admit()
-    finally:
-        COMMIT_LOCK.release()
 
 
 def heard_seen(d: dict) -> int:
@@ -3878,16 +3907,13 @@ async def ws(sock: WebSocket):
                     else:
                         # 停止の確定は、操作の送り始めと同じ鍵の中で行う（送り始めた操作は止めた前のもの。ここから先は、止めた発言での操作を始めない）。
                         # 鍵の空きは、イベントループを止めずに待つ（codex-review 711ce71）
-                        await asyncio.to_thread(COMMIT_LOCK.acquire)
-                        try:
+                        async with invalidating("stop"):  # 読んだその場で確定待ちに数える（鍵を待つ間に、古い操作を始めさせない）
                             STOP_GEN["n"] += 1
                             direct_turn["d"] = None
                             for pend in list(DIRECT_PENDING.values()):  # この画面とほかの画面（切れた画面も）の、送る前のハブ以外への指示を取り消し、それぞれに知らせる
                                 drop_pending(pend)
                             for t in TALKERS.values():  # 利用者は、読まれていた返事・まだ届いていない返事を聞いていない（承認に答える・閉じるの守り）
                                 t.stopped()
-                        finally:
-                            COMMIT_LOCK.release()
                         # 停止の回数を全部の画面に知らせる（画面は発言を始めた合図に付けて送る。最新の停止を知らずに始めた発言は、通信が遅れて停止の
                         # あとに届いても、停止をまたいだものとして見分ける。codex-review 6b2ddfe の P1）。送るのは別の仕事で（遅い画面に待たされない）
                         task = asyncio.create_task(tell_stop_gen(STOP_GEN["n"]))
