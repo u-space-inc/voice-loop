@@ -1886,6 +1886,33 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.ASK_VERIFY.reset(tokv)
             s.subprocess.Popen = real_popen13
         check("指示を送る鍵を取ったあとに送り先が入れ替わっていたら送らない", ((r13 or {}).get("error", {}).get("code"), started13, s.COMMIT_LOCK.locked()), ("session_changed", [], False))
+        # 送り先の確かめ・いまの発言の確かめで例外が出ても、鍵は必ず放す（codex-review 7266c12 の P1）
+        def boom():
+            raise KeyError("pane_id")
+
+        tokb = s.ASK_VERIFY.set(boom)
+        s.subprocess.Popen = lambda *a, **k: (started13.append(2), OkProc13())[1]
+        try:
+            try:
+                r_boom = s._if_still(lambda: True, functools.partial(s._HERDR, timeout=30), "agent", "prompt", "w9:p1", "x")
+            except Exception as e:
+                r_boom = {"raised": type(e).__name__}
+        finally:
+            s.ASK_VERIFY.reset(tokb)
+        lock_after_verify = s.COMMIT_LOCK.locked()
+        if lock_after_verify:  # 取り残した（直しを外したとき）。次の確かめを詰まらせない
+            s.COMMIT_LOCK.release()
+        try:
+            r_boom2 = s._if_still(boom, s._HERDR, "agent", "send-keys", "w9:p1", "1")
+        except Exception as e:
+            r_boom2 = type(e).__name__
+        finally:
+            s.subprocess.Popen = real_popen13
+        lock_after_still = s.COMMIT_LOCK.locked()
+        if s.COMMIT_LOCK.locked():  # 取り残した（直しを外したとき）。あとの試験を詰まらせない
+            s.COMMIT_LOCK.release()
+        check("送り先・いまの発言の確かめで例外が出ても鍵は放し、送らない",
+              ((r_boom or {}).get("error", {}).get("code"), lock_after_verify, r_boom2, lock_after_still, 2 in started13), ("check_failed", False, None, False, False))
         # herdr の返事の error の欄が形の違うものでも、送り途中の印は外す（codex-review 8093b0b）
         odd_held = []
 

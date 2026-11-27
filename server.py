@@ -292,23 +292,31 @@ def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False, 
         while True:
             if not _acquire_for_send(end):
                 return {"error": {"code": "stop_pending", "message": "止める操作の確定を待ちきれなかったので、送っていません"}}
-            if verify is not None and not verify():  # 鍵を待つ間に、送り先の場所のセッションが入れ替わった
+            try:  # 鍵を取ったら、確かめで例外が出ても必ず放す（取り残すと、全部の画面の停止と受け付けが詰まる。codex-review 7266c12）
+                if verify is not None and not verify():  # 鍵を待つ間に、送り先の場所のセッションが入れ替わった
+                    COMMIT_LOCK.release()
+                    return {"error": {"code": "session_changed", "message": "送る前に話し相手が入れ替わったので、送っていません"}}
+                with PENDING_LOCK:  # 確定待ちの停止が無いのを見て、送ると決めるまでを、停止を読んだ印と順に並べる（codex-review 27fc1d4）
+                    again = bool(PENDING["stop"])
+                    ok = False if again else still()
+            except Exception as e:
                 COMMIT_LOCK.release()
-                return {"error": {"code": "session_changed", "message": "送る前に話し相手が入れ替わったので、送っていません"}}
-            with PENDING_LOCK:  # 確定待ちの停止が無いのを見て、送ると決めるまでを、停止を読んだ印と順に並べる（codex-review 27fc1d4）
-                again = bool(PENDING["stop"])
-                ok = False if again else still()
+                return {"error": {"code": "check_failed", "message": f"送る前の確かめに失敗したので、送っていません: {type(e).__name__}"}}
             if not again:
                 break
             COMMIT_LOCK.release()
     elif not COMMIT_LOCK.acquire(blocking=False):
         return BUSY  # ほかの操作の途中（止めたのではない。ハブには、少し待って言い直してもらうよう伝える。codex-review 5fff07e）
     else:
-        with PENDING_LOCK:  # 本体が読んだが確定していない停止・次の発言の受け付けがあれば、承認のキー・閉じるは始めない
-            if PENDING["stop"] or PENDING["admit"]:
-                COMMIT_LOCK.release()
-                return BUSY
-            ok = still()
+        try:  # 鍵を取ったら、確かめで例外が出ても必ず放す（codex-review 7266c12）
+            with PENDING_LOCK:  # 本体が読んだが確定していない停止・次の発言の受け付けがあれば、承認のキー・閉じるは始めない
+                if PENDING["stop"] or PENDING["admit"]:
+                    COMMIT_LOCK.release()
+                    return BUSY
+                ok = still()
+        except Exception:
+            COMMIT_LOCK.release()
+            return None  # 確かめられないので送らない（止めたものとして扱う）
     ev = None
     try:
         if not ok:
