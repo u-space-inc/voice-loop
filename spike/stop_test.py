@@ -1741,6 +1741,40 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.PANE_LOCKS.clear()
             s.ACCEPT_LOCKS.clear()
         check("次の発言のあとに終わった古い往復は、新しい問いの聞いた文と返事の番号を消さない", (hm.HERMES_HEARD["text"], hm.HEARD_ID["n"]), (Q, 9100))
+        # 録音を始めた（合図の）あと、声の頭が届く前にどこかの画面で止めていた声は、聞き取らずに捨てる（codex-review 52a66a0 の P1）
+        check("（前提）前の試験の仕事が片づいている（停止をまたいだ声）", wait_idle(), True)
+        heard9 = []
+        real_transcribe9 = s.transcribe
+        s.transcribe = lambda audio, filename: (heard9.append(1), "はい（停止をまたいだ声）")[1]
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "wincrossv001"}))
+                g9 = (recv_type(wa, "stopgen") or {}).get("n")
+                with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+                    wb.send_text(json.dumps({"type": "stop", "n": 105}))
+                    receive_until(wb, "stopped")
+                wa.send_text(json.dumps({"type": "begin", "b": 1, "pane": hm.HERMES_PANE, "hid": -1, "sg": g9}))  # 停止を知る前に録音を始めた
+                wa.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm", "hid": -1, "begin": 1}))
+                wa.send_bytes(b"0" * 4000)
+                drop9 = receive_until(wa, "error") or {}
+        finally:
+            s.transcribe = real_transcribe9
+        check("録音を始めたあと声が届く前に止めていた声は、聞き取らずに捨てる", (heard9, "捨てました" in drop9.get("text", "")), ([], True))
+        # 合図で受け付けた発言の、遅れて届いた声の頭で、あとから届いたハブの新しい問いを消さない（codex-review 52a66a0）
+        with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+            wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winlatehd001"}))
+            g10 = (recv_type(wa, "stopgen") or {}).get("n")
+            check("（前提）ハブ以外への録音の合図を本体が受けた", begin_and_wait(wa, {"type": "begin", "b": 1, "pane": "w9:p1", "hid": -1, "sg": g10}), True)
+            hm.HERMES_HEARD["text"], hm.HEARD_ID["n"] = Q, 9200  # 録音の間に、ほかの画面にハブの新しい問いが届いた
+            real_transcribe10 = s.transcribe
+            s.transcribe = lambda audio, filename: ""  # 聞き取りは空（この試験では聞き取らない）
+            try:
+                wa.send_text(json.dumps({"type": "turn", "pane": "w9:p1", "speaker": 0, "filename": "a.webm", "hid": -1, "begin": 1}))
+                wa.send_bytes(b"0" * 4000)
+                receive_until(wa, "error")
+            finally:
+                s.transcribe = real_transcribe10
+        check("合図で受け付けた発言の遅れて届いた声の頭で、ハブの新しい問いを消さない", (hm.HERMES_HEARD["text"], hm.HEARD_ID["n"]), (Q, 9200))
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]

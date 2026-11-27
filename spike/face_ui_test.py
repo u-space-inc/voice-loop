@@ -482,6 +482,18 @@ with sync_playwright() as pw:
     check("録音: ほかの画面で止めたら、録音を止めて送らない",
           (pg.evaluate("rec.state"), pg.evaluate("window.__types.includes('turn')"), pg.evaluate("document.getElementById('statusText').textContent.includes('ほかの画面で止めた')")),
           ("inactive", False, True))
+    # 録り終えた声を用意する間にほかの画面で止めたら、その録音は送らない（codex-review 52a66a0）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__types.length = 0; startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    pg.wait_for_timeout(800)
+    pg.evaluate("window.__ab3 = Blob.prototype.arrayBuffer; Blob.prototype.arrayBuffer = function () { const p = window.__ab3.call(this);"
+                " return new Promise(r => setTimeout(() => r(p), 600)); }; stopRec();"
+                " setTimeout(() => ws.onmessage({ data: JSON.stringify({ type: 'stopgen', n: Math.max(stopGen, 0) + 1 }), target: ws }), 150)")
+    pg.wait_for_timeout(1500)
+    pg.evaluate("() => { Blob.prototype.arrayBuffer = window.__ab3; }")
+    check("録音: 声を用意する間にほかの画面で止めたら、その録音は送らない",
+          (pg.evaluate("window.__types.includes('turn')"), pg.evaluate("document.getElementById('statusText').textContent.includes('ほかの画面で止めた')")), (False, True))
     # 本体が、止めたか確かめられないと返したら、「止めました」と出さずに確かめを頼む（codex-review 57c6291）
     pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'stopped', n: 1e9, unsure: true }), target: ws })")
     check("停止: 止めたか確かめられないと返されたら、「止めました」と出さずに確かめを頼む",

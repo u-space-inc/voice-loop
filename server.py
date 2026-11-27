@@ -4043,7 +4043,8 @@ async def ws(sock: WebSocket):
                                "_stopgen": sg0, "_crossed": crossed or STOP_GEN["n"] != sg0, "_legacy": legacy,
                                # 合図の無い更新前の画面の声（機械の口の接続は除く）は、録音を始めた時点が分からない。ハブ以外への直接の指示なら送らない（a2a 4135f4c2 の 3 回目）
                                "_legacy_drop": legacy and not client.bound}
-                    left_hub(str(d.get("pane", "")))
+                    if legacy:  # 合図のある発言は、合図を受けたときにハブの前の問いを消し済み。遅れて届いた頭で、あとの新しい問いを消さない（codex-review 52a66a0）
+                        left_hub(str(d.get("pane", "")))
                 if d["type"] == "text":
                     crossed, adm, legacy = take_begin(d)  # 合図があれば、受け付けは合図を受けたときのもの（前の問いの取り消しも済んでいる）
                     sg0 = STOP_GEN["n"]  # 受け付けの鍵を待つ前に、停止の回数を控える（待つ間に止めたら、この発言のハブ以外への指示は送らない。codex-review 31c9e1c）
@@ -4065,10 +4066,12 @@ async def ws(sock: WebSocket):
                 # 聞き取りは受信の中で待つ。その間に押した「停止」は、聞き取った発言を送ったあとに読む（発言は相手に届くが、止めたことで
                 # 受け付けの番号が進むので、その発言で承認に答える・閉じるは通らない。.github/review-exceptions.md の D-007）
                 head, pending = pending, {}
-                if head.get("_stopgen") is not None and head["_stopgen"] != STOP_GEN["n"]:
-                    # 声の頭を受けたあと、声の本体が届くまでに、どこかの画面で止めた。聞き取らずに捨て、録音した画面に知らせる（ハブにも送らない。
-                    # codex-review fdc6b04）
-                    await send(type="error", text="止めたので、話した内容は聞き取らずに捨てました")
+                stopped_since = head.get("_stopgen") is not None and head["_stopgen"] != STOP_GEN["n"]
+                if head.get("_crossed") or stopped_since:
+                    # 録音を始めたあと（合図のあと）・声の頭を受けたあと、声の本体が届くまでに、どこかの画面で止めた。聞き取らずに捨て、録音した画面に
+                    # 知らせる（ハブにも送らない。codex-review fdc6b04・52a66a0）。合図の無い更新前の画面の返信・添付つきの声は、読み込み直しを頼む
+                    await send(type="error", text="この画面は古い版なので、話した内容は送っていません。画面を読み込み直してください"
+                               if head.get("_legacy") and not stopped_since and STOP_GEN["n"] == head.get("_stopgen") else "止めたので、話した内容は聞き取らずに捨てました")
                     continue
                 # 聞き取り・辞書の補正・知らせの送り出しの間は受信が止まる。その間に届いていた合図は、止まり始めた時点のものとして扱う
                 # （受信に戻ってから 0.5 秒の間に読んだ合図。溜まっていた合図はすぐに読まれる。a2a 4135f4c2 の 2・3 回目）

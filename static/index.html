@@ -2220,6 +2220,8 @@ function sendBegin(pane, hid) { const b = ++beginSeq; try { if (linked()) ws.sen
 async function startRec() { if (recPending) return; recPending = true; try { return await startRecInner(); } finally { recPending = false; } } // 始めるのは 1 つずつ
 async function startRecInner() {
   const stops0 = recStops, face0 = faceOn, hid0 = heardId, ws0 = ws; // hid0: 録音を始めたときに受け取っていた返事の番号（その接続での番号）
+  const sgRec = stopGen; // 録音を始めた（押した）ときの停止の回数。送るまでにほかの画面で止めたら送らない（マイクの許可待ち・声の用意の間も。codex-review 52a66a0）
+  const otherStopped = () => { if (stopGen === sgRec) return false; setStatus('ほかの画面で止めたので、録音は送りません'); face('idle'); return true; };
   // 録音を始めた合図（録音の間にどこかの画面で止めたら、本体が見分ける）と、始めたときの返信先（録音の途中で選んだ返信先には、始める前に
   // 言った声を返信として結び付けない。a2a 4135f4c2）
   // 話し始めたら相手の声は止める（ほかの画面の指示は取り消さない）。録音を始めた合図より先に送る（あとに送ると、この録音の受け付けまで
@@ -2245,6 +2247,7 @@ async function startRecInner() {
     setSession('playback'); // マイクを離したら再生用に戻す（受話口から小さく鳴るのを防ぐ）
     if (!linked()) { setStatus(UNREACHABLE); return; } // 話しているあいだに届かなくなった（短い録音でも、こちらの案内を残す）
     if (recStops !== stops0) return; // 「停止」で止めた録音は送らない（「止めました」は本体の返事で出る）
+    if (otherStopped()) return;
     if (faceOn !== face0) { setStatus('顔の表示を切り替えたので、話した内容は送っていません'); return; } // 件の読み込み・添付の送り出しより前に見る（通知で開いた件を取り消さない）
     const blob = new Blob(chunks, { type: mime || 'audio/webm' });
     if (blob.size < 2000) { setStatus('短すぎました'); return; }
@@ -2268,6 +2271,7 @@ async function startRecInner() {
       // （頭と本体の間に「停止」や次の録音の頭が入ると、止めた声が次の発言として聞き取られる。a2a 3752b7a5 の 3 回目）
       const audio = await blob.arrayBuffer();
       if (recStops !== stops0) return; // 用意する間に止めた（「止めました」は本体の返事で出る）
+      if (otherStopped()) return; // 用意する間に、ほかの画面で止めた
       if (faceOn !== face0) { setStatus('顔の表示を切り替えたので、話した内容は送っていません'); return; } // 本体は頭の時点の名乗りで発言元を決める
       if (!linked()) { setStatus(UNREACHABLE); return; }
       ws.send(JSON.stringify({ type: 'turn', pane, key, speaker: $('speaker').value, filename: 'rec.' + ext, hid: ws === ws0 ? hid0 : -1, begin: b0, ...rf, ...(files.length ? { attachments: files } : {}) }));
