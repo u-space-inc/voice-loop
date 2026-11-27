@@ -241,12 +241,16 @@ def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False, 
     if wait_lock:
         COMMIT_LOCK.acquire()
         # 確定待ちの停止があれば、鍵をいったん放して確定を待つ（停止の側が送る前の指示を取り消して「送っていません」と知らせる。ここで黙って
-        # 送らずに終えると、知らせがどこからも出ない。codex-review a1fa82c）。上限を過ぎたら、ふつうに確かめる
+        # 送らずに終えると、知らせがどこからも出ない。codex-review a1fa82c）。上限を過ぎても確定しなければ送らず、送れなかったと返す（送る仕事の
+        # 終わりで「送信できませんでした」と知らせる。codex-review 070146f）
         end = time.monotonic() + PENDING_WAIT
         while PENDING["stop"] and time.monotonic() < end:
             COMMIT_LOCK.release()
             time.sleep(0.02)
             COMMIT_LOCK.acquire()
+        if PENDING["stop"]:
+            COMMIT_LOCK.release()
+            return {"error": {"code": "stop_pending", "message": "止める操作の確定を待ちきれなかったので、送っていません"}}
     elif not COMMIT_LOCK.acquire(blocking=False):
         return None
     ev = None

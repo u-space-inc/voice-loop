@@ -1374,8 +1374,15 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             t_direct = time.time()
             p_direct = s._if_still(lambda: not dropped_by_stop["v"], functools.partial(s._HERDR, timeout=30), "agent", "prompt", "w9:p1", "x")
             direct_waited = time.time() - t_direct >= 0.25
-            s.PENDING["stop"] = 1
-            p_stop = (s._if_still(lambda: True, s._HERDR, "agent", "send-keys", "w9:p1", "1"), p_direct, direct_waited)
+            # 確定待ちの停止が上限までに確定しなければ、送らずに、送れなかったと返す（codex-review 070146f）
+            s.PENDING["stop"], wait0 = 1, s.PENDING_WAIT
+            s.PENDING_WAIT = 0.2
+            try:
+                p_expired = s._if_still(lambda: True, functools.partial(s._HERDR, timeout=30), "agent", "prompt", "w9:p1", "x")
+            finally:
+                s.PENDING_WAIT = wait0
+            p_stop = (s._if_still(lambda: True, s._HERDR, "agent", "send-keys", "w9:p1", "1"), p_direct, direct_waited,
+                      (p_expired or {}).get("error", {}).get("code"), s.COMMIT_LOCK.locked())
             s.PENDING["stop"], s.PENDING["admit"] = 0, 1
             p_admit = (s._if_still(lambda: True, s._HERDR, "agent", "send-keys", "w9:p1", "1"),
                        "result" in (s._if_still(lambda: True, functools.partial(s._HERDR, timeout=30), "agent", "prompt", "w9:p1", "x") or {}))
@@ -1383,7 +1390,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.PENDING["stop"] = s.PENDING["admit"] = 0
             s.subprocess.Popen = real_popen4
         check("確定待ちの停止があれば承認のキー・閉じるは始めず、指示の送りは停止の確定を待ってから確かめる。確定待ちの受け付けがあれば承認のキー・閉じるだけ始めない",
-              (p_stop, p_admit, pend_started), ((None, None, True), (None, True), [["agent", "prompt"]]))
+              (p_stop, p_admit, pend_started), ((None, None, True, "stop_pending", False), (None, True), [["agent", "prompt"]]))
         # 停止は、読んだその場で確定待ちに数え、鍵を取って確定したら外す
         s.COMMIT_LOCK.acquire()
         rel = threading.Timer(0.5, s.COMMIT_LOCK.release)
