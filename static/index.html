@@ -2168,7 +2168,10 @@ function connect() {
     else if (m.type === 'done') { serverDone = true; turnDone = true; if (!playing && !queue.length) finishSpeaking(); loadAgents(); }
     else if (m.type === 'stopgen') { // どこかの画面で止めた（発言を始めた合図に付ける）
       // ほかの画面で止めたら、それより前に始めた、まだ送っていない録音は捨てる（止めたあとの次のタップで送らない。codex-review 8a47002）
-      if (typeof m.n === 'number' && stopGen >= 0 && m.n > stopGen && rec && rec.state === 'recording') { recStops++; stopRec(); setStatus('ほかの画面で止めたので、録音は送りません'); face('idle'); }
+      if (typeof m.n === 'number' && stopGen >= 0 && m.n > stopGen) {
+        realStops++; // ほかの画面での停止（開いた直後の最初の回数の受け取りは数えない）
+        if (rec && rec.state === 'recording') { recStops++; stopRec(); setStatus('ほかの画面で止めたので、録音は送りません'); face('idle'); }
+      }
       if (typeof m.n === 'number') stopGen = m.n;
     }
     else if (m.type === 'sync') { try { ev.target.send(JSON.stringify({ type: 'sync', n: m.n })); } catch {} } // 同期の合図はすぐ返す（本体は、これより前にこの画面が送ったもの（停止）を読み終えたと分かる）
@@ -2215,13 +2218,16 @@ let voiceSending = false; // 録り終えた声を本体に送っている途中
 // pane は宛先、hid は受け取っていた返事の番号（本体は合図を受けたときに受け付け、聞いた文を引き渡す）
 // sg は、本体から知らされた最新の停止の回数（知らなければ -1。本体は、最新の停止を知らずに始めた発言を、停止をまたいだものとして扱う）
 let stopGen = -1;
+let realStops = 0; // ほかの画面を含む、本体から知らされた停止の数（最初の回数の受け取りは数えない）
 const UNSURE_STOP = '止めたか確かめられませんでした（止める前に送った操作が届いたか分かりません）。セッションの画面で確かめてください';
 function sendBegin(pane, hid) { const b = ++beginSeq; try { if (linked()) ws.send(JSON.stringify({ type: 'begin', b, pane, hid, sg: stopGen })); } catch {} return b; }
 async function startRec() { if (recPending) return; recPending = true; try { return await startRecInner(); } finally { recPending = false; } } // 始めるのは 1 つずつ
 async function startRecInner() {
   const stops0 = recStops, face0 = faceOn, hid0 = heardId, ws0 = ws; // hid0: 録音を始めたときに受け取っていた返事の番号（その接続での番号）
-  const sgRec = stopGen; // 録音を始めた（押した）ときの停止の回数。送るまでにほかの画面で止めたら送らない（マイクの許可待ち・声の用意の間も。codex-review 52a66a0）
-  const otherStopped = () => { if (stopGen === sgRec) return false; setStatus('ほかの画面で止めたので、録音は送りません'); face('idle'); return true; };
+  // 録音を始めた（押した）ときの、ほかの画面の停止の数。送るまでにほかの画面で止めたら送らない（マイクの許可待ち・声の用意の間も。codex-review 52a66a0）。
+  // 開いた直後の最初の停止の回数を受け取っただけでは数えない（codex-review 83aa65b）
+  const rs0 = realStops;
+  const otherStopped = () => { if (realStops === rs0) return false; setStatus('ほかの画面で止めたので、録音は送りません'); face('idle'); return true; };
   // 録音を始めた合図（録音の間にどこかの画面で止めたら、本体が見分ける）と、始めたときの返信先（録音の途中で選んだ返信先には、始める前に
   // 言った声を返信として結び付けない。a2a 4135f4c2）
   // 話し始めたら相手の声は止める（ほかの画面の指示は取り消さない）。録音を始めた合図より先に送る（あとに送ると、この録音の受け付けまで
@@ -2236,6 +2242,7 @@ async function startRecInner() {
   catch (e) { setSession('auto'); stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
   if (!linked()) { stream.getTracks().forEach(t => t.stop()); setSession('playback'); setStatus(UNREACHABLE); return; } // マイクの許可を待つ間に届かなくなった
   if (recStops !== stops0 || faceOn !== face0) { stream.getTracks().forEach(t => t.stop()); setSession('playback'); return; } // マイクの許可を待つ間に止めた・顔の表示を切り替えた
+  if (otherStopped()) { stream.getTracks().forEach(t => t.stop()); setSession('playback'); return; } // マイクの許可を待つ間に、ほかの画面で止めた（マイクを放す。codex-review 83aa65b）
   for (const m of ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']) if (MediaRecorder.isTypeSupported(m)) { mime = m; break; }
   ext = mime.includes('mp4') ? 'mp4' : 'webm';
   rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);

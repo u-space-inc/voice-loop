@@ -494,6 +494,26 @@ with sync_playwright() as pw:
     pg.evaluate("() => { Blob.prototype.arrayBuffer = window.__ab3; }")
     check("録音: 声を用意する間にほかの画面で止めたら、その録音は送らない",
           (pg.evaluate("window.__types.includes('turn')"), pg.evaluate("document.getElementById('statusText').textContent.includes('ほかの画面で止めた')")), (False, True))
+    # 開いた直後、最初の停止の回数を受け取っただけでは、録音を捨てない（codex-review 83aa65b）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__sgSaved = stopGen; stopGen = -1; window.__types.length = 0; window.__turn = null; startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'stopgen', n: window.__sgSaved }), target: ws })")
+    pg.wait_for_timeout(1000)
+    pg.evaluate("stopRec()")
+    pg.wait_for_function("window.__turn || document.getElementById('statusText').textContent.includes('ほかの画面で止めた')", timeout=5000)
+    check("録音: 開いた直後に最初の停止の回数を受け取っただけでは、録音を捨てない", pg.evaluate("!!window.__turn"), True)
+    # マイクの許可を待つ間にほかの画面で止めたら、録音を始めずにマイクを放す（codex-review 83aa65b）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__gum = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);"
+                " navigator.mediaDevices.getUserMedia = c => new Promise(r => setTimeout(() => r(window.__gum(c)), 600));"
+                " window.__types.length = 0; startRec();"
+                " setTimeout(() => ws.onmessage({ data: JSON.stringify({ type: 'stopgen', n: Math.max(stopGen, 0) + 1 }), target: ws }), 150)")
+    pg.wait_for_timeout(1500)
+    mic_rec = pg.evaluate("!!(rec && rec.state === 'recording')")
+    mic_status = pg.evaluate("document.getElementById('statusText').textContent.includes('ほかの画面で止めた')")
+    pg.evaluate("() => { navigator.mediaDevices.getUserMedia = window.__gum; if (rec && rec.state === 'recording') stopRec(); }")
+    check("録音: マイクの許可を待つ間にほかの画面で止めたら、録音を始めない", (mic_rec, mic_status), (False, True))
     # 本体が、止めたか確かめられないと返したら、「止めました」と出さずに確かめを頼む（codex-review 57c6291）
     pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'stopped', n: 1e9, unsure: true }), target: ws })")
     check("停止: 止めたか確かめられないと返されたら、「止めました」と出さずに確かめを頼む",

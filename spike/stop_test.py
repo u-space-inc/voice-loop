@@ -1775,6 +1775,37 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             finally:
                 s.transcribe = real_transcribe10
         check("合図で受け付けた発言の遅れて届いた声の頭で、ハブの新しい問いを消さない", (hm.HERMES_HEARD["text"], hm.HEARD_ID["n"]), (Q, 9200))
+        # 次の発言を受け付けたあとの古い発言が、断り・その場の答え・失敗・返信先なしで終わっても、あとの新しい問いを消さない（codex-review 83aa65b）
+        check("（前提）前の試験の仕事が片づいている（古い発言の終わり方）", wait_idle(), True)
+        kept11 = []
+
+        def old_then_newer():
+            g = hm.hermes_admit()
+            hm.hermes_admit()  # その古い発言のあとに、次の発言を受け付けた
+            hm.HERMES_HEARD["text"], hm.HEARD_ID["n"] = Q, 9300  # 次の発言の返事（新しい問い）が画面に届いた
+            s.PANE_LOCKS.pop(hm.HERMES_PANE, None)
+            return g
+
+        g11 = old_then_newer()
+        asyncio.run(hm.TALKER.refused("古い断り", "断りました", admitted=g11))
+        kept11.append(hm.HERMES_HEARD["text"])
+        g11 = old_then_newer()
+        asyncio.run(hm.TALKER.answered_here("古いその場の答え", "答え", admitted=g11))
+        kept11.append(hm.HERMES_HEARD["text"])
+        g11 = old_then_newer()
+        ask11 = hm.ask_hermes
+        hm.ask_hermes = lambda text: (_ for _ in ()).throw(RuntimeError("届かなかった"))
+        try:
+            asyncio.run(hm.hermes_exchange("古い往復の失敗", admitted=g11))
+        finally:
+            hm.ask_hermes = ask11
+        kept11.append(hm.HERMES_HEARD["text"])
+        g11 = old_then_newer()
+        asyncio.run(hm.hermes_exchange("古い返信", reply_at=1.5, admitted=g11))  # 返信先の報告が見つからずに断る
+        kept11.append(hm.HERMES_HEARD["text"])
+        s.PANE_LOCKS.clear()
+        s.ACCEPT_LOCKS.clear()
+        check("古い発言が断り・その場の答え・失敗・返信先なしで終わっても、あとの新しい問いを消さない", kept11, [Q, Q, Q, Q])
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]

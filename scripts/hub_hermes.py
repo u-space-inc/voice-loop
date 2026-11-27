@@ -342,7 +342,8 @@ async def hermes_answered_here(text: str, answer: str, said: str | None = None, 
         turn = hermes_turn_begin(text, heard=HEARD_AT.pop(gen, "") if gen is not None else None, said=said, via=via, gen=gen)
         # 台帳の返事の欄（row[2]）は空のまま: 閉じるの守りは、Hermes が閉じていいかを聞いた発言の返事の欄を「利用者が聞いた問い」として読む。
         # 本体の答えにはセッションや判断待ちの題（Hermes や他のセッションが書ける文）が入るので、そこに置くと、題に仕込んだ問いで閉じられる（a2a 8f05ef33）
-        HERMES_HEARD["text"] = ""  # 利用者が最後に聞いたのは本体の答え（頭の問いではない）。次の発言を、前に聞いた問いへの答えに使わせない
+        if gen is None or HERMES_GEN["n"] == gen:  # 次の発言を受け付けたあとの古い発言なら、あとの新しい問いには触らない（codex-review 83aa65b）
+            HERMES_HEARD["text"] = ""  # 利用者が最後に聞いたのは本体の答え（頭の問いではない）。次の発言を、前に聞いた問いへの答えに使わせない
         if not await asyncio.to_thread(hermes_log, "ai", answer, turn=turn, by="body"):
             _unsaved.add(turn)
         QUICK_NOTES.append((text, answer, time.time()))
@@ -442,7 +443,8 @@ async def hermes_exchange(text: str, reply_at: float | None = None, extra: str =
                    if item is not None else
                    "返信先の報告が見つかりませんでした（記録が回ったか、読めません）。送っていません。返信を選び直すか、返信をやめて送ってください")
             turn = hermes_turn_begin(text, heard="", extra=extra, refused=True, said=said, via=via, gen=mark)
-            HERMES_HEARD["text"] = ""
+            if admitted is None or HERMES_GEN["n"] == mark:  # 次の発言を受け付けたあとの古い発言なら、あとの新しい問いには触らない（codex-review 83aa65b）
+                HERMES_HEARD["text"] = ""
             if not hermes_log("error", why, turn=turn):
                 _unsaved.add(turn)
             saved = turn not in _unsaved
@@ -472,7 +474,8 @@ async def hermes_exchange(text: str, reply_at: float | None = None, extra: str =
             if not isinstance(e, RuntimeError):
                 traceback.print_exc()
             reply = ""
-            HERMES_HEARD["text"] = ""  # 利用者が聞くのは本体の失敗の知らせ（ハブの問いではない）
+            if admitted is None or HERMES_GEN["n"] == mark:  # 次の発言を受け付けたあとの古い往復なら、あとの新しい問いには触らない（codex-review 83aa65b）
+                HERMES_HEARD["text"] = ""  # 利用者が聞くのは本体の失敗の知らせ（ハブの問いではない）
         else:
             # 画面からの発言（受け付けの番号つき）は、画面に送り終えてから聞いた文にする（Talker.delivered）。番号の無い呼び方は、返事が届いたときに
             # 受け付けたあとに次の発言を受け付けた古い往復は、聞いた文と返事の番号に触らない（受け付けで、聞いた文は空にして引き渡し済み。あとから
@@ -1735,7 +1738,8 @@ class Hermes(Brain, Talker):
         # 空にする（鍵の外で空にすると、あとから終わった往復が古い返事で書き戻し、利用者に届いていない問いが次の発言の「聞いた文」になる）
         async with core.pane_lock(HERMES_PANE):
             turn = hermes_turn_begin(text, heard="", refused=True, said=said, via=via, gen=admitted)  # 断った発言も台帳に載せる（番号は受け付けたその場のもの）（「すぐ次の発言」を進め、保留中の確認を失効させる。承認・閉じる許可にはならない）
-            HERMES_HEARD["text"] = ""  # 利用者が聞くのは本体の断り（前に聞いた問いへの答えに、次の発言を使わせない。失敗のときと同じ）
+            if admitted is None or HERMES_GEN["n"] == admitted:  # 次の発言を受け付けたあとの古い発言なら、あとの新しい問いには触らない（codex-review 83aa65b）
+                HERMES_HEARD["text"] = ""  # 利用者が聞くのは本体の断り（前に聞いた問いへの答えに、次の発言を使わせない。失敗のときと同じ）
             await asyncio.to_thread(hermes_log, "error", why[:300], turn=turn)
             _unsaved.discard(turn)  # 画面には断りをそのまま出すので、記録に書けたかは返さない
 
