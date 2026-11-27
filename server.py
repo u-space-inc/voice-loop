@@ -227,7 +227,8 @@ def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False, 
         if ev is not None:
             # 待ちを打ち切った（herdr が返らなかった）・待つ途中で失敗したら、操作が届いたか分からない。停止は「止めました」と言わずに、
             # 止めたか確かめられないと返す（codex-review d9db7c8 の P1）
-            ev.ok = isinstance(r, dict) and not r.get("timeout")
+            # 結果（result）か、herdr のはっきりした拒否（error）が返ったときだけ確かめられた（中身の分からない返事・打ち切りは分からない。codex-review e7ab276 の P1）
+            ev.ok = isinstance(r, dict) and not r.get("timeout") and ("result" in r or isinstance(r.get("error"), dict))
             if not ev.ok:  # 印が一覧から外れたあとに来た停止にも、しばらくは確かめられないと返す（codex-review 9d641dc の P1）
                 UNSURE_UNTIL["t"] = max(UNSURE_UNTIL["t"], time.monotonic() + UNSURE_HOLD)
             ev.set()
@@ -3794,6 +3795,7 @@ async def ws(sock: WebSocket):
                 t.stopped()
 
     pending: dict = {}
+    last_stop: dict = {}  # この接続の最後の停止への返事（番号・確かめられないか）。止めたあとに届いた声を捨てたときも同じ返事をする
     try:
         while True:
             msg = await sock.receive()
@@ -3865,8 +3867,12 @@ async def ws(sock: WebSocket):
                     for ev in list(REPORT_SPEECH):  # 報告の読み上げも止める
                         ev.set()
                     n = d.get("n")  # 画面の停止の番号。返事に付けて返す（画面は、次の発言を始めたあとに届いた古い返事で表示を変えない）
-                    await send(type="stopped", **({"scope": "talk"} if talk else {}), **({"n": n} if isinstance(n, int) and not isinstance(n, bool) else {}),
-                               **({"unsure": True} if unsure else {}))
+                    reply = {**({"scope": "talk"} if talk else {}), **({"n": n} if isinstance(n, int) and not isinstance(n, bool) else {}),
+                             **({"unsure": True} if unsure else {})}
+                    if not talk:
+                        last_stop.clear()
+                        last_stop.update(reply)
+                    await send(type="stopped", **reply)
                     continue
                 if d["type"] == "begin":
                     # 画面が発言を始めた（送るを押した・録音を始めた）。発言はここで受け付ける（受け付けの番号を進め、直前に聞いた文をこの発言に
@@ -3917,7 +3923,9 @@ async def ws(sock: WebSocket):
                 continue
             if msg.get("bytes") is not None and pending.get("type") == "dropped":
                 pending = {}
-                await send(type="stopped")  # 画面は声を送ったあと「聞き取り中…」で待っているので、止めたと返して戻す
+                # 画面は声を送ったあと「聞き取り中…」で待っているので、止めたと返して戻す。返事は最後の停止と同じ（番号・確かめられない）にする
+                # （番号の無い「止めました」で、先に出した確かめの頼みを上書きしない。codex-review e7ab276）
+                await send(type="stopped", **last_stop)
                 continue
             if msg.get("bytes") is not None and pending.get("type") == "turn":
                 # 聞き取りは受信の中で待つ。その間に押した「停止」は、聞き取った発言を送ったあとに読む（発言は相手に届くが、止めたことで
