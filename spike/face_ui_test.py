@@ -495,15 +495,14 @@ with sync_playwright() as pw:
     pg.evaluate("() => { Blob.prototype.arrayBuffer = window.__ab3; }")
     check("録音: 声を用意する間にほかの画面で止めたら、その録音は送らない",
           (pg.evaluate("window.__types.includes('turn')"), pg.evaluate("document.getElementById('statusText').textContent.includes('ほかの画面で止めた')")), (False, True))
-    # 開いた直後、最初の停止の回数を受け取っただけでは、録音を捨てない（codex-review 83aa65b）
+    # 開いた直後、最初の停止の回数を受け取るまでは録音を始めない（受け取る前の合図は、本体が停止をまたいだ声として捨てる。codex-review e6c4298）
     pg.wait_for_timeout(600)
     pg.evaluate("window.__sgSaved = stopGen; stopGen = -1; window.__types.length = 0; window.__turn = null; startRec()")
-    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
-    pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'stopgen', n: window.__sgSaved }), target: ws })")
-    pg.wait_for_timeout(1000)
-    pg.evaluate("stopRec()")
-    pg.wait_for_function("window.__turn || document.getElementById('statusText').textContent.includes('ほかの画面で止めた')", timeout=5000)
-    check("録音: 開いた直後に最初の停止の回数を受け取っただけでは、録音を捨てない", pg.evaluate("!!window.__turn"), True)
+    pg.wait_for_timeout(800)
+    early = (pg.evaluate("!!(rec && rec.state === 'recording')"), pg.evaluate("window.__types.includes('begin')"),
+             pg.evaluate("document.getElementById('statusText').textContent.includes('つないでいる')"))
+    pg.evaluate("stopGen = window.__sgSaved")
+    check("録音: 最初の停止の回数を受け取るまでは録音を始めない", early, (False, False, True))
     # マイクの許可を待つ間にほかの画面で止めたら、録音を始めずにマイクを放す（codex-review 83aa65b）
     pg.wait_for_timeout(600)
     pg.evaluate("window.__gum = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);"

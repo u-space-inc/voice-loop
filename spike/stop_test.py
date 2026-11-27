@@ -1755,6 +1755,23 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.ask, s.list_agents = real_ask7, real_agents
         check("送れなかった知らせは notice で、合図の番号・読み込みの印・状態の欄の文を付ける",
               tuple((fail14 or {}).get(k) for k in ("type", "b", "pg", "status")), ("notice", 9, "page14abc", "送信できませんでした"))
+        # 合図の番号を送らない更新前の画面には、送れなかったことを、これまでどおり error で知らせる（状態の欄を戻す。codex-review e6c4298）
+        check("（前提）前の試験の仕事が片づいている（更新前の画面への送れなかった知らせ）", wait_idle(), True)
+        s.ask = just_fail
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        fail15 = None
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winfaillg01"}))
+                wa.send_text(json.dumps({"type": "text", "text": "更新前の画面から送れない指示", "pane": "w9:p1", "speaker": 0}))  # 合図の番号が無い
+                for _ in range(40):
+                    m = json.loads(wa.receive_text())
+                    if "送信できませんでした" in m.get("text", ""):
+                        fail15 = m
+                        break
+        finally:
+            s.ask, s.list_agents = real_ask7, real_agents
+        check("合図の番号を送らない更新前の画面には、送れなかったことを error で知らせる", (fail15 or {}).get("type"), "error")
         check("取り消して知らせた指示には、送れなかったを重ねない。取り消しの知らせは notice（停止の結果の表示を消さない。codex-review 5fff07e）",
               (sum("送っていません" in x for t, x in got7), sum("送信できませんでした" in x for t, x in got7), [t for t, x in got7 if "送っていません" in x]),
               (1, 0, ["notice"]))

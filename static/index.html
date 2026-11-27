@@ -2229,7 +2229,12 @@ let agentGen = 0; // 話し相手を選び直した回数（利用者の選び�
 let realStops = 0; // ほかの画面を含む、本体から知らされた停止の数（最初の回数の受け取りは数えない）
 const UNSURE_STOP = '止めたか確かめられませんでした（止める前に送った操作が届いたか分かりません）。セッションの画面で確かめてください';
 function sendBegin(pane, hid) { const b = ++beginSeq; try { if (linked()) ws.send(JSON.stringify({ type: 'begin', b, pane, hid, sg: stopGen })); } catch {} return b; }
-async function startRec() { if (recPending) return; recPending = true; try { return await startRecInner(); } finally { recPending = false; } } // 始めるのは 1 つずつ
+async function startRec() {
+  if (recPending) return;
+  // 最初の停止の回数を受け取るまでは録音を始めない（受け取る前の合図は回数 -1 になり、本体が停止をまたいだ声として捨てる。codex-review e6c4298）
+  if (stopGen < 0) { setStatus('つないでいるところです。少し待ってから、もう一度押してください'); return; }
+  recPending = true; try { return await startRecInner(); } finally { recPending = false; } // 始めるのは 1 つずつ
+}
 async function startRecInner() {
   const stops0 = recStops, face0 = faceOn, hid0 = heardId, ws0 = ws; // hid0: 録音を始めたときに受け取っていた返事の番号（その接続での番号）
   // 録音を始めた（押した）ときの、ほかの画面の停止の数。送るまでにほかの画面で止めたら送らない（マイクの許可待ち・声の用意の間も。codex-review 52a66a0）。

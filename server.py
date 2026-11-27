@@ -3853,7 +3853,8 @@ async def ws(sock: WebSocket):
                 if st == "error":
                     # notice で知らせる（遅れて届いても、停止の結果の表示を消さない。いま表示している発言なら、画面が状態の欄を直す。codex-review e6e6b96）
                     mark = {"b": direct["b"], "pg": direct["pg"], "status": "送信できませんでした"} if direct is not None and direct.get("b") is not None else {}
-                    t = asyncio.ensure_future(tell_window(win_of(client), type="notice", text=f"送信できませんでした: {why}"[:300], **mark))  # 切れてつなぎ直した画面にも
+                    # 合図の番号を送らない更新前の画面には、これまでどおり error で知らせる（状態の欄を戻す。notice では「考え中」が残る。codex-review e6c4298）
+                    t = asyncio.ensure_future(tell_window(win_of(client), type="notice" if mark else "error", text=f"送信できませんでした: {why}"[:300], **mark))  # 切れてつなぎ直した画面にも
                     _tasks.add(t)
                     t.add_done_callback(_tasks.discard)
 
