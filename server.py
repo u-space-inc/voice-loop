@@ -3834,7 +3834,7 @@ async def ws(sock: WebSocket):
 
     def start_turn(text: str, pane: str, speaker: int, key: str | None, reply_at: float | None = None, files: list[str] | None = None,
                    item: int | None = None, said: str | None = None, admitted: int | None = None, via: str | None = None, seen: int | None = None,
-                   stopgen: int | None = None, crossed: bool = False, legacy: bool = False, legacy_drop: bool = False):
+                   stopgen: int | None = None, crossed: bool = False, legacy: bool = False, legacy_drop: bool = False, begin_b: int | None = None):
         # said: 辞書で直す前の聞き取り（直したときだけ。ハブの守りの台帳に載せる）
         # admitted: 発言を受けたその場（声なら発言の頭が届いたとき）に取った受け付けの番号。無ければここで取る
         # via: 発言を受けたその場の発言元（機械なら "device"）。無ければいまの名乗りから決める（声は頭のときに控える。頭と声の間に
@@ -3883,7 +3883,9 @@ async def ws(sock: WebSocket):
         if job is None and not (talker and talker.on()):  # ハブ以外への指示。送るのは画面のターンの中なので、送ったかを本体の一覧で控える
             DIRECT_SEQ["n"] += 1
             direct = direct_turn["d"] = DIRECT_PENDING[DIRECT_SEQ["n"]] = {
-                "key": DIRECT_SEQ["n"], "sent": False, "dropped": False, "handed": False, "lock": threading.Lock(), "notify": notify_unsent}
+                "key": DIRECT_SEQ["n"], "sent": False, "dropped": False, "handed": False, "lock": threading.Lock(),
+                # 取り消しの知らせに、どの発言の指示か（画面の合図の番号）を付ける（画面は、その発言をまだ表示していれば状態の欄を直す。codex-review a63098a）
+                "notify": functools.partial(notify_unsent, b=begin_b) if isinstance(begin_b, int) and not isinstance(begin_b, bool) else notify_unsent}
             if crossed or legacy_drop or (stopgen is not None and stopgen != STOP_GEN["n"]):  # 発言を始めたあと・声の頭を受けたあと（聞き取りの間）に、どこかの画面で止めた
                 if legacy and (crossed or legacy_drop):  # 合図の無い更新前の画面の添付つき・声の指示。確かめられないので送らず、読み込み直しを頼む
                     direct["notify"] = lambda: notify_unsent("この画面は古い版なので、この指示はセッションに送っていません。画面を読み込み直してから送り直してください")
@@ -3901,11 +3903,11 @@ async def ws(sock: WebSocket):
         if d is not None:
             drop_pending(d)
 
-    def notify_unsent(text: str = "送る前に取り消したので、セッションへの前の指示は送っていません"):
+    def notify_unsent(text: str = "送る前に取り消したので、セッションへの前の指示は送っていません", b: int | None = None):
         async def tell():
             # 窓の印で届ける（切れてつなぎ直した画面にも。つながっていなければ控える）。notice は会話の欄に出すだけで、停止の結果の表示（止めました・
             # 確かめの頼み）を消さない（codex-review 5fff07e）
-            await tell_window(win_of(client), type="notice", text=text)
+            await tell_window(win_of(client), type="notice", text=text, **({"b": b} if b is not None else {}))
         task = asyncio.create_task(tell())
         _tasks.add(task)
         task.add_done_callback(_tasks.discard)
@@ -4076,7 +4078,7 @@ async def ws(sock: WebSocket):
                         left_hub(str(d.get("pane", "")))
                         crossed = crossed or STOP_GEN["n"] != sg0  # 鍵を待つ間に止めたら、停止をまたいだ発言にする（ハブへの「はい」でも、承認に答える・閉じるに使わない）
                     start_turn(d["text"], d["pane"], int(d["speaker"]), d.get("key"), reply_at_of(d), attachments_of(d), reply_item_of(d), seen=heard_seen(d),
-                               crossed=crossed, admitted=adm, legacy=legacy, stopgen=sg0)
+                               crossed=crossed, admitted=adm, legacy=legacy, stopgen=sg0, begin_b=d.get("begin"))
                 continue
             if msg.get("bytes") is not None and pending.get("type") == "dropped":
                 pending = {}
@@ -4114,7 +4116,7 @@ async def ws(sock: WebSocket):
                     await send(type="transcript", pane=head["pane"], text=text)
                     start_turn(text, head["pane"], int(head["speaker"]), head.get("key"), reply_at_of(head), attachments_of(head),
                                reply_item_of(head), said if text != said else None, admitted=head["_admitted"], via=head["_via"], stopgen=head["_stopgen"],
-                               crossed=head["_crossed"], legacy=head["_legacy"], legacy_drop=head["_legacy_drop"])
+                               crossed=head["_crossed"], legacy=head["_legacy"], legacy_drop=head["_legacy_drop"], begin_b=head.get("begin"))
                 finally:
                     blocked.update(stop=stop_at_block, end=STOP_GEN["n"], until=time.monotonic() + 0.5)  # 受信に戻る時点から数える
     except WebSocketDisconnect:

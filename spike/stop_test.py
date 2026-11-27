@@ -1703,6 +1703,35 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                 got7 += read_notice(wa, lambda t, x: False, 130, tries=1)
         finally:
             s.ask, s.list_agents = real_ask7, real_agents
+        # 取り消しの知らせには、どの発言の指示か（画面の合図の番号）を付ける（codex-review a63098a）
+        check("（前提）前の試験の仕事が片づいている（取り消しの知らせの番号）", wait_idle(), True)
+        att_go12, att_in12 = threading.Event(), threading.Event()
+
+        async def held_attach12(ids, talker, pane=""):
+            att_in12.set()
+            await asyncio.to_thread(att_go12.wait, 5)
+            return "", ""
+
+        real_attach12 = s.attachment_lines
+        s.attachment_lines = held_attach12
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        notice12 = None
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winnoticeb01"}))
+                wa.send_text(json.dumps({"type": "begin", "b": 7, "pane": "w9:p1", "hid": -1}))
+                wa.send_text(json.dumps({"type": "text", "text": "番号つきで取り消す指示", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 7}))
+                check("（前提）指示が添付の用意で止まっている（取り消しの知らせの番号）", att_in12.wait(5), True)
+                wa.send_text(json.dumps({"type": "stop", "n": 140}))
+                for _ in range(40):
+                    m = json.loads(wa.receive_text())
+                    if m.get("type") == "notice" and "送っていません" in m.get("text", ""):
+                        notice12 = m
+                        break
+        finally:
+            att_go12.set()
+            s.attachment_lines, s.list_agents = real_attach12, real_agents
+        check("取り消しの知らせには、どの発言の指示か（合図の番号）を付ける", (notice12 or {}).get("b"), 7)
         check("取り消して知らせた指示には、送れなかったを重ねない。取り消しの知らせは notice（停止の結果の表示を消さない。codex-review 5fff07e）",
               (sum("送っていません" in x for t, x in got7), sum("送信できませんでした" in x for t, x in got7), [t for t, x in got7 if "送っていません" in x]),
               (1, 0, ["notice"]))
