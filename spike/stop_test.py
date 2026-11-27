@@ -1806,6 +1806,24 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         s.PANE_LOCKS.clear()
         s.ACCEPT_LOCKS.clear()
         check("古い発言が断り・その場の答え・失敗・返信先なしで終わっても、あとの新しい問いを消さない", kept11, [Q, Q, Q, Q])
+        # 止めて抜けた読み上げの終わりの知らせには、止めた印を付ける（画面は停止の結果の表示を上書きしない。codex-review 10a2010）
+        class SpeakC:
+            voice, speaker, audio = False, None, "wav"
+
+            def __init__(self):
+                self.got = []
+
+            async def send(self, **m):
+                self.got.append(m)
+
+        sc_stop, sc_go = SpeakC(), SpeakC()
+        ev_stop, ev_go = asyncio.Event(), asyncio.Event()
+        ev_stop.set()
+        asyncio.run(s.speak_to([sc_stop], "止めた報告", ev_stop, plain=True))
+        asyncio.run(s.speak_to([sc_go], "ふつうの報告", ev_go, plain=True))
+        check("止めて抜けた読み上げの終わりには止めた印を付け、ふつうの終わりには付けない",
+              ([m for m in sc_stop.got if m.get("type") == "done"], [m for m in sc_go.got if m.get("type") == "done"]),
+              ([{"type": "done", "sentences": 0, "stopped": True}], [{"type": "done", "sentences": 0}]))
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]

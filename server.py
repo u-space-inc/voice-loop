@@ -1808,7 +1808,8 @@ async def speak_to(clients: list[Client], text: str, cancel: asyncio.Event, plai
                 body = lambda c: (opus.get(voice[c]) or wavs[voice[c]]) if getattr(c, "audio", "wav") == "opus" else wavs[voice[c]]
                 await each(lambda c: c.sock.send_bytes(body(c)) if c in voice and c.voice else asyncio.sleep(0))
                 n += 1
-    await each(lambda c: c.send(type="done", sentences=n))
+    # 止めて抜けたら、その印を付ける（画面は、停止の結果（止めました・確かめを頼む）を「話し終わりました」で上書きしない。codex-review 10a2010）
+    await each(lambda c: c.send(type="done", sentences=n, **({"stopped": True} if cancel.is_set() else {})))
 
 
 # 報告の声を鳴らすのは 1 か所（設計書 R1・課題 K9。2026-11-23 本人「推奨で」）。文字はすべての画面に出し、声は最後に話しかけた窓だけで鳴らす。

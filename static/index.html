@@ -2165,7 +2165,7 @@ function connect() {
     else if (m.type === 'speaking') { accepting = !muted; serverDone = false; } // 切っている間に届いた音声は鳴らさない（本体も送らないが、切った直後の分が届くことがある）
     else if (m.type === 'error') { stopPlayback(); face('idle'); sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); setStatus(''); if (FACE) $('faceCap').textContent = '⚠ ' + m.text; if (m.gone) { agentsSig = ''; loadAgents(); } } // 相手が消えた・入れ替わった → 一覧を取り直す
     else if (m.type === 'notice') { sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); } // ハブから報告を受け取れなかった等（いまの話し相手とは別の知らせ）
-    else if (m.type === 'done') { serverDone = true; turnDone = true; if (!playing && !queue.length) finishSpeaking(); loadAgents(); }
+    else if (m.type === 'done') { serverDone = true; turnDone = true; if (!m.stopped && !playing && !queue.length) finishSpeaking(); loadAgents(); } // 止めて抜けた読み上げの終わりでは、停止の結果の表示を変えない
     else if (m.type === 'stopgen') { // どこかの画面で止めた（発言を始めた合図に付ける）
       // ほかの画面で止めたら、それより前に始めた、まだ送っていない録音は捨てる（止めたあとの次のタップで送らない。codex-review 8a47002）
       if (typeof m.n === 'number' && stopGen >= 0 && m.n > stopGen) {

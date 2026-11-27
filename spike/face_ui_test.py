@@ -514,6 +514,10 @@ with sync_playwright() as pw:
     mic_status = pg.evaluate("document.getElementById('statusText').textContent.includes('ほかの画面で止めた')")
     pg.evaluate("() => { navigator.mediaDevices.getUserMedia = window.__gum; if (rec && rec.state === 'recording') stopRec(); }")
     check("録音: マイクの許可を待つ間にほかの画面で止めたら、録音を始めない", (mic_rec, mic_status), (False, True))
+    # 止めて抜けた読み上げの終わりの知らせでは、停止の結果の表示（確かめの頼み）を「話し終わりました」で上書きしない（codex-review 10a2010）
+    pg.evaluate("setStatus('止めたか確かめられませんでした（試験）'); ws.onmessage({ data: JSON.stringify({ type: 'done', sentences: 0, stopped: true }), target: ws })")
+    check("停止: 止めて抜けた読み上げの終わりでは、停止の結果の表示を変えない",
+          pg.evaluate("document.getElementById('statusText').textContent"), "止めたか確かめられませんでした（試験）")
     # 本体が、止めたか確かめられないと返したら、「止めました」と出さずに確かめを頼む（codex-review 57c6291）
     pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'stopped', n: 1e9, unsure: true }), target: ws })")
     check("停止: 止めたか確かめられないと返されたら、「止めました」と出さずに確かめを頼む",
