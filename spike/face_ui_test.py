@@ -472,6 +472,16 @@ with sync_playwright() as pw:
     check("録音: 録音を始めたときに合図を送り、返信先が録音の途中で変わったら（途中で選んだ・選び直した・外れた・別のを選んで戻した）送らない（codex-review 62a9436・69257ea）",
           (picked_before, picked_during, picked_changed, picked_cleared, picked_back),
           ((True, [111.5, "number"]), (True, "送らない"), (True, "送らない"), (True, "送らない"), (True, "送らない")))
+    # ほかの画面で止めた（停止の回数が進んだ）ら、それより前に始めた、まだ送っていない録音は止めて捨てる（codex-review 8a47002）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__types.length = 0; window.__turn = null; startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    pg.wait_for_timeout(800)
+    pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'stopgen', n: Math.max(stopGen, 0) + 1 }), target: ws })")
+    pg.wait_for_timeout(1200)
+    check("録音: ほかの画面で止めたら、録音を止めて送らない",
+          (pg.evaluate("rec.state"), pg.evaluate("window.__types.includes('turn')"), pg.evaluate("document.getElementById('statusText').textContent.includes('ほかの画面で止めた')")),
+          ("inactive", False, True))
     # 本体が、止めたか確かめられないと返したら、「止めました」と出さずに確かめを頼む（codex-review 57c6291）
     pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'stopped', n: 1e9, unsure: true }), target: ws })")
     check("停止: 止めたか確かめられないと返されたら、「止めました」と出さずに確かめを頼む",

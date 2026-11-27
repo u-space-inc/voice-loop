@@ -1741,7 +1741,7 @@ async def ask(agent: dict, text: str) -> tuple[str, str]:
     # 送ったその時点から working（または blocked）を見届けるまで待つ（送った直後の idle に反応しない。送りと見届けを別々に呼ぶと、その間に
     # 終わった短い返事を 5 秒見逃す。codex-review fdc6b04）。5 秒で見逃したら（agent_prompt_stalled。受け取りは済んでいる）、終わりを待つ
     r = await asyncio.to_thread(_if_still, commit, functools.partial(herdr, timeout=30), "agent", "prompt", pane, text,
-                                "--wait", "--until", "working", "--until", "blocked", "--timeout", "5000")
+                                "--wait", "--until", "working", "--until", "blocked", "--timeout", "10000")  # herdr の上限は、見届けの 5 秒より長く（先に時間切れを返さない。codex-review 8a47002）
     if r is None:
         return "cancelled", ""
     err = (r.get("error") or {}).get("code")

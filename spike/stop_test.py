@@ -1514,7 +1514,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.herdr, s.jsonl_path, s.read_screen = real_herdr_ask, real_jsonl_ask, real_read_screen2
         check("送ったが working を見なかったら、受け取りは済んでいるので終わりを待つ", (got_st[0], calls_st), ("done", [("agent", "prompt"), ("agent", "wait")]))
         check("指示を送るのは、送った時点から working を見届けて（5 秒まで）、それから終わりを待つ", (calls_ask, got_ask[0]),
-              ([("agent", "prompt", "w9:p1", "送る指示", "--wait", "--until", "working", "--until", "blocked", "--timeout", "5000"),
+              ([("agent", "prompt", "w9:p1", "送る指示", "--wait", "--until", "working", "--until", "blocked", "--timeout", "10000"),
                 ("agent", "wait", "w9:p1", "--timeout", "600000")], "done"))
         # 合図の無い発言が受け付けの鍵を待つ間に止めたら、その指示は送らずに知らせ、ハブへの「はい」もいまの発言にしない。合図の無い次の発言は、
         # 鍵を待つ前に前の指示を取り消す（codex-review 31c9e1c）

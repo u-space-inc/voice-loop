@@ -2166,7 +2166,11 @@ function connect() {
     else if (m.type === 'error') { stopPlayback(); face('idle'); sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); setStatus(''); if (FACE) $('faceCap').textContent = '⚠ ' + m.text; if (m.gone) { agentsSig = ''; loadAgents(); } } // 相手が消えた・入れ替わった → 一覧を取り直す
     else if (m.type === 'notice') { sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); } // ハブから報告を受け取れなかった等（いまの話し相手とは別の知らせ）
     else if (m.type === 'done') { serverDone = true; turnDone = true; if (!playing && !queue.length) finishSpeaking(); loadAgents(); }
-    else if (m.type === 'stopgen') { if (typeof m.n === 'number') stopGen = m.n; } // どこかの画面で止めた（発言を始めた合図に付ける）
+    else if (m.type === 'stopgen') { // どこかの画面で止めた（発言を始めた合図に付ける）
+      // ほかの画面で止めたら、それより前に始めた、まだ送っていない録音は捨てる（止めたあとの次のタップで送らない。codex-review 8a47002）
+      if (typeof m.n === 'number' && stopGen >= 0 && m.n > stopGen && rec && rec.state === 'recording') { recStops++; stopRec(); setStatus('ほかの画面で止めたので、録音は送りません'); face('idle'); }
+      if (typeof m.n === 'number') stopGen = m.n;
+    }
     else if (m.type === 'sync') { try { ev.target.send(JSON.stringify({ type: 'sync', n: m.n })); } catch {} } // 同期の合図はすぐ返す（本体は、これより前にこの画面が送ったもの（停止）を読み終えたと分かる）
     else if (m.type === 'stopped') { // 届いた印は、本体が止めたと返してから（codex-review 44b3c2e）
       // scope=talk: 話し始めるときに再生だけを止めた返事（表示は変えない）。n: 停止の番号。いまの発言を始める前の停止への返事なら、
