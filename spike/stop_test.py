@@ -1362,16 +1362,28 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         s.subprocess.Popen = lambda *a, **k: (pend_started.append(a[0][1:3]), PendProc())[1]
         try:
             s.PENDING["stop"] = 1
-            p_stop = (s._if_still(lambda: True, s._HERDR, "agent", "send-keys", "w9:p1", "1"),
-                      s._if_still(lambda: True, functools.partial(s._HERDR, timeout=30), "agent", "prompt", "w9:p1", "x"))
+            # 指示の送りは、確定待ちの停止が確定するのを待ってから確かめる（停止の側が取り消して知らせる。黙って送らずに終えない。codex-review a1fa82c）
+            dropped_by_stop = {"v": False}
+
+            def finish_stop():
+                time.sleep(0.3)
+                dropped_by_stop["v"] = True  # 停止の確定で、送る前の指示が取り消された
+                s.PENDING["stop"] = 0
+
+            threading.Thread(target=finish_stop).start()
+            t_direct = time.time()
+            p_direct = s._if_still(lambda: not dropped_by_stop["v"], functools.partial(s._HERDR, timeout=30), "agent", "prompt", "w9:p1", "x")
+            direct_waited = time.time() - t_direct >= 0.25
+            s.PENDING["stop"] = 1
+            p_stop = (s._if_still(lambda: True, s._HERDR, "agent", "send-keys", "w9:p1", "1"), p_direct, direct_waited)
             s.PENDING["stop"], s.PENDING["admit"] = 0, 1
             p_admit = (s._if_still(lambda: True, s._HERDR, "agent", "send-keys", "w9:p1", "1"),
                        "result" in (s._if_still(lambda: True, functools.partial(s._HERDR, timeout=30), "agent", "prompt", "w9:p1", "x") or {}))
         finally:
             s.PENDING["stop"] = s.PENDING["admit"] = 0
             s.subprocess.Popen = real_popen4
-        check("確定待ちの停止があれば何も始めず、確定待ちの受け付けがあれば承認のキー・閉じるだけ始めない",
-              (p_stop, p_admit, pend_started), ((None, None), (None, True), [["agent", "prompt"]]))
+        check("確定待ちの停止があれば承認のキー・閉じるは始めず、指示の送りは停止の確定を待ってから確かめる。確定待ちの受け付けがあれば承認のキー・閉じるだけ始めない",
+              (p_stop, p_admit, pend_started), ((None, None, True), (None, True), [["agent", "prompt"]]))
         # 停止は、読んだその場で確定待ちに数え、鍵を取って確定したら外す
         s.COMMIT_LOCK.acquire()
         rel = threading.Timer(0.5, s.COMMIT_LOCK.release)
@@ -1411,6 +1423,27 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.COMMIT_LOCK.release()
         s.PENDING["admit"] = 0
         check("鍵を待つ間に取り消されても、あとで取れた鍵は放し、確定待ちからも外す", cancel_got, (False, 0))
+        # 鍵は、空いていればその場で取り、使われていれば専用の実行枠で待つ（返事待ちの仕事が既定の実行枠を使い切っても、停止と受け付けを並ばせない。codex-review a1fa82c）
+
+        async def pool_case():
+            loop = asyncio.get_running_loop()
+            used = []
+            real_rie = loop.run_in_executor
+
+            def spy(ex, fn, *a):
+                used.append(ex)
+                return real_rie(ex, fn, *a)
+
+            loop.run_in_executor = spy
+            await s._acquire_commit()  # 空いている
+            s.COMMIT_LOCK.release()
+            s.COMMIT_LOCK.acquire()  # 使われている
+            threading.Timer(0.2, s.COMMIT_LOCK.release).start()
+            await s._acquire_commit()
+            s.COMMIT_LOCK.release()
+            return [u is s.COMMIT_POOL for u in used]
+
+        check("鍵は、空いていればその場で取り、使われていれば専用の実行枠で待つ", asyncio.run(pool_case()), [True])
         check("鍵が使われている間に停止が来ても、ほかの画面の相手を続け、停止は鍵が空いてから確定する",
               (busy_other < 0.5, busy_during, busy_after), (True, False, True))
         # 止めたあとに届いた声を捨てたときは、最後の停止と同じ返事（番号・確かめられない）をする（番号の無い「止めました」で確かめの頼みを上書きしない。codex-review e7ab276）

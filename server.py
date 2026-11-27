@@ -194,11 +194,16 @@ COMMIT_LOCK = threading.Lock()  # 鍵の中で受け付け・停止・送り始�
 # 停止・受け付けがあれば始めない。ハブ以外への指示を送るのは、確定待ちの停止があれば始めない（鍵を待つ間に、先に待っていた古い操作が始まらない。
 # codex-review bee122f の P1）
 PENDING = {"stop": 0, "admit": 0}
+PENDING_WAIT = 30  # 指示の送りが、確定待ちの停止の確定を待つ上限（秒）
+# 停止・受け付けの鍵待ちと、送り途中の操作の待ちに使う専用の実行枠（返事待ちの仕事が既定の実行枠を使い切っても、停止と受け付けを並ばせない。codex-review a1fa82c）
+COMMIT_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=8, thread_name_prefix="commit")
 
 
 async def _acquire_commit():
     """COMMIT_LOCK の空きを、イベントループを止めずに待って取る。待つ間に取り消されたら、あとで取れた鍵はその場で放す（取り残さない。codex-review bee122f）"""
-    fut = asyncio.get_running_loop().run_in_executor(None, COMMIT_LOCK.acquire)
+    if COMMIT_LOCK.acquire(blocking=False):  # 空いていればその場で取る
+        return
+    fut = asyncio.get_running_loop().run_in_executor(COMMIT_POOL, COMMIT_LOCK.acquire)
     try:
         await asyncio.shield(fut)
     except asyncio.CancelledError:
@@ -235,12 +240,19 @@ def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False, 
     「止めました」と返す。起動しただけでは herdr がまだ受け取っていないことがあり、「止めました」のあとに届かないように。codex-review b7bf623・57c6291 の P1）"""
     if wait_lock:
         COMMIT_LOCK.acquire()
+        # 確定待ちの停止があれば、鍵をいったん放して確定を待つ（停止の側が送る前の指示を取り消して「送っていません」と知らせる。ここで黙って
+        # 送らずに終えると、知らせがどこからも出ない。codex-review a1fa82c）。上限を過ぎたら、ふつうに確かめる
+        end = time.monotonic() + PENDING_WAIT
+        while PENDING["stop"] and time.monotonic() < end:
+            COMMIT_LOCK.release()
+            time.sleep(0.02)
+            COMMIT_LOCK.acquire()
     elif not COMMIT_LOCK.acquire(blocking=False):
         return None
     ev = None
     try:
         # 本体が読んだが確定していない停止があれば始めない。承認のキー・閉じるは、確定待ちの次の発言の受け付けがあっても始めない
-        if PENDING["stop"] or (not wait_lock and PENDING["admit"]) or not still():
+        if (not wait_lock and (PENDING["stop"] or PENDING["admit"])) or not still():
             return None
         try:
             proc = subprocess.Popen(["herdr", *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -3921,7 +3933,7 @@ async def ws(sock: WebSocket):
                         task.add_done_callback(_tasks.discard)
                         inflight = list(HELD_OPS)
                         # 止める前に起動した操作が返ってから「止めました」と返す（本体は止めずに待つ）。返らなければ、止めたか確かめられないと返す
-                        if inflight and not await asyncio.to_thread(wait_inflight, inflight):
+                        if inflight and not await asyncio.get_running_loop().run_in_executor(COMMIT_POOL, wait_inflight, inflight):
                             unsure = True
                         if time.monotonic() < UNSURE_UNTIL["t"]:  # 少し前に、届いたか分からない操作があった
                             unsure = True
