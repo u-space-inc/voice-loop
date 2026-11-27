@@ -323,6 +323,24 @@ sync_got.append(("待ちのあとに読む", hub("yes").get("reason"), list(stat
 s._worker = real_worker
 s.SETTLING.pop(779, None)
 s.SETTLE_LIMIT, s.SETTLE_LAST["n"] = limit0, -1
+# 画面との同期は、画面のボタンと共有する鍵を取る前に待つ（待つ間に、ほかの画面のボタンを止めない。codex-review 8093b0b）
+s.SETTLE_LIMIT, s.SETTLE_LAST["n"] = 0.6, 780
+s.SETTLING[780] = [threading.Event(), None]
+s._answer_lock = asyncio.Lock()
+
+
+async def lock_free_while_waiting():
+    t = asyncio.create_task(s.hub_answer({"pane": "w9:p1", "answer": "yes"}))
+    await asyncio.sleep(0.2)
+    free = not s._answer_lock.locked()
+    r = json.loads((await t).body)
+    return free, r.get("reason")
+
+
+lock_got = asyncio.run(lock_free_while_waiting())
+s.SETTLING.pop(780, None)
+s.SETTLE_LIMIT, s.SETTLE_LAST["n"] = limit0, -1
+check("画面との同期は、画面のボタンと共有する鍵を取る前に待つ", lock_got, (True, "unconfirmed"))
 # ほかの操作の途中（鍵が使われている）で送らなかったら、止めたのではなく busy と返す（codex-review 5fff07e）
 real_if_still = s._if_still
 s._if_still = lambda *a: s.BUSY

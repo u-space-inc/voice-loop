@@ -288,9 +288,13 @@ def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False, 
         # 送らずに終えると、知らせがどこからも出ない。codex-review a1fa82c）。上限（鍵を取る前から数える）を過ぎても確定しなければ送らず、
         # 送れなかったと返す（送る仕事の終わりで「送信できませんでした」と知らせる。codex-review 070146f・31c9e1c）
         end = time.monotonic() + PENDING_WAIT
+        verify = ASK_VERIFY.get()
         while True:
             if not _acquire_for_send(end):
                 return {"error": {"code": "stop_pending", "message": "止める操作の確定を待ちきれなかったので、送っていません"}}
+            if verify is not None and not verify():  # 鍵を待つ間に、送り先の場所のセッションが入れ替わった
+                COMMIT_LOCK.release()
+                return {"error": {"code": "session_changed", "message": "送る前に話し相手が入れ替わったので、送っていません"}}
             with PENDING_LOCK:  # 確定待ちの停止が無いのを見て、送ると決めるまでを、停止を読んだ印と順に並べる（codex-review 27fc1d4）
                 again = bool(PENDING["stop"])
                 ok = False if again else still()
@@ -326,7 +330,10 @@ def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False, 
         if ev is not None:
             # 待ちを打ち切った（herdr が返らなかった）・待つ途中で失敗したら、操作が届いたか分からない。停止は「止めました」と言わずに、
             # 止めたか確かめられないと返す（codex-review d9db7c8 の P1）
-            ev.ok = _herdr_sure(r)
+            try:
+                ev.ok = _herdr_sure(r)
+            except Exception:  # 確かめに失敗しても、印は必ず外す（以降の停止を待たせない。codex-review 8093b0b）
+                ev.ok = False
             if not ev.ok:  # 印が一覧から外れたあとに来た停止にも、しばらくは確かめられないと返す（codex-review 9d641dc の P1）
                 UNSURE_UNTIL["t"] = max(UNSURE_UNTIL["t"], time.monotonic() + UNSURE_HOLD)
             ev.set()
@@ -345,7 +352,8 @@ def _herdr_sure(r) -> bool:
     if "result" in r:
         return True
     err = r.get("error")
-    return isinstance(err, dict) and (err.get("code") in SURE_REJECTS or err.get("code") in SURE_ACCEPTED)
+    code = err.get("code") if isinstance(err, dict) else None
+    return isinstance(code, str) and (code in SURE_REJECTS or code in SURE_ACCEPTED)  # 形の違う欄は分からない（codex-review 8093b0b）
 
 
 def wait_inflight(evs: list) -> bool:
@@ -1052,6 +1060,9 @@ def _if_still(still, fn, *args):
         # 鍵が使われていたら、承認のキー・閉じるは待たずに断り、指示を送るのは待つ
         return _herdr_gated(still, args, timeout, hold=True, wait_lock=args[:2] == ("agent", "prompt"))
     with COMMIT_LOCK:
+        verify = ASK_VERIFY.get() if args[:2] == ("agent", "prompt") else None
+        if verify is not None and not verify():
+            return {"error": {"code": "session_changed", "message": "送る前に話し相手が入れ替わったので、送っていません"}}
         ok = still is None or still()
     if not ok:
         return None
@@ -1721,6 +1732,8 @@ def pane_lock(pane: str) -> asyncio.Lock:
 # ask がワーカーのスレッドの中で送る直前に呼ぶ確かめ（False なら送らずに ("cancelled", "")）。画面の直接の指示で、スレッドの空きを待つ間に
 # 止めた・次の発言をしたら送らない（codex-review 6096e1d）。送る仕事を作るときに値が写るので、その指示の分だけに効く
 ASK_COMMIT: contextvars.ContextVar = contextvars.ContextVar("ask_commit", default=None)
+# 指示を送る鍵を取ったあとに、送り先のセッションが入れ替わっていないかを確かめる関数（鍵を待つ間に入れ替わったら送らない。codex-review 8093b0b）
+ASK_VERIFY: contextvars.ContextVar = contextvars.ContextVar("ask_verify", default=None)
 
 
 def _agent_state(r) -> str:
@@ -3014,6 +3027,9 @@ def hub_human_turn() -> str | None:
 async def hub_answer(body: dict):
     """_hub_answer を、画面のボタンの返答（_answer）と同じ鍵の中で動かす。確かめてからキーを送るまでが、2 つの経路で重ならないように
     （一方が答えて次の画面（承認など）に変わった直後に、もう一方が古い問いのつもりで番号を送らない。2026-11-05 Codex）。"""
+    # 画面との同期は、画面のボタンと共有する鍵を取る前に待つ（待つ間に、ほかの画面・ほかのセッションのボタンを止めない。codex-review 8093b0b）
+    if not await hub_settled():
+        return JSONResponse({"ok": False, "reason": "unconfirmed"})
     async with _answer_lock:
         return await _hub_answer(body)
 
@@ -3028,7 +3044,7 @@ async def _hub_answer(body: dict):
     if REPORTING:
         return JSONResponse({"ok": False, "reason": "reporting"})
     pane, answer, confirmed = str(body.get("pane", "")), str(body.get("answer", "")).strip().lower(), bool(body.get("confirmed"))
-    if not await hub_settled():  # いまの発言の画面が同期の合図を返すまで待つ（相手と問いを読む前に。待つ間に問いが進んでも、読むのはそのあと）
+    if not settled_now():  # 同期の合図は、鍵を取る前（hub_answer）に待った。そのあと次の発言が入り、まだ返していなければ断る（相手と問いを読む前に）
         return JSONResponse({"ok": False, "reason": "unconfirmed"})  # 止めたかは分からない（同期を確かめられなかった。codex-review 5fff07e）
     a = await asyncio.to_thread(_worker, pane)
     if not a:
@@ -3791,10 +3807,17 @@ async def ws(sock: WebSocket):
 
             if direct is not None:
                 direct["handed"] = True  # ここからは、送る仕事が終わるまで一覧に残す（切れても、ほかの画面の停止で取り消せる）
+            k0 = agent_key(agent)
+
+            def verify():  # 送る鍵を取ったあと、送り先の場所のセッションが、確かめたときと同じか（ワーカーのスレッドで呼ぶ）
+                return any(a["pane"] == pane and agent_key(a) == k0 for a in list_agents())
+
             tok = ASK_COMMIT.set(commit)
+            tok2 = ASK_VERIFY.set(verify)
             try:
-                fut = track_send(pane, ask(agent, text + extra))  # 送る仕事は、作るときの ASK_COMMIT を持つ
+                fut = track_send(pane, ask(agent, text + extra))  # 送る仕事は、作るときの ASK_COMMIT・ASK_VERIFY を持つ
             finally:
+                ASK_VERIFY.reset(tok2)
                 ASK_COMMIT.reset(tok)
 
             def report_failure(f):

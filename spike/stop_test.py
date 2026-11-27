@@ -1868,6 +1868,45 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.HELD_OPS.discard(slow_op)
             s.UNSURE_UNTIL["t"] = 0.0
         check("停止を受け取った時点で期間内なら、待つ間に期間が過ぎても確かめられないと返す", expire_msg.get("unsure"), True)
+        # 指示を送る鍵を取ったあとに、送り先の場所のセッションが入れ替わっていたら送らない（codex-review 8093b0b）
+        started13 = []
+        real_popen13 = s.subprocess.Popen
+
+        class OkProc13:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return '{"result": {}}', ""
+
+        s.subprocess.Popen = lambda *a, **k: (started13.append(1), OkProc13())[1]
+        tokv = s.ASK_VERIFY.set(lambda: False)  # 入れ替わった
+        try:
+            r13 = s._if_still(lambda: True, functools.partial(s._HERDR, timeout=30), "agent", "prompt", "w9:p1", "x")
+        finally:
+            s.ASK_VERIFY.reset(tokv)
+            s.subprocess.Popen = real_popen13
+        check("指示を送る鍵を取ったあとに送り先が入れ替わっていたら送らない", ((r13 or {}).get("error", {}).get("code"), started13, s.COMMIT_LOCK.locked()), ("session_changed", [], False))
+        # herdr の返事の error の欄が形の違うものでも、送り途中の印は外す（codex-review 8093b0b）
+        odd_held = []
+
+        class OddCodeProc:
+            returncode = 1
+
+            def communicate(self, timeout=None):
+                odd_held.extend(s.HELD_OPS)
+                return '{"error": {"code": ["形の違う", "欄"]}}', ""
+
+        s.subprocess.Popen = lambda *a, **k: OddCodeProc()
+        try:
+            try:
+                s._if_still(lambda: True, s._HERDR, "agent", "send-keys", "w9:p1", "1")
+            except Exception:  # 確かめに失敗して例外が出ても、印が残っていないかを下で見る
+                pass
+        finally:
+            s.subprocess.Popen = real_popen13
+            s.UNSURE_UNTIL["t"] = 0.0
+        check("herdr の返事の欄の形が違っても、送り途中の印は外し、確かめられないとする",
+              (len(odd_held), odd_held[0].is_set() if odd_held else None, getattr(odd_held[0], "ok", None) if odd_held else None, len(s.HELD_OPS)), (1, True, False, 0))
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
