@@ -3989,6 +3989,7 @@ async def ws(sock: WebSocket):
                 if d["type"] == "stop":
                     # scope=talk: 話し始めるときに、画面が再生だけを止めた（この画面の分だけ。ほかの画面の送る前の指示は取り消さない。codex-review dad00a5）
                     talk, unsure = d.get("scope") == "talk", False
+                    unsure_at_read = time.monotonic() < UNSURE_UNTIL["t"]  # 停止を受け取った時点で、届いたか分からない操作の期間内だったか（待つ間に過ぎても保つ。codex-review 624d2d4）
                     if pending.get("type") == "turn":  # 声の発言の頭のあと、声の本体の前に止めた。あとから届く声は聞き取らずに捨てる（「止めました」のあとに送らない。codex-review 7793a44）
                         pending = {"type": "dropped"}
                     cancel.set()
@@ -4013,7 +4014,7 @@ async def ws(sock: WebSocket):
                         # 止める前に起動した操作が返ってから「止めました」と返す（本体は止めずに待つ）。返らなければ、止めたか確かめられないと返す
                         if inflight and not await asyncio.get_running_loop().run_in_executor(COMMIT_POOL, wait_inflight, inflight):
                             unsure = True
-                        if time.monotonic() < UNSURE_UNTIL["t"]:  # 少し前に、届いたか分からない操作があった
+                        if unsure_at_read or time.monotonic() < UNSURE_UNTIL["t"]:  # 少し前に、届いたか分からない操作があった（受け取った時点か、待つ間）
                             unsure = True
                     if current:
                         current.cancel()

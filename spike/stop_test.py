@@ -1854,6 +1854,20 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         check("止めて抜けた読み上げの終わりには止めた印を付け、ふつうの終わりには付けない",
               ([m for m in sc_stop.got if m.get("type") == "done"], [m for m in sc_go.got if m.get("type") == "done"]),
               ([{"type": "done", "sentences": 0, "stopped": True}], [{"type": "done", "sentences": 0}]))
+        # 停止を受け取った時点で、届いたか分からない操作の期間内なら、送り途中の操作を待つ間に期間が過ぎても、確かめられないと返す（codex-review 624d2d4 の P1）
+        slow_op = threading.Event()
+        s.HELD_OPS.add(slow_op)
+        threading.Timer(0.6, slow_op.set).start()
+        s.UNSURE_UNTIL["t"] = time.monotonic() + 0.3  # 停止を受け取ったときは期間内、待つ間に過ぎる
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wl:
+                wl.send_text(json.dumps({"type": "stop", "n": 141}))
+                expire_msg = recv_type(wl, "stopped") or {}
+        finally:
+            slow_op.set()
+            s.HELD_OPS.discard(slow_op)
+            s.UNSURE_UNTIL["t"] = 0.0
+        check("停止を受け取った時点で期間内なら、待つ間に期間が過ぎても確かめられないと返す", expire_msg.get("unsure"), True)
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]

@@ -421,15 +421,16 @@ with sync_playwright() as pw:
     pg.evaluate("stopRec()")
     pg.wait_for_function("window.__turn", timeout=5000)
     check("録音: 返事の番号を控え、声の頭には録音を始めたときの番号を付ける", (got_hid, pg.evaluate("window.__turn.hid")), (5, 5))
-    # 発言を始めた接続と送る接続が違えば（つなぎ直した。本体を起動し直すと番号を数え直す）、番号を付けない（-1。a2a 38ef4720）
+    # 発言を始めた接続と送る接続が違えば（つなぎ直した。本体を起動し直すと番号を数え直す）、送らずに録り直しを頼む（本体は前の接続の合図を
+    # 照らせずに捨てる。番号を付けずに送る形（a2a 38ef4720）から、送らない形にした。codex-review 624d2d4）
     pg.wait_for_timeout(300)
     pg.evaluate("heardId = 5; window.__turn2 = null; startRec()")
     pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
     pg.wait_for_timeout(1500)
     pg.evaluate("window.__realws = ws; ws = { readyState: 1, send: m => { try { const d = JSON.parse(m); if (d.type === 'turn') window.__turn2 = d; } catch {} } }; heardId = 5; stopRec()")
-    pg.wait_for_function("window.__turn2", timeout=5000)
+    pg.wait_for_function("window.__turn2 || document.getElementById('statusText').textContent.includes('つなぎ直した')", timeout=5000)
     pg.evaluate("() => { ws = window.__realws; }")
-    check("録音: 録音を始めた接続と送る接続が違えば、返事の番号を付けない", pg.evaluate("window.__turn2.hid"), -1)
+    check("録音: 録音を始めた接続と送る接続が違えば、送らずに録り直しを頼む", pg.evaluate("window.__turn2"), None)
     # 文字の発言には、送るを押した時点で受け取っていた返事の番号を付ける（添付を送る間に届いた返事の番号ではない。a2a 3752b7a5 の 5 回目）
     pg.wait_for_timeout(300)
     pg.evaluate("heardId = 5; window.__text = null; window.__types.length = 0; window.__sa = sendAttach;"
@@ -557,6 +558,19 @@ with sync_playwright() as pw:
       return out; }""")
     check("取り消しの知らせは、いま表示している発言（番号と読み込みの印が合う）のものだけ状態の欄を直す", notice_got,
           ["送っていません", "止めました", "エージェントに送りました。考え中…", "エージェントに送りました。考え中…"])
+    # 録音を始めたあとにつなぎ直したら、送らずに録り直しを頼み、返信先は残す（codex-review 624d2d4）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__types.length = 0; window.__turn = null; setReplyTarget({ at: 555.5, about: 'つなぎ直しの前の報告' }); startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    pg.evaluate("window.__oldws = ws; ws = new WebSocket(ws.url)")  # 録音の間につなぎ直した
+    pg.wait_for_function("ws.readyState === 1", timeout=5000)
+    pg.wait_for_timeout(600)
+    pg.evaluate("stopRec()")
+    pg.wait_for_function("window.__turn || document.getElementById('statusText').textContent.includes('つなぎ直した')", timeout=5000)
+    recon_got = (pg.evaluate("!!window.__turn"), pg.evaluate("document.getElementById('statusText').textContent.includes('つなぎ直した')"),
+                 pg.evaluate("replyTarget && replyTarget.at"))
+    pg.evaluate("() => { try { ws.close(); } catch {} ws = window.__oldws; setReplyTarget(null); }")
+    check("録音: 録音を始めたあとにつなぎ直したら、送らずに録り直しを頼み、返信先は残す", recon_got, (False, True, 555.5))
     # 本体が、止めたか確かめられないと返したら、「止めました」と出さずに確かめを頼む（codex-review 57c6291）
     pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'stopped', n: 1e9, unsure: true }), target: ws })")
     check("停止: 止めたか確かめられないと返されたら、「止めました」と出さずに確かめを頼む",

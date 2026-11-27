@@ -2284,6 +2284,8 @@ async function startRecInner() {
       if (paneMoved || agentGen !== ag0 || $('agent').value !== pane0) { setStatus('録音の途中で話し相手が変わったので、話した内容は送っていません。話し相手を確かめて録り直してください'); return; }
       if (replyGen !== rg0 || rf.reply_at !== rf0.reply_at || rf.reply_item !== rf0.reply_item) { setStatus('録音の途中で返信先が変わったので、話した内容は送っていません。返信先を確かめて録り直してください'); return; }
       const pane = $('agent').value, key = curKey(), list = attachFiles.slice();
+      // 録音を始めたあとにつなぎ直した（マイクの許可待ち・録音の間）。本体は前の接続の合図を照らせずに捨てるので、送らずに録り直しを頼む（返信先と添付は残す。codex-review 624d2d4）
+      if (ws !== ws0) { setStatus('つなぎ直したので、話した内容は送っていません（返信先と添付はそのままです）。録り直してください'); return; }
       const files = await sendAttach(pane, list, '話した内容');
       if (!files) return;
       // 声の本体は先に用意し、止めていない・顔の表示が同じ・つながっているのを確かめてから、頭と本体を待たずに続けて送る
@@ -2293,6 +2295,7 @@ async function startRecInner() {
       if (otherStopped()) return; // 用意する間に、ほかの画面で止めた
       if (faceOn !== face0) { setStatus('顔の表示を切り替えたので、話した内容は送っていません'); return; } // 本体は頭の時点の名乗りで発言元を決める
       if (!linked()) { setStatus(UNREACHABLE); return; }
+      if (ws !== ws0) { setStatus('つなぎ直したので、話した内容は送っていません（返信先と添付はそのままです）。録り直してください'); return; } // 声の用意の間につなぎ直した
       ws.send(JSON.stringify({ type: 'turn', pane, key, speaker: $('speaker').value, filename: 'rec.' + ext, hid: ws === ws0 ? hid0 : -1, begin: b0, pg: PAGE, ...rf, ...(files.length ? { attachments: files } : {}) }));
       ws.send(audio);
       if (sameTarget(rf)) setReplyTarget(null);
