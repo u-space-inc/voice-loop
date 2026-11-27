@@ -840,7 +840,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                     await asyncio.to_thread(lock_go17.wait, 5)
 
             win17 = ("winreconnect01" if reconnect_before else "winqueued0001")
-            s.herdr = lambda *a, **k: {"error": {"code": "agent_busy", "message": "受け付けません"}} if a[:2] == ("agent", "prompt") else {"result": {}}
+            s.herdr = lambda *a, **k: {"error": {"code": "agent_blocked", "message": "受け付けません"}} if a[:2] == ("agent", "prompt") else {"result": {}}
             s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
             s.jsonl_path = lambda a: None
             got17 = []
@@ -1802,14 +1802,16 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.herdr, s.jsonl_path = real_herdr16, real_jsonl16
         # 送って見届ける待ちが時間切れ・中身の分からない返事なら、届いたか分からない（unknown）。はっきり断ったなら error（codex-review ab8a5e5）
         outs17 = []
-        for resp in ({"error": {"code": "timeout"}}, {"raw": "中身の分からない返事", "code": 0}, {"error": {"code": "agent_blocked"}}):
+        for resp in ({"error": {"code": "timeout"}}, {"raw": "中身の分からない返事", "code": 0}, {"error": {"code": ["形の違う", "欄"]}},
+                     {"error": {"code": "something_new"}}, {"error": {"code": "agent_blocked"}}, {"error": {"code": "agent_not_found"}}):
             s.herdr = lambda *a, resp=resp, **k: resp if a[:2] == ("agent", "prompt") else {"result": {"agent": {"agent_status": "idle"}}}
             s.jsonl_path = lambda a: None
             try:
                 outs17.append(asyncio.run(s.ask({"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}, "送る指示"))[0])
             finally:
                 s.herdr, s.jsonl_path = real_herdr16, real_jsonl16
-        check("送って見届ける待ちが時間切れ・中身の分からない返事なら unknown、はっきり断ったなら error", outs17, ["unknown", "unknown", "error"])
+        check("送って見届ける待ちが時間切れ・中身の分からない返事・形の違う欄・知らない error なら unknown、送っていないと分かる断りなら error（codex-review 280cfe6）",
+              outs17, ["unknown", "unknown", "unknown", "unknown", "error", "error"])
         check("送ったあと返事を待てなかったら、unanswered を返す", (got16[0], calls16), ("unanswered", [("agent", "prompt"), ("agent", "wait")]))
         check("（前提）前の試験の仕事が片づいている（返事を確かめられない知らせ）", wait_idle(), True)
 
@@ -2250,7 +2252,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             if a[:2] == ("agent", "prompt"):
                 entered4.set()
                 gate4.wait(5)  # 相手が受け付けるのを待っている間
-                return {"error": {"code": "agent_busy", "message": "受け付けません"}}
+                return {"error": {"code": "agent_blocked", "message": "受け付けません"}}
             return {"result": {}}
 
         s.herdr, s.jsonl_path = refusing_herdr, (lambda a: None)
@@ -2276,7 +2278,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         check("ハブ以外への指示を送り始めたあとに次の発言をし、相手が断ったら、送れなかったことを画面に知らせる",
               sum(t in ("error", "notice") and "送信できませんでした" in x for t, x in seen4), 1)
         # 取り消さずに相手が断ったときも、知らせは 1 回（送る仕事の終わりの 1 か所で出す。ターンを取り消したのが断られたあとでも同じ所で出る）
-        s.herdr = lambda *a, **k: {"error": {"code": "agent_busy", "message": "受け付けません"}} if a[:2] == ("agent", "prompt") else {"result": {}}
+        s.herdr = lambda *a, **k: {"error": {"code": "agent_blocked", "message": "受け付けません"}} if a[:2] == ("agent", "prompt") else {"result": {}}
         s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
         s.jsonl_path = lambda a: None
         seen5 = []

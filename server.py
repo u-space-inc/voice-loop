@@ -368,6 +368,8 @@ def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False, 
 
 SURE_REJECTS = {"agent_blocked"}  # 操作を実行していないと分かる herdr の拒否（agent_blocked は、入力を送る前に断る。herdr agent prompt --help）
 SURE_ACCEPTED = {"agent_prompt_stalled"}  # 受け取ったと分かる herdr の返事（送ったが 5 秒で working を見なかった）
+# 指示を送っていないと分かる herdr の断り（agent_blocked は入力を送る前に断る。相手が見つからない・動いていないなら送れない）。ほかの error は、届いたか分からない
+SEND_REJECTS = {"agent_blocked", "agent_not_found", "agent_not_running"}
 
 
 def _herdr_sure(r) -> bool:
@@ -1790,12 +1792,12 @@ async def ask(agent: dict, text: str) -> tuple[str, str]:
     if r is None:
         return "cancelled", ""
     err = (r.get("error") or {}).get("code")
-    if r.get("timeout") or err == "timeout" or (not err and "result" not in r):
-        # 待ちの時間切れ・中身の分からない返事。届いたかは分からない（送れなかったと言うと、送り直して二重になる。codex-review ab8a5e5）。
-        # herdr がはっきり断った（ほかの error）なら、送れなかったと知らせる
-        return "unknown", json.dumps(r, ensure_ascii=False)[:200]
-    if err and err != "agent_prompt_stalled" or (not err and "result" not in r):
+    if isinstance(err, str) and err in SEND_REJECTS:  # 送っていないと分かる断り。送れなかったと知らせる
         return "error", json.dumps(r, ensure_ascii=False)[:200]
+    if r.get("timeout") or (err and err != "agent_prompt_stalled") or (not err and "result" not in r):
+        # 待ちの時間切れ・ほかの error・形の違う欄・中身の分からない返事。届いたかは分からない（送れなかったと言うと、送り直して二重になる。
+        # 止める側の確かめ（_herdr_sure）と同じく、分からないとする。codex-review ab8a5e5・280cfe6）
+        return "unknown", json.dumps(r, ensure_ascii=False)[:200]
     if _agent_state(r) != "blocked":  # 承認待ちで止まったのを見たら、その結果を使う（待ち直すと、別の画面で答えたあとの状態を読む。codex-review 711ce71）
         r = await asyncio.to_thread(herdr, "agent", "wait", pane, "--timeout", "600000", timeout=610)
         if (r.get("error") or {}).get("code") or "result" not in r:  # 送ったあと、返事を待てなかった（送り直すと二重になる。codex-review 66730ac）
