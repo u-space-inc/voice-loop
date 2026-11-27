@@ -1303,6 +1303,13 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                 odd_ev.extend(s.HELD_OPS)
                 return '{"error": {"code": "agent_blocked"}}', ""
 
+        class TimeoutErrProc:
+            returncode = 1
+
+            def communicate(self, timeout=None):
+                odd_ev.extend(s.HELD_OPS)
+                return '{"error": {"code": "timeout", "message": "応答を待ちきれませんでした"}}', ""
+
         s.UNSURE_UNTIL["t"] = 0.0
         real_popen3 = s.subprocess.Popen
         try:
@@ -1313,11 +1320,36 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.subprocess.Popen = lambda *a, **k: RejectProc()
             s._if_still(lambda: True, s._HERDR, "agent", "send-keys", "w9:p1", "1")
             reject_unsure = s.UNSURE_UNTIL["t"] > time.monotonic()
+            s.subprocess.Popen = lambda *a, **k: TimeoutErrProc()  # herdr が応答待ちを打ち切った error（届いたかは分からない。codex-review 711ce71 の P1）
+            s._if_still(lambda: True, s._HERDR, "agent", "send-keys", "w9:p1", "1")
+            errtimeout_unsure = s.UNSURE_UNTIL["t"] > time.monotonic()
         finally:
             s.subprocess.Popen = real_popen3
             s.UNSURE_UNTIL["t"] = 0.0
-        check("herdr の返事の中身が分からなければ確かめられないで立て、はっきりした拒否なら確かめられたとする",
-              ("raw" in r_odd, [getattr(e, "ok", None) for e in odd_ev], odd_unsure, reject_unsure), (True, [False, True], True, False))
+        check("herdr の返事の中身が分からない・応答待ちを打ち切った error なら確かめられないで立て、実行していないと分かる拒否なら確かめられたとする",
+              ("raw" in r_odd, [getattr(e, "ok", None) for e in odd_ev], odd_unsure, reject_unsure, errtimeout_unsure),
+              (True, [False, True, False], True, False, True))
+        # 鍵が使われている間に停止が来ても、イベントループは止めない（ほかの画面の相手を続ける。停止は鍵が空いてから確定する。codex-review 711ce71）
+        g_busy = s.STOP_GEN["n"]
+        s.COMMIT_LOCK.acquire()
+        t_busy = time.time()
+        busy_release = threading.Timer(0.8, s.COMMIT_LOCK.release)  # 時間で放す（イベントループが止まる作りでも、試験が止まらずに落ちるように）
+        busy_release.start()
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wl:
+                wl.send_text(json.dumps({"type": "stop", "n": 98}))
+                time.sleep(0.1)
+                with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wo:
+                    wo.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winbusy00001"}))
+                    recv_type(wo, "stopgen")
+                    busy_other = time.time() - t_busy
+                    busy_during = s.STOP_GEN["n"] != g_busy
+                receive_until(wl, "stopped")
+                busy_after = s.STOP_GEN["n"] != g_busy
+        finally:
+            busy_release.join()
+        check("鍵が使われている間に停止が来ても、ほかの画面の相手を続け、停止は鍵が空いてから確定する",
+              (busy_other < 0.5, busy_during, busy_after), (True, False, True))
         # 止めたあとに届いた声を捨てたときは、最後の停止と同じ返事（番号・確かめられない）をする（番号の無い「止めました」で確かめの頼みを上書きしない。codex-review e7ab276）
         s.UNSURE_UNTIL["t"] = time.monotonic() + 30
         try:
@@ -1346,6 +1378,17 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             got_ask = asyncio.run(s.ask({"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}, "送る指示"))
         finally:
             s.herdr, s.jsonl_path, s.read_screen = real_herdr_ask, real_jsonl_ask, real_read_screen
+        # 最初の待ちで承認待ち（blocked）を見たら、その結果を使う（待ち直さない。codex-review 711ce71）
+        calls_blk = []
+        s.herdr = lambda *a, **k: (calls_blk.append(a), {"result": {"agent": {"agent_status": "blocked" if a[:2] == ("agent", "wait") else "idle"}}})[1]
+        s.jsonl_path = lambda a: None
+        real_read_prompt = s.read_prompt
+        s.read_prompt = lambda pane: "承認待ちの画面"
+        try:
+            got_blk = asyncio.run(s.ask({"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}, "送る指示"))
+        finally:
+            s.herdr, s.jsonl_path, s.read_prompt = real_herdr_ask, real_jsonl_ask, real_read_prompt
+        check("指示を送ったあと最初の待ちで承認待ちを見たら、その結果を使う", (got_blk, len(calls_blk)), (("blocked", "承認待ちの画面"), 2))
         check("指示を送るのは、待たずに送り、そのあと working を待ってから終わりを待つ", (calls_ask, got_ask[0]),
               ([("agent", "prompt", "w9:p1", "送る指示"), ("agent", "wait", "w9:p1", "--until", "working", "--until", "blocked", "--timeout", "5000"),
                 ("agent", "wait", "w9:p1", "--timeout", "600000")], "done"))

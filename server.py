@@ -227,12 +227,25 @@ def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False, 
         if ev is not None:
             # 待ちを打ち切った（herdr が返らなかった）・待つ途中で失敗したら、操作が届いたか分からない。停止は「止めました」と言わずに、
             # 止めたか確かめられないと返す（codex-review d9db7c8 の P1）
-            # 結果（result）か、herdr のはっきりした拒否（error）が返ったときだけ確かめられた（中身の分からない返事・打ち切りは分からない。codex-review e7ab276 の P1）
-            ev.ok = isinstance(r, dict) and not r.get("timeout") and ("result" in r or isinstance(r.get("error"), dict))
+            ev.ok = _herdr_sure(r)
             if not ev.ok:  # 印が一覧から外れたあとに来た停止にも、しばらくは確かめられないと返す（codex-review 9d641dc の P1）
                 UNSURE_UNTIL["t"] = max(UNSURE_UNTIL["t"], time.monotonic() + UNSURE_HOLD)
             ev.set()
             HELD_OPS.discard(ev)
+
+
+SURE_REJECTS = {"agent_blocked"}  # 操作を実行していないと分かる herdr の拒否（agent_blocked は、入力を送る前に断る。herdr agent prompt --help）
+
+
+def _herdr_sure(r) -> bool:
+    """herdr の返事から、操作が届いた・届いていないと確かめられたか。結果（result）か、実行していないと分かる拒否だけ。打ち切り・中身の分からない
+    返事・ほかの error（応答待ちの打ち切りなど）は、届いたか分からない（codex-review e7ab276・711ce71 の P1）"""
+    if not isinstance(r, dict) or r.get("timeout"):
+        return False
+    if "result" in r:
+        return True
+    err = r.get("error")
+    return isinstance(err, dict) and err.get("code") in SURE_REJECTS
 
 
 def wait_inflight(evs: list) -> bool:
@@ -886,6 +899,17 @@ def admit_now(seen: int | None = None) -> int | None:
         return None
     with COMMIT_LOCK:  # 受け付けの番号を進めるのも、操作の送り始め（確かめてから起動するまで）と直列にする（codex-review f0b77a7 の P1）
         return HUB.admit(seen) if seen is not None else HUB.admit()
+
+
+async def admit_async(seen: int | None = None) -> int | None:
+    """admit_now と同じ。鍵の空きを、イベントループを止めずに待つ（herdr の起動待ちで鍵が使われていても、ほかの画面の相手を続ける。codex-review 711ce71）"""
+    if not HUB.on():
+        return None
+    await asyncio.to_thread(COMMIT_LOCK.acquire)
+    try:
+        return HUB.admit(seen) if seen is not None else HUB.admit()
+    finally:
+        COMMIT_LOCK.release()
 
 
 def heard_seen(d: dict) -> int:
@@ -1602,6 +1626,12 @@ def pane_lock(pane: str) -> asyncio.Lock:
 ASK_COMMIT: contextvars.ContextVar = contextvars.ContextVar("ask_commit", default=None)
 
 
+def _agent_state(r) -> str:
+    """herdr の待ちの返事から、セッションの状態（idle・working・blocked・done）を取り出す。"""
+    res = (r.get("result") or {}) if isinstance(r, dict) else {}
+    return str((res.get("agent") or {}).get("agent_status") or res.get("agent_status") or "")
+
+
 async def ask(agent: dict, text: str) -> tuple[str, str]:
     """セッションに送り、返信が出そろうまで待つ。("done", 返信) / ("blocked", 画面の末尾) / ("error", 理由) を返す。
     ASK_COMMIT が置かれていれば、送る直前にスレッドの中で確かめ、False なら送らずに ("cancelled", "")。"""
@@ -1624,11 +1654,14 @@ async def ask(agent: dict, text: str) -> tuple[str, str]:
     if err or "result" not in r:
         return "error", json.dumps(r, ensure_ascii=False)[:200]
     # 返事を待つ。まず working（または blocked）になるのを待ち（送った直後の idle に反応しない。5 秒で見逃したら短い応答として次へ）、それから終わりを待つ
-    await asyncio.to_thread(herdr, "agent", "wait", pane, "--until", "working", "--until", "blocked", "--timeout", "5000", timeout=15)
-    r = await asyncio.to_thread(herdr, "agent", "wait", pane, "--timeout", "600000", timeout=610)
+    first = await asyncio.to_thread(herdr, "agent", "wait", pane, "--until", "working", "--until", "blocked", "--timeout", "5000", timeout=15)
+    if _agent_state(first) == "blocked":  # 承認待ちで止まったのを見た。その結果を使う（待ち直すと、別の画面で答えたあとの状態を読む。codex-review 711ce71）
+        r = first
+    else:
+        r = await asyncio.to_thread(herdr, "agent", "wait", pane, "--timeout", "600000", timeout=610)
     if (r.get("error") or {}).get("code") or "result" not in r:
         return "error", json.dumps(r, ensure_ascii=False)[:200]
-    state = str((r.get("result") or {}).get("agent", {}).get("agent_status") or (r.get("result") or {}).get("agent_status") or "")
+    state = _agent_state(r)
     if state == "blocked":
         return "blocked", read_prompt(pane)[-1500:]
     reply = ""
@@ -3843,14 +3876,18 @@ async def ws(sock: WebSocket):
                     if talk:  # 話し始めるときの再生だけの停止。この画面の送る前の指示だけ取り消し、届いていた返事（聞いた文）は消さない（codex-review 6b2ddfe）
                         drop_direct()
                     else:
-                        # 停止の確定は、操作の送り始めと同じ鍵の中で行う（送り始めた操作は止めた前のもの。ここから先は、止めた発言での操作を始めない）
-                        with COMMIT_LOCK:
+                        # 停止の確定は、操作の送り始めと同じ鍵の中で行う（送り始めた操作は止めた前のもの。ここから先は、止めた発言での操作を始めない）。
+                        # 鍵の空きは、イベントループを止めずに待つ（codex-review 711ce71）
+                        await asyncio.to_thread(COMMIT_LOCK.acquire)
+                        try:
                             STOP_GEN["n"] += 1
                             direct_turn["d"] = None
                             for pend in list(DIRECT_PENDING.values()):  # この画面とほかの画面（切れた画面も）の、送る前のハブ以外への指示を取り消し、それぞれに知らせる
                                 drop_pending(pend)
                             for t in TALKERS.values():  # 利用者は、読まれていた返事・まだ届いていない返事を聞いていない（承認に答える・閉じるの守り）
                                 t.stopped()
+                        finally:
+                            COMMIT_LOCK.release()
                         # 停止の回数を全部の画面に知らせる（画面は発言を始めた合図に付けて送る。最新の停止を知らずに始めた発言は、通信が遅れて停止の
                         # あとに届いても、停止をまたいだものとして見分ける。codex-review 6b2ddfe の P1）。送るのは別の仕事で（遅い画面に待たされない）
                         task = asyncio.create_task(tell_stop_gen(STOP_GEN["n"]))
@@ -3887,7 +3924,7 @@ async def ws(sock: WebSocket):
                         if stopped_in_block():  # 聞き取りで受信が止まっていた間に届いていたかもしれない合図。その間に止めていたら、止まり始めた時点のものにする
                             stop_now = min(stop_now, blocked["stop"])
                         drop_direct()
-                        adm = admit_now(heard_seen(d))
+                        adm = await admit_async(heard_seen(d))
                         if d.get("pane"):  # 宛先が分かるときだけ（ハブ以外宛てなら前の問いを消す）
                             left_hub(str(d["pane"]))
                         begins[b] = {"stop": stop_now, "adm": adm}
@@ -3910,7 +3947,7 @@ async def ws(sock: WebSocket):
                 pending = d  # {"type":"turn", pane, speaker, filename} → 次のバイナリが音声
                 if d["type"] == "turn":  # 声の発言の頭が届いた。受け付けの番号はここで取る（聞き取りの間に届いた前の往復の返事を、聞いた文にしない）
                     crossed, adm, legacy = take_begin(d)
-                    pending = {**d, "_admitted": adm if adm is not None else admit_now(heard_seen(d)), "_via": "device" if client.kind == "device" else "",
+                    pending = {**d, "_admitted": adm if adm is not None else await admit_async(heard_seen(d)), "_via": "device" if client.kind == "device" else "",
                                "_stopgen": STOP_GEN["n"], "_crossed": crossed, "_legacy": legacy,
                                # 合図の無い更新前の画面の声（機械の口の接続は除く）は、録音を始めた時点が分からない。ハブ以外への直接の指示なら送らない（a2a 4135f4c2 の 3 回目）
                                "_legacy_drop": legacy and not client.bound}
@@ -3918,6 +3955,9 @@ async def ws(sock: WebSocket):
                     left_hub(str(d.get("pane", "")))
                 if d["type"] == "text":
                     crossed, adm, legacy = take_begin(d)  # 合図があれば、受け付けは合図を受けたときのもの（前の問いの取り消しも済んでいる）
+                    if adm is None and HUB.on():  # 合図の無い文字の発言。受け付けはここで（鍵の空きを、イベントループを止めずに待つ）
+                        adm = await admit_async(heard_seen(d))
+                        left_hub(str(d.get("pane", "")))
                     start_turn(d["text"], d["pane"], int(d["speaker"]), d.get("key"), reply_at_of(d), attachments_of(d), reply_item_of(d), seen=heard_seen(d),
                                crossed=crossed, admitted=adm, legacy=legacy)
                 continue
