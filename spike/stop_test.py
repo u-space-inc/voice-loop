@@ -2209,6 +2209,39 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.PENDING["stop"] = 0
             s._if_still, s._asked, s.subprocess.Popen = real_if_still21, real_asked21, real_popen21
             s.ANSWERED.clear()
+        # ボタンを押したあと、問いを読む間に止めたら、承認のキーは送らない（受け付けたときの停止の回数で照らす。codex-review 8d5b6fa の P1）
+        sent21b = []
+        s.subprocess.Popen = lambda cmd, *a, **k: (sent21b.append(tuple(cmd[1:3])), BtnProc())[1]
+
+        def asked_then_stop(pane, key):
+            s.STOP_GEN["n"] += 1  # 読む間に、どこかの画面で止めた
+            return ({"pane": "w9:p1", "cwd": "/x/proj", "session": "s1", "status": "blocked"}, {"kind": "permission", "fp": "fpbtn", "risky": False})
+
+        s._asked = asked_then_stop
+        try:
+            s._answer_lock = asyncio.Lock()
+            s.ANSWERED.clear()
+            r21c = json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "s1", "fp": "fpbtn", "choice": "allow"})).body)
+        finally:
+            s._asked, s.subprocess.Popen = real_asked21, real_popen21
+            s.ANSWERED.clear()
+        check("ボタンを押したあと問いを読む間に止めたら、承認のキーは送らない", (r21c.get("reason"), sent21b), ("stopped", []))
+        # 何も出さずにふつうに終わった送り（pane send-text の成功）は、送れたものとする（止める側で確かめられないとしない。codex-review 8d5b6fa）
+        class SilentProc:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return "", ""
+
+        s.UNSURE_UNTIL["t"] = 0.0
+        s.subprocess.Popen = lambda *a, **k: SilentProc()
+        try:
+            s._if_still(lambda: True, s._HERDR, "pane", "send-text", "w9:p1", "自由記入")
+        finally:
+            s.subprocess.Popen = real_popen21
+        silent_unsure = s.UNSURE_UNTIL["t"] > time.monotonic()
+        s.UNSURE_UNTIL["t"] = 0.0
+        check("何も出さずにふつうに終わった送りは、送れたものとする", silent_unsure, False)
         check("画面のボタンからのキーも送り始めの道を通し、確定待ちの停止があれば送らない",
               (btn_calls, r21.get("reason"), r21b.get("ok"), sent21), ([("agent", "send-keys"), ("agent", "send-keys")], "busy", True, [("agent", "send-keys")]))
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む

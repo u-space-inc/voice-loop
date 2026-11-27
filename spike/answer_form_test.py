@@ -161,6 +161,22 @@ s.herdr = lambda *a, **k: {"raw": "error: no such pane", "code": 1} if a[:2] == 
 r = press(act="free", text="駅前の店")
 s.herdr = real_h
 check("文字を送る herdr が失敗で終わったら止まり、Enter を送らない", (r.get("reason"), st["tui"].log), ("stuck", ["down", "down"]))
+# 答え始めたあとに止めたら、残りのキー・文字は送らない（ボタンを受け付けたときの停止の回数で照らす。codex-review 8d5b6fa の P1）
+setup(REAL_SHOP_INPUT)
+real_h2 = s.herdr
+
+
+def stop_after_first(*a, **k):
+    r = real_h2(*a, **k)
+    if a[:2] == ("agent", "send-keys"):
+        s.STOP_GEN["n"] += 1  # 最初のキーを送ったところで、どこかの画面で止めた
+    return r
+
+
+s.herdr = stop_after_first
+r = press(act="free", text="駅前の店")
+s.herdr = real_h2
+check("答え始めたあとに止めたら、残りのキー・文字は送らない", (r.get("reason"), "止めた" in (r.get("why") or ""), st["tui"].log), ("stuck", True, ["down"]))
 check("キー・文字を送る herdr の呼び出しには、5 秒以下の時間切れを付ける", bool(TIMEOUTS) and all(t is not None and 0 < t <= 5 for t in TIMEOUTS), True)
 setup()
 real = s.read_dialog

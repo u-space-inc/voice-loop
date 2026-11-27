@@ -382,6 +382,8 @@ def _herdr_sure(r) -> bool:
         return False
     if "result" in r:
         return True
+    if r.get("raw") == "" and r.get("code") == 0:  # 何も出さずにふつうに終わった（pane send-text の成功。codex-review 8d5b6fa）
+        return True
     err = r.get("error")
     code = err.get("code") if isinstance(err, dict) else None
     # 形の違う欄は分からない（codex-review 8093b0b）。送っていないと分かる断りは、指示の送り（ask）と同じく確かめられたとする（codex-review fbf6e98）
@@ -3385,11 +3387,12 @@ async def api_answer(body: dict):
     守ること: 画面に出したのと同じ問いにだけ答える（指紋で確かめる）。許可は「今回だけ」（1）で、「今後は聞かずに許可」は選ばない。
     取り消しにくい操作に見えるときは、もう一度押してから（confirmed）。承認の画面と見分けられないもの（質問・フォルダの信頼など）には答えない。
     同じ問いに二度答えない。"""
+    sg0 = STOP_GEN["n"]  # ボタンを受け付けたときの停止の回数。キーを送る直前ごとに照らす（そのあと止めたら送らない。codex-review 8d5b6fa の P1）
     async with _answer_lock:
-        return await _answer(body)
+        return await _answer(body, sg0)
 
 
-async def _answer(body: dict):
+async def _answer(body: dict, sg0: int | None = None):
     pane, key, fp = str(body.get("pane", "")), str(body.get("key", "")), str(body.get("fp", ""))
     choice, confirmed = str(body.get("choice", "")), bool(body.get("confirmed"))
     if answered(pane, fp, by="step" if choice == "step" else ""):  # 二度押し・重ねた送信（1 問ずつの答えどうしは、step_answer が sfp で見る）
@@ -3400,7 +3403,7 @@ async def _answer(body: dict):
     if asked["kind"] in ("gone", "none", "unreadable", "trust"):
         return JSONResponse({"ok": False, "reason": asked["kind"]})
     if choice == "step":
-        return JSONResponse(await step_answer(a, asked, body, confirmed))
+        return JSONResponse(await step_answer(a, asked, body, confirmed, sg0))
     if asked["kind"] != "permission":  # 承認の画面と見分けられないときは、何も送らない
         return JSONResponse({"ok": False, "reason": "not_permission"})
     if asked["fp"] != fp:  # 画面に出したあとで問いが変わった
@@ -3413,9 +3416,12 @@ async def _answer(body: dict):
         keys, said = "esc", "断る"
     # 画面のボタンのキーも、停止の確定と同じ鍵の中で送り始め、返るまで送り途中の印を持つ（停止は返るのを待ってから「止めました」と返す。
     # 確定待ちの停止があれば送らない。codex-review ebdea92 の P1）
-    r = await asyncio.to_thread(_if_still, lambda: True, herdr, "agent", "send-keys", pane, keys)
+    not_stopped = (lambda: True) if sg0 is None else (lambda: STOP_GEN["n"] == sg0)  # 確定待ちの停止は、送り始めの道が見る（あれば busy）
+    r = await asyncio.to_thread(_if_still, not_stopped, herdr, "agent", "send-keys", pane, keys)
     if r is BUSY:
         return JSONResponse({"ok": False, "reason": "busy"})
+    if r is None:  # ボタンを押したあとに止めた（送っていない）
+        return JSONResponse({"ok": False, "reason": "stopped"})
     hlog(f"answer(画面) → {pane} ({a['cwd'].rsplit('/', 1)[-1]}): {said} {'ok' if 'result' in r else 'ERR'}", flush=True)
     if "result" not in r:
         return JSONResponse({"ok": False, "reason": "herdr"})
@@ -3430,7 +3436,7 @@ async def _answer(body: dict):
 STEP_ACTS = ("pick", "toggle", "next", "free", "submit")
 
 
-async def step_answer(a: dict, asked: dict, body: dict, confirmed: bool) -> dict:
+async def step_answer(a: dict, asked: dict, body: dict, confirmed: bool, sg0: int | None = None) -> dict:
     """1 回押したぶんを送る。見せたのと同じ画面（指紋）にだけ。取り消しにくい問いは、印の付け外しのほかは、もう一度押してから。呼ぶのは _answer_lock の中。"""
     if "step" not in asked:
         return {"ok": False, "reason": "not_form"}
@@ -3450,17 +3456,24 @@ async def step_answer(a: dict, asked: dict, body: dict, confirmed: bool) -> dict
     async def read():
         return await asyncio.to_thread(read_dialog, pane, ask_form.READ_MAX)
 
+    # 答え始めたあとに止めたら、残りのキー・文字は送らない（受け付けたときの停止の回数で照らす。codex-review 8d5b6fa の P1）
+    not_stopped = (lambda: True) if sg0 is None else (lambda: STOP_GEN["n"] == sg0)
+
     async def keys(k):  # 画面のボタンのキーも、送り始めの道を通す（停止と直列にし、送り途中の印を持つ。codex-review ebdea92 の P1）
-        r = await asyncio.to_thread(_if_still, lambda: True, functools.partial(herdr, timeout=ask_form.READ_MAX), "agent", "send-keys", pane, k)
+        r = await asyncio.to_thread(_if_still, not_stopped, functools.partial(herdr, timeout=ask_form.READ_MAX), "agent", "send-keys", pane, k)
         if r is BUSY:
             raise ask_form.Stuck("ほかの操作の途中です。少し待ってから答え直してください")
+        if r is None:  # 答え始めたあとに止めた（残りのキーは送らない）
+            raise ask_form.Stuck("止めたので、残りの答えは送っていません")
         if "result" not in r:
             raise ask_form.Stuck("herdr が応答しない")
 
     async def text(t):
-        r = await asyncio.to_thread(_if_still, lambda: True, functools.partial(herdr, timeout=ask_form.READ_MAX), "pane", "send-text", pane, t)
+        r = await asyncio.to_thread(_if_still, not_stopped, functools.partial(herdr, timeout=ask_form.READ_MAX), "pane", "send-text", pane, t)
         if r is BUSY:
             raise ask_form.Stuck("ほかの操作の途中です。少し待ってから答え直してください")
+        if r is None:
+            raise ask_form.Stuck("止めたので、残りの答えは送っていません")
         if "result" not in r and r.get("code") != 0:  # send-text はうまくいくと何も出さない（終わりの数 0）。2026-11-17 実機で確かめた
             raise ask_form.Stuck("herdr が応答しない")
 
