@@ -549,12 +549,14 @@ with sync_playwright() as pw:
     # 取り消しの知らせが、いま表示している発言のものなら、「送りました・考え中」を「送っていません」に直す（停止の結果・ほかの発言の表示は変えない。codex-review a63098a）
     notice_got = pg.evaluate("""() => {
       const st = () => document.getElementById('statusText').textContent, out = [];
-      const tell = b => ws.onmessage({ data: JSON.stringify({ type: 'notice', text: '送る前に取り消したので、セッションへの前の指示は送っていません', b }), target: ws });
-      setStatus('エージェントに送りました。考え中…'); tell(beginSeq); out.push(st());
-      setStatus('止めました'); tell(beginSeq); out.push(st());
-      setStatus('エージェントに送りました。考え中…'); tell(beginSeq + 100); out.push(st());
+      const tell = (b, pg) => ws.onmessage({ data: JSON.stringify({ type: 'notice', text: '送る前に取り消したので、セッションへの前の指示は送っていません', b, pg }), target: ws });
+      setStatus('エージェントに送りました。考え中…'); tell(beginSeq, PAGE); out.push(st());
+      setStatus('止めました'); tell(beginSeq, PAGE); out.push(st());
+      setStatus('エージェントに送りました。考え中…'); tell(beginSeq + 100, PAGE); out.push(st());
+      setStatus('エージェントに送りました。考え中…'); tell(beginSeq, 'oldpage'); out.push(st());  // 読み込み直す前の発言の知らせ（番号が同じでも印が違う）
       return out; }""")
-    check("取り消しの知らせは、いま表示している発言のものだけ状態の欄を直す", notice_got, ["送っていません", "止めました", "エージェントに送りました。考え中…"])
+    check("取り消しの知らせは、いま表示している発言（番号と読み込みの印が合う）のものだけ状態の欄を直す", notice_got,
+          ["送っていません", "止めました", "エージェントに送りました。考え中…", "エージェントに送りました。考え中…"])
     # 本体が、止めたか確かめられないと返したら、「止めました」と出さずに確かめを頼む（codex-review 57c6291）
     pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'stopped', n: 1e9, unsure: true }), target: ws })")
     check("停止: 止めたか確かめられないと返されたら、「止めました」と出さずに確かめを頼む",

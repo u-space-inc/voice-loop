@@ -2168,7 +2168,7 @@ function connect() {
     else if (m.type === 'notice') {
       sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); // ハブから報告を受け取れなかった等（いまの話し相手とは別の知らせ）
       // いま表示している発言の指示を、送る前に取り消した知らせなら、状態の欄の「送りました・考え中」を「送っていません」に直す（停止の結果の表示は変えない。codex-review a63098a）
-      if (typeof m.b === 'number' && m.b === beginSeq && /送りました|考え中/.test($('statusText').textContent)) { setStatus('送っていません'); face('idle'); }
+      if (typeof m.b === 'number' && m.b === beginSeq && m.pg === PAGE && /送りました|考え中/.test($('statusText').textContent)) { setStatus('送っていません'); face('idle'); }
     }
     else if (m.type === 'done') { serverDone = true; turnDone = true; if (!m.stopped && !playing && !queue.length) finishSpeaking(); loadAgents(); } // 止めて抜けた読み上げの終わりでは、停止の結果の表示を変えない
     else if (m.type === 'stopgen') { // どこかの画面で止めた（発言を始めた合図に付ける）
@@ -2219,6 +2219,8 @@ let utterStops = 0; // いまの発言（録音・文字）を始めたときの
 // 発言を始めた（送るを押した・録り終えた）合図。本体はそのときの停止の回数を控え、発言が届くまで（添付を送る間・声の本体を用意する間）に
 // どこかの画面で止めていたら、その発言では承認に答えない・閉じない（ハブ以外への指示なら送らない。codex-review c72fbbe）
 let beginSeq = 0;
+// この読み込みの印（読み込み直すと合図の番号が 0 に戻るので、取り消しの知らせを番号と合わせて照らす。codex-review 4908670）
+const PAGE = Math.random().toString(36).slice(2, 12);
 let voiceSending = false; // 録り終えた声を本体に送っている途中（文字の発言は、送り終えてから）
 // pane は宛先、hid は受け取っていた返事の番号（本体は合図を受けたときに受け付け、聞いた文を引き渡す）
 // sg は、本体から知らされた最新の停止の回数（知らなければ -1。本体は、最新の停止を知らずに始めた発言を、停止をまたいだものとして扱う）
@@ -2291,7 +2293,7 @@ async function startRecInner() {
       if (otherStopped()) return; // 用意する間に、ほかの画面で止めた
       if (faceOn !== face0) { setStatus('顔の表示を切り替えたので、話した内容は送っていません'); return; } // 本体は頭の時点の名乗りで発言元を決める
       if (!linked()) { setStatus(UNREACHABLE); return; }
-      ws.send(JSON.stringify({ type: 'turn', pane, key, speaker: $('speaker').value, filename: 'rec.' + ext, hid: ws === ws0 ? hid0 : -1, begin: b0, ...rf, ...(files.length ? { attachments: files } : {}) }));
+      ws.send(JSON.stringify({ type: 'turn', pane, key, speaker: $('speaker').value, filename: 'rec.' + ext, hid: ws === ws0 ? hid0 : -1, begin: b0, pg: PAGE, ...rf, ...(files.length ? { attachments: files } : {}) }));
       ws.send(audio);
       if (sameTarget(rf)) setReplyTarget(null);
       dropSent(list);
@@ -2343,7 +2345,7 @@ $('typedForm').onsubmit = async e => {
   const shown = (t || (list.length ? '' : '（ことばなし）')) + (list.length ? (t ? '\n' : '') + '📎 ' + list.map(f => f.name).join('、') : '');
   if ($('typed').value.trim() === t) { $('typed').value = ''; fitTyped(); }  // 待つ間に打ち直した文は消さない
   decorate(bubble('me', shown, 'pending'), { role: 'me', reply_to: about, reply_item: item }); localPush('me', shown);
-  ws.send(JSON.stringify({ type: 'text', text: t, pane, key, speaker: $('speaker').value, hid: ws === ws0 ? hid0 : -1, begin: b0, ...rf, ...(files.length ? { attachments: files } : {}) }));
+  ws.send(JSON.stringify({ type: 'text', text: t, pane, key, speaker: $('speaker').value, hid: ws === ws0 ? hid0 : -1, begin: b0, pg: PAGE, ...rf, ...(files.length ? { attachments: files } : {}) }));
   if (sameTarget(rf)) setReplyTarget(null);
   paintSend();
   dropSent(list);

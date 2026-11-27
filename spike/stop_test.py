@@ -1720,7 +1720,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
                 wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winnoticeb01"}))
                 wa.send_text(json.dumps({"type": "begin", "b": 7, "pane": "w9:p1", "hid": -1}))
-                wa.send_text(json.dumps({"type": "text", "text": "番号つきで取り消す指示", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 7}))
+                wa.send_text(json.dumps({"type": "text", "text": "番号つきで取り消す指示", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 7, "pg": "page12abc"}))
                 check("（前提）指示が添付の用意で止まっている（取り消しの知らせの番号）", att_in12.wait(5), True)
                 wa.send_text(json.dumps({"type": "stop", "n": 140}))
                 for _ in range(40):
@@ -1731,7 +1731,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         finally:
             att_go12.set()
             s.attachment_lines, s.list_agents = real_attach12, real_agents
-        check("取り消しの知らせには、どの発言の指示か（合図の番号）を付ける", (notice12 or {}).get("b"), 7)
+        check("取り消しの知らせには、どの発言の指示か（合図の番号と読み込みの印）を付ける", ((notice12 or {}).get("b"), (notice12 or {}).get("pg")), (7, "page12abc"))
         check("取り消して知らせた指示には、送れなかったを重ねない。取り消しの知らせは notice（停止の結果の表示を消さない。codex-review 5fff07e）",
               (sum("送っていません" in x for t, x in got7), sum("送信できませんでした" in x for t, x in got7), [t for t, x in got7 if "送っていません" in x]),
               (1, 0, ["notice"]))
