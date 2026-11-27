@@ -211,19 +211,47 @@ async def _acquire_commit():
         raise
 
 
+# 確定待ちの数を数える・見るときの鍵（ごく短く持つ）。指示の送りの確定（確定待ちの停止が無いのを見て送ると決める）と、停止を読んだ印を、
+# この鍵で順に並べる（見たあと送ると決める前に停止を読んで、止めたあとに送らない。codex-review 27fc1d4）
+PENDING_LOCK = threading.Lock()
+
+
+def _admit_order() -> asyncio.Lock:
+    """受け付けを読んだ順に確定する鍵（このイベントループの。asyncio の鍵は待った順に渡す。codex-review 27fc1d4 の P1）"""
+    loop = asyncio.get_running_loop()
+    lk = getattr(loop, "_vl_admit_order", None)
+    if lk is None:
+        lk = asyncio.Lock()
+        loop._vl_admit_order = lk
+    return lk
+
+
 @contextlib.asynccontextmanager
-async def invalidating(kind: str):
-    """停止（kind="stop"）・次の発言の受け付け（"admit"）を確定する。読んだその場で確定待ちに数え、鍵を取ってから確定し、確定待ちから外して鍵を放す。"""
-    PENDING[kind] += 1
-    held = False
+async def invalidating(kind: str, order: asyncio.Lock | None = None):
+    """停止（kind="stop"）・次の発言の受け付け（"admit"）を確定する。読んだその場で確定待ちに数え、（order があれば読んだ順に）鍵を取ってから確定し、
+    確定待ちから外して鍵を放す。"""
+    with PENDING_LOCK:
+        PENDING[kind] += 1
+    counted = True
     try:
-        await _acquire_commit()
-        held = True
-        yield
+        if order is not None:
+            await order.acquire()
+        try:
+            await _acquire_commit()
+            try:
+                yield
+            finally:
+                with PENDING_LOCK:
+                    PENDING[kind] -= 1
+                counted = False
+                COMMIT_LOCK.release()
+        finally:
+            if order is not None:
+                order.release()
     finally:
-        PENDING[kind] -= 1
-        if held:
-            COMMIT_LOCK.release()
+        if counted:
+            with PENDING_LOCK:
+                PENDING[kind] -= 1
 
 
 HELD_TIMEOUT = 15  # 返事を待たない操作（承認のキー・閉じる・指示を送る）を herdr が返すのを待つ上限（秒）。ふつうはすぐ返る
@@ -256,14 +284,24 @@ def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False, 
         # 確定待ちの停止があれば、鍵をいったん放して確定を待つ（停止の側が送る前の指示を取り消して「送っていません」と知らせる。ここで黙って
         # 送らずに終えると、知らせがどこからも出ない。codex-review a1fa82c）。上限（鍵を取る前から数える）を過ぎても確定しなければ送らず、
         # 送れなかったと返す（送る仕事の終わりで「送信できませんでした」と知らせる。codex-review 070146f・31c9e1c）
-        if not _acquire_for_send(time.monotonic() + PENDING_WAIT):
-            return {"error": {"code": "stop_pending", "message": "止める操作の確定を待ちきれなかったので、送っていません"}}
+        end = time.monotonic() + PENDING_WAIT
+        while True:
+            if not _acquire_for_send(end):
+                return {"error": {"code": "stop_pending", "message": "止める操作の確定を待ちきれなかったので、送っていません"}}
+            with PENDING_LOCK:  # 確定待ちの停止が無いのを見て、送ると決めるまでを、停止を読んだ印と順に並べる（codex-review 27fc1d4）
+                again = bool(PENDING["stop"])
+                ok = False if again else still()
+            if not again:
+                break
+            COMMIT_LOCK.release()
     elif not COMMIT_LOCK.acquire(blocking=False):
         return None
+    else:
+        with PENDING_LOCK:  # 本体が読んだが確定していない停止・次の発言の受け付けがあれば、承認のキー・閉じるは始めない
+            ok = not (PENDING["stop"] or PENDING["admit"]) and still()
     ev = None
     try:
-        # 本体が読んだが確定していない停止があれば始めない。承認のキー・閉じるは、確定待ちの次の発言の受け付けがあっても始めない
-        if (not wait_lock and (PENDING["stop"] or PENDING["admit"])) or not still():
+        if not ok:
             return None
         try:
             proc = subprocess.Popen(["herdr", *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -960,7 +998,7 @@ async def admit_async(seen: int | None = None) -> int | None:
     """admit_now と同じ。鍵の空きを、イベントループを止めずに待つ（herdr の起動待ちで鍵が使われていても、ほかの画面の相手を続ける。codex-review 711ce71）"""
     if not HUB.on():
         return None
-    async with invalidating("admit"):
+    async with invalidating("admit", _admit_order()):  # 読んだ順に確定する（別々の画面の受け付けで、先に読んだ発言に新しい番号を付けない）
         return HUB.admit(seen) if seen is not None else HUB.admit()
 
 
@@ -3743,6 +3781,8 @@ async def ws(sock: WebSocket):
                 # 送れなかったことは、送る仕事の終わりのここ 1 か所で知らせる（このターンを止める・次の発言で取り消したのが、
                 # 終わる前でもあとでも 1 回。ターンが待っていなくても黙って消さない。a2a 38ef4720）
                 if f.cancelled():
+                    return
+                if direct is not None and direct["dropped"]:  # 取り消して「送っていません」と知らせ済み。同じ指示に「送信できませんでした」を重ねない（codex-review 27fc1d4）
                     return
                 exc = f.exception()
                 st, why = ("error", f"{type(exc).__name__}: {exc}") if exc is not None else f.result()

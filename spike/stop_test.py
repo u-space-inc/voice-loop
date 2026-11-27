@@ -1603,6 +1603,87 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             rel5.join()
             s.subprocess.Popen = real_popen5
         check("指示の送りの上限は鍵を取る前から数え、上限で送らずに返る", ((r_dl or {}).get("error", {}).get("code"), el5 < 0.6, dl_started), ("stop_pending", True, []))
+        # 受け付けは読んだ順に確定する（別々の画面の受け付けが鍵を待っても、先に読んだ発言に新しい番号を付けない。codex-review 27fc1d4 の P1）
+
+        async def order_case():
+            entered, gate = [], asyncio.Event()
+            real_acq = s._acquire_commit
+
+            async def fake_acq():
+                entered.append(len(entered))
+                await gate.wait()
+                s.COMMIT_LOCK.acquire()
+
+            s._acquire_commit = fake_acq
+            try:
+                t1 = asyncio.create_task(s.admit_async(-1))
+                await asyncio.sleep(0.05)
+                t2 = asyncio.create_task(s.admit_async(-1))
+                await asyncio.sleep(0.05)
+                before = len(entered)
+                gate.set()
+                a, b = await t1, await t2
+            finally:
+                s._acquire_commit = real_acq
+            return before, a < b
+
+        check("受け付けは読んだ順に 1 つずつ確定する（先に読んだ発言の番号が小さい）", asyncio.run(order_case()), (1, True))
+        # 指示の送りは、確定待ちの停止が無いのを見て送ると決めるまでを、停止を読んだ印と並べる。見たあとに停止を読んだら、送らずに確定を待つ
+        # （codex-review 27fc1d4 の P2）
+        real_afs, inject = s._acquire_for_send, {"done": False}
+        still_calls = []
+
+        def afs_then_stop(end):
+            ok = real_afs(end)
+            if ok and not inject["done"]:  # 鍵を取った直後に、本体が停止を読んだ
+                inject["done"] = True
+                s.PENDING["stop"] = 1
+
+                def finish():
+                    time.sleep(0.3)
+                    s.PENDING["stop"] = 0
+
+                threading.Thread(target=finish).start()
+            return ok
+
+        sent6 = []
+        real_popen6 = s.subprocess.Popen
+        s.subprocess.Popen = lambda *a, **k: (sent6.append(1), None)[1]
+        s._acquire_for_send = afs_then_stop
+        t6 = time.time()
+        try:
+            r6 = s._if_still(lambda: (still_calls.append(round(time.time() - t6, 2)), False)[1], functools.partial(s._HERDR, timeout=30), "agent", "prompt", "w9:p1", "x")
+        finally:
+            s._acquire_for_send, s.subprocess.Popen = real_afs, real_popen6
+            s.PENDING["stop"] = 0
+        check("送ると決める前に停止を読んだら、送りを確定せずに停止の確定を待ってから確かめる",
+              (r6, sent6, len(still_calls), bool(still_calls) and still_calls[0] >= 0.25), (None, [], 1, True))
+        # 取り消して「送っていません」と知らせた指示には、「送信できませんでした」を重ねない（codex-review 27fc1d4 の P3）
+        check("（前提）前の試験の直接の指示が片づいている（知らせは 1 回）", wait_idle(), True)
+        real_ask7 = s.ask
+
+        async def drop_then_fail(agent, text):
+            for pend in list(s.DIRECT_PENDING.values()):  # 送る前に停止が確定して取り消した
+                s.drop_pending(pend)
+            return "error", "送れなかった"
+
+        s.ask = drop_then_fail
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        got7 = []
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winonce00001"}))
+                wa.send_text(json.dumps({"type": "begin", "b": 1, "pane": "w9:p1", "hid": -1}))
+                wa.send_text(json.dumps({"type": "text", "text": "知らせは 1 回の指示", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 1}))
+                time.sleep(0.5)
+                wait_idle()
+                got7 = read_notice(wa, lambda t, x: "送っていません" in x, 120)
+                time.sleep(0.3)
+                got7 += read_notice(wa, lambda t, x: False, 130, tries=1)
+        finally:
+            s.ask, s.list_agents = real_ask7, real_agents
+        check("取り消して知らせた指示には、送れなかったを重ねない",
+              (sum("送っていません" in x for t, x in got7), sum("送信できませんでした" in x for t, x in got7)), (1, 0))
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
