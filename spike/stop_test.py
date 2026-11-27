@@ -1220,7 +1220,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         check("本物の herdr は、鍵の中で確かめて起動したら鍵を放し、承認のキー・閉じるは返るまで送り途中の印を持つ（確かめが False なら起動しない。"
               "鍵が使われていたら、承認のキー・閉じるは断り、指示は待つ。codex-review b7bf623・e749b6a）",
               (started, "result" in r_ok, r_no, "result" in r_ask, r_busy, "result" in (r_wait or {}), s.COMMIT_LOCK.locked(), len(s.HELD_OPS)),
-              ([True, ("wait", False, 1), True, ("wait", False, 0), True, ("wait", False, 0)], True, None, True, None, True, False, 0))
+              ([True, ("wait", False, 1), True, ("wait", False, 1), True, ("wait", False, 1)], True, None, True, None, True, False, 0))
         # 停止は、送り途中の承認のキー・閉じるが返ってから「止めました」と返す。その間も、本体はほかの画面の相手を続ける（codex-review e749b6a の P2）
         held_op = threading.Event()
         s.HELD_OPS.add(held_op)
@@ -1240,6 +1240,34 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             held_op.set()
             s.HELD_OPS.discard(held_op)
         check("停止は送り途中の承認のキー・閉じるが返ってから返し、その間もほかの画面の相手を続ける", (other_at < 0.55, stop_at >= 0.55), (True, True))
+        # 送り途中の操作が上限までに返らなければ、「止めました」ではなく、止めたか確かめられないと返す（codex-review 57c6291 の P1）
+        stuck_op = threading.Event()
+        s.HELD_OPS.add(stuck_op)
+        held0 = (s.HELD_TIMEOUT, s.HELD_MARGIN)
+        s.HELD_TIMEOUT, s.HELD_MARGIN = 0.1, 0.1
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wl:
+                wl.send_text(json.dumps({"type": "stop", "n": 93}))
+                unsure_msg = recv_type(wl, "stopped") or {}
+        finally:
+            s.HELD_TIMEOUT, s.HELD_MARGIN = held0
+            stuck_op.set()
+            s.HELD_OPS.discard(stuck_op)
+        check("送り途中の操作が上限までに返らなければ、止めたか確かめられないと返す", unsure_msg.get("unsure"), True)
+        # 指示を送るのは、送る（受け取ったら返る。返事を待たない）と、返事を待つに分ける（codex-review 57c6291 の P1）
+        calls_ask = []
+        real_herdr_ask, real_jsonl_ask = s.herdr, s.jsonl_path
+        s.herdr = lambda *a, **k: (calls_ask.append(a), {"result": {"agent": {"agent_status": "idle"}}})[1]
+        s.jsonl_path = lambda a: None
+        real_read_screen = s.read_screen
+        s.read_screen = lambda pane, n: "返事"
+        try:
+            got_ask = asyncio.run(s.ask({"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}, "送る指示"))
+        finally:
+            s.herdr, s.jsonl_path, s.read_screen = real_herdr_ask, real_jsonl_ask, real_read_screen
+        check("指示を送るのは、待たずに送り、そのあと working を待ってから終わりを待つ", (calls_ask, got_ask[0]),
+              ([("agent", "prompt", "w9:p1", "送る指示"), ("agent", "wait", "w9:p1", "--until", "working", "--until", "blocked", "--timeout", "5000"),
+                ("agent", "wait", "w9:p1", "--timeout", "600000")], "done"))
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]

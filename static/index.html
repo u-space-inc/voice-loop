@@ -2172,6 +2172,7 @@ function connect() {
       // scope=talk: 話し始めるときに再生だけを止めた返事（表示は変えない）。n: 停止の番号。いまの発言を始める前の停止への返事なら、
       // 返事が遅れて届いても「止めました」と出さず、顔も再生も変えない（新しい発言は止めていない。codex-review 6096e1d・dad00a5・f73d1be）
       if (m.scope === 'talk' || (typeof m.n === 'number' && m.n <= utterStops)) faceAckWait = false;
+      else if (m.unsure) { stopPlayback(); setStatus('止めたか確かめられませんでした（止める前に送った操作が返っていません）。セッションの画面で確かめてください'); faceAckWait = false; } // 届いた印は光らせない
       else { stopPlayback(); setStatus('止めました'); if (faceAckWait) { faceAckWait = false; faceAck(); } }
     }
     else if (m.type === 'blocked') loadAsks(); // 話している相手が承認で止まった → すぐ並べる

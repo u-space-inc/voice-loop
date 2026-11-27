@@ -190,20 +190,20 @@ _HERDR = herdr  # 本物の herdr（_if_still が、確かめと送り始めを�
 COMMIT_LOCK = threading.Lock()  # 鍵の中で受け付け・停止・送り始めを呼び合わない（入れ子にしない）
 
 
-HELD_TIMEOUT = 15  # 送り途中の承認のキー・閉じるを、停止が待つ上限（秒）。ふつうはすぐ返る
+HELD_TIMEOUT = 15  # 返事を待たない操作（承認のキー・閉じる・指示を送る）を herdr が返すのを待つ上限（秒）。ふつうはすぐ返る
+HELD_MARGIN = 5  # 停止が送り途中の操作を待つのは、HELD_TIMEOUT よりこれだけ長く
 HELD_OPS: set[threading.Event] = set()  # 起動して、まだ返っていない承認のキー・閉じる（返ったら立つ印）
 
 
-def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False) -> dict | None:
+def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False, wait_lock: bool = False) -> dict | None:
     """鍵の中で確かめて herdr を起動し、起動したら鍵を放す（鍵は短く持つ。停止・次の発言の受け付けを待たせない）。確かめが False なら起動せずに None。
-    hold（承認のキー・閉じる）なら、鍵が空いていなければ待たずに断る（待つ間に相手・問いが入れ替わらないように。codex-review e749b6a の P1）。
-    また、返るまで送り途中の印を持つ（停止は、送り途中の操作が返るのを待ってから「止めました」と返す。起動しただけでは herdr がまだ受け取って
-    いないことがあり、「止めました」のあとに届かないように。codex-review b7bf623 の P1）。hold でなければ（ハブ以外への指示）、鍵を待つ"""
-    if hold:
-        if not COMMIT_LOCK.acquire(blocking=False):
-            return None
-    else:
+    wait_lock でなければ（承認のキー・閉じる）、鍵が空いていなければ待たずに断る（待つ間に相手・問いが入れ替わらないように。codex-review e749b6a の P1）。
+    wait_lock なら（ハブ以外への指示を送る）、鍵が空くのを待つ。hold なら、返るまで送り途中の印を持つ（停止は、送り途中の操作が返るのを待ってから
+    「止めました」と返す。起動しただけでは herdr がまだ受け取っていないことがあり、「止めました」のあとに届かないように。codex-review b7bf623・57c6291 の P1）"""
+    if wait_lock:
         COMMIT_LOCK.acquire()
+    elif not COMMIT_LOCK.acquire(blocking=False):
+        return None
     ev = None
     try:
         if not still():
@@ -225,11 +225,11 @@ def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False) 
             HELD_OPS.discard(ev)
 
 
-def wait_inflight(evs: list) -> None:
-    """送り途中の承認のキー・閉じるが返るのを待つ（上限 HELD_TIMEOUT 秒。ワーカーのスレッドで呼ぶ）。"""
-    end = time.monotonic() + HELD_TIMEOUT
-    for ev in evs:
-        ev.wait(max(0.0, end - time.monotonic()))
+def wait_inflight(evs: list) -> bool:
+    """送り途中の操作（承認のキー・閉じる・指示を送る）が返るのを待つ（ワーカーのスレッドで呼ぶ）。herdr の待ちの上限（HELD_TIMEOUT 秒で打ち切って
+    印を立てる）より少し長く待つ。全部返ったら True。返らなければ False（止めたか確かめられない）"""
+    end = time.monotonic() + HELD_TIMEOUT + HELD_MARGIN
+    return all(ev.wait(max(0.0, end - time.monotonic())) for ev in evs)
 
 
 def _herdr_wait(proc, timeout: float | None) -> dict:
@@ -917,8 +917,9 @@ def _if_still(still, fn, *args):
     base = fn.func if isinstance(fn, functools.partial) else fn
     if still is not None and base is _HERDR:  # 本物の herdr: 確かめと起動を、停止の確定と同じ鍵の中で行う
         timeout = fn.keywords.get("timeout", 60) if isinstance(fn, functools.partial) else 60
-        # 承認のキー・閉じる（すぐ返る操作）は、herdr が返るまで鍵を持つ。返事を待つ指示（agent prompt）は、起動したら放す
-        return _herdr_gated(still, args, timeout, hold=args[:2] != ("agent", "prompt"))
+        # 返事を待たない操作（承認のキー・閉じる・指示を送る）は、返るまで送り途中の印を持つ（停止は、返るのを待ってから「止めました」と返す）。
+        # 鍵が使われていたら、承認のキー・閉じるは待たずに断り、指示を送るのは待つ
+        return _herdr_gated(still, args, timeout, hold="--wait" not in args, wait_lock=args[:2] == ("agent", "prompt"))
     with COMMIT_LOCK:
         ok = still is None or still()
     if not ok:
@@ -1604,14 +1605,18 @@ async def ask(agent: dict, text: str) -> tuple[str, str]:
     pane = agent["pane"]
     path = jsonl_path(agent)
     offset = path.stat().st_size if path and path.exists() else 0  # 新しいセッションは最初の発言まで記録が無い
-    # --wait: 送信後に working を観測してから idle/done/blocked を待つ（送信直後の idle に反応しない）
-    r = await asyncio.to_thread(_if_still, commit, functools.partial(herdr, timeout=610), "agent", "prompt", pane, text, "--wait", "--timeout", "600000")
+    # 送る（herdr が受け取ったら返る。ハブ経由の送りと同じ）。送り途中の印を持つので、停止は受け取られるのを待ってから「止めました」と返す
+    # （起動してから受け取るまでの間に止めても、「止めました」のあとに届かない。codex-review 57c6291 の P1）
+    r = await asyncio.to_thread(_if_still, commit, functools.partial(herdr, timeout=30), "agent", "prompt", pane, text)
     if r is None:
         return "cancelled", ""
     err = (r.get("error") or {}).get("code")
-    if err == "agent_prompt_stalled":  # 5秒以内に working にならなかった。短い応答で見逃した可能性があるので通常待ちへ
-        r = await asyncio.to_thread(herdr, "agent", "wait", pane, "--timeout", "600000", timeout=610)
-    elif err or "result" not in r:
+    if err or "result" not in r:
+        return "error", json.dumps(r, ensure_ascii=False)[:200]
+    # 返事を待つ。まず working（または blocked）になるのを待ち（送った直後の idle に反応しない。5 秒で見逃したら短い応答として次へ）、それから終わりを待つ
+    await asyncio.to_thread(herdr, "agent", "wait", pane, "--until", "working", "--until", "blocked", "--timeout", "5000", timeout=15)
+    r = await asyncio.to_thread(herdr, "agent", "wait", pane, "--timeout", "600000", timeout=610)
+    if (r.get("error") or {}).get("code") or "result" not in r:
         return "error", json.dumps(r, ensure_ascii=False)[:200]
     state = str((r.get("result") or {}).get("agent", {}).get("agent_status") or (r.get("result") or {}).get("agent_status") or "")
     if state == "blocked":
@@ -3820,7 +3825,7 @@ async def ws(sock: WebSocket):
                     continue
                 if d["type"] == "stop":
                     # scope=talk: 話し始めるときに、画面が再生だけを止めた（この画面の分だけ。ほかの画面の送る前の指示は取り消さない。codex-review dad00a5）
-                    talk = d.get("scope") == "talk"
+                    talk, unsure = d.get("scope") == "talk", False
                     if pending.get("type") == "turn":  # 声の発言の頭のあと、声の本体の前に止めた。あとから届く声は聞き取らずに捨てる（「止めました」のあとに送らない。codex-review 7793a44）
                         pending = {"type": "dropped"}
                     cancel.set()
@@ -3841,14 +3846,16 @@ async def ws(sock: WebSocket):
                         _tasks.add(task)
                         task.add_done_callback(_tasks.discard)
                         inflight = list(HELD_OPS)
-                        if inflight:  # 止める前に起動した承認のキー・閉じるが返ってから「止めました」と返す（本体は止めずに待つ）
-                            await asyncio.to_thread(wait_inflight, inflight)
+                        # 止める前に起動した操作が返ってから「止めました」と返す（本体は止めずに待つ）。返らなければ、止めたか確かめられないと返す
+                        if inflight and not await asyncio.to_thread(wait_inflight, inflight):
+                            unsure = True
                     if current:
                         current.cancel()
                     for ev in list(REPORT_SPEECH):  # 報告の読み上げも止める
                         ev.set()
                     n = d.get("n")  # 画面の停止の番号。返事に付けて返す（画面は、次の発言を始めたあとに届いた古い返事で表示を変えない）
-                    await send(type="stopped", **({"scope": "talk"} if talk else {}), **({"n": n} if isinstance(n, int) and not isinstance(n, bool) else {}))
+                    await send(type="stopped", **({"scope": "talk"} if talk else {}), **({"n": n} if isinstance(n, int) and not isinstance(n, bool) else {}),
+                               **({"unsure": True} if unsure else {}))
                     continue
                 if d["type"] == "begin":
                     # 画面が発言を始めた（送るを押した・録音を始めた）。発言はここで受け付ける（受け付けの番号を進め、直前に聞いた文をこの発言に

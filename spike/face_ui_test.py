@@ -472,6 +472,10 @@ with sync_playwright() as pw:
     check("録音: 録音を始めたときに合図を送り、返信先が録音の途中で変わったら（途中で選んだ・選び直した・外れた・別のを選んで戻した）送らない（codex-review 62a9436・69257ea）",
           (picked_before, picked_during, picked_changed, picked_cleared, picked_back),
           ((True, [111.5, "number"]), (True, "送らない"), (True, "送らない"), (True, "送らない"), (True, "送らない")))
+    # 本体が、止めたか確かめられないと返したら、「止めました」と出さずに確かめを頼む（codex-review 57c6291）
+    pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'stopped', n: 1e9, unsure: true }), target: ws })")
+    check("停止: 止めたか確かめられないと返されたら、「止めました」と出さずに確かめを頼む",
+          pg.evaluate("document.getElementById('statusText').textContent.includes('確かめられませんでした')"), True)
     # 名乗りで同期に応じると伝え、本体からの同期の合図は、届いた接続にすぐ返す（codex-review 62a9436）
     pg.evaluate("window.__types.length = 0; ws.onmessage({ data: JSON.stringify({ type: 'sync', n: 7 }), target: ws })")
     pg.wait_for_timeout(200)
