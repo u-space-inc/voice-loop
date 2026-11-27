@@ -275,6 +275,9 @@ def _acquire_for_send(end: float) -> bool:
             return False
 
 
+BUSY = {"busy": True}  # 承認のキー・閉じるを、ほかの操作の途中（鍵が使われている・確定待ちの停止や受け付けがある）で送らなかった（止めたのではない）
+
+
 def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False, wait_lock: bool = False) -> dict | None:
     """鍵の中で確かめて herdr を起動し、起動したら鍵を放す（鍵は短く持つ。停止・次の発言の受け付けを待たせない）。確かめが False なら起動せずに None。
     wait_lock でなければ（承認のキー・閉じる）、鍵が空いていなければ待たずに断る（待つ間に相手・問いが入れ替わらないように。codex-review e749b6a の P1）。
@@ -295,10 +298,13 @@ def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False, 
                 break
             COMMIT_LOCK.release()
     elif not COMMIT_LOCK.acquire(blocking=False):
-        return None
+        return BUSY  # ほかの操作の途中（止めたのではない。ハブには、少し待って言い直してもらうよう伝える。codex-review 5fff07e）
     else:
         with PENDING_LOCK:  # 本体が読んだが確定していない停止・次の発言の受け付けがあれば、承認のキー・閉じるは始めない
-            ok = not (PENDING["stop"] or PENDING["admit"]) and still()
+            if PENDING["stop"] or PENDING["admit"]:
+                COMMIT_LOCK.release()
+                return BUSY
+            ok = still()
     ev = None
     try:
         if not ok:
@@ -2947,6 +2953,8 @@ async def confirm_yes(pane: str, fp0: str, still=None) -> tuple[bool, str]:
         if still is not None and not still():  # 送る直前（ここから送るまで待ちを挟まない）
             return False, "stopped"
         r = await asyncio.to_thread(_if_still, still, herdr, "agent", "send-keys", pane, "down" if yes > c["cursor"] else "up")
+        if r is BUSY:
+            return False, "busy"
         if r is None:
             return False, "stopped"
         moved = True
@@ -2964,6 +2972,8 @@ async def confirm_yes(pane: str, fp0: str, still=None) -> tuple[bool, str]:
     if still is not None and not still():  # Enter を送る直前（読み直し・待ちのあいだに止めたら送らない）
         return False, "stopped:moved" if moved else "stopped"
     r = await asyncio.to_thread(_if_still, still, herdr, "agent", "send-keys", pane, "enter")
+    if r is BUSY:
+        return False, "busy:moved" if moved else "busy"
     if r is None:
         return False, "stopped:moved" if moved else "stopped"
     return ("result" in r), ("" if "result" in r else "herdr が応答しない（Enter が届いたか分からない）")
@@ -3019,7 +3029,7 @@ async def _hub_answer(body: dict):
         return JSONResponse({"ok": False, "reason": "reporting"})
     pane, answer, confirmed = str(body.get("pane", "")), str(body.get("answer", "")).strip().lower(), bool(body.get("confirmed"))
     if not await hub_settled():  # いまの発言の画面が同期の合図を返すまで待つ（相手と問いを読む前に。待つ間に問いが進んでも、読むのはそのあと）
-        return JSONResponse({"ok": False, "reason": "stopped"})
+        return JSONResponse({"ok": False, "reason": "unconfirmed"})  # 止めたかは分からない（同期を確かめられなかった。codex-review 5fff07e）
     a = await asyncio.to_thread(_worker, pane)
     if not a:
         return JSONResponse({"ok": False, "reason": f"セッションが見つかりません: {pane}"}, status_code=404)
@@ -3096,8 +3106,10 @@ async def _hub_answer(body: dict):
     # キーを送る直前に、答えに使う発言のあとに利用者が止めた・次の発言をしていないかを、もう一度確かめる（入口で確かめたあとの読み取りの
     # 待ちの間に止めることがある。ここから送るまで待ちを挟まない。確認の段は、キーを送る直前ごとに確かめる。a2a 30fd5b94 の 3 回目）
     # 同期の合図は入口で待った。途中で次の発言が入り、その画面がまだ返していなければ断る（ここでは待たない）
-    if not settled_now() or not hub_current(turn):
+    if not hub_current(turn):
         return JSONResponse({"ok": False, "reason": "stopped"})
+    if not settled_now():
+        return JSONResponse({"ok": False, "reason": "unconfirmed"})
     if key == "confirm":
         prev = ANSWERED.get(pane)
         mark_answered(pane, fp)  # カーソルを動かし始めたら、同じ画面に重ねて送らない（途中で止めても）
@@ -3105,14 +3117,16 @@ async def _hub_answer(body: dict):
         ok, why = await confirm_yes(pane, fp, still=lambda: hub_current(turn))
         hlog(f"answer → {pane} ({project}): {said} {'ok' if ok else '止めました: ' + why}", flush=True)
         if not ok:
-            if why == "stopped" and ANSWERED.get(pane) is mine:  # キーを 1 つも送らずに止めた。答えた印を外す（画面のボタン・ハブの断りを 15 秒止めない。codex-review fb69347）
+            if why in ("stopped", "busy") and ANSWERED.get(pane) is mine:  # キーを 1 つも送らずに止めた。答えた印を外す（画面のボタン・ハブの断りを 15 秒止めない。codex-review fb69347）
                 if prev:
                     ANSWERED[pane] = prev
                 else:
                     ANSWERED.pop(pane, None)
-            return JSONResponse({"ok": False, "reason": "stopped" if why.startswith("stopped") else "stuck", "why": why})
+            return JSONResponse({"ok": False, "reason": "stopped" if why.startswith("stopped") else "busy" if why.startswith("busy") else "stuck", "why": why})
     else:
         r = await asyncio.to_thread(_if_still, lambda: hub_current(turn), herdr, "agent", "send-keys", pane, key)
+        if r is BUSY:  # ほかの操作の途中で送らなかった（止めたのではない）
+            return JSONResponse({"ok": False, "reason": "busy"})
         if r is None:  # スレッドの空きを待つ間に止めた・次の発言をした（送っていない）
             return JSONResponse({"ok": False, "reason": "stopped"})
         hlog(f"answer → {pane} ({project}): {said} {'ok' if 'result' in r else 'ERR'}", flush=True)
@@ -3490,7 +3504,7 @@ async def hub_close(body: dict):
         return JSONResponse({"ok": False, "reason": "reporting"})
     pane, confirmed = str(body.get("pane", "")), bool(body.get("confirmed"))
     if confirmed and not await hub_settled():  # いまの発言の画面が同期の合図を返すまで待つ（閉じる相手を読む前に。待つ間に入れ替わっても、読むのはそのあと）
-        return JSONResponse({"ok": False, "reason": "stopped"})
+        return JSONResponse({"ok": False, "reason": "unconfirmed"})  # 止めたかは分からない（同期を確かめられなかった。codex-review 5fff07e）
     held = CLOSING.get(pane)
     (now, said), (before, _) = (await asyncio.to_thread(hub_turns, 2) + [(None, "")] * 2)[:2]
     if confirmed and await asyncio.to_thread(hub_via, now) == "device":  # 機械からの発言では閉じない（閉じていいかは画面で答える）
@@ -3522,12 +3536,17 @@ async def hub_close(body: dict):
                 why = "not_asked"
             elif not consent.affirms(said, "close", project):
                 why = "not_yes"
-            elif not settled_now() or not hub_current(now):  # 閉じる直前に、もう一度（読み取りの待ちの間に止めた・次の発言をした・その画面がまだ同期を返していない。ここから閉じるまで待ちを挟まない）
+            elif not hub_current(now):  # 閉じる直前に、もう一度（読み取りの待ちの間に止めた・次の発言をした。ここから閉じるまで待ちを挟まない）
                 why = "stopped"
+            elif not settled_now():  # 途中で入った次の発言の画面が、まだ同期を返していない（止めたかは分からない）
+                why = "unconfirmed"
             else:
                 del CLOSING[pane]  # 閉じる前に外す（重ねて届いた同じ許可で、二度閉じない）
                 CLOSED.add(pane)
                 r = await asyncio.to_thread(_if_still, lambda: hub_current(now), herdr, "pane", "close", pane)
+                if r is BUSY:  # ほかの操作の途中で閉じなかった（止めたのではない）
+                    CLOSED.discard(pane)
+                    return JSONResponse({"ok": False, "reason": "busy"})
                 if r is None:  # スレッドの空きを待つ間に止めた・次の発言をした（閉じていない）
                     CLOSED.discard(pane)
                     return JSONResponse({"ok": False, "reason": "stopped"})
@@ -3884,7 +3903,9 @@ async def ws(sock: WebSocket):
 
     def notify_unsent(text: str = "送る前に取り消したので、セッションへの前の指示は送っていません"):
         async def tell():
-            await tell_window(win_of(client), type="error", text=text)  # 窓の印で届ける（切れてつなぎ直した画面にも。つながっていなければ控える）
+            # 窓の印で届ける（切れてつなぎ直した画面にも。つながっていなければ控える）。notice は会話の欄に出すだけで、停止の結果の表示（止めました・
+            # 確かめの頼み）を消さない（codex-review 5fff07e）
+            await tell_window(win_of(client), type="notice", text=text)
         task = asyncio.create_task(tell())
         _tasks.add(task)
         task.add_done_callback(_tasks.discard)

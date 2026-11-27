@@ -122,8 +122,17 @@ sync_got.append((*close(confirmed=True), read_after[:1]))
 s._worker = real_worker
 s.SETTLING.pop(s.SETTLE_LAST["n"], None)
 s.SETTLE_LIMIT, s.SETTLE_LAST["n"] = limit0, -1
+# ほかの操作の途中（鍵が使われている）で閉じなかったら、止めたのではなく busy と返す（codex-review 5fff07e）
+s.CLOSED.discard("w9:p1")
+asked()
+say("はい、閉じて")
+real_if_still = s._if_still
+s._if_still = lambda *a: s.BUSY
+busy_close = close(confirmed=True)
+s._if_still = real_if_still
+check("ほかの操作の途中で閉じなかったら busy と返す", busy_close, ("busy", []))
 check("同期: 返事を待っている・返事の前に切れた発言では閉じず、返事が来たら閉じる。途中で次の発言が入ったら、その返事を待つ",
-      sync_got, [("stopped", []), ("stopped", []), ("ok", ["w9:p1"]), ("stopped", []), ("ok", ["w9:p1"], [True])])
+      sync_got, [("unconfirmed", []), ("unconfirmed", []), ("ok", ["w9:p1"]), ("unconfirmed", []), ("ok", ["w9:p1"], [True])])
 
 # 相手の位置: 本体が送らずに断った「はい」（添付の形・宛先・返信先が無い）を、乗せられたハブが閉じる許可に使う
 s.CLOSED.clear(); s.CLOSING.clear()

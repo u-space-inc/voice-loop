@@ -323,9 +323,17 @@ sync_got.append(("待ちのあとに読む", hub("yes").get("reason"), list(stat
 s._worker = real_worker
 s.SETTLING.pop(779, None)
 s.SETTLE_LIMIT, s.SETTLE_LAST["n"] = limit0, -1
+# ほかの操作の途中（鍵が使われている）で送らなかったら、止めたのではなく busy と返す（codex-review 5fff07e）
+real_if_still = s._if_still
+s._if_still = lambda *a: s.BUSY
+s.SEEN_PROMPT["w9:p1"] = (fp, "t1", "sess-1"); state["sent"].clear(); s.ANSWERED.clear(); s._answer_lock = asyncio.Lock()
+busy_got = (hub("yes").get("reason"), list(state["sent"]))
+s._if_still = real_if_still
+s.ANSWERED.clear()
+check("ほかの操作の途中で送らなかったら busy と返す", busy_got, ("busy", []))
 s.ANSWERED.clear()
 check("同期: 返事を待っている・返事の前に切れた発言では答えず、返事が来たら答える",
-      sync_got, [("返事を待っている", "stopped", []), ("返事の前に切れた", "stopped", []), ("返事が来た", None, ["1"]), ("途中で次の発言", "stopped", []), ("待ちのあとに読む", None, ["1"], [True])])
+      sync_got, [("返事を待っている", "unconfirmed", []), ("返事の前に切れた", "unconfirmed", []), ("返事が来た", None, ["1"]), ("途中で次の発言", "unconfirmed", []), ("待ちのあとに読む", None, ["1"], [True])])
 
 # セッションの立て直し（key はセッション ID で見分ける）
 AGENT_RE = {**AGENT, "session": "old-session"}

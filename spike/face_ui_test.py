@@ -518,6 +518,20 @@ with sync_playwright() as pw:
     pg.evaluate("setStatus('止めたか確かめられませんでした（試験）'); ws.onmessage({ data: JSON.stringify({ type: 'done', sentences: 0, stopped: true }), target: ws })")
     check("停止: 止めて抜けた読み上げの終わりでは、停止の結果の表示を変えない",
           pg.evaluate("document.getElementById('statusText').textContent"), "止めたか確かめられませんでした（試験）")
+    # 録音の途中で話し相手が変わったら、送らずに録り直しを頼む（返信先が変わったときと同じ。codex-review 5fff07e）
+    pg.wait_for_timeout(600)
+    pg.evaluate(PICK)
+    pg.evaluate("window.__types.length = 0; window.__turn = null; window.__pane0 = $('agent').value; startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    other_pane = pg.evaluate("(() => { const o = document.createElement('option'); o.value = 'w9:other'; o.textContent = '別の相手（試験）'; o.id = 'otherOpt';"
+                             " $('agent').appendChild(o); return o.value; })()")  # 録音の途中で選べる別の相手（試験の中だけ）
+    pg.evaluate(f"$('agent').value = {json.dumps(other_pane)}")
+    pg.wait_for_timeout(800)
+    pg.evaluate("stopRec()")
+    pg.wait_for_function("window.__turn || document.getElementById('statusText').textContent.includes('話し相手が変わった')", timeout=5000)
+    pane_changed = (bool(other_pane), pg.evaluate("!!window.__turn"), pg.evaluate("document.getElementById('statusText').textContent.includes('話し相手が変わった')"))
+    pg.evaluate("$('agent').value = window.__pane0; document.getElementById('otherOpt')?.remove()")
+    check("録音: 録音の途中で話し相手が変わったら、送らずに録り直しを頼む", pane_changed, (True, False, True))
     # 本体が、止めたか確かめられないと返したら、「止めました」と出さずに確かめを頼む（codex-review 57c6291）
     pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'stopped', n: 1e9, unsure: true }), target: ws })")
     check("停止: 止めたか確かめられないと返されたら、「止めました」と出さずに確かめを頼む",

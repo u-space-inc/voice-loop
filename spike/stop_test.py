@@ -524,7 +524,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.attachment_lines = real_attach
             s.transcribe = real_transcribe
         check("ハブ以外への声の指示を送り始める前に止めたら、送っていないと画面に知らせる",
-              (("transcript", "セッションへの声の指示") in seen, any(t == "error" and "送っていません" in x for t, x in seen)), (True, True))
+              (("transcript", "セッションへの声の指示") in seen, any(t in ("error", "notice") and "送っていません" in x for t, x in seen)), (True, True))
         # 送るスレッドの空きを待つ間に止めたら、セッションに送らず、送っていないと知らせる（送ったかの印は、スレッドの中で送る直前に立てる。codex-review 6096e1d）
         prompts, gate3, entered3 = [], threading.Event(), threading.Event()
         real_if, real_herdr, real_agents, real_jsonl = s._if_still, s.herdr, s.list_agents, s.jsonl_path
@@ -570,7 +570,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             gate3.set()
             s._if_still, s.herdr, s.list_agents, s.jsonl_path, s.topics.mark_direct = real_if, real_herdr, real_agents, real_jsonl, real_mark
         check("ハブ以外への指示を、送るスレッドの空きを待つ間に止めたら、送らずに送っていないと知らせ、件のリンクの印も付けない",
-              (prompts[:-1], any(t == "error" and "送っていません" in x for t, x in seen3), marks_cancelled), ([], True, []))
+              (prompts[:-1], any(t in ("error", "notice") and "送っていません" in x for t, x in seen3), marks_cancelled), ([], True, []))
         check("取り消さずに送った直接の指示には、送ると決めたときに件のリンクの印を付ける", (prompts, marks), (["セッションへのふつうの指示"], ["s1"]))
         # 別の画面の「停止」でも、送る前のハブ以外への指示を取り消し、指示を出した画面に知らせる（a2a 38ef4720 の 3 回目）
         prompts6, gate6, entered6 = [], threading.Event(), threading.Event()
@@ -597,7 +597,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             for _ in range(60):  # 知らせが来なければ、送ったあとの「回答を読めませんでした」で終わる（待ち続けない）
                 m = json.loads(w.receive_text())
                 seen6.append((m.get("type"), m.get("text", "")))
-                if m.get("type") == "error" and any(k in m.get("text", "") for k in WAITED):
+                if m.get("type") in ("error", "notice") and any(k in m.get("text", "") for k in WAITED):
                     break
             gate6.set()
             time.sleep(0.3)
@@ -605,7 +605,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             gate6.set()
             s._if_still, s.herdr, s.list_agents, s.jsonl_path = real_if, real_herdr, real_agents, real_jsonl
         check("別の画面で止めても、送る前のハブ以外への指示は送らず、指示を出した画面に送っていないと知らせる",
-              (prompts6, any(t == "error" and "送っていません" in x for t, x in seen6)), ([], True))
+              (prompts6, any(t in ("error", "notice") and "送っていません" in x for t, x in seen6)), ([], True))
         # 発言を始めた合図（begin）のあと、発言が届くまでに別の画面で止めたら、その発言では承認に答えない・閉じない（↩ 返信でも）。
         # ハブ以外への指示なら送らずに知らせる。止めていなければ、ふつうに受け付ける（codex-review c72fbbe）
         def row_of(text):
@@ -656,13 +656,13 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             for _ in range(60):  # 知らせが来なければ、送ったあとの「回答を読めませんでした」で終わる
                 m = json.loads(w.receive_text())
                 seen10.append((m.get("type"), m.get("text", "")))
-                if m.get("type") == "error" and any(k in m.get("text", "") for k in WAITED):
+                if m.get("type") in ("error", "notice") and any(k in m.get("text", "") for k in WAITED):
                     break
             time.sleep(0.3)
         finally:
             s.herdr, s.list_agents, s.jsonl_path = real_herdr, real_agents, real_jsonl
         check("発言を始めたあと届くまでに別の画面で止めたら、ハブ以外への指示は送らず、送っていないと知らせる",
-              (prompts10, any(t == "error" and "送っていません" in x for t, x in seen10)), ([], True))
+              (prompts10, any(t in ("error", "notice") and "送っていません" in x for t, x in seen10)), ([], True))
         # 合図（begin）の無い更新前の画面の「↩ 返信」は、停止をまたいだか分からないので、承認に使わせない（合図があれば、ふつうに受け付ける。a2a 4135f4c2）
         legacy = {}
         for label, extra in [("合図あり", {"begin": 904}), ("合図なし", {})]:
@@ -739,7 +739,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                 for _ in range(60):  # 取り消したなら知らせ、送ったなら返事を待ったあとの「回答を読めませんでした」が届く
                     m = json.loads(wa.receive_text())
                     seen12.append((m.get("type"), m.get("text", "")))
-                    if m.get("type") == "error" and any(k in m.get("text", "") for k in WAITED):
+                    if m.get("type") in ("error", "notice") and any(k in m.get("text", "") for k in WAITED):
                         break
                 wait_idle()
         finally:
@@ -785,7 +785,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                     for _ in range(80):
                         m = json.loads(wa.receive_text())
                         seen15.append((m.get("type"), m.get("text", "")))
-                        if m.get("type") == "error" and any(k in m.get("text", "") for k in WAITED):
+                        if m.get("type") in ("error", "notice") and any(k in m.get("text", "") for k in WAITED):
                             break
                     wait_idle()
             finally:
@@ -1220,7 +1220,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         check("本物の herdr は、鍵の中で確かめて起動したら鍵を放し、承認のキー・閉じるは返るまで送り途中の印を持つ（確かめが False なら起動しない。"
               "鍵が使われていたら、承認のキー・閉じるは断り、指示は待つ。codex-review b7bf623・e749b6a）",
               (started, "result" in r_ok, r_no, "result" in r_ask, r_busy, "result" in (r_wait or {}), s.COMMIT_LOCK.locked(), len(s.HELD_OPS)),
-              ([True, ("wait", False, 1), True, ("wait", False, 1), True, ("wait", False, 1)], True, None, True, None, True, False, 0))
+              ([True, ("wait", False, 1), True, ("wait", False, 1), True, ("wait", False, 1)], True, None, True, s.BUSY, True, False, 0))
         # 停止は、送り途中の承認のキー・閉じるが返ってから「止めました」と返す。その間も、本体はほかの画面の相手を続ける（codex-review e749b6a の P2）
         held_op = threading.Event()
         s.HELD_OPS.add(held_op)
@@ -1400,7 +1400,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.PENDING["stop"] = s.PENDING["admit"] = 0
             s.subprocess.Popen = real_popen4
         check("確定待ちの停止があれば承認のキー・閉じるは始めず、指示の送りは停止の確定を待ってから確かめる。確定待ちの受け付けがあれば承認のキー・閉じるだけ始めない",
-              (p_stop, p_admit, pend_started), ((None, None, True, "stop_pending", False), (None, True), [["agent", "prompt"]]))
+              (p_stop, p_admit, pend_started), ((s.BUSY, None, True, "stop_pending", False), (s.BUSY, True), [["agent", "prompt"]]))
         # 停止は、読んだその場で確定待ちに数え、鍵を取って確定したら外す
         s.COMMIT_LOCK.acquire()
         rel = threading.Timer(0.5, s.COMMIT_LOCK.release)
@@ -1703,8 +1703,9 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                 got7 += read_notice(wa, lambda t, x: False, 130, tries=1)
         finally:
             s.ask, s.list_agents = real_ask7, real_agents
-        check("取り消して知らせた指示には、送れなかったを重ねない",
-              (sum("送っていません" in x for t, x in got7), sum("送信できませんでした" in x for t, x in got7)), (1, 0))
+        check("取り消して知らせた指示には、送れなかったを重ねない。取り消しの知らせは notice（停止の結果の表示を消さない。codex-review 5fff07e）",
+              (sum("送っていません" in x for t, x in got7), sum("送信できませんでした" in x for t, x in got7), [t for t, x in got7 if "送っていません" in x]),
+              (1, 0, ["notice"]))
         # 声の頭を受けたあと、声の本体が届くまでに別の画面で止めたら、聞き取らずに捨てて録音した画面に知らせる（codex-review fdc6b04 の P1）
         check("（前提）前の試験の仕事が片づいている（声の本体の前の停止）", wait_idle(), True)
         heard8 = []
@@ -1881,7 +1882,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             for _ in range(60):
                 m = json.loads(w.receive_text())
                 seen11.append((m.get("type"), m.get("text", "")))
-                if m.get("type") == "error" and any(k in m.get("text", "") for k in WAITED):
+                if m.get("type") in ("error", "notice") and any(k in m.get("text", "") for k in WAITED):
                     break
             gate11.set()
             w.send_bytes(b"0" * 4000)
@@ -1891,7 +1892,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             gate11.set()
             s._if_still, s.herdr, s.list_agents, s.jsonl_path, s.transcribe = real_if, real_herdr, real_agents, real_jsonl, real_transcribe
         check("次の声の発言の頭を受けたら、前のまだ送っていないハブ以外への指示は送らずに知らせる",
-              (prompts11, any(t == "error" and "送っていません" in x for t, x in seen11)), ([], True))
+              (prompts11, any(t in ("error", "notice") and "送っていません" in x for t, x in seen11)), ([], True))
         # 話し始めるときに再生だけを止める停止（scope=talk）では、ほかの画面の送る前の指示は取り消さない（codex-review dad00a5）
         prompts9, gate9, entered9 = [], threading.Event(), threading.Event()
 
@@ -1951,7 +1952,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             for _ in range(60):  # 知らせが来なければ、送ったあとの「回答を読めませんでした」で終わる
                 m = json.loads(w.receive_text())
                 seen7.append((m.get("type"), m.get("text", "")))
-                if m.get("type") == "error" and any(k in m.get("text", "") for k in WAITED):
+                if m.get("type") in ("error", "notice") and any(k in m.get("text", "") for k in WAITED):
                     break
             time.sleep(0.3)
         finally:
@@ -1963,9 +1964,9 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             seen7.append((m.get("type"), m.get("text", "")))
             if m.get("type") == "stopped":
                 break
-        after = seen7[next(i for i, (t, x) in enumerate(seen7) if t == "error" and "送っていません" in x):]
+        after = seen7[next(i for i, (t, x) in enumerate(seen7) if t in ("error", "notice") and "送っていません" in x):]
         check("別の画面の停止がこの画面の聞き取りの間に来たら、聞き取ったハブ以外への指示は送らず、送っていないと知らせる（そのあと「送りました」と出さない）",
-              (prompts7, any(t == "error" and "送っていません" in x for t, x in seen7), any("エージェントに送りました" in x for t, x in after)), ([], True, False))
+              (prompts7, any(t in ("error", "notice") and "送っていません" in x for t, x in seen7), any("エージェントに送りました" in x for t, x in after)), ([], True, False))
         check("止めたの返事は、画面の停止の番号を付けて返す", seen7[-1], ("stopped", ""))
         check("止めたの返事の番号", m.get("n"), 41)
         # 指示を出した画面が、送るスレッドの空きを待つ間に切れても、別の画面の停止で取り消す（切れた画面の指示も送らせない）
