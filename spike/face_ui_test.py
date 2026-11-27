@@ -555,9 +555,13 @@ with sync_playwright() as pw:
       setStatus('止めました'); tell(beginSeq, PAGE); out.push(st());
       setStatus('エージェントに送りました。考え中…'); tell(beginSeq + 100, PAGE); out.push(st());
       setStatus('エージェントに送りました。考え中…'); tell(beginSeq, 'oldpage'); out.push(st());  // 読み込み直す前の発言の知らせ（番号が同じでも印が違う）
+      setStatus('エージェントに送りました。考え中…');
+      ws.onmessage({ data: JSON.stringify({ type: 'notice', text: '送信できませんでした: 届かなかった', b: beginSeq, pg: PAGE, status: '送信できませんでした' }), target: ws }); out.push(st());
+      setStatus('止めたか確かめられませんでした（試験）');
+      ws.onmessage({ data: JSON.stringify({ type: 'notice', text: '送信できませんでした: 遅れて届いた', b: beginSeq, pg: PAGE, status: '送信できませんでした' }), target: ws }); out.push(st());
       return out; }""")
     check("取り消しの知らせは、いま表示している発言（番号と読み込みの印が合う）のものだけ状態の欄を直す", notice_got,
-          ["送っていません", "止めました", "エージェントに送りました。考え中…", "エージェントに送りました。考え中…"])
+          ["送っていません", "止めました", "エージェントに送りました。考え中…", "エージェントに送りました。考え中…", "送信できませんでした", "止めたか確かめられませんでした（試験）"])
     # 録音を始めたあとにつなぎ直したら、送らずに録り直しを頼み、返信先は残す（codex-review 624d2d4）
     pg.wait_for_timeout(600)
     pg.evaluate("window.__types.length = 0; window.__turn = null; setReplyTarget({ at: 555.5, about: 'つなぎ直しの前の報告' }); startRec()")

@@ -875,11 +875,11 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                     wait_idle()  # 切れている間に断られた
                     with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa2:
                         wa2.send_text(json.dumps({"type": "hello", "speaker": 0, "win": win17}))  # あとでつないだ
-                        got17 += read_notice(wa2, lambda t, x: t == "error" and "送信できませんでした" in x, 80)
+                        got17 += read_notice(wa2, lambda t, x: t in ("error", "notice") and "送信できませんでした" in x, 80)
             finally:
                 lock_go17.set()
                 s.herdr, s.list_agents, s.jsonl_path = real_herdr, real_agents, real_jsonl
-            check(f"指示の行方の知らせは窓の印で届ける（{label}）", any(t == "error" and "送信できませんでした" in x for t, x in got17), True)
+            check(f"指示の行方の知らせは窓の印で届ける（{label}）", any(t in ("error", "notice") and "送信できませんでした" in x for t, x in got17), True)
         # 切れてつなぎ直した画面にも、別の画面の停止で取り消した指示の知らせが届く（もとの D-009 の場合。窓の印で届ける）
         check("（前提）前の試験の直接の指示が片づいている（つなぎ直した画面への取り消しの知らせ）", wait_idle(), True)
         prompts18, gate18, entered18 = [], threading.Event(), threading.Event()
@@ -1732,6 +1732,29 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             att_go12.set()
             s.attachment_lines, s.list_agents = real_attach12, real_agents
         check("取り消しの知らせには、どの発言の指示か（合図の番号と読み込みの印）を付ける", ((notice12 or {}).get("b"), (notice12 or {}).get("pg")), (7, "page12abc"))
+        # 送れなかった知らせも notice で、どの発言の指示か（合図の番号と読み込みの印）と状態の欄の文を付ける（遅れて届いても停止の結果の表示を消さない。codex-review e6e6b96）
+        check("（前提）前の試験の仕事が片づいている（送れなかった知らせの種類）", wait_idle(), True)
+
+        async def just_fail(agent, text):
+            return "error", "届かなかった"
+
+        s.ask = just_fail
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        fail14 = None
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winfailnt01"}))
+                wa.send_text(json.dumps({"type": "begin", "b": 9, "pane": "w9:p1", "hid": -1}))
+                wa.send_text(json.dumps({"type": "text", "text": "送れない指示", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 9, "pg": "page14abc"}))
+                for _ in range(40):
+                    m = json.loads(wa.receive_text())
+                    if "送信できませんでした" in m.get("text", ""):
+                        fail14 = m
+                        break
+        finally:
+            s.ask, s.list_agents = real_ask7, real_agents
+        check("送れなかった知らせは notice で、合図の番号・読み込みの印・状態の欄の文を付ける",
+              tuple((fail14 or {}).get(k) for k in ("type", "b", "pg", "status")), ("notice", 9, "page14abc", "送信できませんでした"))
         check("取り消して知らせた指示には、送れなかったを重ねない。取り消しの知らせは notice（停止の結果の表示を消さない。codex-review 5fff07e）",
               (sum("送っていません" in x for t, x in got7), sum("送信できませんでした" in x for t, x in got7), [t for t, x in got7 if "送っていません" in x]),
               (1, 0, ["notice"]))
@@ -1886,6 +1909,34 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.ASK_VERIFY.reset(tokv)
             s.subprocess.Popen = real_popen13
         check("指示を送る鍵を取ったあとに送り先が入れ替わっていたら送らない", ((r13 or {}).get("error", {}).get("code"), started13, s.COMMIT_LOCK.locked()), ("session_changed", [], False))
+        # 送り先の確かめ（herdr の一覧）は鍵の外で行い、確かめてから鍵を取るまでが長かったら確かめ直す（codex-review e6e6b96）
+        class OkProcQ:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return '{"result": {}}', ""
+
+        verify_seen = []
+        real_popen_q = s.subprocess.Popen
+        tokq = s.ASK_VERIFY.set(lambda: (verify_seen.append(s.COMMIT_LOCK.locked()), True)[1])
+        s.subprocess.Popen = lambda *a, **k: OkProcQ()
+        try:  # 鍵を取り合う相手がいないとき: 確かめは鍵を取る前（鍵の外）
+            s._if_still(lambda: True, functools.partial(s._HERDR, timeout=30), "agent", "prompt", "w9:p1", "x")
+        finally:
+            pass
+        outside = list(verify_seen)
+        verify_seen.clear()
+        s.COMMIT_LOCK.acquire()
+        relq = threading.Timer(0.8, s.COMMIT_LOCK.release)  # 鍵がほかで長く使われている
+        relq.start()
+        try:
+            r_q = s._if_still(lambda: True, functools.partial(s._HERDR, timeout=30), "agent", "prompt", "w9:p1", "x")
+        finally:
+            s.ASK_VERIFY.reset(tokq)
+            relq.join()
+            s.subprocess.Popen = real_popen_q
+        check("送り先の確かめは鍵の外で行い、鍵を取るまでが長かったら確かめ直す",
+              (outside, "result" in (r_q or {}), len(verify_seen) >= 2), ([False], True, True))
         # 送り先の確かめ・いまの発言の確かめで例外が出ても、鍵は必ず放す（codex-review 7266c12 の P1）
         def boom():
             raise KeyError("pane_id")
@@ -2137,7 +2188,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             gate4.set()
             s.herdr, s.list_agents, s.jsonl_path = real_herdr, real_agents, real_jsonl
         check("ハブ以外への指示を送り始めたあとに次の発言をし、相手が断ったら、送れなかったことを画面に知らせる",
-              sum(t == "error" and "送信できませんでした" in x for t, x in seen4), 1)
+              sum(t in ("error", "notice") and "送信できませんでした" in x for t, x in seen4), 1)
         # 取り消さずに相手が断ったときも、知らせは 1 回（送る仕事の終わりの 1 か所で出す。ターンを取り消したのが断られたあとでも同じ所で出る）
         s.herdr = lambda *a, **k: {"error": {"code": "agent_busy", "message": "受け付けません"}} if a[:2] == ("agent", "prompt") else {"result": {}}
         s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
@@ -2155,7 +2206,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         finally:
             s.herdr, s.list_agents, s.jsonl_path = real_herdr, real_agents, real_jsonl
         check("ハブ以外への指示を相手が断ったら、取り消していなくても、送れなかった知らせは 1 回",
-              sum(t == "error" and "送信できませんでした" in x for t, x in seen5), 1)
+              sum(t in ("error", "notice") and "送信できませんでした" in x for t, x in seen5), 1)
         check("声の頭と本体の間に止めたら、届いた声は聞き取らず、ハブにも台帳にも送らない",
               (first is not None, second and second.get("type"), heard_calls, any(r[1] == "止めたあとに届いた声" for r in list(hm.HERMES_TURNS))), (True, "stopped", [], False))
         # 画面に送る途中で、次の発言を受け付けた（a2a 30fd5b94 の 2 回目の再現: 送れていない問いが、次の「はい」の行に「聞いた文」として写った）

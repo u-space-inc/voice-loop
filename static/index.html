@@ -2168,7 +2168,7 @@ function connect() {
     else if (m.type === 'notice') {
       sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); // ハブから報告を受け取れなかった等（いまの話し相手とは別の知らせ）
       // いま表示している発言の指示を、送る前に取り消した知らせなら、状態の欄の「送りました・考え中」を「送っていません」に直す（停止の結果の表示は変えない。codex-review a63098a）
-      if (typeof m.b === 'number' && m.b === beginSeq && m.pg === PAGE && /送りました|考え中/.test($('statusText').textContent)) { setStatus('送っていません'); face('idle'); }
+      if (typeof m.b === 'number' && m.b === beginSeq && m.pg === PAGE && /送りました|考え中/.test($('statusText').textContent)) { setStatus(m.status === '送信できませんでした' ? m.status : '送っていません'); face('idle'); }
     }
     else if (m.type === 'done') { serverDone = true; turnDone = true; if (!m.stopped && !playing && !queue.length) finishSpeaking(); loadAgents(); } // 止めて抜けた読み上げの終わりでは、停止の結果の表示を変えない
     else if (m.type === 'stopgen') { // どこかの画面で止めた（発言を始めた合図に付ける）

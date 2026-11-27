@@ -254,6 +254,7 @@ async def invalidating(kind: str, order: asyncio.Lock | None = None):
                 PENDING[kind] -= 1
 
 
+VERIFY_FRESH = 0.5  # 送り先を確かめてから鍵を取るまでが、これより長かったら確かめ直す（秒）
 HELD_TIMEOUT = 15  # 返事を待たない操作（承認のキー・閉じる・指示を送る）を herdr が返すのを待つ上限（秒）。ふつうはすぐ返る
 HELD_MARGIN = 5  # 停止が送り途中の操作を待つのは、HELD_TIMEOUT よりこれだけ長く
 UNSURE_HOLD = 60  # herdr の待ちを打ち切ってから、これだけの間の停止は、止めたか確かめられないと返す（打ち切っても herdr があとで操作することがある）
@@ -290,12 +291,24 @@ def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False, 
         end = time.monotonic() + PENDING_WAIT
         verify = ASK_VERIFY.get()
         while True:
+            # 送り先の確かめ（herdr の一覧）は鍵の外で（一覧の取得が詰まっても、ほかの画面の停止と受け付けを待たせない。codex-review e6e6b96）。
+            # 確かめてから鍵を取るまでが長かったら、確かめ直す
+            if verify is not None:
+                try:
+                    same = verify()
+                except Exception as e:
+                    return {"error": {"code": "check_failed", "message": f"送り先を確かめられなかったので、送っていません: {type(e).__name__}"}}
+                if not same:  # 送り先の場所のセッションが入れ替わった
+                    return {"error": {"code": "session_changed", "message": "送る前に話し相手が入れ替わったので、送っていません"}}
+            t_verified = time.monotonic()
             if not _acquire_for_send(end):
                 return {"error": {"code": "stop_pending", "message": "止める操作の確定を待ちきれなかったので、送っていません"}}
+            if verify is not None and time.monotonic() - t_verified > VERIFY_FRESH:
+                COMMIT_LOCK.release()
+                if time.monotonic() >= end:
+                    return {"error": {"code": "check_failed", "message": "送り先を確かめ直せなかったので、送っていません"}}
+                continue
             try:  # 鍵を取ったら、確かめで例外が出ても必ず放す（取り残すと、全部の画面の停止と受け付けが詰まる。codex-review 7266c12）
-                if verify is not None and not verify():  # 鍵を待つ間に、送り先の場所のセッションが入れ替わった
-                    COMMIT_LOCK.release()
-                    return {"error": {"code": "session_changed", "message": "送る前に話し相手が入れ替わったので、送っていません"}}
                 with PENDING_LOCK:  # 確定待ちの停止が無いのを見て、送ると決めるまでを、停止を読んだ印と順に並べる（codex-review 27fc1d4）
                     again = bool(PENDING["stop"])
                     ok = False if again else still()
@@ -1067,10 +1080,10 @@ def _if_still(still, fn, *args):
         # 返事を待たない操作（承認のキー・閉じる・指示を送る）は、返るまで送り途中の印を持つ（停止は、返るのを待ってから「止めました」と返す）。
         # 鍵が使われていたら、承認のキー・閉じるは待たずに断り、指示を送るのは待つ
         return _herdr_gated(still, args, timeout, hold=True, wait_lock=args[:2] == ("agent", "prompt"))
+    verify = ASK_VERIFY.get() if args[:2] == ("agent", "prompt") else None
+    if verify is not None and not verify():  # 送り先の確かめは鍵の外で
+        return {"error": {"code": "session_changed", "message": "送る前に話し相手が入れ替わったので、送っていません"}}
     with COMMIT_LOCK:
-        verify = ASK_VERIFY.get() if args[:2] == ("agent", "prompt") else None
-        if verify is not None and not verify():
-            return {"error": {"code": "session_changed", "message": "送る前に話し相手が入れ替わったので、送っていません"}}
         ok = still is None or still()
     if not ok:
         return None
@@ -3838,7 +3851,9 @@ async def ws(sock: WebSocket):
                 exc = f.exception()
                 st, why = ("error", f"{type(exc).__name__}: {exc}") if exc is not None else f.result()
                 if st == "error":
-                    t = asyncio.ensure_future(tell_window(win_of(client), type="error", text=f"送信できませんでした: {why}"[:300]))  # 切れてつなぎ直した画面にも
+                    # notice で知らせる（遅れて届いても、停止の結果の表示を消さない。いま表示している発言なら、画面が状態の欄を直す。codex-review e6e6b96）
+                    mark = {"b": direct["b"], "pg": direct["pg"], "status": "送信できませんでした"} if direct is not None and direct.get("b") is not None else {}
+                    t = asyncio.ensure_future(tell_window(win_of(client), type="notice", text=f"送信できませんでした: {why}"[:300], **mark))  # 切れてつなぎ直した画面にも
                     _tasks.add(t)
                     t.add_done_callback(_tasks.discard)
 
@@ -3916,6 +3931,8 @@ async def ws(sock: WebSocket):
             DIRECT_SEQ["n"] += 1
             direct = direct_turn["d"] = DIRECT_PENDING[DIRECT_SEQ["n"]] = {
                 "key": DIRECT_SEQ["n"], "sent": False, "dropped": False, "handed": False, "lock": threading.Lock(),
+                "b": begin_b if isinstance(begin_b, int) and not isinstance(begin_b, bool) else None,
+                "pg": begin_pg if isinstance(begin_pg, str) and re.fullmatch(r"[a-z0-9]{1,16}", begin_pg) else None,
                 # 取り消しの知らせに、どの発言の指示か（画面の合図の番号）を付ける（画面は、その発言をまだ表示していれば状態の欄を直す。codex-review a63098a）
                 # 読み込みの印（pg）も返す（読み込み直した画面の新しい発言と、番号だけで取り違えない。codex-review 4908670）
                 "notify": functools.partial(notify_unsent, b=begin_b, pg=begin_pg if isinstance(begin_pg, str) and re.fullmatch(r"[a-z0-9]{1,16}", begin_pg) else None)
