@@ -1254,6 +1254,32 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             stuck_op.set()
             s.HELD_OPS.discard(stuck_op)
         check("送り途中の操作が上限までに返らなければ、止めたか確かめられないと返す", unsure_msg.get("unsure"), True)
+        # herdr の待ちを打ち切ったら、送り途中の印は「確かめられない」で立てる（停止は「止めました」と言わない。codex-review d9db7c8 の P1）
+        seen_ev = []
+
+        class SlowProc:
+            returncode = -9
+            calls = 0
+
+            def communicate(self, timeout=None):
+                SlowProc.calls += 1
+                if SlowProc.calls == 1:
+                    seen_ev.extend(s.HELD_OPS)
+                    raise s.subprocess.TimeoutExpired("herdr", timeout or 0)
+                return "", ""
+
+            def kill(self):
+                pass
+
+        real_popen2 = s.subprocess.Popen
+        s.subprocess.Popen = lambda *a, **k: SlowProc()
+        try:
+            r_slow = s._if_still(lambda: True, s._HERDR, "agent", "send-keys", "w9:p1", "1")
+        finally:
+            s.subprocess.Popen = real_popen2
+        check("herdr の待ちを打ち切ったら、送り途中の印は確かめられないで立てる",
+              (r_slow.get("timeout"), len(seen_ev), seen_ev[0].is_set() if seen_ev else None, s.wait_inflight(seen_ev), len(s.HELD_OPS)),
+              (True, 1, True, False, 0))
         # 指示を送るのは、送る（受け取ったら返る。返事を待たない）と、返事を待つに分ける（codex-review 57c6291 の P1）
         calls_ask = []
         real_herdr_ask, real_jsonl_ask = s.herdr, s.jsonl_path

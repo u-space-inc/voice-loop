@@ -217,19 +217,24 @@ def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False, 
             HELD_OPS.add(ev)
     finally:
         COMMIT_LOCK.release()
+    r = None
     try:
-        return _herdr_wait(proc, min(timeout or HELD_TIMEOUT, HELD_TIMEOUT) if hold else timeout)
+        r = _herdr_wait(proc, min(timeout or HELD_TIMEOUT, HELD_TIMEOUT) if hold else timeout)
+        return r
     finally:
         if ev is not None:
+            # 待ちを打ち切った（herdr が返らなかった）・待つ途中で失敗したら、操作が届いたか分からない。停止は「止めました」と言わずに、
+            # 止めたか確かめられないと返す（codex-review d9db7c8 の P1）
+            ev.ok = isinstance(r, dict) and not r.get("timeout")
             ev.set()
             HELD_OPS.discard(ev)
 
 
 def wait_inflight(evs: list) -> bool:
     """送り途中の操作（承認のキー・閉じる・指示を送る）が返るのを待つ（ワーカーのスレッドで呼ぶ）。herdr の待ちの上限（HELD_TIMEOUT 秒で打ち切って
-    印を立てる）より少し長く待つ。全部返ったら True。返らなければ False（止めたか確かめられない）"""
+    印を立てる）より少し長く待つ。全部ふつうに返ったら True。返らない・打ち切った・待つ途中で失敗したなら False（止めたか確かめられない）"""
     end = time.monotonic() + HELD_TIMEOUT + HELD_MARGIN
-    return all(ev.wait(max(0.0, end - time.monotonic())) for ev in evs)
+    return all(ev.wait(max(0.0, end - time.monotonic())) and getattr(ev, "ok", True) for ev in evs)
 
 
 def _herdr_wait(proc, timeout: float | None) -> dict:
@@ -238,7 +243,7 @@ def _herdr_wait(proc, timeout: float | None) -> dict:
     except subprocess.TimeoutExpired as e:
         proc.kill()
         proc.communicate()
-        return {"raw": str(e), "code": -1}
+        return {"raw": str(e), "code": -1, "timeout": True}  # 打ち切った（herdr が操作を受け取ったかは分からない）
     return _herdr_out(out, err, proc.returncode)
 
 
