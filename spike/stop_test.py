@@ -1336,6 +1336,22 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         finally:
             s.subprocess.Popen = real_popen3
             s.UNSURE_UNTIL["t"] = 0.0
+        class NotFoundProc:
+            returncode = 1
+
+            def communicate(self, timeout=None):
+                return '{"error": {"code": "agent_not_found"}}', ""
+
+        s.UNSURE_UNTIL["t"] = 0.0
+        real_popen_nf = s.subprocess.Popen
+        s.subprocess.Popen = lambda *a, **k: NotFoundProc()
+        try:
+            s._if_still(lambda: True, s._HERDR, "agent", "send-keys", "w9:p1", "1")
+        finally:
+            s.subprocess.Popen = real_popen_nf
+        notfound_unsure = s.UNSURE_UNTIL["t"] > time.monotonic()
+        s.UNSURE_UNTIL["t"] = 0.0
+        check("相手が見つからないとはっきり断られたら、止める側も確かめられたとする（codex-review fbf6e98）", notfound_unsure, False)
         check("herdr の返事の中身が分からない・応答待ちを打ち切った error なら確かめられないで立て、実行していないと分かる拒否なら確かめられたとする",
               ("raw" in r_odd, [getattr(e, "ok", None) for e in odd_ev], odd_unsure, reject_unsure, stalled_unsure, errtimeout_unsure),
               (True, [False, True, True, False], True, False, False, True))
@@ -1812,6 +1828,27 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                 s.herdr, s.jsonl_path = real_herdr16, real_jsonl16
         check("送って見届ける待ちが時間切れ・中身の分からない返事・形の違う欄・知らない error なら unknown、送っていないと分かる断りなら error（codex-review 280cfe6）",
               outs17, ["unknown", "unknown", "unknown", "unknown", "error", "error"])
+        # 送ったあとの待ちの返事の形が違っても、送れたので unanswered。herdr を起動する前にやめた指示は error（送っていない。codex-review fbf6e98）
+        outs18 = []
+        for wait_resp in (["形の違う", "返事"], {"error": "文字だけの error"}):
+            s.herdr = lambda *a, wr=wait_resp, **k: {"result": {"agent": {"agent_status": "working"}}} if a[:2] == ("agent", "prompt") else wr
+            s.jsonl_path = lambda a: None
+            try:
+                try:
+                    outs18.append(asyncio.run(s.ask({"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}, "送る指示"))[0])
+                except Exception as e:  # 形の違う返事で例外になる作りでも、下で比べる
+                    outs18.append(type(e).__name__)
+            finally:
+                s.herdr, s.jsonl_path = real_herdr16, real_jsonl16
+        s.herdr = lambda *a, **k: {"result": {"agent": {"agent_status": "working"}}}
+        s.jsonl_path = lambda a: None
+        tokv18 = s.ASK_VERIFY.set(lambda: False)  # 起動する前に送り先が入れ替わった
+        try:
+            outs18.append(asyncio.run(s.ask({"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}, "送る指示"))[0])
+        finally:
+            s.ASK_VERIFY.reset(tokv18)
+            s.herdr, s.jsonl_path = real_herdr16, real_jsonl16
+        check("送ったあとの待ちの返事の形が違っても unanswered、起動する前にやめた指示は error", outs18, ["unanswered", "unanswered", "error"])
         check("送ったあと返事を待てなかったら、unanswered を返す", (got16[0], calls16), ("unanswered", [("agent", "prompt"), ("agent", "wait")]))
         check("（前提）前の試験の仕事が片づいている（返事を確かめられない知らせ）", wait_idle(), True)
 
@@ -2072,6 +2109,33 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             wl.send_text(json.dumps({"type": "stop", "n": 150}))
             receive_until(wl, "stopped")
         check("止めたら、取り消しにくい操作の聞き返し・閉じるの聞き返しの記録を消す", ("w9:p1" in s.CONFIRMING, "w9:p1" in s.CLOSING), (False, False))
+        # 機械の口からの声のハブ以外への指示は、録音を始めた時点（合図）が分からないので送らずに知らせる（止めたあとに送らない。codex-review fbf6e98 の P1）
+        check("（前提）前の試験の仕事が片づいている（機械からの声の指示）", wait_idle(), True)
+        prompts19 = []
+        real_place19, real_herdr19, real_tr19 = s.device_place, s.herdr, s.transcribe
+        real_jsonl19, real_screen19 = s.jsonl_path, s.read_screen
+        s.jsonl_path, s.read_screen = (lambda a: None), (lambda pane, n: "")  # 本物の herdr の画面は読まない
+        s.device_place = lambda scope: "home"  # 機械の口で受けた接続
+        s.herdr = lambda *a, **k: (prompts19.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
+        s.transcribe = lambda audio, filename: "機械からのセッションへの指示"
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        got19d = []
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wd:
+                wd.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "windevice001"}))
+                wd.send_text(json.dumps({"type": "turn", "pane": "w9:p1", "speaker": 0, "filename": "a.webm"}))  # 機械は合図を送らない
+                wd.send_bytes(b"0" * 4000)
+                for _ in range(40):
+                    m = json.loads(wd.receive_text())
+                    got19d.append((m.get("type"), m.get("text", "")))
+                    if m.get("type") in ("error", "notice", "done", "reply"):
+                        break  # 知らせか、送ってしまう作りなら往復の終わり（返事・読めなかった）で読むのをやめる
+            wait_idle()
+        finally:
+            s.device_place, s.herdr, s.transcribe, s.list_agents = real_place19, real_herdr19, real_tr19, real_agents
+            s.jsonl_path, s.read_screen = real_jsonl19, real_screen19
+        check("機械の口からの声のハブ以外への指示は、送らずに知らせる",
+              (prompts19, any("止めたかを確かめられないので送っていません" in x for t, x in got19d)), ([], True))
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]

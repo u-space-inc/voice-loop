@@ -370,6 +370,7 @@ SURE_REJECTS = {"agent_blocked"}  # 操作を実行していないと分かる h
 SURE_ACCEPTED = {"agent_prompt_stalled"}  # 受け取ったと分かる herdr の返事（送ったが 5 秒で working を見なかった）
 # 指示を送っていないと分かる herdr の断り（agent_blocked は入力を送る前に断る。相手が見つからない・動いていないなら送れない）。ほかの error は、届いたか分からない
 SEND_REJECTS = {"agent_blocked", "agent_not_found", "agent_not_running"}
+SEND_ABORTED = {"session_changed", "check_failed", "stop_pending"}  # 本体が herdr を起動する前にやめた（送っていない）
 
 
 def _herdr_sure(r) -> bool:
@@ -381,7 +382,8 @@ def _herdr_sure(r) -> bool:
         return True
     err = r.get("error")
     code = err.get("code") if isinstance(err, dict) else None
-    return isinstance(code, str) and (code in SURE_REJECTS or code in SURE_ACCEPTED)  # 形の違う欄は分からない（codex-review 8093b0b）
+    # 形の違う欄は分からない（codex-review 8093b0b）。送っていないと分かる断りは、指示の送り（ask）と同じく確かめられたとする（codex-review fbf6e98）
+    return isinstance(code, str) and (code in SURE_REJECTS or code in SEND_REJECTS or code in SURE_ACCEPTED)
 
 
 def wait_inflight(evs: list) -> bool:
@@ -1764,6 +1766,15 @@ ASK_COMMIT: contextvars.ContextVar = contextvars.ContextVar("ask_commit", defaul
 ASK_VERIFY: contextvars.ContextVar = contextvars.ContextVar("ask_verify", default=None)
 
 
+def _err_code(r) -> str | None:
+    """herdr の返事の error の欄の code（文字でなければ "?"。error が無ければ None）。"""
+    if not isinstance(r, dict) or "error" not in r:
+        return None
+    e = r.get("error")
+    code = e.get("code") if isinstance(e, dict) else None
+    return code if isinstance(code, str) else "?"
+
+
 def _agent_state(r) -> str:
     """herdr の待ちの返事から、セッションの状態（idle・working・blocked・done）を取り出す。"""
     res = (r.get("result") or {}) if isinstance(r, dict) else {}
@@ -1791,19 +1802,19 @@ async def ask(agent: dict, text: str) -> tuple[str, str]:
                                 "--wait", "--until", "working", "--until", "blocked", "--timeout", "10000")  # herdr の上限は、見届けの 5 秒より長く（先に時間切れを返さない。codex-review 8a47002）
     if r is None:
         return "cancelled", ""
-    err = (r.get("error") or {}).get("code")
-    if isinstance(err, str) and err in SEND_REJECTS:  # 送っていないと分かる断り。送れなかったと知らせる
+    if not isinstance(r, dict):  # 形の違う返事。届いたかは分からない
+        return "unknown", str(r)[:200]
+    err = _err_code(r)
+    if err in SEND_REJECTS or err in SEND_ABORTED:  # 送っていないと分かる断り・herdr を起動する前にやめた。送れなかったと知らせる（codex-review fbf6e98）
         return "error", json.dumps(r, ensure_ascii=False)[:200]
-    if r.get("timeout") or (err and err != "agent_prompt_stalled") or (not err and "result" not in r):
+    if r.get("timeout") or ("error" in r and err != "agent_prompt_stalled") or ("error" not in r and "result" not in r):
         # 待ちの時間切れ・ほかの error・形の違う欄・中身の分からない返事。届いたかは分からない（送れなかったと言うと、送り直して二重になる。
         # 止める側の確かめ（_herdr_sure）と同じく、分からないとする。codex-review ab8a5e5・280cfe6）
         return "unknown", json.dumps(r, ensure_ascii=False)[:200]
     if _agent_state(r) != "blocked":  # 承認待ちで止まったのを見たら、その結果を使う（待ち直すと、別の画面で答えたあとの状態を読む。codex-review 711ce71）
         r = await asyncio.to_thread(herdr, "agent", "wait", pane, "--timeout", "600000", timeout=610)
-        if (r.get("error") or {}).get("code") or "result" not in r:  # 送ったあと、返事を待てなかった（送り直すと二重になる。codex-review 66730ac）
-            return "unanswered", json.dumps(r, ensure_ascii=False)[:200]
-    if (r.get("error") or {}).get("code") or "result" not in r:
-        return "error", json.dumps(r, ensure_ascii=False)[:200]
+        if not isinstance(r, dict) or "error" in r or "result" not in r:  # 送ったあと、返事を待てなかった（形の違う返事も。送り直すと二重になる。codex-review 66730ac・fbf6e98）
+            return "unanswered", (json.dumps(r, ensure_ascii=False) if isinstance(r, dict) else str(r))[:200]
     state = _agent_state(r)
     if state == "blocked":
         return "blocked", read_prompt(pane)[-1500:]
@@ -3904,7 +3915,7 @@ async def ws(sock: WebSocket):
 
     def start_turn(text: str, pane: str, speaker: int, key: str | None, reply_at: float | None = None, files: list[str] | None = None,
                    item: int | None = None, said: str | None = None, admitted: int | None = None, via: str | None = None, seen: int | None = None,
-                   stopgen: int | None = None, crossed: bool = False, legacy: bool = False, legacy_drop: bool = False, begin_b: int | None = None,
+                   stopgen: int | None = None, crossed: bool = False, legacy: bool = False, legacy_drop: bool = False, device_drop: bool = False, begin_b: int | None = None,
                    begin_pg: str | None = None):
         # said: 辞書で直す前の聞き取り（直したときだけ。ハブの守りの台帳に載せる）
         # admitted: 発言を受けたその場（声なら発言の頭が届いたとき）に取った受け付けの番号。無ければここで取る
@@ -3962,7 +3973,9 @@ async def ws(sock: WebSocket):
                 "notify": functools.partial(notify_unsent, b=begin_b, pg=begin_pg if isinstance(begin_pg, str) and re.fullmatch(r"[a-z0-9]{1,16}", begin_pg) else None)
                 if isinstance(begin_b, int) and not isinstance(begin_b, bool) else notify_unsent}
             if crossed or legacy_drop or (stopgen is not None and stopgen != STOP_GEN["n"]):  # 発言を始めたあと・声の頭を受けたあと（聞き取りの間）に、どこかの画面で止めた
-                if legacy and (crossed or legacy_drop):  # 合図の無い更新前の画面の添付つき・声の指示。確かめられないので送らず、読み込み直しを頼む
+                if device_drop:  # 機械の口からの声のハブ以外への指示。録音を始めた時点が分からないので送らない
+                    direct["notify"] = lambda: notify_unsent("機械からの声のセッションへの指示は、止めたかを確かめられないので送っていません。ハブに頼むか、画面から送ってください")
+                elif legacy and (crossed or legacy_drop):  # 合図の無い更新前の画面の添付つき・声の指示。確かめられないので送らず、読み込み直しを頼む
                     direct["notify"] = lambda: notify_unsent("この画面は古い版なので、この指示はセッションに送っていません。画面を読み込み直してから送り直してください")
                 drop_pending(direct)  # 送っていないと知らせ、画面のターンは動かさない（「送りました・考え中」と出さない。codex-review dad00a5）
                 return
@@ -4147,7 +4160,8 @@ async def ws(sock: WebSocket):
                                # 受け付けの鍵を待つ間に止めたら、停止をまたいだ発言にする（ハブへの「はい」でも、承認に答える・閉じるに使わない）
                                "_stopgen": sg0, "_crossed": crossed or STOP_GEN["n"] != sg0, "_legacy": legacy,
                                # 合図の無い更新前の画面の声（機械の口の接続は除く）は、録音を始めた時点が分からない。ハブ以外への直接の指示なら送らない（a2a 4135f4c2 の 3 回目）
-                               "_legacy_drop": legacy and not client.bound}
+                               # 機械の口の声も、合図（録音を始めた時点の停止の回数）が無ければ、ハブ以外への指示は送らない（止めたあとに送らない。codex-review fbf6e98 の P1）
+                               "_legacy_drop": legacy, "_device_drop": legacy and client.bound}
                     if legacy:  # 合図のある発言は、合図を受けたときにハブの前の問いを消し済み。遅れて届いた頭で、あとの新しい問いを消さない（codex-review 52a66a0）
                         left_hub(str(d.get("pane", "")))
                 if d["type"] == "text":
@@ -4197,7 +4211,7 @@ async def ws(sock: WebSocket):
                     await send(type="transcript", pane=head["pane"], text=text)
                     start_turn(text, head["pane"], int(head["speaker"]), head.get("key"), reply_at_of(head), attachments_of(head),
                                reply_item_of(head), said if text != said else None, admitted=head["_admitted"], via=head["_via"], stopgen=head["_stopgen"],
-                               crossed=head["_crossed"], legacy=head["_legacy"], legacy_drop=head["_legacy_drop"], begin_b=head.get("begin"),
+                               crossed=head["_crossed"], legacy=head["_legacy"], legacy_drop=head["_legacy_drop"], device_drop=head.get("_device_drop", False), begin_b=head.get("begin"),
                                begin_pg=head.get("pg"))
                 finally:
                     blocked.update(stop=stop_at_block, end=STOP_GEN["n"], until=time.monotonic() + 0.5)  # 受信に戻る時点から数える
