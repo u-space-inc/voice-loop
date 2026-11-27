@@ -328,6 +328,7 @@ def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False, 
 
 
 SURE_REJECTS = {"agent_blocked"}  # 操作を実行していないと分かる herdr の拒否（agent_blocked は、入力を送る前に断る。herdr agent prompt --help）
+SURE_ACCEPTED = {"agent_prompt_stalled"}  # 受け取ったと分かる herdr の返事（送ったが 5 秒で working を見なかった）
 
 
 def _herdr_sure(r) -> bool:
@@ -338,7 +339,7 @@ def _herdr_sure(r) -> bool:
     if "result" in r:
         return True
     err = r.get("error")
-    return isinstance(err, dict) and err.get("code") in SURE_REJECTS
+    return isinstance(err, dict) and (err.get("code") in SURE_REJECTS or err.get("code") in SURE_ACCEPTED)
 
 
 def wait_inflight(evs: list) -> bool:
@@ -1043,7 +1044,7 @@ def _if_still(still, fn, *args):
         timeout = fn.keywords.get("timeout", 60) if isinstance(fn, functools.partial) else 60
         # 返事を待たない操作（承認のキー・閉じる・指示を送る）は、返るまで送り途中の印を持つ（停止は、返るのを待ってから「止めました」と返す）。
         # 鍵が使われていたら、承認のキー・閉じるは待たずに断り、指示を送るのは待つ
-        return _herdr_gated(still, args, timeout, hold="--wait" not in args, wait_lock=args[:2] == ("agent", "prompt"))
+        return _herdr_gated(still, args, timeout, hold=True, wait_lock=args[:2] == ("agent", "prompt"))
     with COMMIT_LOCK:
         ok = still is None or still()
     if not ok:
@@ -1737,17 +1738,16 @@ async def ask(agent: dict, text: str) -> tuple[str, str]:
     offset = path.stat().st_size if path and path.exists() else 0  # 新しいセッションは最初の発言まで記録が無い
     # 送る（herdr が受け取ったら返る。ハブ経由の送りと同じ）。送り途中の印を持つので、停止は受け取られるのを待ってから「止めました」と返す
     # （起動してから受け取るまでの間に止めても、「止めました」のあとに届かない。codex-review 57c6291 の P1）
-    r = await asyncio.to_thread(_if_still, commit, functools.partial(herdr, timeout=30), "agent", "prompt", pane, text)
+    # 送ったその時点から working（または blocked）を見届けるまで待つ（送った直後の idle に反応しない。送りと見届けを別々に呼ぶと、その間に
+    # 終わった短い返事を 5 秒見逃す。codex-review fdc6b04）。5 秒で見逃したら（agent_prompt_stalled。受け取りは済んでいる）、終わりを待つ
+    r = await asyncio.to_thread(_if_still, commit, functools.partial(herdr, timeout=30), "agent", "prompt", pane, text,
+                                "--wait", "--until", "working", "--until", "blocked", "--timeout", "5000")
     if r is None:
         return "cancelled", ""
     err = (r.get("error") or {}).get("code")
-    if err or "result" not in r:
+    if err and err != "agent_prompt_stalled" or (not err and "result" not in r):
         return "error", json.dumps(r, ensure_ascii=False)[:200]
-    # 返事を待つ。まず working（または blocked）になるのを待ち（送った直後の idle に反応しない。5 秒で見逃したら短い応答として次へ）、それから終わりを待つ
-    first = await asyncio.to_thread(herdr, "agent", "wait", pane, "--until", "working", "--until", "blocked", "--timeout", "5000", timeout=15)
-    if _agent_state(first) == "blocked":  # 承認待ちで止まったのを見た。その結果を使う（待ち直すと、別の画面で答えたあとの状態を読む。codex-review 711ce71）
-        r = first
-    else:
+    if _agent_state(r) != "blocked":  # 承認待ちで止まったのを見たら、その結果を使う（待ち直すと、別の画面で答えたあとの状態を読む。codex-review 711ce71）
         r = await asyncio.to_thread(herdr, "agent", "wait", pane, "--timeout", "600000", timeout=610)
     if (r.get("error") or {}).get("code") or "result" not in r:
         return "error", json.dumps(r, ensure_ascii=False)[:200]
@@ -4065,6 +4065,11 @@ async def ws(sock: WebSocket):
                 # 聞き取りは受信の中で待つ。その間に押した「停止」は、聞き取った発言を送ったあとに読む（発言は相手に届くが、止めたことで
                 # 受け付けの番号が進むので、その発言で承認に答える・閉じるは通らない。.github/review-exceptions.md の D-007）
                 head, pending = pending, {}
+                if head.get("_stopgen") is not None and head["_stopgen"] != STOP_GEN["n"]:
+                    # 声の頭を受けたあと、声の本体が届くまでに、どこかの画面で止めた。聞き取らずに捨て、録音した画面に知らせる（ハブにも送らない。
+                    # codex-review fdc6b04）
+                    await send(type="error", text="止めたので、話した内容は聞き取らずに捨てました")
+                    continue
                 # 聞き取り・辞書の補正・知らせの送り出しの間は受信が止まる。その間に届いていた合図は、止まり始めた時点のものとして扱う
                 # （受信に戻ってから 0.5 秒の間に読んだ合図。溜まっていた合図はすぐに読まれる。a2a 4135f4c2 の 2・3 回目）
                 # 前の声の窓がまだ開いている（声が続いて届いていた）なら、早いほうの値を引き継ぐ（あとの声の処理で上書きしない。a2a 4135f4c2 の 4 回目）

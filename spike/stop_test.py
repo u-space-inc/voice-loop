@@ -1303,6 +1303,13 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                 odd_ev.extend(s.HELD_OPS)
                 return '{"error": {"code": "agent_blocked"}}', ""
 
+        class StalledProc:
+            returncode = 1
+
+            def communicate(self, timeout=None):
+                odd_ev.extend(s.HELD_OPS)
+                return '{"error": {"code": "agent_prompt_stalled"}}', ""
+
         class TimeoutErrProc:
             returncode = 1
 
@@ -1320,6 +1327,9 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.subprocess.Popen = lambda *a, **k: RejectProc()
             s._if_still(lambda: True, s._HERDR, "agent", "send-keys", "w9:p1", "1")
             reject_unsure = s.UNSURE_UNTIL["t"] > time.monotonic()
+            s.subprocess.Popen = lambda *a, **k: StalledProc()  # 送ったが 5 秒で working を見なかった（受け取りは済んでいる）
+            s._if_still(lambda: True, s._HERDR, "agent", "send-keys", "w9:p1", "1")
+            stalled_unsure = s.UNSURE_UNTIL["t"] > time.monotonic()
             s.subprocess.Popen = lambda *a, **k: TimeoutErrProc()  # herdr が応答待ちを打ち切った error（届いたかは分からない。codex-review 711ce71 の P1）
             s._if_still(lambda: True, s._HERDR, "agent", "send-keys", "w9:p1", "1")
             errtimeout_unsure = s.UNSURE_UNTIL["t"] > time.monotonic()
@@ -1327,8 +1337,8 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.subprocess.Popen = real_popen3
             s.UNSURE_UNTIL["t"] = 0.0
         check("herdr の返事の中身が分からない・応答待ちを打ち切った error なら確かめられないで立て、実行していないと分かる拒否なら確かめられたとする",
-              ("raw" in r_odd, [getattr(e, "ok", None) for e in odd_ev], odd_unsure, reject_unsure, errtimeout_unsure),
-              (True, [False, True, False], True, False, True))
+              ("raw" in r_odd, [getattr(e, "ok", None) for e in odd_ev], odd_unsure, reject_unsure, stalled_unsure, errtimeout_unsure),
+              (True, [False, True, True, False], True, False, False, True))
         # 鍵が使われている間に停止が来ても、イベントループは止めない（ほかの画面の相手を続ける。停止は鍵が空いてから確定する。codex-review 711ce71）
         g_busy = s.STOP_GEN["n"]
         s.COMMIT_LOCK.acquire()
@@ -1483,7 +1493,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.herdr, s.jsonl_path, s.read_screen = real_herdr_ask, real_jsonl_ask, real_read_screen
         # 最初の待ちで承認待ち（blocked）を見たら、その結果を使う（待ち直さない。codex-review 711ce71）
         calls_blk = []
-        s.herdr = lambda *a, **k: (calls_blk.append(a), {"result": {"agent": {"agent_status": "blocked" if a[:2] == ("agent", "wait") else "idle"}}})[1]
+        s.herdr = lambda *a, **k: (calls_blk.append(a), {"result": {"agent": {"agent_status": "blocked" if a[:2] == ("agent", "prompt") else "idle"}}})[1]
         s.jsonl_path = lambda a: None
         real_read_prompt = s.read_prompt
         s.read_prompt = lambda pane: "承認待ちの画面"
@@ -1491,9 +1501,20 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             got_blk = asyncio.run(s.ask({"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}, "送る指示"))
         finally:
             s.herdr, s.jsonl_path, s.read_prompt = real_herdr_ask, real_jsonl_ask, real_read_prompt
-        check("指示を送ったあと最初の待ちで承認待ちを見たら、その結果を使う", (got_blk, len(calls_blk)), (("blocked", "承認待ちの画面"), 2))
-        check("指示を送るのは、待たずに送り、そのあと working を待ってから終わりを待つ", (calls_ask, got_ask[0]),
-              ([("agent", "prompt", "w9:p1", "送る指示"), ("agent", "wait", "w9:p1", "--until", "working", "--until", "blocked", "--timeout", "5000"),
+        check("指示を送って見届ける間に承認待ちを見たら、その結果を使う（待ち直さない）", (got_blk, len(calls_blk)), (("blocked", "承認待ちの画面"), 1))
+        # 送ったが 5 秒で working を見なかった（agent_prompt_stalled。受け取りは済んでいる）なら、終わりを待つ
+        calls_st = []
+        s.herdr = lambda *a, **k: (calls_st.append(a[:2]), {"error": {"code": "agent_prompt_stalled"}} if a[:2] == ("agent", "prompt") else {"result": {"agent": {"agent_status": "idle"}}})[1]
+        s.jsonl_path = lambda a: None
+        real_read_screen2 = s.read_screen
+        s.read_screen = lambda pane, n: "返事"
+        try:
+            got_st = asyncio.run(s.ask({"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}, "送る指示"))
+        finally:
+            s.herdr, s.jsonl_path, s.read_screen = real_herdr_ask, real_jsonl_ask, real_read_screen2
+        check("送ったが working を見なかったら、受け取りは済んでいるので終わりを待つ", (got_st[0], calls_st), ("done", [("agent", "prompt"), ("agent", "wait")]))
+        check("指示を送るのは、送った時点から working を見届けて（5 秒まで）、それから終わりを待つ", (calls_ask, got_ask[0]),
+              ([("agent", "prompt", "w9:p1", "送る指示", "--wait", "--until", "working", "--until", "blocked", "--timeout", "5000"),
                 ("agent", "wait", "w9:p1", "--timeout", "600000")], "done"))
         # 合図の無い発言が受け付けの鍵を待つ間に止めたら、その指示は送らずに知らせ、ハブへの「はい」もいまの発言にしない。合図の無い次の発言は、
         # 鍵を待つ前に前の指示を取り消す（codex-review 31c9e1c）
@@ -1550,9 +1571,9 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                         wb.send_text(json.dumps({"type": "stop", "n": 103}))
                         receive_until(wb, "stopped")
                     gate31.set()
-                    receive_until(wa, "transcript")
-                    vrow31 = row_of("はい（声で鍵を待つ間に止める）")
-                    voice_cur31 = s.HUB.current(vrow31[0]) if vrow31 else None
+                    # 声の本体は、受け付けの鍵を待つ間の停止のあとに読む。聞き取らずに捨てて知らせる（codex-review fdc6b04。いまの発言にもならない）
+                    m31 = receive_until(wa, "error") or {}
+                    voice_cur31 = "捨てた" if "捨てました" in m31.get("text", "") else m31.get("text")
             finally:
                 s.transcribe = real_transcribe31
             check("（前提）前の試験の直接の指示が片づいている（前の指示の取り消し）", wait_idle(), True)
@@ -1584,7 +1605,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.admit_async, s.herdr, s.attachment_lines, s.list_agents = real_admit31, real_herdr31, real_attach31, real_agents
         check("合図の無い発言が受け付けの鍵を待つ間に止めたら、指示は送らずに知らせ、ハブへの「はい」もいまの発言にしない。次の合図の無い発言は、鍵を待つ前に前の指示を取り消す",
               (any("鍵を待つ間に止める指示" in x for x in prompts31), any("送っていません" in x for t, x in got31), hub_cur31, voice_cur31, dropped_before31),
-              (False, True, False, False, True))
+              (False, True, False, "捨てた", True))
         # 指示の送りの、確定待ちの停止の上限は、鍵を取る前から数える（ほかの操作が鍵を長く持っていても、上限で送らずに返る。codex-review 31c9e1c）
         dl_started = []
         real_popen5 = s.subprocess.Popen
@@ -1684,6 +1705,42 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.ask, s.list_agents = real_ask7, real_agents
         check("取り消して知らせた指示には、送れなかったを重ねない",
               (sum("送っていません" in x for t, x in got7), sum("送信できませんでした" in x for t, x in got7)), (1, 0))
+        # 声の頭を受けたあと、声の本体が届くまでに別の画面で止めたら、聞き取らずに捨てて録音した画面に知らせる（codex-review fdc6b04 の P1）
+        check("（前提）前の試験の仕事が片づいている（声の本体の前の停止）", wait_idle(), True)
+        heard8 = []
+        real_transcribe8 = s.transcribe
+        s.transcribe = lambda audio, filename: (heard8.append(1), "はい（本体の前に別の画面で止めた）")[1]
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm"}))
+                time.sleep(0.2)
+                with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+                    wb.send_text(json.dumps({"type": "stop", "n": 104}))
+                    receive_until(wb, "stopped")
+                wa.send_bytes(b"0" * 4000)
+                drop8 = receive_until(wa, "error")
+        finally:
+            s.transcribe = real_transcribe8
+        check("声の本体の前に別の画面で止めたら、聞き取らずに捨てて知らせる", (heard8, "捨てました" in (drop8 or {}).get("text", "")), ([], True))
+        # 次の発言を受け付けたあとに終わった古い往復は、あとから置かれた新しい問い（聞いた文と返事の番号）を消さない（codex-review fdc6b04）
+        old_mark = hm.hermes_admit()
+        ask0 = hm.ask_hermes
+
+        def newer_then_old(text):  # 古い往復が Hermes を待つ間に、次の発言を受け付け、その返事が画面に届いた
+            hm.hermes_admit()
+            hm.HERMES_HEARD["text"], hm.HEARD_ID["n"] = Q, 9100
+            return "古い往復の返事"
+
+        hm.ask_hermes = newer_then_old
+        check("（前提）前の試験の仕事が片づいている（古い往復）", wait_idle(), True)
+        s.PANE_LOCKS.pop(hm.HERMES_PANE, None)  # 鍵はイベントループに結び付くので、この実行の分を作り直す
+        try:
+            asyncio.run(asyncio.wait_for(hm.hermes_exchange("古い往復", admitted=old_mark), 10))
+        finally:
+            hm.ask_hermes = ask0
+            s.PANE_LOCKS.clear()
+            s.ACCEPT_LOCKS.clear()
+        check("次の発言のあとに終わった古い往復は、新しい問いの聞いた文と返事の番号を消さない", (hm.HERMES_HEARD["text"], hm.HEARD_ID["n"]), (Q, 9100))
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]

@@ -352,11 +352,12 @@ async def hermes_answered_here(text: str, answer: str, said: str | None = None, 
         return saved
 
 
-def hermes_turn_end(turn: str, reply: str, heard: bool = True):
+def hermes_turn_end(turn: str, reply: str, heard: bool = True, keep_heard: bool = False):
     """heard=False は、受け付けたあとに利用者が話しかけた・止めた往復の返事。利用者は聞いていない（読まれない）ので、直前に聞いた文と
     台帳の返事の欄（閉じるの守りが問いとして読む）に置かず、直前に聞いた文は空にする（その前に聞いた問いへの答えにも使わせない）。記録には残す（画面の履歴では読める）。"""
-    HERMES_HEARD["text"] = reply if heard else ""
-    HEARD_ID["n"] = None  # 画面を通らずに置いた返事（画面の番号とは合わない）
+    if not keep_heard:  # keep_heard: あとの発言を受け付けたあとに終わった古い往復。あとの往復の聞いた文と返事の番号には触らない（codex-review fdc6b04）
+        HERMES_HEARD["text"] = reply if heard else ""
+        HEARD_ID["n"] = None  # 画面を通らずに置いた返事（画面の番号とは合わない）
     for row in HERMES_TURNS:
         if row[0] == turn:
             row[2] = reply if heard else ""
@@ -474,7 +475,9 @@ async def hermes_exchange(text: str, reply_at: float | None = None, extra: str =
             HERMES_HEARD["text"] = ""  # 利用者が聞くのは本体の失敗の知らせ（ハブの問いではない）
         else:
             # 画面からの発言（受け付けの番号つき）は、画面に送り終えてから聞いた文にする（Talker.delivered）。番号の無い呼び方は、返事が届いたときに
-            hermes_turn_end(turn, reply, heard=HERMES_GEN["n"] == mark and admitted is None)
+            # 受け付けたあとに次の発言を受け付けた古い往復は、聞いた文と返事の番号に触らない（受け付けで、聞いた文は空にして引き渡し済み。あとから
+            # 置かれた新しい問いを、古い往復の終わりで消さない。codex-review fdc6b04）
+            hermes_turn_end(turn, reply, heard=HERMES_GEN["n"] == mark and admitted is None, keep_heard=admitted is not None and HERMES_GEN["n"] != mark)
             if admitted is not None and HERMES_GEN["n"] == mark:
                 HERMES_PENDING[mark] = (turn, reply)
             why = "" if reply else "Hermes の返事が空でした"
