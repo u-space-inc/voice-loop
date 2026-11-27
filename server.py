@@ -179,9 +179,11 @@ def herdr(*args: str, timeout: float | None = 60) -> dict:
 def _herdr_out(stdout: str, stderr: str, code: int) -> dict:
     out = (stdout or "").strip() or (stderr or "").strip()
     try:
-        return json.loads(out)
+        r = json.loads(out)
     except json.JSONDecodeError:
         return {"raw": out, "code": code}
+    # 辞書でない返事（null・配列・文字）は、中身の分からない返事として包む（None を送る前の取り消しと取り違えない。codex-review ebdea92）
+    return r if isinstance(r, dict) else {"raw": out, "code": code}
 
 
 _HERDR = herdr  # 本物の herdr（_if_still が、確かめと送り始めを停止と直列にするのに使う。試験の差し替えでは使わない）
@@ -341,8 +343,8 @@ def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False, 
             return None
         try:
             proc = subprocess.Popen(["herdr", *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        except OSError as e:
-            return {"raw": str(e), "code": -1}
+        except OSError as e:  # herdr を起動できなかった（送っていない。codex-review ebdea92）
+            return {"error": {"code": "spawn_failed", "message": f"herdr を起動できなかったので、送っていません: {type(e).__name__}"}}
         if hold:
             ev = threading.Event()
             HELD_OPS.add(ev)
@@ -370,7 +372,7 @@ SURE_REJECTS = {"agent_blocked"}  # 操作を実行していないと分かる h
 SURE_ACCEPTED = {"agent_prompt_stalled"}  # 受け取ったと分かる herdr の返事（送ったが 5 秒で working を見なかった）
 # 指示を送っていないと分かる herdr の断り（agent_blocked は入力を送る前に断る。相手が見つからない・動いていないなら送れない）。ほかの error は、届いたか分からない
 SEND_REJECTS = {"agent_blocked", "agent_not_found", "agent_not_running"}
-SEND_ABORTED = {"session_changed", "check_failed", "stop_pending"}  # 本体が herdr を起動する前にやめた（送っていない）
+SEND_ABORTED = {"session_changed", "check_failed", "stop_pending", "spawn_failed"}  # 本体が herdr を起動する前にやめた・起動できなかった（送っていない）
 
 
 def _herdr_sure(r) -> bool:
@@ -3409,7 +3411,11 @@ async def _answer(body: dict):
         keys, said = "1", "許可（今回だけ）"
     else:
         keys, said = "esc", "断る"
-    r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, keys)
+    # 画面のボタンのキーも、停止の確定と同じ鍵の中で送り始め、返るまで送り途中の印を持つ（停止は返るのを待ってから「止めました」と返す。
+    # 確定待ちの停止があれば送らない。codex-review ebdea92 の P1）
+    r = await asyncio.to_thread(_if_still, lambda: True, herdr, "agent", "send-keys", pane, keys)
+    if r is BUSY:
+        return JSONResponse({"ok": False, "reason": "busy"})
     hlog(f"answer(画面) → {pane} ({a['cwd'].rsplit('/', 1)[-1]}): {said} {'ok' if 'result' in r else 'ERR'}", flush=True)
     if "result" not in r:
         return JSONResponse({"ok": False, "reason": "herdr"})
@@ -3444,13 +3450,17 @@ async def step_answer(a: dict, asked: dict, body: dict, confirmed: bool) -> dict
     async def read():
         return await asyncio.to_thread(read_dialog, pane, ask_form.READ_MAX)
 
-    async def keys(k):
-        r = await asyncio.to_thread(herdr, "agent", "send-keys", pane, k, timeout=ask_form.READ_MAX)
+    async def keys(k):  # 画面のボタンのキーも、送り始めの道を通す（停止と直列にし、送り途中の印を持つ。codex-review ebdea92 の P1）
+        r = await asyncio.to_thread(_if_still, lambda: True, functools.partial(herdr, timeout=ask_form.READ_MAX), "agent", "send-keys", pane, k)
+        if r is BUSY:
+            raise ask_form.Stuck("ほかの操作の途中です。少し待ってから答え直してください")
         if "result" not in r:
             raise ask_form.Stuck("herdr が応答しない")
 
     async def text(t):
-        r = await asyncio.to_thread(herdr, "pane", "send-text", pane, t, timeout=ask_form.READ_MAX)
+        r = await asyncio.to_thread(_if_still, lambda: True, functools.partial(herdr, timeout=ask_form.READ_MAX), "pane", "send-text", pane, t)
+        if r is BUSY:
+            raise ask_form.Stuck("ほかの操作の途中です。少し待ってから答え直してください")
         if "result" not in r and r.get("code") != 0:  # send-text はうまくいくと何も出さない（終わりの数 0）。2026-11-17 実機で確かめた
             raise ask_form.Stuck("herdr が応答しない")
 

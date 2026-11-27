@@ -1826,6 +1826,29 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                 outs17.append(asyncio.run(s.ask({"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}, "送る指示"))[0])
             finally:
                 s.herdr, s.jsonl_path = real_herdr16, real_jsonl16
+        # herdr の返事が JSON の null なら（送る前の取り消しと取り違えずに）送れたか分からない。herdr を起動できなければ送っていない（codex-review ebdea92）
+        class NullProc:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return "null", ""
+
+        def no_spawn(*a, **k):
+            raise FileNotFoundError("herdr")
+
+        outs20 = []
+        real_popen20, real_jsonl20 = s.subprocess.Popen, s.jsonl_path
+        s.jsonl_path = lambda a: None
+        tokc20 = s.ASK_COMMIT.set(lambda: True)  # 本番の指示の送りと同じく、送る直前の確かめを持つ（送り始めの道を通る）
+        try:
+            for fake in (lambda *a, **k: NullProc(), no_spawn):
+                s.subprocess.Popen = fake
+                outs20.append(asyncio.run(s.ask({"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}, "送る指示"))[0])
+        finally:
+            s.ASK_COMMIT.reset(tokc20)
+            s.subprocess.Popen, s.jsonl_path = real_popen20, real_jsonl20
+            s.UNSURE_UNTIL["t"] = 0.0
+        check("herdr の返事が null なら送れたか分からない、起動できなければ送っていない", outs20, ["unknown", "error"])
         check("送って見届ける待ちが時間切れ・中身の分からない返事・形の違う欄・知らない error なら unknown、送っていないと分かる断りなら error（codex-review 280cfe6）",
               outs17, ["unknown", "unknown", "unknown", "unknown", "error", "error"])
         # 送ったあとの待ちの返事の形が違っても、送れたので unanswered。herdr を起動する前にやめた指示は error（送っていない。codex-review fbf6e98）
@@ -2136,6 +2159,58 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.jsonl_path, s.read_screen = real_jsonl19, real_screen19
         check("機械の口からの声のハブ以外への指示は、送らずに知らせる",
               (prompts19, any("止めたかを確かめられないので送っていません" in x for t, x in got19d)), ([], True))
+        # 画面のボタンからのキーも、送り始めの道を通す（確定待ちの停止があれば送らずに busy。送るときは送り途中の印を持つ。codex-review ebdea92 の P1）
+        btn_calls = []
+        real_if_still21 = s._if_still
+
+        def spy_if_still(still, fn, *args):
+            btn_calls.append(args[:2])
+            return real_if_still21(still, fn, *args)
+
+        s._if_still = spy_if_still
+        real_asked21, real_popen21 = s._asked, s.subprocess.Popen
+        sent21 = []
+
+        class BtnProc:  # subprocess.Popen の偽物（subprocess.run の with にも対応する）
+            returncode = 0
+            args = ["herdr"]
+
+            def communicate(self, input=None, timeout=None):
+                return '{"result": {}}', ""
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        s.subprocess.Popen = lambda cmd, *a, **k: (sent21.append(tuple(cmd[1:3])), BtnProc())[1]  # 本物の herdr の道で、起動だけ差し替える
+        s._asked = lambda pane, key: ({"pane": "w9:p1", "cwd": "/x/proj", "session": "s1", "status": "blocked"},
+                                      {"kind": "permission", "fp": "fpbtn", "risky": False})  # 画面に出ている承認の問い
+        try:
+            s.PENDING["stop"] = 1  # 本体が停止を読んだが、まだ確定していない
+            s._answer_lock = asyncio.Lock()
+            s.ANSWERED.clear()
+            r21 = json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "s1", "fp": "fpbtn", "choice": "deny"})).body)
+            s.PENDING["stop"] = 0
+            s._answer_lock = asyncio.Lock()
+            s.ANSWERED.clear()
+            r21b = json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "s1", "fp": "fpbtn", "choice": "deny"})).body)
+        finally:
+            s.PENDING["stop"] = 0
+            s._if_still, s._asked, s.subprocess.Popen = real_if_still21, real_asked21, real_popen21
+            s.ANSWERED.clear()
+        check("画面のボタンからのキーも送り始めの道を通し、確定待ちの停止があれば送らない",
+              (btn_calls, r21.get("reason"), r21b.get("ok"), sent21), ([("agent", "send-keys"), ("agent", "send-keys")], "busy", True, [("agent", "send-keys")]))
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む
         prompts13 = []
         s.herdr = lambda *a, **k: (prompts13.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
