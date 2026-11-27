@@ -1277,9 +1277,19 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             r_slow = s._if_still(lambda: True, s._HERDR, "agent", "send-keys", "w9:p1", "1")
         finally:
             s.subprocess.Popen = real_popen2
-        check("herdr の待ちを打ち切ったら、送り途中の印は確かめられないで立てる",
-              (r_slow.get("timeout"), len(seen_ev), seen_ev[0].is_set() if seen_ev else None, s.wait_inflight(seen_ev), len(s.HELD_OPS)),
-              (True, 1, True, False, 0))
+        unsure_until = s.UNSURE_UNTIL["t"] > time.monotonic()
+        # 打ち切ったあと（印が一覧から外れたあと）に来た停止にも、しばらくは確かめられないと返す（codex-review 9d641dc の P1）
+        with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wl:
+            wl.send_text(json.dumps({"type": "stop", "n": 94}))
+            late_msg = recv_type(wl, "stopped") or {}
+        s.UNSURE_UNTIL["t"] = 0.0
+        with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wl:
+            wl.send_text(json.dumps({"type": "stop", "n": 95}))
+            clear_msg = recv_type(wl, "stopped") or {}
+        check("herdr の待ちを打ち切ったら、送り途中の印は確かめられないで立て、そのあとしばらくの停止にも確かめられないと返す",
+              (r_slow.get("timeout"), len(seen_ev), seen_ev[0].is_set() if seen_ev else None, s.wait_inflight(seen_ev), len(s.HELD_OPS),
+               unsure_until, late_msg.get("unsure"), clear_msg.get("unsure")),
+              (True, 1, True, False, 0, True, True, None))
         # 指示を送るのは、送る（受け取ったら返る。返事を待たない）と、返事を待つに分ける（codex-review 57c6291 の P1）
         calls_ask = []
         real_herdr_ask, real_jsonl_ask = s.herdr, s.jsonl_path

@@ -2171,8 +2171,9 @@ function connect() {
     else if (m.type === 'stopped') { // 届いた印は、本体が止めたと返してから（codex-review 44b3c2e）
       // scope=talk: 話し始めるときに再生だけを止めた返事（表示は変えない）。n: 停止の番号。いまの発言を始める前の停止への返事なら、
       // 返事が遅れて届いても「止めました」と出さず、顔も再生も変えない（新しい発言は止めていない。codex-review 6096e1d・dad00a5・f73d1be）
-      if (m.scope === 'talk' || (typeof m.n === 'number' && m.n <= utterStops)) faceAckWait = false;
-      else if (m.unsure) { stopPlayback(); setStatus('止めたか確かめられませんでした（止める前に送った操作が返っていません）。セッションの画面で確かめてください'); faceAckWait = false; } // 届いた印は光らせない
+      if (m.unsure && m.scope !== 'talk' && typeof m.n === 'number' && m.n <= utterStops) { faceAckWait = false; setStatus(UNSURE_STOP); } // 次の発言を始めたあとに届いても、確かめの頼みは出す（表示のほかは変えない。codex-review 9d641dc）
+      else if (m.scope === 'talk' || (typeof m.n === 'number' && m.n <= utterStops)) faceAckWait = false;
+      else if (m.unsure) { stopPlayback(); setStatus(UNSURE_STOP); faceAckWait = false; } // 届いた印は光らせない
       else { stopPlayback(); setStatus('止めました'); if (faceAckWait) { faceAckWait = false; faceAck(); } }
     }
     else if (m.type === 'blocked') loadAsks(); // 話している相手が承認で止まった → すぐ並べる
@@ -2210,6 +2211,7 @@ let voiceSending = false; // 録り終えた声を本体に送っている途中
 // pane は宛先、hid は受け取っていた返事の番号（本体は合図を受けたときに受け付け、聞いた文を引き渡す）
 // sg は、本体から知らされた最新の停止の回数（知らなければ -1。本体は、最新の停止を知らずに始めた発言を、停止をまたいだものとして扱う）
 let stopGen = -1;
+const UNSURE_STOP = '止めたか確かめられませんでした（止める前に送った操作が届いたか分かりません）。セッションの画面で確かめてください';
 function sendBegin(pane, hid) { const b = ++beginSeq; try { if (linked()) ws.send(JSON.stringify({ type: 'begin', b, pane, hid, sg: stopGen })); } catch {} return b; }
 async function startRec() { if (recPending) return; recPending = true; try { return await startRecInner(); } finally { recPending = false; } } // 始めるのは 1 つずつ
 async function startRecInner() {

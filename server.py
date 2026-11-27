@@ -192,6 +192,8 @@ COMMIT_LOCK = threading.Lock()  # 鍵の中で受け付け・停止・送り始�
 
 HELD_TIMEOUT = 15  # 返事を待たない操作（承認のキー・閉じる・指示を送る）を herdr が返すのを待つ上限（秒）。ふつうはすぐ返る
 HELD_MARGIN = 5  # 停止が送り途中の操作を待つのは、HELD_TIMEOUT よりこれだけ長く
+UNSURE_HOLD = 60  # herdr の待ちを打ち切ってから、これだけの間の停止は、止めたか確かめられないと返す（打ち切っても herdr があとで操作することがある）
+UNSURE_UNTIL = {"t": 0.0}
 HELD_OPS: set[threading.Event] = set()  # 起動して、まだ返っていない承認のキー・閉じる（返ったら立つ印）
 
 
@@ -226,6 +228,8 @@ def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False, 
             # 待ちを打ち切った（herdr が返らなかった）・待つ途中で失敗したら、操作が届いたか分からない。停止は「止めました」と言わずに、
             # 止めたか確かめられないと返す（codex-review d9db7c8 の P1）
             ev.ok = isinstance(r, dict) and not r.get("timeout")
+            if not ev.ok:  # 印が一覧から外れたあとに来た停止にも、しばらくは確かめられないと返す（codex-review 9d641dc の P1）
+                UNSURE_UNTIL["t"] = max(UNSURE_UNTIL["t"], time.monotonic() + UNSURE_HOLD)
             ev.set()
             HELD_OPS.discard(ev)
 
@@ -3853,6 +3857,8 @@ async def ws(sock: WebSocket):
                         inflight = list(HELD_OPS)
                         # 止める前に起動した操作が返ってから「止めました」と返す（本体は止めずに待つ）。返らなければ、止めたか確かめられないと返す
                         if inflight and not await asyncio.to_thread(wait_inflight, inflight):
+                            unsure = True
+                        if time.monotonic() < UNSURE_UNTIL["t"]:  # 少し前に、届いたか分からない操作があった
                             unsure = True
                     if current:
                         current.cancel()

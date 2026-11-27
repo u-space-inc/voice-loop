@@ -476,6 +476,10 @@ with sync_playwright() as pw:
     pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'stopped', n: 1e9, unsure: true }), target: ws })")
     check("停止: 止めたか確かめられないと返されたら、「止めました」と出さずに確かめを頼む",
           pg.evaluate("document.getElementById('statusText').textContent.includes('確かめられませんでした')"), True)
+    # 次の発言を始めたあとに届いた古い停止の返事でも、確かめられないなら、確かめを頼む（表示のほかは変えない。codex-review 9d641dc）
+    pg.evaluate("setStatus('考え中'); ws.onmessage({ data: JSON.stringify({ type: 'stopped', n: -1, unsure: true }), target: ws })")
+    check("停止: 次の発言を始めたあとに届いた古い返事でも、確かめられないなら確かめを頼む",
+          pg.evaluate("document.getElementById('statusText').textContent.includes('確かめられませんでした')"), True)
     # 名乗りで同期に応じると伝え、本体からの同期の合図は、届いた接続にすぐ返す（codex-review 62a9436）
     pg.evaluate("window.__types.length = 0; ws.onmessage({ data: JSON.stringify({ type: 'sync', n: 7 }), target: ws })")
     pg.wait_for_timeout(200)
