@@ -574,6 +574,24 @@ with sync_playwright() as pw:
                  pg.evaluate("replyTarget && replyTarget.at"))
     pg.evaluate("() => { try { ws.close(); } catch {} ws = window.__oldws; setReplyTarget(null); }")
     check("録音: 録音を始めたあとにつなぎ直したら、送らずに録り直しを頼み、返信先は残す", recon_got, (False, True, 555.5))
+    # 録音の途中で、同じ場所のセッションが入れ替わったら（一覧の更新で印が変わったら）、送らない（codex-review 66730ac）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__types.length = 0; window.__turn = null; window.__key0 = curAgent().key; startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    pg.evaluate("curAgent().key = 'other-session'")
+    pg.wait_for_timeout(1500)  # 短すぎない録音にする
+    pg.evaluate("stopRec()")
+    pg.wait_for_function("window.__turn || document.getElementById('statusText').textContent.includes('話し相手が変わった')", timeout=5000)
+    key_got = (pg.evaluate("!!window.__turn"), pg.evaluate("document.getElementById('statusText').textContent.includes('話し相手が変わった')"))
+    pg.evaluate("curAgent().key = window.__key0")
+    check("録音: 録音の途中で同じ場所のセッションが入れ替わったら、送らない", key_got, (False, True))
+    # 最初の停止の回数を受け取るまでは、文字の発言も送らない（打った文は欄に残す。codex-review 66730ac）
+    pg.evaluate("window.__sgSaved2 = stopGen; stopGen = -1; window.__types.length = 0; document.getElementById('typed').value = '開いた直後の文字'; document.getElementById('typedForm').requestSubmit()")
+    pg.wait_for_timeout(300)
+    text_early = (pg.evaluate("window.__types.includes('text')"), pg.evaluate("document.getElementById('typed').value"),
+                  pg.evaluate("document.getElementById('statusText').textContent.includes('つないでいる')"))
+    pg.evaluate("stopGen = window.__sgSaved2; document.getElementById('typed').value = ''")
+    check("文字: 最初の停止の回数を受け取るまでは送らず、打った文は欄に残す", text_early, (False, "開いた直後の文字", True))
     # 本体が、止めたか確かめられないと返したら、「止めました」と出さずに確かめを頼む（codex-review 57c6291）
     pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'stopped', n: 1e9, unsure: true }), target: ws })")
     check("停止: 止めたか確かめられないと返されたら、「止めました」と出さずに確かめを頼む",

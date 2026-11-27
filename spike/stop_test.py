@@ -1772,6 +1772,40 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         finally:
             s.ask, s.list_agents = real_ask7, real_agents
         check("合図の番号を送らない更新前の画面には、送れなかったことを error で知らせる", (fail15 or {}).get("type"), "error")
+        # 送ったあと、返事を待てなかったら、送れなかったとは言わずに、送ったが返事は確かめられないと知らせる（送り直して二重にしない。codex-review 66730ac）
+        calls16 = []
+        real_herdr16 = s.herdr
+        s.herdr = lambda *a, **k: (calls16.append(a[:2]), {"result": {"agent": {"agent_status": "working"}}} if a[:2] == ("agent", "prompt")
+                                   else {"error": {"code": "timeout"}})[1]
+        real_jsonl16 = s.jsonl_path
+        s.jsonl_path = lambda a: None
+        try:
+            got16 = asyncio.run(s.ask({"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}, "送る指示"))
+        finally:
+            s.herdr, s.jsonl_path = real_herdr16, real_jsonl16
+        check("送ったあと返事を待てなかったら、unanswered を返す", (got16[0], calls16), ("unanswered", [("agent", "prompt"), ("agent", "wait")]))
+        check("（前提）前の試験の仕事が片づいている（返事を確かめられない知らせ）", wait_idle(), True)
+
+        async def sent_unanswered(agent, text):
+            return "unanswered", "返事を待てなかった"
+
+        s.ask = sent_unanswered
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        un16 = None
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winunans001"}))
+                wa.send_text(json.dumps({"type": "begin", "b": 11, "pane": "w9:p1", "hid": -1}))
+                wa.send_text(json.dumps({"type": "text", "text": "送れたが返事を確かめられない指示", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 11, "pg": "page16abc"}))
+                for _ in range(40):
+                    m = json.loads(wa.receive_text())
+                    if "返事を確かめられませんでした" in m.get("text", "") or "送信できませんでした" in m.get("text", ""):
+                        un16 = m
+                        break
+        finally:
+            s.ask, s.list_agents = real_ask7, real_agents
+        check("送ったが返事を確かめられないときは、送れなかったとは言わずにそう知らせる",
+              ((un16 or {}).get("type"), "送り直す前に" in (un16 or {}).get("text", ""), (un16 or {}).get("status")), ("notice", True, "送りました（返事は確かめられません）"))
         check("取り消して知らせた指示には、送れなかったを重ねない。取り消しの知らせは notice（停止の結果の表示を消さない。codex-review 5fff07e）",
               (sum("送っていません" in x for t, x in got7), sum("送信できませんでした" in x for t, x in got7), [t for t, x in got7 if "送っていません" in x]),
               (1, 0, ["notice"]))

@@ -1789,6 +1789,8 @@ async def ask(agent: dict, text: str) -> tuple[str, str]:
         return "error", json.dumps(r, ensure_ascii=False)[:200]
     if _agent_state(r) != "blocked":  # 承認待ちで止まったのを見たら、その結果を使う（待ち直すと、別の画面で答えたあとの状態を読む。codex-review 711ce71）
         r = await asyncio.to_thread(herdr, "agent", "wait", pane, "--timeout", "600000", timeout=610)
+        if (r.get("error") or {}).get("code") or "result" not in r:  # 送ったあと、返事を待てなかった（送り直すと二重になる。codex-review 66730ac）
+            return "unanswered", json.dumps(r, ensure_ascii=False)[:200]
     if (r.get("error") or {}).get("code") or "result" not in r:
         return "error", json.dumps(r, ensure_ascii=False)[:200]
     state = _agent_state(r)
@@ -3850,11 +3852,15 @@ async def ws(sock: WebSocket):
                     return
                 exc = f.exception()
                 st, why = ("error", f"{type(exc).__name__}: {exc}") if exc is not None else f.result()
-                if st == "error":
+                if st in ("error", "unanswered"):
                     # notice で知らせる（遅れて届いても、停止の結果の表示を消さない。いま表示している発言なら、画面が状態の欄を直す。codex-review e6e6b96）
-                    mark = {"b": direct["b"], "pg": direct["pg"], "status": "送信できませんでした"} if direct is not None and direct.get("b") is not None else {}
+                    sent_ok = st == "unanswered"  # 送れたが、返事を確かめられなかった（「送信できませんでした」と言うと、送り直して二重になる）
+                    shown = "送りました（返事は確かめられません）" if sent_ok else "送信できませんでした"
+                    mark = {"b": direct["b"], "pg": direct["pg"], "status": shown} if direct is not None and direct.get("b") is not None else {}
                     # 合図の番号を送らない更新前の画面には、これまでどおり error で知らせる（状態の欄を戻す。notice では「考え中」が残る。codex-review e6c4298）
-                    t = asyncio.ensure_future(tell_window(win_of(client), type="notice" if mark else "error", text=f"送信できませんでした: {why}"[:300], **mark))  # 切れてつなぎ直した画面にも
+                    text = (f"送りましたが、返事を確かめられませんでした。送り直す前に、セッションの画面で確かめてください: {why}" if sent_ok
+                            else f"送信できませんでした: {why}")[:300]
+                    t = asyncio.ensure_future(tell_window(win_of(client), type="notice" if mark else "error", text=text, **mark))  # 切れてつなぎ直した画面にも
                     _tasks.add(t)
                     t.add_done_callback(_tasks.discard)
 
@@ -3867,7 +3873,7 @@ async def ws(sock: WebSocket):
                 raise
             except Exception:
                 return  # 知らせは report_failure が出す
-            if cancel.is_set() or state in ("cancelled", "error"):  # error の知らせは report_failure が出す
+            if cancel.is_set() or state in ("cancelled", "error", "unanswered"):  # error・unanswered の知らせは report_failure が出す
                 return
             if state == "blocked":
                 await send(type="status", text="承認待ちです")
