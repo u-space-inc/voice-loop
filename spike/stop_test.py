@@ -1699,6 +1699,80 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             att_go33.set()
             s.herdr, s.attachment_lines, s.transcribe, s.list_agents = real_herdr33, real_attach33, real_tr33, real_agents
         check("合図を受けた録音の頭が遅れて届いても、ほかの画面の新しい指示は取り消さない", (dropped33, sent33), (False, True))
+        # 画面 A の声を聞き取っている間に、別の画面 B の次の発言を受け付けたら、A の声の指示は送らずに A に知らせる（codex-review 7bded3f）
+        check("（前提）前の試験の直接の指示が片づいている（聞き取りの間のあとの発言）", wait_idle(), True)
+        tr_go34, tr_in34 = threading.Event(), threading.Event()
+
+        def slow_tr34(audio, filename):
+            tr_in34.set()
+            tr_go34.wait(5)
+            return "画面 A の声の指示"
+
+        prompts34, sent34, got34 = [], None, []
+        real_herdr34, real_tr34 = s.herdr, s.transcribe
+        s.herdr = lambda *a, **k: (prompts34.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
+        s.transcribe = slow_tr34
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "wintr0001"}))
+                wa.send_text(json.dumps({"type": "begin", "b": 1, "pane": "w9:p1", "hid": -1, "sg": s.STOP_GEN["n"]}))
+                wa.send_text(json.dumps({"type": "turn", "pane": "w9:p1", "speaker": 0, "filename": "a.webm", "begin": 1}))
+                wa.send_bytes(b"0" * 4000)
+                check("（前提）画面 A の声を聞き取っている", tr_in34.wait(5), True)
+                with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+                    wb.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "wintr0002"}))
+                    wb.send_text(json.dumps({"type": "begin", "b": 1, "pane": hm.HERMES_PANE, "hid": -1, "sg": s.STOP_GEN["n"]}))  # 画面 B で次の発言を始めた
+                    time.sleep(0.3)
+                    tr_go34.set()
+                    time.sleep(0.5)
+                    wait_idle()
+                    sent34 = any("画面 A の声の指示" in x for x in prompts34)
+                got34 = read_notice(wa, lambda t, x: "送っていません" in x, 130)
+        finally:
+            tr_go34.set()
+            s.herdr, s.transcribe, s.list_agents = real_herdr34, real_tr34, real_agents
+        check("画面 A の声を聞き取っている間に別の画面 B の次の発言を受けたら、A の声の指示は送らずに A に知らせる",
+              (sent34, any("送っていません" in x for t, x in got34)), (False, True))
+        # ハブを使わない構成でも、合図の無い文字を受けたら、ほかの画面の、まだ送っていない前の指示を取り消す（codex-review 7bded3f）
+        check("（前提）前の試験の直接の指示が片づいている（ハブを使わない構成）", wait_idle(), True)
+        att_go35, att_in35 = threading.Event(), threading.Event()
+
+        async def held_attach35(ids, talker, pane=""):
+            att_in35.set()
+            await asyncio.to_thread(att_go35.wait, 5)
+            return "", ""
+
+        prompts35, dropped35 = [], None
+        real_herdr35, real_attach35, real_on35 = s.herdr, s.attachment_lines, s.HUB.on
+        s.herdr = lambda *a, **k: (prompts35.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
+        s.attachment_lines = held_attach35
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winnohub001"}))
+                wa.send_text(json.dumps({"type": "begin", "b": 1, "pane": "w9:p1", "hid": -1, "sg": s.STOP_GEN["n"]}))
+                wa.send_text(json.dumps({"type": "text", "text": "画面 A の前の指示（ハブなし）", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 1}))
+                check("（前提）画面 A の前の指示が添付の用意で止まっている（ハブなし）", att_in35.wait(5), True)
+                entry35 = next(iter(s.DIRECT_PENDING.values()), None)
+                s.HUB.on = lambda: False  # ハブを使わない構成
+                with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+                    wb.send_text(json.dumps({"type": "text", "text": "更新前の画面 B の次の発言", "pane": "w9:p2", "speaker": 0}))  # 合図の無い文字
+                    for _ in range(40):
+                        if entry35 is None or entry35["dropped"]:
+                            break
+                        time.sleep(0.05)
+                    dropped35 = entry35["dropped"] if entry35 else None
+                    s.HUB.on = real_on35
+                    att_go35.set()
+                    time.sleep(0.3)
+                    wait_idle()
+        finally:
+            att_go35.set()
+            s.HUB.on = real_on35
+            s.herdr, s.attachment_lines, s.list_agents = real_herdr35, real_attach35, real_agents
+        check("ハブを使わない構成でも、合図の無い文字を受けたら、ほかの画面の前の指示を取り消す",
+              (dropped35, any("画面 A の前の指示（ハブなし）" in x for x in prompts35)), (True, False))
         # 指示の送りの、確定待ちの停止の上限は、鍵を取る前から数える（ほかの操作が鍵を長く持っていても、上限で送らずに返る。codex-review 31c9e1c）
         dl_started = []
         real_popen5 = s.subprocess.Popen
@@ -1896,7 +1970,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         # 送って見届ける待ちが時間切れ・中身の分からない返事なら、届いたか分からない（unknown）。はっきり断ったなら error（codex-review ab8a5e5）
         outs17 = []
         for resp in ({"error": {"code": "timeout"}}, {"raw": "中身の分からない返事", "code": 0}, {"error": {"code": ["形の違う", "欄"]}},
-                     {"error": {"code": "something_new"}}, {"error": {"code": "agent_blocked"}}, {"error": {"code": "agent_not_found"}}):
+                     {"error": {"code": "something_new"}}, {"result": None}, {"error": {"code": "agent_blocked"}}, {"error": {"code": "agent_not_found"}}):  # 結果が null も（codex-review 7bded3f）
             s.herdr = lambda *a, resp=resp, **k: resp if a[:2] == ("agent", "prompt") else {"result": {"agent": {"agent_status": "idle"}}}
             s.jsonl_path = lambda a: None
             try:
@@ -1926,8 +2000,8 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.subprocess.Popen, s.jsonl_path = real_popen20, real_jsonl20
             s.UNSURE_UNTIL["t"] = 0.0
         check("herdr の返事が null なら送れたか分からない、起動できなければ送っていない", outs20, ["unknown", "error"])
-        check("送って見届ける待ちが時間切れ・中身の分からない返事・形の違う欄・知らない error なら unknown、送っていないと分かる断りなら error（codex-review 280cfe6）",
-              outs17, ["unknown", "unknown", "unknown", "unknown", "error", "error"])
+        check("送って見届ける待ちが時間切れ・中身の分からない返事・形の違う欄・知らない error・結果が null なら unknown、送っていないと分かる断りなら error（codex-review 280cfe6）",
+              outs17, ["unknown", "unknown", "unknown", "unknown", "unknown", "error", "error"])
         # 送ったあとの待ちの返事の形が違っても、送れたので unanswered。herdr を起動する前にやめた指示は error（送っていない。codex-review fbf6e98）
         outs18 = []
         for wait_resp in (["形の違う", "返事"], {"error": "文字だけの error"}, {"result": ["配列"]}, {"result": {}}):  # 状態の読めない result も（codex-review c30584e）
