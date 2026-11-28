@@ -1622,6 +1622,45 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         check("合図の無い発言が受け付けの鍵を待つ間に止めたら、指示は送らずに知らせ、ハブへの「はい」もいまの発言にしない。次の合図の無い発言は、鍵を待つ前に前の指示を取り消す",
               (any("鍵を待つ間に止める指示" in x for x in prompts31), any("送っていません" in x for t, x in got31), hub_cur31, voice_cur31, dropped_before31),
               (False, True, False, "捨てた", True))
+        # 画面 A の前の指示が送る前の間に、別の画面 B の次の発言の合図を受けたら、A の指示も送らずに A に知らせる（本体が受け取った順。codex-review c30584e）
+        check("（前提）前の試験の直接の指示が片づいている（別の画面の次の発言）", wait_idle(), True)
+        att_go32, att_in32 = threading.Event(), threading.Event()
+
+        async def held_attach32(ids, talker, pane=""):
+            att_in32.set()
+            await asyncio.to_thread(att_go32.wait, 5)
+            return "", ""
+
+        prompts32, got32, dropped32, sent32 = [], [], None, None
+        real_herdr32, real_attach32 = s.herdr, s.attachment_lines
+        s.herdr = lambda *a, **k: (prompts32.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
+        s.attachment_lines = held_attach32
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "wincross0001"}))
+                wa.send_text(json.dumps({"type": "begin", "b": 1, "pane": "w9:p1", "hid": -1, "sg": s.STOP_GEN["n"]}))
+                wa.send_text(json.dumps({"type": "text", "text": "画面 A の前の指示（添付を用意中）", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 1}))
+                check("（前提）画面 A の前の指示が添付の用意で止まっている", att_in32.wait(5), True)
+                entry32 = next(iter(s.DIRECT_PENDING.values()), None)
+                with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+                    wb.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "wincross0002"}))
+                    wb.send_text(json.dumps({"type": "begin", "b": 1, "pane": hm.HERMES_PANE, "hid": -1, "sg": s.STOP_GEN["n"]}))  # 画面 B で次の発言を始めた
+                    for _ in range(40):
+                        if entry32 is None or entry32["dropped"]:
+                            break
+                        time.sleep(0.05)
+                    dropped32 = entry32["dropped"] if entry32 else None  # 停止を送る前に見る（停止でも取り消すので）
+                    att_go32.set()
+                    time.sleep(0.3)
+                    wait_idle()
+                    sent32 = any("画面 A の前の指示" in x for x in prompts32)
+                got32 = read_notice(wa, lambda t, x: "送っていません" in x, 120)
+        finally:
+            att_go32.set()
+            s.herdr, s.attachment_lines, s.list_agents = real_herdr32, real_attach32, real_agents
+        check("画面 A の前の指示が送る前の間に、別の画面 B の次の発言を受けたら、A の指示も送らずに A に知らせる",
+              (dropped32, sent32, any("送っていません" in x for t, x in got32)), (True, False, True))
         # 指示の送りの、確定待ちの停止の上限は、鍵を取る前から数える（ほかの操作が鍵を長く持っていても、上限で送らずに返る。codex-review 31c9e1c）
         dl_started = []
         real_popen5 = s.subprocess.Popen
@@ -1853,7 +1892,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
               outs17, ["unknown", "unknown", "unknown", "unknown", "error", "error"])
         # 送ったあとの待ちの返事の形が違っても、送れたので unanswered。herdr を起動する前にやめた指示は error（送っていない。codex-review fbf6e98）
         outs18 = []
-        for wait_resp in (["形の違う", "返事"], {"error": "文字だけの error"}):
+        for wait_resp in (["形の違う", "返事"], {"error": "文字だけの error"}, {"result": ["配列"]}, {"result": {}}):  # 状態の読めない result も（codex-review c30584e）
             s.herdr = lambda *a, wr=wait_resp, **k: {"result": {"agent": {"agent_status": "working"}}} if a[:2] == ("agent", "prompt") else wr
             s.jsonl_path = lambda a: None
             try:
@@ -1871,7 +1910,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         finally:
             s.ASK_VERIFY.reset(tokv18)
             s.herdr, s.jsonl_path = real_herdr16, real_jsonl16
-        check("送ったあとの待ちの返事の形が違っても unanswered、起動する前にやめた指示は error", outs18, ["unanswered", "unanswered", "error"])
+        check("送ったあとの待ちの返事の形が違っても（状態の読めない result も）unanswered、起動する前にやめた指示は error", outs18, ["unanswered", "unanswered", "unanswered", "unanswered", "error"])
         check("送ったあと返事を待てなかったら、unanswered を返す", (got16[0], calls16), ("unanswered", [("agent", "prompt"), ("agent", "wait")]))
         check("（前提）前の試験の仕事が片づいている（返事を確かめられない知らせ）", wait_idle(), True)
 

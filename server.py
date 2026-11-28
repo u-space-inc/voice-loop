@@ -1788,8 +1788,12 @@ def _err_code(r) -> str | None:
 
 def _agent_state(r) -> str:
     """herdr の待ちの返事から、セッションの状態（idle・working・blocked・done）を取り出す。"""
-    res = (r.get("result") or {}) if isinstance(r, dict) else {}
-    return str((res.get("agent") or {}).get("agent_status") or res.get("agent_status") or "")
+    res = r.get("result") if isinstance(r, dict) else None
+    if not isinstance(res, dict):  # 形の違う返事は、状態が分からない（例外にしない。codex-review c30584e）
+        return ""
+    ag = res.get("agent")
+    st = (ag.get("agent_status") if isinstance(ag, dict) else None) or res.get("agent_status")
+    return st if isinstance(st, str) else ""
 
 
 async def ask(agent: dict, text: str) -> tuple[str, str]:
@@ -1824,7 +1828,8 @@ async def ask(agent: dict, text: str) -> tuple[str, str]:
         return "unknown", json.dumps(r, ensure_ascii=False)[:200]
     if _agent_state(r) != "blocked":  # 承認待ちで止まったのを見たら、その結果を使う（待ち直すと、別の画面で答えたあとの状態を読む。codex-review 711ce71）
         r = await asyncio.to_thread(herdr, "agent", "wait", pane, "--timeout", "600000", timeout=610)
-        if not isinstance(r, dict) or "error" in r or "result" not in r:  # 送ったあと、返事を待てなかった（形の違う返事も。送り直すと二重になる。codex-review 66730ac・fbf6e98）
+        # 送ったあと、返事を待てなかった（形の違う返事・終わりの状態が読めない返事も。送り直すと二重になる。codex-review 66730ac・fbf6e98・c30584e）
+        if not isinstance(r, dict) or "error" in r or "result" not in r or _agent_state(r) not in ("idle", "done", "blocked"):
             return "unanswered", (json.dumps(r, ensure_ascii=False) if isinstance(r, dict) else str(r))[:200]
     state = _agent_state(r)
     if state == "blocked":
@@ -4035,12 +4040,15 @@ async def ws(sock: WebSocket):
     direct_turn: dict = {"d": None}  # いまの画面のターンが、ハブ以外への指示ならその印 {"sent": 送り始めたか}
     my_settle: set[int] = set()  # この接続が同期の返事を返していない発言の受け付けの番号
 
-    def drop_direct():
+    def drop_direct(everywhere: bool = False):
         # この接続の画面のターンを次の発言で取り消す前に呼ぶ。ハブ以外への指示をまだ送っていなければ、送らせず、送っていないと画面に知らせる
         # （「送りました」と出たまま、黙って消さない。codex-review e460a4f）
         d, direct_turn["d"] = direct_turn["d"], None
         if d is not None:
             drop_pending(d)
+        if everywhere:  # 次の発言を受け付けた。ほかの画面の、まだ送っていない前の指示も（本体が受け取った順で前のもの）、送らずに元の画面に知らせる（codex-review c30584e）
+            for o in list(DIRECT_PENDING.values()):
+                drop_pending(o)
 
     def notify_unsent(text: str = "送る前に取り消したので、セッションへの前の指示は送っていません", b: int | None = None, pg: str | None = None):
         async def tell():
@@ -4181,7 +4189,7 @@ async def ws(sock: WebSocket):
                             stop_now = min(stop_now, sg)
                         if stopped_in_block():  # 聞き取りで受信が止まっていた間に届いていたかもしれない合図。その間に止めていたら、止まり始めた時点のものにする
                             stop_now = min(stop_now, blocked["stop"])
-                        drop_direct()
+                        drop_direct(everywhere=True)
                         adm = await admit_async(heard_seen(d))
                         if d.get("pane"):  # 宛先が分かるときだけ（ハブ以外宛てなら前の問いを消す）
                             left_hub(str(d["pane"]))
@@ -4206,7 +4214,7 @@ async def ws(sock: WebSocket):
                 if d["type"] == "turn":  # 声の発言の頭が届いた。受け付けの番号はここで取る（聞き取りの間に届いた前の往復の返事を、聞いた文にしない）
                     crossed, adm, legacy = take_begin(d)
                     sg0 = STOP_GEN["n"]  # 受け付けの鍵を待つ前に、停止の回数を控える（待つ間に止めたら、この発言のハブ以外への指示は送らない。codex-review 31c9e1c）
-                    drop_direct()  # 次の発言を読んだ。この画面の前の、まだ送っていないハブ以外への指示は、鍵を待つ前に送らずに知らせる（codex-review c72fbbe・31c9e1c）
+                    drop_direct(everywhere=True)  # 次の発言を読んだ。前の、まだ送っていないハブ以外への指示は（ほかの画面のも）、鍵を待つ前に送らずに知らせる（codex-review c72fbbe・31c9e1c・c30584e）
                     pending = {**d, "_admitted": adm if adm is not None else await admit_async(heard_seen(d)), "_via": "device" if client.kind == "device" else "",
                                # 受け付けの鍵を待つ間に止めたら、停止をまたいだ発言にする（ハブへの「はい」でも、承認に答える・閉じるに使わない）
                                "_stopgen": sg0, "_crossed": crossed or STOP_GEN["n"] != sg0, "_legacy": legacy,
@@ -4219,7 +4227,7 @@ async def ws(sock: WebSocket):
                     crossed, adm, legacy = take_begin(d)  # 合図があれば、受け付けは合図を受けたときのもの（前の問いの取り消しも済んでいる）
                     sg0 = STOP_GEN["n"]  # 受け付けの鍵を待つ前に、停止の回数を控える（待つ間に止めたら、この発言のハブ以外への指示は送らない。codex-review 31c9e1c）
                     if adm is None and HUB.on():  # 合図の無い文字の発言。受け付けはここで（鍵の空きを、イベントループを止めずに待つ）
-                        drop_direct()  # 前の、まだ送っていないハブ以外への指示は、鍵を待つ前に送らずに知らせる（codex-review 31c9e1c）
+                        drop_direct(everywhere=True)  # 前の、まだ送っていないハブ以外への指示は（ほかの画面のも）、鍵を待つ前に送らずに知らせる（codex-review 31c9e1c・c30584e）
                         adm = await admit_async(heard_seen(d))
                         left_hub(str(d.get("pane", "")))
                         crossed = crossed or STOP_GEN["n"] != sg0  # 鍵を待つ間に止めたら、停止をまたいだ発言にする（ハブへの「はい」でも、承認に答える・閉じるに使わない）
