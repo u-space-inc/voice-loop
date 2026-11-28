@@ -309,6 +309,12 @@ else:
                   {"ok": False, "reason": "busy"}):
         ANSWER_REPLY[0] = reply
         errs.append(subprocess.run([sys.executable, str(ROOT / "hubctl"), "answer", "w1:p1", "yes"], capture_output=True, text=True, env=env, timeout=60).stderr)
+    errs_c = []
+    for reply in ({"ok": False, "reason": "unsure"}, {"ok": False, "reason": "herdr"}):
+        ANSWER_REPLY[0] = reply
+        errs_c.append(subprocess.run([sys.executable, str(ROOT / "hubctl"), "close", "w1:p1", "--confirmed"], capture_output=True, text=True, env=env, timeout=60).stderr)
+    check("hubctl close: 閉じたか分からないものに「閉じていません」と付けず、閉じていないものには付ける（codex-review 84a5fa0）",
+          [(e.startswith("閉じたか分かりません"), "閉じていません:" in e) for e in errs_c], [(True, False), (False, True)])
     check("hubctl answer: 届いたか分からない答えに「送っていません」と付けず、送っていないものには付ける",
           [(e.startswith("答えが届いたか分かりません"), "答えは送っていません:" in e) for e in errs], [(True, False), (True, False), (False, True)])
     srv.shutdown()

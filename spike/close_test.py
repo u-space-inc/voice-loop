@@ -21,7 +21,8 @@ closed: list[str] = []
 fail = {"herdr": False}
 s.list_agents = lambda: [dict(a) for a in agents]
 s.jsonl_path = lambda a: None
-s.herdr = lambda *a, **k: ((closed.append(a[2]), {} if fail["herdr"] else {"result": {}})[1] if a[:2] == ("pane", "close") else {"result": {}})
+FAIL_REPLY = {"unsent": {"error": {"code": "agent_not_found", "message": "見つからない"}}, "unsure": {"raw": "中身の分からない返事", "code": 0}}
+s.herdr = lambda *a, **k: ((closed.append(a[2]), FAIL_REPLY[fail["herdr"]] if fail["herdr"] else {"result": {}})[1] if a[:2] == ("pane", "close") else {"result": {}})
 
 
 def say(text: str, reply: str = "わかりました", note: bool = False) -> str | None:
@@ -237,8 +238,14 @@ during = {"送る": reason(s.hub_send({"pane": "w9:p1", "text": "テスト"})), 
           "立てる": reason(s.hub_spawn({"project": "x", "text": "テスト"}))}
 check("自動通知への応答中は、送る・答える・立てるも断る", during, dict.fromkeys(during, "reporting"))
 s.REPORTING = False
-fail["herdr"] = True
-check("herdr が閉じられなかったら、閉じた印を残さない", (close(confirmed=True), "w9:p1" in s.CLOSED), (("herdr", ["w9:p1"]), False))
+fail["herdr"] = "unsent"
+check("herdr が閉じるのをはっきり断ったら、閉じた印を残さない", (close(confirmed=True), "w9:p1" in s.CLOSED), (("herdr", ["w9:p1"]), False))
+# 閉じる操作を送ったあと herdr の結果を確かめられなければ、閉じていないとは言わず（unsure）、閉じた印を残す（重ねて閉じない。codex-review 84a5fa0）
+fail["herdr"] = "unsure"
+asked()
+say("はい")
+check("閉じる操作の結果を確かめられなければ unsure とし、閉じた印を残す", (close(confirmed=True), "w9:p1" in s.CLOSED), (("unsure", ["w9:p1"]), True))
+s.CLOSED.discard("w9:p1")
 fail["herdr"] = False
 check("ハブ自身は閉じない", close(pane="hermes", confirmed=True), ("gone", []))
 check("無いセッションは閉じない", close(pane="w7:p7", confirmed=True), ("gone", []))

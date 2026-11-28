@@ -558,9 +558,10 @@ with sync_playwright() as pw:
       ws.onmessage({ data: JSON.stringify({ type: 'notice', text: '送信できませんでした: 届かなかった', b: beginSeq, pg: PAGE, status: '送信できませんでした' }), target: ws }); out.push(st());
       setStatus('止めたか確かめられませんでした（試験）');
       ws.onmessage({ data: JSON.stringify({ type: 'notice', text: '送信できませんでした: 遅れて届いた', b: beginSeq, pg: PAGE, status: '送信できませんでした' }), target: ws }); out.push(st());
+      setStatus('聞き取り中…'); tell(beginSeq, PAGE); out.push(st());  // 聞き取ったあと送らずに取り消した録音の指示（codex-review 84a5fa0）
       return out; }""")
-    check("取り消しの知らせは、いま表示している発言（番号と読み込みの印が合う）のものだけ状態の欄を直す", notice_got,
-          ["送っていません", "止めました", "エージェントに送りました。考え中…", "エージェントに送りました。考え中…", "送信できませんでした", "止めたか確かめられませんでした（試験）"])
+    check("取り消しの知らせは、いま表示している発言（番号と読み込みの印が合う）のものだけ状態の欄を直す（聞き取り中も）", notice_got,
+          ["送っていません", "止めました", "エージェントに送りました。考え中…", "エージェントに送りました。考え中…", "送信できませんでした", "止めたか確かめられませんでした（試験）", "送っていません"])
     # 録音を始めたあとにつなぎ直したら、送らずに録り直しを頼み、返信先は残す（codex-review 624d2d4）
     pg.wait_for_timeout(600)
     pg.evaluate("window.__types.length = 0; window.__turn = null; setReplyTarget({ at: 555.5, about: 'つなぎ直しの前の報告' }); startRec()")

@@ -3697,10 +3697,13 @@ async def hub_close(body: dict):
                 if r is None:  # スレッドの空きを待つ間に止めた・次の発言をした（閉じていない）
                     CLOSED.discard(pane)
                     return JSONResponse({"ok": False, "reason": "stopped"})
-                hlog(f"close → {pane} ({project}): 許可「{_clip(said, 40)}」 {'ok' if 'result' in r else 'ERR ' + json.dumps(r, ensure_ascii=False)[:120]}", flush=True)
-                if "result" not in r:
+                out = _key_outcome(r)
+                hlog(f"close → {pane} ({project}): 許可「{_clip(said, 40)}」 {out if out == 'ok' else out + ' ' + json.dumps(r, ensure_ascii=False)[:120]}", flush=True)
+                if out == "unsent":  # 起動する前にやめた・はっきり断られた（閉じていない）
                     CLOSED.discard(pane)
                     return JSONResponse({"ok": False, "reason": "herdr"})
+                if out == "unsure":  # 閉じる操作を送ったが、結果を確かめられなかった。閉じていないとは言わない（重ねて閉じない。codex-review 84a5fa0）
+                    return JSONResponse({"ok": False, "reason": "unsure"})
                 SEEN_PROMPT.pop(pane, None)
                 CONFIRMING.pop(pane, None)
                 return JSONResponse({"ok": True, "project": project, "title": a["title"]})
