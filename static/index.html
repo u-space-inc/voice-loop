@@ -2325,6 +2325,7 @@ $('talk').onclick = () => { if (!$('agent').value) return; if (rec && rec.state 
 $('stop').onclick = () => {
   if (attachJob) { attachJob.cancelled = true; attachJob.ctl.abort(); }  // 添付を送っている途中の発言も取り消す（送り終えてから発言が出ないように）
   recStops++; if (rec && rec.state === 'recording') stopRec(); // 録音中・録音を始めている途中の声は、送らずに捨てる
+  asks.forEach(item => { if (item.armed) disarm(item); }); // 取り消しにくい問いの「もう一度押すと」は、押した時点で戻す（停止の回数の知らせを待たない。codex-review 6bbb510）
   // 手元の再生はすぐ止め、「止めました」は本体が止めたと返してから（届いたか分からないまま、止まったように見せない。codex-review 44b3c2e）
   if (linked()) ws.send(JSON.stringify({ type: 'stop', n: recStops })); stopPlayback(); setStatus(linked() ? '止めています…' : UNREACHABLE);
 };
