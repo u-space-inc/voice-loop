@@ -115,7 +115,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     def say(w, pane, text, files=None, **extra):
         # いまの画面と同じく、送るを押した合図（begin）を先に送る（合図の無い添付つきの発言は、更新前の画面として送らない）
         BEGIN["n"] += 1
-        w.send_json({"type": "begin", "b": BEGIN["n"], "pane": pane, "hid": extra.get("hid", -1)})
+        w.send_json({"type": "begin", "sg": s.STOP_GEN["n"], "b": BEGIN["n"], "pane": pane, "hid": extra.get("hid", -1)})
         w.send_json({"type": "text", "text": text, "pane": pane, "speaker": 0, "begin": BEGIN["n"], **({"attachments": files} if files is not None else {}), **extra})
         while True:
             m = w.receive_json()
@@ -198,7 +198,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     check("渡す: コンテナに置けなければ、送らない", (m["type"], m["text"].startswith("添付を渡せませんでした"), len(ASKED) - k), ("error", True, 0))
     s.transcribe = lambda data, name: "声で頼む"
     with c.websocket_connect("ws://127.0.0.1:8790/ws") as w:
-        w.send_json({"type": "begin", "b": 99, "pane": "w9:p1", "hid": -1})  # いまの画面と同じく、録音を始めた合図を先に送る
+        w.send_json({"type": "begin", "sg": s.STOP_GEN["n"], "b": 99, "pane": "w9:p1", "hid": -1})  # いまの画面と同じく、録音を始めた合図を先に送る
         w.send_json({"type": "turn", "pane": "w9:p1", "speaker": 0, "filename": "rec.webm", "attachments": [a2], "begin": 99})
         w.send_bytes(b"x" * 3000)
         while w.receive_json()["type"] not in ("reply", "error"):

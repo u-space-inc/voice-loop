@@ -4239,8 +4239,10 @@ async def ws(sock: WebSocket):
                     if isinstance(b, int) and not isinstance(b, bool):
                         stop_now = STOP_GEN["n"]
                         sg = d.get("sg")  # 画面が発言を始めたときに知っていた停止の回数。最新でなければ、その回数を開始値にする（停止をまたいだと見分ける）
-                        if isinstance(sg, int) and not isinstance(sg, bool):
+                        if isinstance(sg, int) and not isinstance(sg, bool) and sg >= 0:
                             stop_now = min(stop_now, sg)
+                        else:  # 回数の無い・読めない合図は、止める前に始めたかを確かめられない。停止をまたいだものとして扱う（「止めました」のあとに送らない。codex-review a5e9c68）
+                            stop_now = -1
                         if stopped_in_block():  # 聞き取りで受信が止まっていた間に届いていたかもしれない合図。その間に止めていたら、止まり始めた時点のものにする
                             stop_now = min(stop_now, blocked["stop"])
                         # 停止をまたいだ合図（止める前に始めた発言。あとで捨てる）は、ほかの画面の新しい指示を取り消さず、受け付けの回数も進めない

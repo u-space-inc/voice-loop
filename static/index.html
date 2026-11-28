@@ -1007,6 +1007,7 @@ async function answer(pane, choice, n) {
   const act = choice === 'step' ? n : null; // 1 問ずつの押し方 {act, n?, text?}
   const what = choice === 'step' ? `step:${JSON.stringify(act)}` : `${choice}:${n ?? ''}`;
   // 取り消しにくい操作に見えるときは、同じボタンをもう一度押してから送る（ほかのボタンを押したら、そちらで数え直す。印の付け外しは 1 回で）
+  // 1 回目を押したあとに止めたら、停止の回数の知らせで戻す（disarm）ので、もう一度押すところからやり直す（止める前の確かめで通さない。codex-review a5e9c68）
   if (q.risky && choice !== 'deny' && !(act && act.act === 'toggle') && item.armedFor !== what) {
     disarm(item); item.armed = setTimeout(() => disarm(item), 4000); item.armedFor = what;
     if (choice === 'allow') { const b = el.querySelector('.allow'); b.textContent = 'もう一度押すと許可'; b.classList.add('warn'); }
@@ -2181,6 +2182,7 @@ function connect() {
         realStops++; // ほかの画面での停止（開いた直後の最初の回数の受け取りは数えない）
         if (rec && rec.state === 'recording') { recStops++; stopRec(); setStatus('ほかの画面で止めたので、録音は送りません'); face('idle'); }
       }
+      if (typeof m.n === 'number' && m.n !== stopGen) asks.forEach(item => { if (item.armed) disarm(item); }); // 止めたら、取り消しにくい問いの「もう一度押すと」を戻す（codex-review a5e9c68）
       if (typeof m.n === 'number') stopGen = m.n;
     }
     else if (m.type === 'sync') { try { ev.target.send(JSON.stringify({ type: 'sync', n: m.n })); } catch {} } // 同期の合図はすぐ返す（本体は、これより前にこの画面が送ったもの（停止）を読み終えたと分かる）

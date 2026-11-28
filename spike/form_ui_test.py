@@ -169,6 +169,14 @@ def run(page, width):
     check(f"{who} 取り消しにくく見える問いには印を出す", risky.locator(".head").text_content(), "deploy｜受注｜⚠ 取り消しにくい操作かもしれません。質問で止まっています（1 問ずつ答えます）")
     risky.locator(".choose", has_text="反映する").click()
     check(f"{who} 取り消しにくく見える問いは、1 回目では送らず「もう一度」を出す", (TUIS["w4:p1"].log, risky.locator(".choose.warn .lbl").text_content()), ([], "もう一度押すと「1. 反映する」を選ぶ"))
+    # 1 回目を押したあとに止めたら、「もう一度」を戻し、止めたあとの 1 回目では送らない（止める前の確かめで通さない。codex-review a5e9c68）
+    sg_before = page.evaluate("stopGen")
+    page.evaluate("ws.send(JSON.stringify({ type: 'stop', n: 4242 }))")
+    page.wait_for_function(f"stopGen > {sg_before}", timeout=5000)
+    page.wait_for_timeout(200)
+    check(f"{who} 1 回目を押したあとに止めたら、「もう一度」を戻す", risky.locator(".choose.warn").count(), 0)
+    risky.locator(".choose", has_text="反映する").click()
+    check(f"{who} 止めたあとの 1 回目では送らず、「もう一度」を出し直す", (TUIS["w4:p1"].log, risky.locator(".choose.warn .lbl").text_content()), ([], "もう一度押すと「1. 反映する」を選ぶ"))
     risky.locator(".choose", has_text="反映する").click()
     check(f"{who} もう一度押すと送る", (wait(lambda: TUIS["w4:p1"].result is not None), TUIS["w4:p1"].result), (True, ["反映する"]))
     AGENTS[3]["status"] = "idle"

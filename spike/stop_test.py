@@ -507,7 +507,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         s.transcribe = lambda audio, filename: "セッションへの声の指示"
         seen = []
         try:
-            w.send_text(json.dumps({"type": "begin", "b": 950, "pane": "w9:p1", "hid": -1}))  # いまの画面と同じく、録音を始めた合図を先に送る
+            w.send_text(json.dumps({"type": "begin", "sg": s.STOP_GEN["n"], "b": 950, "pane": "w9:p1", "hid": -1}))  # いまの画面と同じく、録音を始めた合図を先に送る
             w.send_text(json.dumps({"type": "turn", "pane": "w9:p1", "speaker": 0, "filename": "a.webm", "begin": 950}))
             w.send_bytes(b"0" * 4000)
             w.send_text(json.dumps({"type": "stop"}))
@@ -617,11 +617,11 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             return None
 
         hm.ask_hermes = lambda text: "わかりました"
-        w.send_text(json.dumps({"type": "begin", "b": 901}))
+        w.send_text(json.dumps({"type": "begin", "sg": s.STOP_GEN["n"], "b": 901}))
         w.send_text(json.dumps({"type": "text", "text": "はい（またがない）", "pane": hm.HERMES_PANE, "speaker": 0, "hid": -1, "begin": 901}))
         plain_row = row_of("はい（またがない）")
         plain_cur = s.HUB.current(plain_row[0]) if plain_row else None
-        check("（前提）合図を本体が受けた（902）", begin_and_wait(w, {"type": "begin", "b": 902}), True)
+        check("（前提）合図を本体が受けた（902）", begin_and_wait(w, {"type": "begin", "sg": s.STOP_GEN["n"], "b": 902}), True)
         with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
             wb.send_text(json.dumps({"type": "stop", "n": 1}))
             receive_until(wb, "stopped")
@@ -630,12 +630,12 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         check("発言を始めたあと届くまでに別の画面で止めたら、その発言はハブに届くが、もういまの発言ではない（止めていなければいまの発言）",
               (plain_cur, crossed_row is not None, s.HUB.current(crossed_row[0]) if crossed_row else None), (True, True, False))
         # 停止をまたいだ発言は、その発言だけを使えなくする（ハブ全体を止め直して、ほかの画面の停止のあとの発言まで失効させない。codex-review bb7be2c）
-        check("（前提）合図を本体が受けた（905）", begin_and_wait(w, {"type": "begin", "b": 905}), True)
+        check("（前提）合図を本体が受けた（905）", begin_and_wait(w, {"type": "begin", "sg": s.STOP_GEN["n"], "b": 905}), True)
         with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
             wb.send_text(json.dumps({"type": "stop", "n": 1}))
             receive_until(wb, "stopped")
         with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wc:
-            check("（前提）停止のあとの別の画面の合図を本体が受けた", begin_and_wait(wc, {"type": "begin", "b": 1}), True)
+            check("（前提）停止のあとの別の画面の合図を本体が受けた", begin_and_wait(wc, {"type": "begin", "sg": s.STOP_GEN["n"], "b": 1}), True)
             wc.send_text(json.dumps({"type": "text", "text": "はい（停止のあとの別の画面）", "pane": hm.HERMES_PANE, "speaker": 0, "hid": -1, "begin": 1}))
             later_row = row_of("はい（停止のあとの別の画面）")
             w.send_text(json.dumps({"type": "text", "text": "はい（またいだ古い発言）", "pane": hm.HERMES_PANE, "speaker": 0, "hid": -1, "begin": 905}))
@@ -648,7 +648,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         s.jsonl_path = lambda a: None
         seen10 = []
         try:
-            check("（前提）合図を本体が受けた（903）", begin_and_wait(w, {"type": "begin", "b": 903}), True)
+            check("（前提）合図を本体が受けた（903）", begin_and_wait(w, {"type": "begin", "sg": s.STOP_GEN["n"], "b": 903}), True)
             with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
                 wb.send_text(json.dumps({"type": "stop", "n": 1}))
                 receive_until(wb, "stopped")
@@ -667,7 +667,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         legacy = {}
         for label, extra in [("合図あり", {"begin": 904}), ("合図なし", {})]:
             if extra:
-                w.send_text(json.dumps({"type": "begin", "b": 904}))
+                w.send_text(json.dumps({"type": "begin", "sg": s.STOP_GEN["n"], "b": 904}))
             before_turn = s.hub_human_turn()
             w.send_text(json.dumps({"type": "text", "text": f"はい（返信・{label}）", "pane": hm.HERMES_PANE, "speaker": 0, "hid": -1, "reply_at": 12345.5, **extra}))
             for _ in range(100):  # 返信先の報告は無いので本体が断り、断った発言として台帳に載る
@@ -686,9 +686,9 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             hm.HEARD_ID["n"] = 777  # 画面が受け取った問いの番号
             if other_pane is not None:
                 with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
-                    begin_and_wait(wb, {"type": "begin", "b": 1, "pane": other_pane, "hid": -1})  # 別の画面で送るを押した（添付を送っている）
+                    begin_and_wait(wb, {"type": "begin", "sg": s.STOP_GEN["n"], "b": 1, "pane": other_pane, "hid": -1})  # 別の画面で送るを押した（添付を送っている）
             b = 920 + len(label)
-            w.send_text(json.dumps({"type": "begin", "b": b, "pane": hm.HERMES_PANE, "hid": 777}))
+            w.send_text(json.dumps({"type": "begin", "sg": s.STOP_GEN["n"], "b": b, "pane": hm.HERMES_PANE, "hid": 777}))
             w.send_text(json.dumps({"type": "text", "text": f"はい（{label}）", "pane": hm.HERMES_PANE, "speaker": 0, "hid": 777, "begin": b}))
             r = row_of(f"はい（{label}）")
             return r[3] if r else None
@@ -730,7 +730,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                 wa.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm", "hid": -1}))
                 wa.send_bytes(b"0" * 4000)
                 check("（前提）前の声を聞き取っている", tr_in12.wait(5), True)
-                wa.send_text(json.dumps({"type": "begin", "b": 940, "pane": "w9:p1", "hid": -1}))  # 聞き取りの間に送るを押した（本体はまだ読めない）
+                wa.send_text(json.dumps({"type": "begin", "sg": s.STOP_GEN["n"], "b": 940, "pane": "w9:p1", "hid": -1}))  # 聞き取りの間に送るを押した（本体はまだ読めない）
                 wa.send_text(json.dumps({"type": "text", "text": "聞き取りの間に押した指示", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 940}))
                 with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
                     wb.send_text(json.dumps({"type": "stop", "n": 1}))
@@ -766,15 +766,15 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             seen15 = []
             try:
                 with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
-                    wa.send_text(json.dumps({"type": "begin", "b": 960, "pane": hm.HERMES_PANE, "hid": -1}))
+                    wa.send_text(json.dumps({"type": "begin", "sg": s.STOP_GEN["n"], "b": 960, "pane": hm.HERMES_PANE, "hid": -1}))
                     wa.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm", "hid": -1, "begin": 960}))
                     wa.send_bytes(b"0" * 4000)
                     check(f"（前提）1 つ目の声を聞き取っている（{label}）", in15.wait(5), True)
                     if label.startswith("声が続いた"):
-                        wa.send_text(json.dumps({"type": "begin", "b": 961, "pane": hm.HERMES_PANE, "hid": -1}))
+                        wa.send_text(json.dumps({"type": "begin", "sg": s.STOP_GEN["n"], "b": 961, "pane": hm.HERMES_PANE, "hid": -1}))
                         wa.send_text(json.dumps({"type": "turn", "pane": hm.HERMES_PANE, "speaker": 0, "filename": "a.webm", "hid": -1, "begin": 961}))
                         wa.send_bytes(b"0" * 4000)
-                        wa.send_text(json.dumps({"type": "begin", "b": 962, "pane": "w9:p1", "hid": -1}))
+                        wa.send_text(json.dumps({"type": "begin", "sg": s.STOP_GEN["n"], "b": 962, "pane": "w9:p1", "hid": -1}))
                         wa.send_text(json.dumps({"type": "text", "text": label, "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 962}))
                     else:
                         wa.send_text(json.dumps({"type": "text", "text": label, "pane": "w9:p1", "speaker": 0}))  # 合図も番号も無い（更新前の画面）
@@ -808,7 +808,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             held16 = c.portal.start_task_soon(hold_lock16)
             check("（前提）セッションの鍵がふさがっている", lock_in16.wait(5), True)
             with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
-                wa.send_text(json.dumps({"type": "begin", "b": 970, "pane": "w9:p1", "hid": -1}))
+                wa.send_text(json.dumps({"type": "begin", "sg": s.STOP_GEN["n"], "b": 970, "pane": "w9:p1", "hid": -1}))
                 wa.send_text(json.dumps({"type": "text", "text": "鍵を待つ間に切れる指示", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 970}))
                 sent_shown = None
                 for _ in range(30):
@@ -849,7 +849,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                 check(f"（前提）セッションの鍵がふさがっている（{label}）", lock_in17.wait(5), True)
                 with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
                     wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": win17}))
-                    wa.send_text(json.dumps({"type": "begin", "b": 980, "pane": "w9:p1", "hid": -1}))
+                    wa.send_text(json.dumps({"type": "begin", "sg": s.STOP_GEN["n"], "b": 980, "pane": "w9:p1", "hid": -1}))
                     wa.send_text(json.dumps({"type": "text", "text": f"断られる指示（{label}）", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 980}))
                     for _ in range(30):
                         m = json.loads(wa.receive_text())
@@ -896,7 +896,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         try:
             with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
                 wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winreconnect02"}))
-                wa.send_text(json.dumps({"type": "begin", "b": 990, "pane": "w9:p1", "hid": -1}))
+                wa.send_text(json.dumps({"type": "begin", "sg": s.STOP_GEN["n"], "b": 990, "pane": "w9:p1", "hid": -1}))
                 wa.send_text(json.dumps({"type": "text", "text": "つなぎ直した画面で取り消す指示", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 990}))
                 check("（前提）送るスレッドの手前で待っている（つなぎ直す前）", entered18.wait(5), True)
             time.sleep(0.3)
@@ -956,7 +956,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         try:
             with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
                 wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winrefused001"}))
-                wa.send_text(json.dumps({"type": "begin", "b": 995, "pane": "w9:gone", "hid": -1}))
+                wa.send_text(json.dumps({"type": "begin", "sg": s.STOP_GEN["n"], "b": 995, "pane": "w9:gone", "hid": -1}))
                 wa.send_text(json.dumps({"type": "text", "text": "いなくなったセッションへの指示", "pane": "w9:gone", "speaker": 0, "hid": -1, "begin": 995}))
                 check("（前提）添付の用意で止めている（断る前）", att_in20.wait(5), True)
             time.sleep(0.3)  # 画面が切れた
@@ -1181,7 +1181,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         s.COMMIT_LOCK.acquire()  # 送り始めの途中
         try:
             with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wl:
-                wl.send_text(json.dumps({"type": "begin", "b": 1, "pane": hm.HERMES_PANE, "hid": -1}))
+                wl.send_text(json.dumps({"type": "begin", "sg": s.STOP_GEN["n"], "b": 1, "pane": hm.HERMES_PANE, "hid": -1}))
                 time.sleep(0.4)
                 adm_during = hm.HERMES_GEN["n"] != h_lock
                 s.COMMIT_LOCK.release()
@@ -1604,7 +1604,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.attachment_lines = held_attach31
             with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
                 wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winlegacy0002"}))
-                wa.send_text(json.dumps({"type": "begin", "b": 1, "pane": "w9:p1", "hid": -1}))
+                wa.send_text(json.dumps({"type": "begin", "sg": s.STOP_GEN["n"], "b": 1, "pane": "w9:p1", "hid": -1}))
                 wa.send_text(json.dumps({"type": "text", "text": "前の指示（添付を用意中）", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 1}))
                 check("（前提）前の指示が添付の用意で止まっている", att_in31.wait(5), True)
                 entry31 = next(iter(s.DIRECT_PENDING.values()), None)
@@ -1892,6 +1892,26 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
                       (sent39, any("送っていません" in x for t, x in got39)), (False, True))
             else:
                 check("停止をまたいだ古い合図が遅れて届いても、停止のあとのほかの画面の新しい指示は取り消さない", (dropped39, sent39), (False, True))
+        # 停止の回数（sg）の無い・読めない合図は、止める前に始めたかを確かめられないので、停止をまたいだものとして扱い、その指示は送らずに知らせる（codex-review a5e9c68）
+        check("（前提）前の試験の直接の指示が片づいている（回数の無い合図）", wait_idle(), True)
+        prompts40, got40 = [], []
+        real_herdr40 = s.herdr
+        s.herdr = lambda *a, **k: (prompts40.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winnosg0001"}))
+                for k, sg_bad in enumerate((None, "1", -1, True)):  # 回数が無い・文字・負・真偽
+                    head40 = {"type": "begin", "b": 20 + k, "pane": "w9:p1", "hid": -1, **({} if sg_bad is None else {"sg": sg_bad})}
+                    wa.send_text(json.dumps(head40))
+                    wa.send_text(json.dumps({"type": "text", "text": f"回数の無い合図の指示{k}", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 20 + k}))
+                    time.sleep(0.3)
+                wait_idle()
+                got40 = read_notice(wa, lambda t, x: sum("送っていません" in y for _, y in [(t, x)]) > 0, 160)
+        finally:
+            s.herdr, s.list_agents = real_herdr40, real_agents
+        check("停止の回数の無い・読めない合図の指示は、停止をまたいだものとして送らない",
+              ([k for k in range(4) if any(f"回数の無い合図の指示{k}" in x for x in prompts40)], any("送っていません" in x for t, x in got40)), ([], True))
         # 指示の送りの、確定待ちの停止の上限は、鍵を取る前から数える（ほかの操作が鍵を長く持っていても、上限で送らずに返る。codex-review 31c9e1c）
         dl_started = []
         real_popen5 = s.subprocess.Popen
@@ -1997,7 +2017,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         try:
             with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
                 wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winonce00001"}))
-                wa.send_text(json.dumps({"type": "begin", "b": 1, "pane": "w9:p1", "hid": -1}))
+                wa.send_text(json.dumps({"type": "begin", "sg": s.STOP_GEN["n"], "b": 1, "pane": "w9:p1", "hid": -1}))
                 wa.send_text(json.dumps({"type": "text", "text": "知らせは 1 回の指示", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 1}))
                 time.sleep(0.5)
                 wait_idle()
@@ -2022,7 +2042,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         try:
             with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
                 wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winnoticeb01"}))
-                wa.send_text(json.dumps({"type": "begin", "b": 7, "pane": "w9:p1", "hid": -1}))
+                wa.send_text(json.dumps({"type": "begin", "sg": s.STOP_GEN["n"], "b": 7, "pane": "w9:p1", "hid": -1}))
                 wa.send_text(json.dumps({"type": "text", "text": "番号つきで取り消す指示", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 7, "pg": "page12abc"}))
                 check("（前提）指示が添付の用意で止まっている（取り消しの知らせの番号）", att_in12.wait(5), True)
                 wa.send_text(json.dumps({"type": "stop", "n": 140}))
@@ -2047,7 +2067,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         try:
             with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
                 wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winfailnt01"}))
-                wa.send_text(json.dumps({"type": "begin", "b": 9, "pane": "w9:p1", "hid": -1}))
+                wa.send_text(json.dumps({"type": "begin", "sg": s.STOP_GEN["n"], "b": 9, "pane": "w9:p1", "hid": -1}))
                 wa.send_text(json.dumps({"type": "text", "text": "送れない指示", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 9, "pg": "page14abc"}))
                 for _ in range(40):
                     m = json.loads(wa.receive_text())
@@ -2154,7 +2174,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         try:
             with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
                 wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winunans001"}))
-                wa.send_text(json.dumps({"type": "begin", "b": 11, "pane": "w9:p1", "hid": -1}))
+                wa.send_text(json.dumps({"type": "begin", "sg": s.STOP_GEN["n"], "b": 11, "pane": "w9:p1", "hid": -1}))
                 wa.send_text(json.dumps({"type": "text", "text": "送れたが返事を確かめられない指示", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 11, "pg": "page16abc"}))
                 for _ in range(40):
                     m = json.loads(wa.receive_text())
@@ -2708,7 +2728,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
         seen7 = []
         try:
-            w.send_text(json.dumps({"type": "begin", "b": 951, "pane": "w9:p1", "hid": -1}))
+            w.send_text(json.dumps({"type": "begin", "sg": s.STOP_GEN["n"], "b": 951, "pane": "w9:p1", "hid": -1}))
             w.send_text(json.dumps({"type": "turn", "pane": "w9:p1", "speaker": 0, "filename": "a.webm", "hid": -1, "begin": 951}))
             w.send_bytes(b"0" * 4000)
             check("（前提）この画面の声を聞き取っている", tr_in7.wait(5), True)

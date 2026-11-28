@@ -322,7 +322,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     with c.websocket_connect(WS) as w:
         # いまの画面は、録音を始めたときに合図（begin）を送り、声の頭にその番号を付ける（合図の無い更新前の画面の返信つきの声は、本体が捨てて
         # 読み込み直しを頼む。stop_test で確かめる）
-        w.send_json({"type": "begin", "b": 1, "pane": s.hermes.HERMES_PANE, "hid": -1})
+        w.send_json({"type": "begin", "sg": s.STOP_GEN["n"], "b": 1, "pane": s.hermes.HERMES_PANE, "hid": -1})
         w.send_json({"type": "turn", "pane": s.hermes.HERMES_PANE, "speaker": 0, "filename": "rec.webm", "reply_at": 1700000100.5, "hid": -1, "begin": 1})
         w.send_bytes(b"x" * 3000)
         until(w, "reply")
@@ -344,7 +344,7 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     with c.websocket_connect(WS) as w:
         w.send_json({"type": "text", "text": "はい", "pane": s.hermes.HERMES_PANE, "speaker": 0, "reply_at": True})
         e1 = settle(w)
-        w.send_json({"type": "begin", "b": 2, "pane": s.hermes.HERMES_PANE, "hid": -1})  # いまの画面は録音を始めたときに合図を送る
+        w.send_json({"type": "begin", "sg": s.STOP_GEN["n"], "b": 2, "pane": s.hermes.HERMES_PANE, "hid": -1})  # いまの画面は録音を始めたときに合図を送る
         w.send_json({"type": "turn", "pane": s.hermes.HERMES_PANE, "speaker": 0, "filename": "rec.webm", "reply_at": "1700000100.5", "hid": -1, "begin": 2})
         w.send_bytes(b"x" * 3000)
         e2 = settle(w)
