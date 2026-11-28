@@ -387,8 +387,8 @@ def _herdr_sure(r, args: tuple = ()) -> bool:
     返事・ほかの error（応答待ちの打ち切りなど）は、届いたか分からない（codex-review e7ab276・711ce71 の P1）"""
     if not isinstance(r, dict) or r.get("timeout"):
         return False
-    if "result" in r:
-        return True
+    if "result" in r:  # 結果が辞書の形でなければ（null など）、届いたか分からない（codex-review a592e9a）
+        return isinstance(r["result"], dict)
     if tuple(args[:2]) == ("pane", "send-text") and r.get("raw") == "" and r.get("code") == 0:
         return True  # 文字の送りが何も出さずにふつうに終わった（pane send-text の成功。ほかの操作の空の返事は分からない。codex-review 8d5b6fa・e9c4f46）
     err = r.get("error")
@@ -4214,7 +4214,10 @@ async def ws(sock: WebSocket):
                 if d["type"] == "turn":  # 声の発言の頭が届いた。受け付けの番号はここで取る（聞き取りの間に届いた前の往復の返事を、聞いた文にしない）
                     crossed, adm, legacy = take_begin(d)
                     sg0 = STOP_GEN["n"]  # 受け付けの鍵を待つ前に、停止の回数を控える（待つ間に止めたら、この発言のハブ以外への指示は送らない。codex-review 31c9e1c）
-                    drop_direct(everywhere=True)  # 次の発言を読んだ。前の、まだ送っていないハブ以外への指示は（ほかの画面のも）、鍵を待つ前に送らずに知らせる（codex-review c72fbbe・31c9e1c・c30584e）
+                    # 次の発言を読んだ。この画面の前の、まだ送っていないハブ以外への指示は、鍵を待つ前に送らずに知らせる（codex-review c72fbbe・31c9e1c）。
+                    # ほかの画面の指示まで取り消すのは、この頭が受け付けの時点のとき（合図の無い頭）だけ。合図を受けた録音の順は合図で決め、遅れて届いた
+                    # 頭で、合図のあとに受けたほかの画面の新しい指示を取り消さない（codex-review c30584e・a592e9a）
+                    drop_direct(everywhere=legacy)
                     pending = {**d, "_admitted": adm if adm is not None else await admit_async(heard_seen(d)), "_via": "device" if client.kind == "device" else "",
                                # 受け付けの鍵を待つ間に止めたら、停止をまたいだ発言にする（ハブへの「はい」でも、承認に答える・閉じるに使わない）
                                "_stopgen": sg0, "_crossed": crossed or STOP_GEN["n"] != sg0, "_legacy": legacy,

@@ -1661,6 +1661,44 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.herdr, s.attachment_lines, s.list_agents = real_herdr32, real_attach32, real_agents
         check("画面 A の前の指示が送る前の間に、別の画面 B の次の発言を受けたら、A の指示も送らずに A に知らせる",
               (dropped32, sent32, any("送っていません" in x for t, x in got32)), (True, False, True))
+        # 合図を受けた録音の頭が遅れて届いても、合図のあとに受けたほかの画面の新しい指示は取り消さない（録音の順は合図で決める。codex-review a592e9a）
+        check("（前提）前の試験の直接の指示が片づいている（遅れて届いた録音の頭）", wait_idle(), True)
+        att_go33, att_in33 = threading.Event(), threading.Event()
+
+        async def held_attach33(ids, talker, pane=""):
+            att_in33.set()
+            await asyncio.to_thread(att_go33.wait, 5)
+            return "", ""
+
+        prompts33, dropped33, sent33 = [], None, None
+        real_herdr33, real_attach33, real_tr33 = s.herdr, s.attachment_lines, s.transcribe
+        s.herdr = lambda *a, **k: (prompts33.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
+        s.attachment_lines = held_attach33
+        s.transcribe = lambda audio, filename: "画面 B の録音"
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+                wb.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winlate0002"}))
+                wb.send_text(json.dumps({"type": "begin", "b": 1, "pane": "w9:p1", "hid": -1, "sg": s.STOP_GEN["n"]}))  # 画面 B で録音を始めた
+                time.sleep(0.2)
+                with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                    wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winlate0001"}))
+                    wa.send_text(json.dumps({"type": "begin", "b": 1, "pane": "w9:p1", "hid": -1, "sg": s.STOP_GEN["n"]}))
+                    wa.send_text(json.dumps({"type": "text", "text": "画面 A の新しい指示（添付を用意中）", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 1}))
+                    check("（前提）画面 A の新しい指示が添付の用意で止まっている", att_in33.wait(5), True)
+                    entry33 = next(iter(s.DIRECT_PENDING.values()), None)
+                    wb.send_text(json.dumps({"type": "turn", "pane": "w9:p1", "speaker": 0, "filename": "a.webm", "begin": 1}))  # B の録音の頭が遅れて届いた
+                    wb.send_bytes(b"0" * 4000)
+                    time.sleep(0.5)
+                    dropped33 = entry33["dropped"] if entry33 else None
+                    att_go33.set()
+                    time.sleep(0.3)
+                    wait_idle()
+                    sent33 = any("画面 A の新しい指示" in x for x in prompts33)
+        finally:
+            att_go33.set()
+            s.herdr, s.attachment_lines, s.transcribe, s.list_agents = real_herdr33, real_attach33, real_tr33, real_agents
+        check("合図を受けた録音の頭が遅れて届いても、ほかの画面の新しい指示は取り消さない", (dropped33, sent33), (False, True))
         # 指示の送りの、確定待ちの停止の上限は、鍵を取る前から数える（ほかの操作が鍵を長く持っていても、上限で送らずに返る。codex-review 31c9e1c）
         dl_started = []
         real_popen5 = s.subprocess.Popen
@@ -2300,6 +2338,22 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.subprocess.Popen = real_popen21
             s.UNSURE_UNTIL["t"] = 0.0
         check("何も出さずにふつうに終わった文字の送りは送れたものとし、ほかの操作の空の返事は分からないとする（codex-review e9c4f46）", silent_unsure, [False, True])
+        # 結果が辞書の形でない返事（result が null）は、届いたか分からない（codex-review a592e9a）
+        class NullResultProc:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return '{"result": null}', ""
+
+        s.subprocess.Popen = lambda *a, **k: NullResultProc()
+        s.UNSURE_UNTIL["t"] = 0.0
+        try:
+            s._if_still(lambda: True, s._HERDR, "agent", "send-keys", "w9:p1", "1")
+        finally:
+            s.subprocess.Popen = real_popen21
+        null_unsure = s.UNSURE_UNTIL["t"] > time.monotonic()
+        s.UNSURE_UNTIL["t"] = 0.0
+        check("結果が null の返事は、届いたか分からないとする", null_unsure, True)
         # 届いたか分からない期限は、鍵の中で延ばす（並んだワーカーが、短い期限で長い期限を上書きしない。codex-review e9c4f46）
         class OddProc:
             returncode = 0
