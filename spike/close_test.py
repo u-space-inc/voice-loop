@@ -21,7 +21,8 @@ closed: list[str] = []
 fail = {"herdr": False}
 s.list_agents = lambda: [dict(a) for a in agents]
 s.jsonl_path = lambda a: None
-s.herdr = lambda *a, **k: ((closed.append(a[2]), {} if fail["herdr"] else {"result": {}})[1] if a[:2] == ("pane", "close") else {"result": {}})
+FAIL_REPLY = {"unsent": {"error": {"code": "agent_not_found", "message": "見つからない"}}, "unsure": {"raw": "中身の分からない返事", "code": 0}}
+s.herdr = lambda *a, **k: ((closed.append(a[2]), FAIL_REPLY[fail["herdr"]] if fail["herdr"] else {"result": {}})[1] if a[:2] == ("pane", "close") else {"result": {}})
 
 
 def say(text: str, reply: str = "わかりました", note: bool = False) -> str | None:
@@ -68,12 +69,83 @@ say("はい、閉じて")
 check("聞いた次の発言が「はい」なら閉じる", close(confirmed=True), ("ok", ["w9:p1"]))
 check("閉じたら、聞いている印を消し、閉じた pane として覚える", ("w9:p1" in s.CLOSING, "w9:p1" in s.CLOSED), (False, True))
 check("もう一度 confirmed しても、聞き直しから", close(confirmed=True), ("confirm", []))
+# いまの発言の画面が同期の合図を返すまでは閉じない。返す前に切れた発言でも閉じない。返したら閉じる（codex-review 62a9436・5fabc67 の P1）
+s.CLOSED.discard("w9:p1")
+asked()
+say("はい、閉じて")
+limit0, s.SETTLE_LIMIT = s.SETTLE_LIMIT, 0.2
+s.SETTLE_LAST["n"] = s.hermes.HERMES_GEN["n"]
+waiting, cut, came = [threading.Event(), None], [threading.Event(), False], [threading.Event(), True]
+cut[0].set(); came[0].set()
+sync_got = []
+for entry in (waiting, cut, came):
+    s.SETTLING[s.SETTLE_LAST["n"]] = entry
+    sync_got.append(close(confirmed=True))
+s.SETTLING.pop(s.SETTLE_LAST["n"], None)
+# 閉じるの途中（相手を読む間）に次の発言が入り、その発言の画面がまだ返していない。入口ではなく、使う発言が決まってから待つ
+s.CLOSED.discard("w9:p1")
+asked()
+say("はい、閉じて")
+real_worker = s._worker
+s.SETTLE_LAST["n"] = s.hermes.HERMES_GEN["n"]
+
+
+def worker_then_next(pane):
+    s.SETTLE_LAST["n"] += 1000
+    s.SETTLING[s.SETTLE_LAST["n"]] = [threading.Event(), None]
+    return real_worker(pane)
+
+
+s._worker = worker_then_next
+sync_got.append(close(confirmed=True))
+s._worker = real_worker
+s.SETTLING.pop(s.SETTLE_LAST["n"], None)
+# 同期の待ちは、閉じる相手を読む前（待つ間にセッションが入れ替わっても、読むのは返事のあと。codex-review 2eccfb5 の P1）
+s.CLOSED.discard("w9:p1")
+asked()
+say("はい、閉じて")
+s.SETTLE_LIMIT, s.SETTLE_LAST["n"] = 2.0, s.hermes.HERMES_GEN["n"]
+late = [threading.Event(), None]
+s.SETTLING[s.SETTLE_LAST["n"]] = late
+
+
+def came_later():
+    import time
+    time.sleep(0.2)
+    late[1] = True
+    late[0].set()
+
+
+read_after = []
+s._worker = lambda pane: (read_after.append(late[0].is_set()), real_worker(pane))[1]
+threading.Thread(target=came_later).start()
+sync_got.append((*close(confirmed=True), read_after[:1]))
+s._worker = real_worker
+s.SETTLING.pop(s.SETTLE_LAST["n"], None)
+s.SETTLE_LIMIT, s.SETTLE_LAST["n"] = limit0, -1
+# 閉じるの聞き返しは、登録する直前にもいまの発言か確かめる（止める前の要求で登録し直さない。codex-review ab8a5e5）
+s.CLOSED.discard("w9:p1")
+say("テストのセッションを閉じて", ASK)
+s.CLOSING.pop("w9:p1", None)
+s.hermes.hermes_admit()  # 読み取りの間に止めた・次の発言をした（その発言はもういまの発言ではない）
+check("閉じるの聞き返しは、いまの発言でなくなっていたら登録しない", (close()[0], "w9:p1" in s.CLOSING), ("stopped", False))
+# ほかの操作の途中（鍵が使われている）で閉じなかったら、止めたのではなく busy と返す（codex-review 5fff07e）
+s.CLOSED.discard("w9:p1")
+asked()
+say("はい、閉じて")
+real_if_still = s._if_still
+s._if_still = lambda *a: s.BUSY
+busy_close = close(confirmed=True)
+s._if_still = real_if_still
+check("ほかの操作の途中で閉じなかったら busy と返す", busy_close, ("busy", []))
+check("同期: 返事を待っている・返事の前に切れた発言では閉じず、返事が来たら閉じる。途中で次の発言が入ったら、その返事を待つ",
+      sync_got, [("unconfirmed", []), ("unconfirmed", []), ("ok", ["w9:p1"]), ("unconfirmed", []), ("ok", ["w9:p1"], [True])])
 
 # 相手の位置: 本体が送らずに断った「はい」（添付の形・宛先・返信先が無い）を、乗せられたハブが閉じる許可に使う
 s.CLOSED.clear(); s.CLOSING.clear()
 asked()
 asyncio.run(s.TALKERS[s.hermes.HERMES_PANE].refused("はい", "添付が見つかりません。送っていません"))
-check("断った発言: 閉じるの確認の次に、本体が添付のせいで断った「はい」は、閉じる許可にならない（聞き直し）", close(confirmed=True), ("not_yes", []))
+check("断った発言: 閉じるの確認の次に、本体が添付のせいで断った「はい」は、閉じる許可にならない（直前に聞いたのは本体の断りなので聞き直し）", close(confirmed=True), ("not_asked", []))
 say("はい")
 check("断った発言: そのあとの「はい」も、断った発言をはさんだので閉じない（聞き直しから）", close(confirmed=True), ("not_asked", []))
 s.CLOSED.clear(); s.CLOSING.clear()
@@ -82,7 +154,7 @@ real_ref = s.hermes.report_ref
 s.hermes.report_ref = lambda at: ("", "", "")
 asyncio.run(s.hermes.hermes_exchange("はい", 99.5))  # 返信先の報告が見つからない → 送らずに断る
 s.hermes.report_ref = real_ref
-check("断った発言: 返信先が見つからずに断った「はい」も、閉じる許可にならない", close(confirmed=True), ("not_yes", []))
+check("断った発言: 返信先が見つからずに断った「はい」も、閉じる許可にならない（聞き直し）", close(confirmed=True), ("not_asked", []))
 check("断った発言: 記録には利用者の言葉を残す（台帳だけ空）", [json.loads(l)["text"] for l in s.hermes.HERMES_LOG.read_text().splitlines() if '"role": "me"' in l][-1], "はい")
 
 s.CLOSED.clear(); s.CLOSING.clear()
@@ -136,7 +208,8 @@ check("あいだに別の発言をはさんだら、閉じずに聞き直し", c
 asked()
 say("テストが完了しました", note=True)  # 聞いたあと、ユーザーが答える前に自動通知が届いた
 say("はい")
-check("あいだの自動通知は発言に数えない", close(confirmed=True), ("ok", ["w9:p1"]))
+# 自動通知は発言に数えない（上の hub_turns の確かめ）が、直前に聞いたのは閉じるの問いではないので、報告への「はい」で閉じない（a2a 3752b7a5）
+check("あいだに自動通知が届いたら、次の「はい」では閉じない（聞き直し）", close(confirmed=True), ("not_asked", []))
 
 asked()
 say("はい")
@@ -165,8 +238,14 @@ during = {"送る": reason(s.hub_send({"pane": "w9:p1", "text": "テスト"})), 
           "立てる": reason(s.hub_spawn({"project": "x", "text": "テスト"}))}
 check("自動通知への応答中は、送る・答える・立てるも断る", during, dict.fromkeys(during, "reporting"))
 s.REPORTING = False
-fail["herdr"] = True
-check("herdr が閉じられなかったら、閉じた印を残さない", (close(confirmed=True), "w9:p1" in s.CLOSED), (("herdr", ["w9:p1"]), False))
+fail["herdr"] = "unsent"
+check("herdr が閉じるのをはっきり断ったら、閉じた印を残さない", (close(confirmed=True), "w9:p1" in s.CLOSED), (("herdr", ["w9:p1"]), False))
+# 閉じる操作を送ったあと herdr の結果を確かめられなければ、閉じていないとは言わず（unsure）、閉じた印を残す（重ねて閉じない。codex-review 84a5fa0）
+fail["herdr"] = "unsure"
+asked()
+say("はい")
+check("閉じる操作の結果を確かめられなければ unsure とし、閉じた印を残す", (close(confirmed=True), "w9:p1" in s.CLOSED), (("unsure", ["w9:p1"]), True))
+s.CLOSED.discard("w9:p1")
 fail["herdr"] = False
 check("ハブ自身は閉じない", close(pane="hermes", confirmed=True), ("gone", []))
 check("無いセッションは閉じない", close(pane="w7:p7", confirmed=True), ("gone", []))
@@ -217,6 +296,51 @@ asyncio.run(race())
 s.hermes.ask_hermes = real_ask
 check("断った発言: 前の往復が返事を待つ間に断っても、断りはそのあとに載せ、最後に聞いた文は空（古い問いを次の発言の「聞いた文」にしない）",
       (s.hermes.HERMES_HEARD["text"], [(r[1], r[2]) for r in list(s.hermes.HERMES_TURNS)[-2:]]), ("", [("テストのセッションを閉じて", ASK), ("", "")]))
+
+# 止めた（2026-11-24。顔を押す・停止）: 閉じていいかを聞いた返事を読んでいる途中・届く前に止めたら、利用者はその問いを聞いていない。
+# 「はい」のあとに止めたら、頭が回の途中で閉じない（操作の直前に確かめる。a2a 30fd5b94）
+agents[:] = [TARGET]
+s.list_agents = lambda: [dict(a) for a in agents]  # 上の立てる数の試験で差し替えた一覧を戻す
+asked()
+s.HUB.stopped()
+say("はい、閉じて")
+check("止める: 閉じていいかの問いを読んでいる途中で止めたら、次の「はい」で閉じない（聞き直し）", close(confirmed=True), ("not_asked", []))
+s.CLOSING.pop("w9:p1", None)
+asked()
+say("はい、閉じて")
+check("止める: 止めずに聞いた問いへの「はい」なら、これまでどおり閉じる", close(confirmed=True), ("ok", ["w9:p1"]))
+# 閉じていいかの問いのあとに、別件の報告が届いた。その報告への「はい」で、前の問いのセッションを閉じない（a2a 3752b7a5）
+s.CLOSING.pop("w9:p1", None)
+asked()
+asyncio.run(s.HUB.report_end("done", "別件の報告です。進めていいですか？", "other｜t", True))
+say("はい、閉じて")
+check("報告: 閉じていいかの問いのあとに報告が届いたら、次の「はい」で閉じない（聞き直し）", close(confirmed=True), ("not_asked", []))
+agents[:] = [TARGET]
+s.CLOSING.pop("w9:p1", None)
+asked()
+say("はい、閉じて")
+s.HUB.stopped()
+check("止める: 「はい」のあとに止めたら、頭が回の途中で閉じない", close(confirmed=True), ("stopped", []))
+s.CLOSING.pop("w9:p1", None)
+asked()
+say("はい、閉じて")
+real_reply_to = s.hub_reply_to
+s.hub_reply_to = lambda turn: (s.HUB.stopped(), real_reply_to(turn))[1]  # 入口で確かめたあと、閉じる前の読み取りの間に止めた（a2a 30fd5b94 の 3 回目）
+try:
+    got = close(confirmed=True)
+finally:
+    s.hub_reply_to = real_reply_to
+check("止める: 閉じる直前の読み取りの間に止めたら、閉じない", got, ("stopped", []))
+s.CLOSING.pop("w9:p1", None)
+asked()
+say("はい、閉じて")
+real_current, calls = s.hub_current, {"n": 0}
+s.hub_current = lambda turn: (calls.__setitem__("n", calls["n"] + 1), real_current(turn) if calls["n"] < 3 else False)[1]  # 3 回目（ワーカーの中）でだけ止めたあと
+try:
+    got = close(confirmed=True)
+finally:
+    s.hub_current = real_current
+check("止める: ループで確かめたあと、ワーカーの空きを待つ間に止めたら閉じない（ワーカーの中で確かめる。codex-review bcd26ac）", (got, calls["n"]), (("stopped", []), 3))
 
 bad = [f"{name}: {g!r}（期待 {w!r}）" for name, ok, g, w in results if not ok]
 print("\n".join(bad) or f"{len(results)} 例、すべて期待どおり")

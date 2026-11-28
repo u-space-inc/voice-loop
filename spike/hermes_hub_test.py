@@ -291,6 +291,87 @@ screen()
 asked_then(DQ, "はい")
 check("確認: カーソルがもう Yes なら Enter だけ", answer(), ("ok", ["enter"]))
 s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+# 止める（2026-11-24、a2a 30fd5b94 の 3 回目）: 入口で確かめたあと、読み取りの待ちの間に止めたら、キーを送らない（番号の承認・確認の段の Enter）
+state.update(screen=PERMISSION, on_key=None)
+begin("見て")
+screen()
+asked_then(Q, "はい")
+real_heard = s.hub_heard
+s.hub_heard = lambda turn: (s.HUB.stopped(), real_heard(turn))[1]  # 答えを送る前の読み取りの間に、利用者が止めた
+try:
+    got = answer()
+finally:
+    s.hub_heard = real_heard
+check("止める: 答えを送る直前の読み取りの間に止めたら、キーを送らない", got, ("stopped", []))
+s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+state.update(screen=CONFIRM_NO, on_key=lambda k: (state.update(screen=CONFIRM_YES), s.HUB.stopped()) if k == "down" else None)
+begin("見て")
+screen()
+asked_then(DQ, "削除して")
+check("止める: 確認の段で、カーソルを動かしたあと Enter の前に止めたら、Enter を送らない", answer(), ("stopped", ["down"]))
+s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+# ループの側で確かめたあと、ワーカーのスレッドの空きを待つ間に止めた（codex-review bcd26ac）: ワーカーの中で、送る直前にもう一度確かめる
+for label, scr, utter, last in [("番号の承認", PERMISSION, "はい", 3), ("確認の段の Enter", CONFIRM_YES, "削除して", 4),
+                                ("確認の段のカーソル（a2a 5a3533e2）", CONFIRM_NO, "削除して", 4)]:
+    state.update(screen=scr, on_key=cursor_moves if scr == CONFIRM_NO else None)
+    begin("見て")
+    screen()
+    asked_then(Q if scr == PERMISSION else DQ, utter)
+    real_current, calls = s.hub_current, {"n": 0}
+
+    def flips(turn, real_current=real_current, calls=calls, last=last):
+        calls["n"] += 1
+        return real_current(turn) if calls["n"] < last else False  # 最後の 1 回（ワーカーの中）でだけ、止めたあと
+
+    s.hub_current = flips
+    try:
+        got = answer()
+    finally:
+        s.hub_current = real_current
+    check(f"止める: {label}を、ワーカーの空きを待つ間に止めたら送らない（ワーカーの中で確かめる）", (got, calls["n"]), (("stopped", []), last))
+    s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+# 確認の段でキーを 1 つも送らずに止めたら、答えた印を外す（画面のボタン・ハブの断りを 15 秒止めない）。カーソルを動かしたあとなら残す（codex-review fb69347）
+for label, flip_at, keys, marked in [("キーを送る前", 3, [], False), ("カーソルを動かしたあと", 5, ["down"], True)]:
+    state.update(screen=CONFIRM_NO, on_key=cursor_moves)
+    begin("見て")
+    screen()
+    asked_then(DQ, "削除して")
+    real_current, calls = s.hub_current, {"n": 0}
+
+    def flips2(turn, real_current=real_current, calls=calls, flip_at=flip_at):
+        calls["n"] += 1
+        return real_current(turn) if calls["n"] < flip_at else False
+
+    s.hub_current = flips2
+    try:
+        got = answer()
+    finally:
+        s.hub_current = real_current
+    check(f"止める: 確認の段で{label}に止めたら、答えた印は{'残す' if marked else '外す'}", (got, s.answered("w9:p1", s.prompt_fp(CONFIRM_NO))), (("stopped", keys), marked))
+    s.ANSWERED.clear()
+    s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
+# 確認の段の最初の読み取り（カーソルを動かす前）の間に止めた・次の発言を受け付けたら、キーを 1 つも送らない（a2a 30fd5b94 の 4 回目）
+for change, act in [("止めた", s.HUB.stopped), ("次の発言を受け付けた", s.HUB.admit)]:
+    state.update(screen=CONFIRM_NO, on_key=cursor_moves)
+    begin("見て")
+    screen()
+    asked_then(DQ, "削除して")
+    real_read = s.read_prompt
+    reads = {"n": 0}
+
+    def read_then_change(pane):
+        reads["n"] += 1
+        if reads["n"] == 2:  # 1 回目は答えの道の読み取り、2 回目は確認の段の最初の読み取り
+            act()
+        return real_read(pane)
+
+    s.read_prompt = read_then_change
+    try:
+        got = answer()
+    finally:
+        s.read_prompt = real_read
+    check(f"止める: 確認の段で、カーソルを動かす前の読み取りの間に{change}ら、キーを 1 つも送らない", got, ("stopped", []))
+    s.hermes.hermes_turn_end(s.hub_human_turn(), "伝えました")
 state.update(screen=LEFTOVER, on_key=lambda k: state.update(screen=LEFTOVER.replace(" ❯ No\n   Yes", "   No\n ❯ Yes")) if k == "down" else None)
 begin("見て")
 sc = screen()

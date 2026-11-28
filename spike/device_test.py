@@ -117,7 +117,7 @@ with TestClient(s.app, base_url=f"https://{TS}") as c:
 seen_via = []
 
 
-async def fake_exchange(text, reply_at=None, extra="", item=None, said=None, via=""):
+async def fake_exchange(text, reply_at=None, extra="", item=None, said=None, via="", admitted=None):
     seen_via.append((text, via))
     return "わかりました。", "", True
 

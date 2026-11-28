@@ -401,6 +401,8 @@
   #face[data-s="offline"] .eye { opacity:0; animation:none; }
   #face[data-s="offline"] .lid { opacity:.55; }
   #face[data-s="offline"] .mouth { opacity:.4; }
+  /* 押したのが届いた印（止めた）。縁を白く一瞬光らせる（届いたか分からないと、もう一度押してしまう。R12） */
+  #face.ack::after { box-shadow:inset 0 0 0 6px #ffffff, inset 0 0 48px rgba(255,255,255,.4); transition:none; }
   #faceCap { min-height:2.8em; max-width:min(90vw, 36em); text-align:center; font-size:17px; line-height:1.4; color:#bdbdbd;
     display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
   #faceBack { position:absolute; top:calc(10px + env(safe-area-inset-top)); right:calc(12px + env(safe-area-inset-right)); color:#8a8a8a; font-size:14px;
@@ -429,7 +431,7 @@
     <form id="typedForm" class="row"><button id="attachBtn" type="button" aria-label="ファイルを添付する" title="ファイルを添付する（画像・PDF・テキスト。1 つ 20MB・5 つまで）">📎</button><input id="attachInput" type="file" multiple accept="image/png,image/jpeg,image/gif,image/webp,image/heic,.heic,application/pdf,text/plain,text/markdown,text/csv,.md,.txt,.csv" hidden><textarea id="typed" rows="1" placeholder="文字で送る" autocomplete="off"></textarea><button id="send" type="submit">送る</button></form>
   </div>
   <div id="viewer" hidden role="dialog" aria-modal="true" aria-labelledby="vName"><div class="vhead"><span id="vName"></span><span id="vPos"></span><button id="vPrev" aria-label="前の成果物">←</button><button id="vNext" aria-label="次の成果物">→</button><button id="vClose">✕ 閉じる</button></div><div id="vStage"></div><div id="vPath"></div></div>
-<div id="face" hidden role="button" tabindex="0" aria-label="タップして話す（もう一度タップで送る）" data-s="idle">
+<div id="face" hidden role="button" tabindex="0" aria-label="タップして話す（もう一度タップで送る。話している・考えているときは止める）" data-s="idle">
   <a id="faceBack" href="/">画面に戻る</a>
   <div id="faceSit" hidden title="判断待ちの数（3 日以内）"></div>
   <svg viewBox="0 0 320 200" aria-hidden="true">
@@ -448,7 +450,8 @@ const FACE = new URLSearchParams(location.search).has('face');
 let faceOn = FACE; // 顔を閉じたら（通知で件を開いた・「画面に戻る」）、ふだんの画面として名乗り直す
 const FACE_HASH = location.hash; // 開いたときの場所。件・受け箱の処理が場所を消す前に控える（件の場所つきで開いたら、顔を閉じて中身を見せる）
 const setStatus = t => { $('statusText').textContent = t; if (FACE) $('faceCap').textContent = t; };
-let ws, rec, chunks = [], mime = '', ext = 'webm';
+let ws, rec, mime = '', ext = 'webm';
+let heardId = -1; // 最後に受け取ったハブの返事の番号（本体が付ける）。声の発言の頭に、録音を始めたときの番号を付ける（言い終えたあとに届いた問いへの答えにしない）
 let agents = [], agentsSig = '', threadSource = 'jsonl', loadSeq = 0;
 
 // 端末側の出来事をサーバーのログに残す（スマホの再生不具合を後から追えるように）
@@ -779,7 +782,10 @@ const ibUndos = new Map();  // 戻せる件: 番号 → { n, title, until }（5 
 let inbox = null, ibSel = null, ibWant = null, ibProj = '', ibOther = false, ibOld = false, ibFyiOpen = false, ibAiOpen = true, ibMsg = null, ibSig = '';
 // 返信先。報告（{ at, about }）か、受け箱の判断待ち（{ item: 番号, about: 題 }）。ハブの会話のときだけ付けて送り、送ったら外す。相手を替えたら外す
 let replyTarget = null;
+let replyGen = 0; // 返信先を選び直した回数（録音の途中で選び直したら、元に戻しても送らない。codex-review 69257ea）
 function setReplyTarget(t) {
+  const same = (!replyTarget && !t) || (replyTarget && t && replyTarget.at === t.at && replyTarget.item === t.item);
+  if (!same) replyGen++;
   replyTarget = t;
   $('replyBar').hidden = !t;
   $('replyTo').textContent = !t ? '' : t.item ? `↩ 判断待ち [${t.item}]「${t.about}」に返信` : '↩ ' + t.about + ' の報告に返信';
@@ -893,7 +899,7 @@ const ASK_HEAD = {
 const ANSWER_FAIL = {
   changed: '画面が変わっていました。出し直したので、確かめてから押してください', none: 'もう止まっていません',
   gone: 'セッションが入れ替わっていました', not_permission: '承認の画面と見分けられませんでした', trust: 'フォルダの信頼は端末で答えてください',
-  unreadable: '画面を読めませんでした', confirm: 'もう一度押してください', unreachable: '接続できません', herdr: 'herdr が応答しません',
+  unreadable: '画面を読めませんでした', confirm: 'もう一度押してください', unreachable: '接続できません', herdr: 'herdr が応答しません', busy: 'ほかの操作の途中でした。少し待ってから、もう一度押してください', stopped: '止めたので、送っていません。もう一度押してください', unsure: 'herdr の返事を確かめられませんでした',
   bad_choice: 'そのボタンでは答えられません', answered: 'もう答えています',
   not_form: '問いを読み取れませんでした。端末で答えてください',
   stuck: '画面が思った形にならなかったので、送らずに（途中なら、それ以上送らずに）止めました。端末で確かめてください',
@@ -1001,6 +1007,7 @@ async function answer(pane, choice, n) {
   const act = choice === 'step' ? n : null; // 1 問ずつの押し方 {act, n?, text?}
   const what = choice === 'step' ? `step:${JSON.stringify(act)}` : `${choice}:${n ?? ''}`;
   // 取り消しにくい操作に見えるときは、同じボタンをもう一度押してから送る（ほかのボタンを押したら、そちらで数え直す。印の付け外しは 1 回で）
+  // 1 回目を押したあとに止めたら、停止の回数の知らせで戻す（disarm）ので、もう一度押すところからやり直す（止める前の確かめで通さない。codex-review a5e9c68）
   if (q.risky && choice !== 'deny' && !(act && act.act === 'toggle') && item.armedFor !== what) {
     disarm(item); item.armed = setTimeout(() => disarm(item), 4000); item.armedFor = what;
     if (choice === 'allow') { const b = el.querySelector('.allow'); b.textContent = 'もう一度押すと許可'; b.classList.add('warn'); }
@@ -1009,12 +1016,15 @@ async function answer(pane, choice, n) {
     return;
   }
   const confirmed = !!item.armed; disarm(item);
+  if (stopGen < 0) { sys('⚠ つないでいるところです。少し待ってから、もう一度押してください'); return; } // 押したときの停止の回数が分からないうちは送らない
   item.busy = true; el.querySelectorAll('button, input').forEach(b => { b.disabled = true; }); // 二重に送らない
-  const sendBody = { pane: q.pane, key: q.key, fp: q.fp, choice, confirmed, ...(act ? { sfp: q.sfp, ...act } : {}) };
+  // 押したときの停止の回数（sg）を添える。本体は、押したあとに止めていたら送らない（停止が先に届いても。codex-review b743362）
+  const sendBody = { pane: q.pane, key: q.key, fp: q.fp, choice, confirmed, sg: stopGen, ...(act ? { sfp: q.sfp, ...act } : {}) };
   let r; try { r = await (await fetch('/api/answer', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sendBody) })).json(); }
   catch { r = { ok: false, reason: 'unreachable' }; }
   item.busy = false; el.remove(); asks.delete(pane);
   if (r.ok) { if (!act) answered[pane] = [q.fp, Date.now()]; sys(`${q.name} に「${r.said}」を送りました`); }
+  else if (r.reason === 'unsure') sys(`⚠ ${q.name} への答えが届いたか確かめられませんでした（${r.why || '押し直す前に、セッションの画面を確かめてください'}）`); // 送れなかったとは言わない
   else sys(`⚠ ${q.name} に答えを送れませんでした: ` + (ANSWER_FAIL[r.reason] || r.reason) + (r.why ? `（${r.why}）` : ''));
   if (act) setTimeout(loadAsks, 200); // 1 問ずつ: 次の 1 問をすぐ出す
   setTimeout(loadAsks, 1500); // 出し直す（問いが変わっていれば、新しい中身で）
@@ -1049,7 +1059,7 @@ try {
     else if (d.dup && d.dup === WIN) { WIN = makeWin(); try { sessionStorage.setItem('vl.win', WIN); } catch {} hello(); } };
   winBC.postMessage({ q: WIN });
 } catch {}
-const hello = (visible = !document.hidden) => { try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'hello', speaker: $('speaker').value, voice: !muted, visible, win: WIN, ...(faceOn ? { kind: 'stackchan', place: 'home' } : {}) })); } catch {} };
+const hello = (visible = !document.hidden) => { try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'hello', speaker: $('speaker').value, voice: !muted, visible, win: WIN, sync: true, ...(faceOn ? { kind: 'stackchan', place: 'home' } : {}) })); } catch {} };
 $('speaker').onchange = e => { localStorage.setItem('vl.speaker', e.target.value); hello(); };
 
 // ---------- 再生 ----------
@@ -1094,7 +1104,7 @@ function playNext() {
   }).catch(e => {
     if (g !== gen || e.name === 'AbortError') return;
     clog('play rejected: ' + e.name + ' ' + e.message);
-    if (e.name === 'NotAllowedError') { queue.unshift(item); playing = false; showTap(true); setStatus('音声の再生にはタップが必要です'); }
+    if (e.name === 'NotAllowedError') { queue.unshift(item); playing = false; showTap(true); setStatus('音声の再生にはタップが必要です'); face('idle'); } // 顔は「考え中」にしない（顔を押すと再生を始める。考え中・話し中の顔を押すと止める）
     else playNext();
   });
 }
@@ -1970,6 +1980,7 @@ function renderSessions() {
   if (sessFilter !== 'all' && !hits) box.appendChild(node('div', 'sessNone', `${SESS_ST[sessFilter]}のセッションはありません`));
 }
 $('agent').addEventListener('change', renderSessions);
+$('agent').addEventListener('change', () => { agentGen++; }); // 話し相手を選び直した回数（録音の途中で選び直して戻しても、その録音は送らない）
 
 // Hermes の記憶（PC の右の「記憶」）。足す・直す・消す（消すは 2 段）。
 // 直している途中の文・消すの確かめ・足す欄の打ちかけは、描き直しても残るよう、画面の状態として持つ（描くたびにそこから作り直す）。
@@ -2130,6 +2141,7 @@ function connect() {
   const sock = ws, giveUp = setTimeout(() => { if (sock.readyState === 0) sock.close(); }, 5000); // 通信が止まって待たされるときは見切る
   ws.onopen = () => {
     clearTimeout(giveUp); $('conn').classList.add('on'); setStatus('準備できました'); face('idle'); applyTarget(); hello(); clog('connected ' + navigator.userAgent);
+    heardId = -1; stopGen = -1; // つなぎ直したら、前の接続の返事の番号・停止の回数は使わない（名乗りの返事で取り直す）
     if (away || !agentsSig || !$('speaker').options.length || pendingTopic) { away = false; catchUp(); } // 起動時に読めなかったもの（開けなかった件も）を取り直す
   };
   ws.onclose = () => {
@@ -2144,6 +2156,7 @@ function connect() {
     if (m.type === 'status') setStatus(m.text);
     else if (m.type === 'transcript') { if (here) { bubble('me', m.text, 'pending'); localPush('me', m.text); } setStatus('エージェントに送りました。考え中…'); }
     else if (m.type === 'reply') {
+      if (here && typeof m.hid === 'number') heardId = m.hid; // いまの相手のハブの返事を受け取った
       if (!here) { if (m.report) sys(A('ハブから報告が届きました: ') + m.about + (m.saved === false ? A('（記録に書けなかったので、ハブの履歴には出ません）') : A('（ハブを選ぶと読めます）'))); return; } // report = 頼んだ件についての、ハブからの自発的な報告
       if (m.saved === false) { bubble('ai', m.text); sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); } // 描き直すと消えるので、そのまま足す
       else {
@@ -2156,9 +2169,31 @@ function connect() {
     else if (m.type === 'cue') { if (!here || recPending || (rec && rec.state === 'recording')) return; setStatus(m.text); if (!muted && typeof m.audio === 'string') { try { enqueueCue(Uint8Array.from(atob(m.audio), c => c.charCodeAt(0)).buffer, m.text); } catch {} } }  // 返事を待つ間の本体の一言
     else if (m.type === 'speaking') { accepting = !muted; serverDone = false; } // 切っている間に届いた音声は鳴らさない（本体も送らないが、切った直後の分が届くことがある）
     else if (m.type === 'error') { stopPlayback(); face('idle'); sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); setStatus(''); if (FACE) $('faceCap').textContent = '⚠ ' + m.text; if (m.gone) { agentsSig = ''; loadAgents(); } } // 相手が消えた・入れ替わった → 一覧を取り直す
-    else if (m.type === 'notice') { sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); } // ハブから報告を受け取れなかった等（いまの話し相手とは別の知らせ）
-    else if (m.type === 'done') { serverDone = true; turnDone = true; if (!playing && !queue.length) finishSpeaking(); loadAgents(); }
-    else if (m.type === 'stopped') { stopPlayback(); setStatus('止めました'); }
+    else if (m.type === 'notice') {
+      sys('⚠ ' + m.text); if (m.saved === false) sys('⚠ このやり取りは記録に書けませんでした（開き直すと消えます。本体のログを見てください）'); // ハブから報告を受け取れなかった等（いまの話し相手とは別の知らせ）
+      // いま表示している発言の指示を、送る前に取り消した知らせなら、状態の欄の「送りました・考え中」を「送っていません」に直す（停止の結果の表示は変えない。codex-review a63098a）
+      // 聞き取り中の録音の指示を、聞き取ったあと送らずに取り消したときも（codex-review 84a5fa0）
+      if (typeof m.b === 'number' && m.b === beginSeq && m.pg === PAGE && /送りました|考え中|聞き取り中/.test($('statusText').textContent)) { setStatus(['送信できませんでした', '送りました（返事は確かめられません）', '送れたか確かめられません'].includes(m.status) ? m.status : '送っていません'); face('idle'); }
+    }
+    else if (m.type === 'done') { serverDone = true; turnDone = true; if (!m.stopped && !playing && !queue.length) finishSpeaking(); loadAgents(); } // 止めて抜けた読み上げの終わりでは、停止の結果の表示を変えない
+    else if (m.type === 'stopgen') { // どこかの画面で止めた（発言を始めた合図に付ける）
+      // ほかの画面で止めたら、それより前に始めた、まだ送っていない録音は捨てる（止めたあとの次のタップで送らない。codex-review 8a47002）
+      if (typeof m.n === 'number' && stopGen >= 0 && m.n > stopGen) {
+        realStops++; // ほかの画面での停止（開いた直後の最初の回数の受け取りは数えない）
+        if (rec && rec.state === 'recording') { recStops++; stopRec(); setStatus('ほかの画面で止めたので、録音は送りません'); face('idle'); }
+      }
+      if (typeof m.n === 'number' && m.n !== stopGen) asks.forEach(item => { if (item.armed) disarm(item); }); // 止めたら、取り消しにくい問いの「もう一度押すと」を戻す（codex-review a5e9c68）
+      if (typeof m.n === 'number') stopGen = m.n;
+    }
+    else if (m.type === 'sync') { try { ev.target.send(JSON.stringify({ type: 'sync', n: m.n })); } catch {} } // 同期の合図はすぐ返す（本体は、これより前にこの画面が送ったもの（停止）を読み終えたと分かる）
+    else if (m.type === 'stopped') { // 届いた印は、本体が止めたと返してから（codex-review 44b3c2e）
+      // scope=talk: 話し始めるときに再生だけを止めた返事（表示は変えない）。n: 停止の番号。いまの発言を始める前の停止への返事なら、
+      // 返事が遅れて届いても「止めました」と出さず、顔も再生も変えない（新しい発言は止めていない。codex-review 6096e1d・dad00a5・f73d1be）
+      if (m.unsure && m.scope !== 'talk' && typeof m.n === 'number' && m.n <= utterStops) { faceAckWait = false; setStatus(UNSURE_STOP); } // 次の発言を始めたあとに届いても、確かめの頼みは出す（表示のほかは変えない。codex-review 9d641dc）
+      else if (m.scope === 'talk' || (typeof m.n === 'number' && m.n <= utterStops)) faceAckWait = false;
+      else if (m.unsure) { stopPlayback(); setStatus(UNSURE_STOP); faceAckWait = false; } // 届いた印は光らせない
+      else { stopPlayback(); setStatus('止めました'); if (faceAckWait) { faceAckWait = false; faceAck(); } }
+    }
     else if (m.type === 'blocked') loadAsks(); // 話している相手が承認で止まった → すぐ並べる
     else if (m.type === 'agent_notice') { loadSituation(); faceNotice(m); } // 代理からの知らせ。会話の欄には出さず、💡 の数と受け箱を取り直す（閉じていても）。顔の表示では縁と一言で知らせる
   };
@@ -2183,42 +2218,105 @@ function sendTurnStart() { stopPlayback(); serverDone = true; turnDone = false; 
 
 // ---------- 録音（タップ→話す→タップ） ----------
 let recPending = false;  // 録音を始めている途中（マイクの許可を待つ間など）。この間と録音中に届いた一言は鳴らさない
-async function startRec() { recPending = true; try { return await startRecInner(); } finally { recPending = false; } }
+// 「停止」を押した回数。録音は、始めたときの回数と顔の表示を、録音ごとに控える（あとの録音に上書きされない）。停止を押した・顔の表示を
+// 切り替えたら、その録音は送らずに捨てる（「止めました」と出したあとの次のタップで送らない。顔で録った声を画面からの発言として送らない。a2a 3752b7a5）
+let recStops = 0;
+let utterStops = 0; // いまの発言（録音・文字）を始めたときの停止の回数（本体の「止めた」が、その発言より前の停止への返事かを見分ける）
+// 発言を始めた（送るを押した・録り終えた）合図。本体はそのときの停止の回数を控え、発言が届くまで（添付を送る間・声の本体を用意する間）に
+// どこかの画面で止めていたら、その発言では承認に答えない・閉じない（ハブ以外への指示なら送らない。codex-review c72fbbe）
+let beginSeq = 0;
+// この読み込みの印（読み込み直すと合図の番号が 0 に戻るので、取り消しの知らせを番号と合わせて照らす。codex-review 4908670）
+const PAGE = Math.random().toString(36).slice(2, 12);
+let voiceSending = false; // 録り終えた声を本体に送っている途中（文字の発言は、送り終えてから）
+// pane は宛先、hid は受け取っていた返事の番号（本体は合図を受けたときに受け付け、聞いた文を引き渡す）
+// sg は、本体から知らされた最新の停止の回数（知らなければ -1。本体は、最新の停止を知らずに始めた発言を、停止をまたいだものとして扱う）
+let stopGen = -1;
+let agentGen = 0; // 話し相手を選び直した回数（利用者の選び直し）
+let realStops = 0; // ほかの画面を含む、本体から知らされた停止の数（最初の回数の受け取りは数えない）
+const UNSURE_STOP = '止めたか確かめられませんでした（止める前に送った操作が届いたか分かりません）。セッションの画面で確かめてください';
+function sendBegin(pane, hid) { const b = ++beginSeq; try { if (linked()) ws.send(JSON.stringify({ type: 'begin', b, pane, hid, sg: stopGen })); } catch {} return b; }
+async function startRec() {
+  if (recPending) return;
+  // 最初の停止の回数を受け取るまでは録音を始めない（受け取る前の合図は回数 -1 になり、本体が停止をまたいだ声として捨てる。codex-review e6c4298）
+  if (stopGen < 0) { setStatus('つないでいるところです。少し待ってから、もう一度押してください'); return; }
+  recPending = true; try { return await startRecInner(); } finally { recPending = false; } // 始めるのは 1 つずつ
+}
 async function startRecInner() {
-  if (playing || queue.length) { ws.send(JSON.stringify({ type: 'stop' })); stopPlayback(); } // 話し始めたら相手の声は止める
+  const stops0 = recStops, face0 = faceOn, hid0 = heardId, ws0 = ws; // hid0: 録音を始めたときに受け取っていた返事の番号（その接続での番号）
+  // 録音を始めた（押した）ときの、ほかの画面の停止の数。送るまでにほかの画面で止めたら送らない（マイクの許可待ち・声の用意の間も。codex-review 52a66a0）。
+  // 開いた直後の最初の停止の回数を受け取っただけでは数えない（codex-review 83aa65b）
+  const rs0 = realStops;
+  const otherStopped = () => { if (realStops === rs0) return false; setStatus('ほかの画面で止めたので、録音は送りません'); face('idle'); return true; };
+  // 録音を始めた合図（録音の間にどこかの画面で止めたら、本体が見分ける）と、始めたときの返信先（録音の途中で選んだ返信先には、始める前に
+  // 言った声を返信として結び付けない。a2a 4135f4c2）
+  // 話し始めたら相手の声は止める（ほかの画面の指示は取り消さない）。録音を始めた合図より先に送る（あとに送ると、この録音の受け付けまで
+  // 失効させ、読み上げを止めて声で「↩ 返信」した答えが承認に使えない。codex-review bb7be2c）
+  if (playing || queue.length) { ws.send(JSON.stringify({ type: 'stop', scope: 'talk' })); stopPlayback(); }
+  // 録音を始めたときの話し相手とセッション（録音の途中で変わったら、選び直して戻しても、同じ場所でセッションが入れ替わっても送らない。codex-review 5fff07e・a63098a・66730ac）
+  const pane0 = $('agent').value, key0 = curKey(), ag0 = agentGen;
+  let paneMoved = false, paneWatch = null; // 録音の間に話し相手の欄が書き換わったか（画面の中からの書き換えは change が来ないので見張る）
+  const b0 = sendBegin(pane0, hid0), rf0 = replyFields(), rg0 = replyGen;
+  utterStops = stops0;
   prime();
   setSession('play-and-record');
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
   catch (e) { setSession('auto'); stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
   if (!linked()) { stream.getTracks().forEach(t => t.stop()); setSession('playback'); setStatus(UNREACHABLE); return; } // マイクの許可を待つ間に届かなくなった
+  if (recStops !== stops0 || faceOn !== face0) { stream.getTracks().forEach(t => t.stop()); setSession('playback'); return; } // マイクの許可を待つ間に止めた・顔の表示を切り替えた
+  if (otherStopped()) { stream.getTracks().forEach(t => t.stop()); setSession('playback'); return; } // マイクの許可を待つ間に、ほかの画面で止めた（マイクを放す。codex-review 83aa65b）
   for (const m of ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']) if (MediaRecorder.isTypeSupported(m)) { mime = m; break; }
   ext = mime.includes('mp4') ? 'mp4' : 'webm';
   rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
-  chunks = [];
+  const chunks = []; // 録音ごとの音声片（捨てた前の録音の最後の片が、次の録音に混ざらないように。a2a 3752b7a5 の 3 回目）
   rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
   rec.onstop = async () => {
+    clearInterval(paneWatch);
     stream.getTracks().forEach(t => t.stop());
     face('idle'); // 録音中に切れたときは、face が「つながっていない」の顔のままにする
     setSession('playback'); // マイクを離したら再生用に戻す（受話口から小さく鳴るのを防ぐ）
     if (!linked()) { setStatus(UNREACHABLE); return; } // 話しているあいだに届かなくなった（短い録音でも、こちらの案内を残す）
+    if (recStops !== stops0) return; // 「停止」で止めた録音は送らない（「止めました」は本体の返事で出る）
+    if (otherStopped()) return;
+    if (faceOn !== face0) { setStatus('顔の表示を切り替えたので、話した内容は送っていません'); return; } // 件の読み込み・添付の送り出しより前に見る（通知で開いた件を取り消さない）
     const blob = new Blob(chunks, { type: mime || 'audio/webm' });
     if (blob.size < 2000) { setStatus('短すぎました'); return; }
     sendTurnStart();
     if (!$('agent').value) { setStatus('話し相手を選んでください'); return; }
     if (attachJob) { setStatus('添付を送っている途中なので、話した内容は送っていません'); return; }  // 前の発言の添付を送っている間は重ねない
-    // 宛先・返信先・添付は話し終えた時点で固定する（添付を置いている間に相手や欄が変わっても、ずらさない）
-    cancelTopic();
-    const pane = $('agent').value, key = curKey(), rf = replyFields(), list = attachFiles.slice();
-    const files = await sendAttach(pane, list, '話した内容');
-    if (!files) return;
-    ws.send(JSON.stringify({ type: 'turn', pane, key, speaker: $('speaker').value, filename: 'rec.' + ext, ...rf, ...(files.length ? { attachments: files } : {}) }));
-    if (sameTarget(rf)) setReplyTarget(null);
-    dropSent(list);
-    ws.send(await blob.arrayBuffer());
-    setStatus('聞き取り中…'); face('think');
+    // 声を送り終えるまでは、文字の発言を送らない（声の本体を用意する間に送った新しい文字の指示を、あとから届く古い声が取り消さないように。
+    // 発言は本体に届いた順で扱う。codex-review 6b2ddfe）
+    voiceSending = true;
+    try {
+      // 宛先・返信先・添付は話し終えた時点で固定する（添付を置いている間に相手や欄が変わっても、ずらさない）
+      cancelTopic();
+      const rf = replyFields(); // 返信先は、録音を始めたときと同じものが選ばれているときだけ送る
+      // 録音の途中で返信先が変わった（選び直した・外れた・途中で選んだ）なら送らない。ふつうの発言として送ると、報告への「はい」が、
+      // 前に聞いた別の問いへの答えになりうる（codex-review 62a9436 の P1）
+      if (paneMoved || agentGen !== ag0 || $('agent').value !== pane0 || curKey() !== key0) { setStatus('録音の途中で話し相手が変わったので、話した内容は送っていません。話し相手を確かめて録り直してください'); return; }
+      if (replyGen !== rg0 || rf.reply_at !== rf0.reply_at || rf.reply_item !== rf0.reply_item) { setStatus('録音の途中で返信先が変わったので、話した内容は送っていません。返信先を確かめて録り直してください'); return; }
+      const pane = $('agent').value, key = curKey(), list = attachFiles.slice();
+      // 録音を始めたあとにつなぎ直した（マイクの許可待ち・録音の間）。本体は前の接続の合図を照らせずに捨てるので、送らずに録り直しを頼む（返信先と添付は残す。codex-review 624d2d4）
+      if (ws !== ws0) { setStatus('つなぎ直したので、話した内容は送っていません（返信先と添付はそのままです）。録り直してください'); return; }
+      const files = await sendAttach(pane, list, '話した内容');
+      if (!files) return;
+      // 声の本体は先に用意し、止めていない・顔の表示が同じ・つながっているのを確かめてから、頭と本体を待たずに続けて送る
+      // （頭と本体の間に「停止」や次の録音の頭が入ると、止めた声が次の発言として聞き取られる。a2a 3752b7a5 の 3 回目）
+      const audio = await blob.arrayBuffer();
+      if (recStops !== stops0) return; // 用意する間に止めた（「止めました」は本体の返事で出る）
+      if (otherStopped()) return; // 用意する間に、ほかの画面で止めた
+      if (faceOn !== face0) { setStatus('顔の表示を切り替えたので、話した内容は送っていません'); return; } // 本体は頭の時点の名乗りで発言元を決める
+      if (!linked()) { setStatus(UNREACHABLE); return; }
+      if (ws !== ws0) { setStatus('つなぎ直したので、話した内容は送っていません（返信先と添付はそのままです）。録り直してください'); return; } // 声の用意の間につなぎ直した
+      ws.send(JSON.stringify({ type: 'turn', pane, key, speaker: $('speaker').value, filename: 'rec.' + ext, hid: ws === ws0 ? hid0 : -1, begin: b0, pg: PAGE, ...rf, ...(files.length ? { attachments: files } : {}) }));
+      ws.send(audio);
+      if (sameTarget(rf)) setReplyTarget(null);
+      dropSent(list);
+      setStatus('聞き取り中…'); face('think');
+    } finally { voiceSending = false; }
   };
   rec.start(); face('listen');
+  paneWatch = setInterval(() => { if ($('agent').value !== pane0) paneMoved = true; }, 150);
   $('talk').classList.add('rec'); $('talk').textContent = '話してください（タップで送る）';
 }
 function stopRec() { if (rec && rec.state !== 'inactive') rec.stop(); $('talk').classList.remove('rec'); $('talk').textContent = 'タップして話す'; }
@@ -2226,7 +2324,10 @@ function stopRec() { if (rec && rec.state !== 'inactive') rec.stop(); $('talk').
 $('talk').onclick = () => { if (!$('agent').value) return; if (rec && rec.state === 'recording') stopRec(); else if (attachJob) setStatus('添付を送っています。送り終えてから話してください'); else startRec().catch(e => { setStatus('マイクが使えません: ' + e.message); clog('mic failed: ' + e.name + ' ' + e.message); }); };
 $('stop').onclick = () => {
   if (attachJob) { attachJob.cancelled = true; attachJob.ctl.abort(); }  // 添付を送っている途中の発言も取り消す（送り終えてから発言が出ないように）
-  if (linked()) ws.send(JSON.stringify({ type: 'stop' })); stopPlayback(); setStatus('止めました');
+  recStops++; if (rec && rec.state === 'recording') stopRec(); // 録音中・録音を始めている途中の声は、送らずに捨てる
+  asks.forEach(item => { if (item.armed) disarm(item); }); // 取り消しにくい問いの「もう一度押すと」は、押した時点で戻す（停止の回数の知らせを待たない。codex-review 6bbb510）
+  // 手元の再生はすぐ止め、「止めました」は本体が止めたと返してから（届いたか分からないまま、止まったように見せない。codex-review 44b3c2e）
+  if (linked()) ws.send(JSON.stringify({ type: 'stop', n: recStops })); stopPlayback(); setStatus(linked() ? '止めています…' : UNREACHABLE);
 };
 // 文字の欄は、行の数に合わせて伸びる（上限は CSS の max-height。超えたら欄の中で送る）
 const fitTyped = () => { const el = $('typed'); el.style.height = 'auto'; el.style.height = (el.scrollHeight + 2) + 'px'; };
@@ -2245,11 +2346,16 @@ $('typedForm').onsubmit = async e => {
   // Enter の requestSubmit() はボタンの無効を見ないので、ここでボタンと同じ可否（applyTarget）を確かめる。添付だけでも送れる
   // 添付を送っている間は、重ねて送らない（Enter・「送る」を続けて押しても 1 回だけ）
   e.preventDefault(); if (attachJob) return;
+  if (voiceSending) { setStatus('話した内容を送っています。送り終えてから送ってください'); return; } // 声を送り終える前に文字を重ねない（打った文は欄に残す）
+  // 最初の停止の回数を受け取るまでは送らない（受け取る前の合図は回数 -1 になり、本体が停止をまたいだ指示として取り消す。打った文は欄に残す。codex-review 66730ac）
+  if (stopGen < 0) { setStatus('つないでいるところです。少し待ってから、もう一度送ってください'); return; }
   const t = $('typed').value.trim(); if ((!t && !attachFiles.length && !itemOnly()) || $('send').disabled || !$('agent').value || !linked()) return;
   // 宛先・返信先（とその件の名前）・添付は押した時点で固定する。待つ間に欄が変わっても、ここで決めたものだけを送る
   cancelTopic();
   const pane = $('agent').value, key = curKey(), rf = replyFields(), about = rf.reply_at !== undefined ? replyTarget.about : '', list = attachFiles.slice();
-  const item = rf.reply_item;
+  const item = rf.reply_item, hid0 = heardId, ws0 = ws; // hid0: 押した時点で受け取っていた返事の番号（添付を送る間に届いた問いへの答えにしない）
+  utterStops = recStops; // ここから新しい発言（これより前の停止への返事では、表示を変えない）
+  const b0 = sendBegin($('agent').value, hid0); // 送るを押した（本体はここで受け付け、届くまでの停止を見分ける）
   prime();  // 読み上げの許可は、押したその場で取る（添付を置き終えるのを待ってからでは、iPhone の Safari が押した操作と見ない）
   const files = await sendAttach(pane, list, '文と添付');
   if (!files) return;  // 送らないときは、文も添付も残す
@@ -2257,7 +2363,7 @@ $('typedForm').onsubmit = async e => {
   const shown = (t || (list.length ? '' : '（ことばなし）')) + (list.length ? (t ? '\n' : '') + '📎 ' + list.map(f => f.name).join('、') : '');
   if ($('typed').value.trim() === t) { $('typed').value = ''; fitTyped(); }  // 待つ間に打ち直した文は消さない
   decorate(bubble('me', shown, 'pending'), { role: 'me', reply_to: about, reply_item: item }); localPush('me', shown);
-  ws.send(JSON.stringify({ type: 'text', text: t, pane, key, speaker: $('speaker').value, ...rf, ...(files.length ? { attachments: files } : {}) }));
+  ws.send(JSON.stringify({ type: 'text', text: t, pane, key, speaker: $('speaker').value, hid: ws === ws0 ? hid0 : -1, begin: b0, pg: PAGE, ...rf, ...(files.length ? { attachments: files } : {}) }));
   if (sameTarget(rf)) setReplyTarget(null);
   paintSend();
   dropSent(list);
@@ -2303,6 +2409,9 @@ Promise.race([Promise.allSettled([loadAgents(), ensureSpeakers()]).then(() => tr
 // 表情の優先: つながっていない ＞ 録音中（聞いている）＞ 頼まれた表情。再生の始まり・終わり・停止・失敗の知らせが、
 // 切断や録音中の顔を上書きしないように（顔の表示では録音のボタンが隠れているので、録音中だと分からなくなる。codex-review c62083a・04b0694）
 function face(s) { if (FACE) $('face').dataset.s = !linked() ? 'offline' : rec && rec.state === 'recording' ? 'listen' : s; }
+// 顔を押して止めたとき、届いた印（縁を白く一瞬）は、本体が止めたと返してから光らせる
+let faceAckWait = false;
+function faceAck() { if (!FACE) return; const f = $('face'); f.classList.remove('ack'); void f.offsetWidth; f.classList.add('ack'); setTimeout(() => f.classList.remove('ack'), 600); }
 // 縁の琥珀色: 急ぎ。承認・入力待ちがあるか、代理（Hermes）からの新しい知らせをまだ聞いていないとき。顔の表示では受け箱が見えず、
 // 画面が見えている扱いでプッシュ通知も止まるので、知らせは顔で示す（codex-review b7a7b3f）。顔をタップしたら聞いたことにする。
 // たまっている判断待ちの数は、縁ではなく左上の「💡 数」で示す（1 日に何件も届き、片づくまで長いので、縁を光らせ続けると急ぎが分からなくなる）
@@ -2332,6 +2441,8 @@ if (FACE) {
   document.addEventListener('visibilitychange', () => { if (!document.hidden && wantWake) askWake(); });
   const tapAct = () => {
     if (rec && rec.state === 'recording') { $('talk').click(); return; } // 録音中は、まず録音を止めて送る（再生のタップ待ちより先。codex-review dc4b0b9）
+    const s = $('face').dataset.s;
+    if (s === 'think' || s === 'speak') { faceAckWait = true; $('stop').click(); return; } // 考えている・話しているときに押したら止める（録音は始めない。もう一度押すと話せる。R12・2026-11-24）。再生のタップ待ちより先
     if ($('tap').style.display === 'inline-block') { $('tap').click(); return; } // 再生にタップが要るとき（自動の再生を断られた）は、録音ではなく再生を始める（codex-review 779f0c2）
     if ($('talk').disabled) { $('faceCap').textContent = 'いまは話せません（' + ($('statusText').textContent || '準備中') + '）'; return; } // 黙って何もしないと、壊れたように見える
     $('talk').click();
@@ -2346,6 +2457,7 @@ if (FACE) {
   const closeFace = () => {
     if (!faceOn) return;
     faceOn = false; $('face').hidden = true; applyInert(); faceAttn();
+    if (rec && rec.state === 'recording') stopRec(); // 顔で録っていた声は送らない（録音の終わりで、表示が切り替わったのを見て捨てる）。マイクも離す
     wantWake = false; if (wake) { const w = wake; wake = null; w.release().catch(() => {}); } // ふだんの画面では眠れるように、許可を手放す（頼んでいる途中の分は、届いたら手放す。codex-review bc775f6）
     try { history.replaceState(null, '', location.pathname + location.hash); } catch {}
     hello(); applyTarget(); // ハブが居ないときの案内から「画面に戻る」を外す
@@ -2356,7 +2468,15 @@ if (FACE) {
   window.addEventListener('hashchange', e => { let h = ''; try { h = new URL(e.newURL).hash; } catch {} if (/^#(t=|inbox|i=)/.test(h)) closeFace(); });
   $('face').addEventListener('click', tapFace);
   if (/^#(t=|inbox|i=)/.test(FACE_HASH)) closeFace(); // 件・受け箱・判断待ちの場所つきで開いたときも、顔を閉じて中身を見せる（最初の表示では hashchange が起きない）
-  $('face').addEventListener('keydown', e => { if (e.target.closest('#faceBack')) return; if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); if (!e.repeat) tapFace(e); } }); // 戻るリンクの Enter は止めない。長押しの繰り返しでは押さない（codex-review b5a95ff）
+  $('face').addEventListener('keydown', e => {
+    if (e.target.closest('#faceBack')) return;
+    if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); if (!e.repeat) tapFace(e); } // 戻るリンクの Enter は止めない。長押しの繰り返しでは押さない（codex-review b5a95ff）
+    else if (e.key === 'Escape') { // 机の顔（PC の 3 列の幅でない窓）でも Esc で止める。考えている・話しているときだけ（録音中に止めたと出して、録音を続けない）
+      e.preventDefault(); e.stopPropagation(); // 画面全体の Esc（停止）にも回さない
+      const s = $('face').dataset.s;
+      if (!e.repeat && (s === 'think' || s === 'speak')) { faceAckWait = true; $('stop').click(); }
+    }
+  });
   face('idle');
 }
 </script>

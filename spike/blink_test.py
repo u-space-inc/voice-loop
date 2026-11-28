@@ -87,6 +87,10 @@ s.jsonl_path = lambda a: None
 s.herdr = lambda *a, **k: (state["keys"].append(a[-1]), {"result": {}})[1] if a[:2] == ("agent", "send-keys") else {"result": {}}
 s.hermes.ask_hermes = lambda text: "わかりました"
 
+
+def page_answer(body):  # 画面のボタンからの答え（押したときの停止の回数 sg を、画面と同じく添える）
+    return s.api_answer({"sg": s.STOP_GEN["n"], **body})
+
 results = []
 
 
@@ -120,7 +124,7 @@ def button(text, fp):
     state["keys"].clear()
     if hasattr(s, "ANSWERED"):
         s.ANSWERED.clear()
-    r = json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "sess-1", "fp": fp, "choice": "allow"})).body)
+    r = json.loads(asyncio.run(page_answer({"pane": "w9:p1", "key": "sess-1", "fp": fp, "choice": "allow"})).body)
     return r.get("reason", "ok"), list(state["keys"])
 
 

@@ -110,8 +110,13 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     check("口: コンテナからは使えない（鍵があっても）", c.post("/api/attach", params={"name": "a.png"}, content=PNG,
                                                      headers={"Host": "host.docker.internal:8790", "X-VL-Key": "k1"}).status_code, 403)
 
+    BEGIN = {"n": 0}
+
     def say(w, pane, text, files=None, **extra):
-        w.send_json({"type": "text", "text": text, "pane": pane, "speaker": 0, **({"attachments": files} if files is not None else {}), **extra})
+        # いまの画面と同じく、送るを押した合図（begin）を先に送る（合図の無い添付つきの発言は、更新前の画面として送らない）
+        BEGIN["n"] += 1
+        w.send_json({"type": "begin", "sg": s.STOP_GEN["n"], "b": BEGIN["n"], "pane": pane, "hid": extra.get("hid", -1)})
+        w.send_json({"type": "text", "text": text, "pane": pane, "speaker": 0, "begin": BEGIN["n"], **({"attachments": files} if files is not None else {}), **extra})
         while True:
             m = w.receive_json()
             if m["type"] in ("reply", "error"):
@@ -150,9 +155,10 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     # 承認の守りが見る発言は、利用者の言葉のまま（本体が足す添付の行は入れない）。相手の位置: 名前を「はい」にしたファイルだけを付けた発言
     import consent  # noqa: E402
     s.hermes.HERMES_HEARD["text"] = "proj の「テスト」が許可を求めています。許可しますか？"
+    s.hermes.HEARD_ID["n"] = 9001  # 画面に送り終えた返事の番号（画面は、送るを押した時点で受け取っていた番号を付ける）
     hy = up("写真.png", PNG, pane=s.hermes.HERMES_PANE).json()["id"]
     with c.websocket_connect("ws://127.0.0.1:8790/ws") as w:
-        my = say(w, s.hermes.HERMES_PANE, "はい", [hy])
+        my = say(w, s.hermes.HERMES_PANE, "はい", [hy], hid=9001)
     row = list(s.hermes.HERMES_TURNS)[-1]
     rec_me = [json.loads(l) for l in s.hermes.HERMES_LOG.read_text().splitlines() if '"role": "me"' in l][-1]
     check("守り: 「はい」に添付を付けても、承認の守りが見る発言は「はい」（台帳には添付の行を入れない）。Hermes に送る文と記録には添付の行を付ける",
@@ -192,7 +198,8 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
     check("渡す: コンテナに置けなければ、送らない", (m["type"], m["text"].startswith("添付を渡せませんでした"), len(ASKED) - k), ("error", True, 0))
     s.transcribe = lambda data, name: "声で頼む"
     with c.websocket_connect("ws://127.0.0.1:8790/ws") as w:
-        w.send_json({"type": "turn", "pane": "w9:p1", "speaker": 0, "filename": "rec.webm", "attachments": [a2]})
+        w.send_json({"type": "begin", "sg": s.STOP_GEN["n"], "b": 99, "pane": "w9:p1", "hid": -1})  # いまの画面と同じく、録音を始めた合図を先に送る
+        w.send_json({"type": "turn", "pane": "w9:p1", "speaker": 0, "filename": "rec.webm", "attachments": [a2], "begin": 99})
         w.send_bytes(b"x" * 3000)
         while w.receive_json()["type"] not in ("reply", "error"):
             pass
@@ -202,6 +209,8 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
 # 1 つ目の状態の知らせを送っている間に 2 つ目が届いても、1 つ目を捨てない（画面のターンの中で仕事を作ると、知らせを待つ間に止められて消えていた。
 # a2a 81fecd16 の再現を試験にした）。画面の口は作り物の接続、話し相手は作り物
 EXCHANGED: list[str] = []
+DELIVERED: list = []  # 画面に返事を送り終えた知らせ（本体の画面の turn が呼ぶ）
+SENT_TYPES: list[str] = []
 
 
 class FakeTalker:
@@ -213,11 +222,20 @@ class FakeTalker:
     def sending_text(self):
         return "送っています"
 
-    async def exchange(self, text, reply_at=None, extra="", item=None):
+    def admit(self):
+        return 0
+
+    def stopped(self):
+        pass
+
+    def delivered(self, admitted):
+        DELIVERED.append(admitted)
+
+    async def exchange(self, text, reply_at=None, extra="", item=None, admitted=None):
         EXCHANGED.append(text)
         return "わかりました", "", True
 
-    async def refused(self, text, why):
+    async def refused(self, text, why, **k):
         EXCHANGED.append("断った:" + text)
 
 
@@ -244,6 +262,7 @@ class SlowStatusSock:
 
     async def send_text(self, text):
         d = json.loads(text)
+        SENT_TYPES.append(d["type"])
         if d["type"] == "status":
             self.status += 1
             if self.status == 1:
@@ -266,6 +285,7 @@ try:
 finally:
     s.TALKERS, s.speak_to = real_talkers, real_speak
 check("渡す: ハブへの 1 つ目の発言の知らせを送っている間に 2 つ目が届いても、1 つ目を捨てず、受け取った順に送る", EXCHANGED, ["一つ目", "二つ目"])
+check("渡す: 返事を送り終えたら、話し相手に知らせ、そのあとにエラーを送らない（codex-review bcd26ac）", (len(DELIVERED), "error" in SENT_TYPES[SENT_TYPES.index("reply"):] if "reply" in SENT_TYPES else None), (1, False))
 
 # ---------- 片づけ ----------
 day = Path(TMP) / "state" / "attachments" / "20200101"

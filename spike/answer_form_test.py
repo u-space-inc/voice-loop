@@ -51,6 +51,10 @@ s.pane_shows_trust = lambda pane: False
 s.read_prompt = lambda pane: screen()
 s.read_dialog = lambda pane, *_: st["tui"].screen()
 s.herdr = fake_herdr
+
+def page_answer(body):  # 画面のボタンからの答え（押したときの停止の回数 sg を、画面と同じく添える）
+    return s.api_answer({"sg": s.STOP_GEN["n"], **body})
+
 results = []
 
 
@@ -69,7 +73,7 @@ def prompt():
 
 def press(q=None, **body):
     q = q or prompt()
-    return json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "sess-1", "fp": q["fp"], "sfp": q.get("sfp"), "choice": "step", **body})).body)
+    return json.loads(asyncio.run(page_answer({"pane": "w9:p1", "key": "sess-1", "fp": q["fp"], "sfp": q.get("sfp"), "choice": "step", **body})).body)
 
 
 # ---------- いまの 1 問を出す ----------
@@ -131,11 +135,18 @@ check("1 問ずつ答えたら、ハブが前に見た問いの記録を消し�
 r = press(q2, act="toggle", n=1)
 check("続く 1 問ずつの答えは、前の答えが残した prompt_fp では止めない（次の問いの指紋が同じでも）", r.get("ok"), True)
 s.read_prompt = lambda pane: screen()
+setup(quirks=["no_typing"])
+s.ANSWERED.clear()
+q = prompt()
+r = press(q, act="free", text="3番の朝ごはん")
+check("1 問ずつの答えがキーを送ったあと途中で止まったら、ハブ・承認のボタンが比べる指紋（prompt_fp）でも、同じ画面に重ねて送らない（codex-review）",
+      (r.get("reason"), st["tui"].log, s.answered("w9:p1", q["sfp"]), s.answered("w9:p1", q["fp"])), ("stuck", ["down", "down"], True, True))
 setup()
+s.ANSWERED.clear()
 q = prompt()
 r = press(q, act="pick", n=9)
-check("1 問ずつの答えが途中で止まったら、ハブ・承認のボタンが比べる指紋（prompt_fp）でも、同じ画面に重ねて送らない（codex-review）",
-      (r.get("reason"), s.answered("w9:p1", q["sfp"]), s.answered("w9:p1", q["fp"])), ("stuck", True, True))
+check("キーを 1 つも送らずに止まったら（選択肢の外）、答えた印を残さない（codex-review b743362）",
+      (r.get("reason"), st["tui"].log, s.answered("w9:p1", q["sfp"]), s.answered("w9:p1", q["fp"])), ("stuck", [], False, False))
 setup()
 for body, why in ((dict(act="jump"), "bad_choice"), (dict(act="pick", n=9), "stuck"), (dict(act="toggle", n=1), "stuck"), (dict(act="free", text=""), "stuck")):
     s.ANSWERED.clear()
@@ -160,14 +171,60 @@ real_h = s.herdr
 s.herdr = lambda *a, **k: {"raw": "error: no such pane", "code": 1} if a[:2] == ("pane", "send-text") else real_h(*a, **k)
 r = press(act="free", text="駅前の店")
 s.herdr = real_h
-check("文字を送る herdr が失敗で終わったら止まり、Enter を送らない", (r.get("reason"), st["tui"].log), ("stuck", ["down", "down"]))
+check("文字を送る herdr が見知らぬ失敗で終わったら止まり、Enter を送らない（届いたか分からないので unsure。codex-review 289b4ec）", (r.get("reason"), st["tui"].log), ("unsure", ["down", "down"]))
+# 答え始めたあとに止めたら、残りのキー・文字は送らない（ボタンを受け付けたときの停止の回数で照らす。codex-review 8d5b6fa の P1）
+setup(REAL_SHOP_INPUT)
+real_h2 = s.herdr
+
+
+def stop_after_first(*a, **k):
+    r = real_h2(*a, **k)
+    if a[:2] == ("agent", "send-keys"):
+        s.STOP_GEN["n"] += 1  # 最初のキーを送ったところで、どこかの画面で止めた
+    return r
+
+
+s.herdr = stop_after_first
+r = press(act="free", text="駅前の店")
+s.herdr = real_h2
+check("答え始めたあとに止めたら、残りのキー・文字は送らない", (r.get("reason"), "止めた" in (r.get("why") or ""), st["tui"].log), ("stuck", True, ["down"]))
+# キーも文字も 1 つも送らずに終わったら（確定待ちの停止で断った・最初のキーの前に止めた）、答えた印を外し、押し直せる（codex-review b743362）
+real_if_still = s._if_still
+for label in ("ほかの操作の途中で断った", "最初のキーの前に止めた"):
+    setup()
+    s.ANSWERED.clear()
+    q0 = prompt()
+    real_read = s.read_dialog
+    if label == "ほかの操作の途中で断った":
+        s._if_still = lambda still, fn, *args: s.BUSY  # 送り始めの道が、鍵が使われていて断った（本物の herdr の道の断りの代わり）
+    else:
+        def read_then_stop(pane, *_):
+            s.STOP_GEN["n"] += 1  # 最初の読み取りの間に、どこかの画面で止めた
+            return real_read(pane)
+        s.read_dialog = read_then_stop
+    try:
+        r1 = press(q0, act="pick", n=2)
+        log1 = list(st["tui"].log)
+    finally:
+        s.read_dialog, s._if_still = real_read, real_if_still
+    r2 = press(prompt(), act="pick", n=2)
+    check(f"キーを送らずに終わったら、答えた印を外して押し直せる（{label}）", (r1.get("reason"), log1, r2.get("ok"), st["tui"].log), ("stuck", [], True, ["2"]))
+# キーを送ったあと herdr の結果を確かめられなければ、送れなかったとは言わず（unsure）、画面を確かめるよう案内し、印は残す（codex-review 289b4ec）
+setup()
+real_h3 = s.herdr
+s.herdr = lambda *a, **k: (real_h3(*a, **k), {"raw": "中身の分からない返事", "code": 0})[1] if a[:2] == ("agent", "send-keys") else real_h3(*a, **k)
+q = prompt()
+r = press(q, act="pick", n=2)
+s.herdr = real_h3
+check("キーの結果を確かめられなければ unsure として返し、画面を確かめるよう案内し、印は残す",
+      (r.get("reason"), "確かめて" in (r.get("why") or ""), s.answered("w9:p1", q["sfp"])), ("unsure", True, True))
 check("キー・文字を送る herdr の呼び出しには、5 秒以下の時間切れを付ける", bool(TIMEOUTS) and all(t is not None and 0 < t <= 5 for t in TIMEOUTS), True)
 setup()
 real = s.read_dialog
 s.read_dialog = lambda pane, *_: (_ for _ in ()).throw(__import__("subprocess").TimeoutExpired("herdr", 5)) if st["tui"].log else real(pane)
 r = press(act="pick", n=2)
 s.read_dialog = real
-check("送ったあとの読み取りが失敗したら、送れたとせず「結果が分からない」と返す", (r.get("ok"), r.get("reason"), "結果が分からない" in (r.get("why") or "")), (False, "stuck", True))
+check("送ったあとの読み取りが失敗したら、送れたとせず「結果が分からない」と返す（unsure。codex-review 289b4ec）", (r.get("ok"), r.get("reason"), "結果が分からない" in (r.get("why") or "")), (False, "unsure", True))
 
 setup()
 q = prompt()

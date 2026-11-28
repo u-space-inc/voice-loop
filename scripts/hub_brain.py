@@ -73,6 +73,11 @@ class Brain:
         承認に答える・閉じるの守りが、機械からの発言を答えに使わないために見る。記録に残らない頭は "device"（断る側）を返す。"""
         return "device"
 
+    def current(self, turn: str) -> bool:
+        """発言 turn を受け付けたあとに、利用者が止めていない・次の発言をしていないか。承認に答える・閉じるの守りが、操作の直前に見る
+        （止めた・話しかけ直したあとに、頭が回の途中で答えを送ったり閉じたりしないように。2026-11-24、a2a 30fd5b94）。分からなければ False（断る側）。"""
+        return False
+
     def reply_to(self, turn: str) -> str:
         """発言 turn へのハブの返答。"""
         raise NotImplementedError
@@ -97,7 +102,8 @@ class Brain:
 
     async def report_end(self, state: str, reply: str, about: str, saved: bool, pane: str = "", topic: str = "", ask: dict | None = None) -> bool:
         """報告のあと。記録に書けたかを返す。topic は、どの件の報告か（記録を持つ頭は、報告の記録に書く）。
-        ask は、止まった報告でハブが見た問い {"fp": 画面の指紋, "session": セッション}（記録を持つ頭は報告の記録に書き、reply_ask で返す）。"""
+        ask は、止まった報告でハブが見た問い {"fp": 画面の指紋, "session": セッション}（記録を持つ頭は報告の記録に書き、reply_ask で返す）。
+        報告は「利用者が聞いた文」にしない（承認に答える・閉じるの問いとして読ませない。報告に答えるのは画面の「↩ 返信」）。"""
         return saved
 
     def reply_topic(self) -> str:
@@ -137,24 +143,44 @@ class Talker:
         """送ったときの状態の文。"""
         raise NotImplementedError
 
+    def admit(self, seen: int | None = None) -> int:
+        """利用者の新しい発言を受け付けた（添付の用意・順番待ちの前に、受けたその場で呼ぶ）。受け付けの番号を進めて返す。exchange の admitted に渡す。
+        seen は、画面が発言を始めたときに受け取っていた返事の番号（delivered の admitted。付いていなければ確かめない）。直前に聞いた文が、
+        その返事でなければ、この発言には引き渡さない（言い終えたあとに届いた問いへの答えにしない）。
+        これより前に受け付けた往復の返事は、あとで届いても「利用者が聞いた文」にしない（利用者は次の発言に移り、その返事は読まれない）。"""
+        return 0
+
     async def exchange(self, text: str, reply_at: float | None = None, extra: str = "", item: int | None = None,
-                       via: str = "") -> tuple[str, str, bool]:
-        """ユーザーの発言を 1 往復する。via は発言の来た所（機械なら "device"。台帳に残し、承認に答える・閉じるの守りが見る）。(返事, 失敗の理由, 記録に書けたか)。reply_at は、画面の「返信」が指した報告の記録の時刻（無ければ None）。
+                       via: str = "", admitted: int | None = None) -> tuple[str, str, bool]:
+        """ユーザーの発言を 1 往復する。admitted は admit の番号（無ければ往復を始めたときの番号）。返事が届いたときに番号が進んでいたら
+        （そのあとに話しかけた・止めた）、返事は記録に残すが「利用者が聞いた文」と台帳の返事の欄には置かない。via は発言の来た所（機械なら "device"。台帳に残し、承認に答える・閉じるの守りが見る）。(返事, 失敗の理由, 記録に書けたか)。reply_at は、画面の「返信」が指した報告の記録の時刻（無ければ None）。
         item は、画面の受け箱（💡）で押した判断待ちの記録の番号（無ければ None。形が違えば -1）。その件への返信として渡し、text は空でもよい。
         返信と同じく、承認に答える・閉じるには使わせない。
         extra は本体が発言の末尾に足す行（添付の場所）。相手に渡す文と記録には付けるが、承認・閉じるの守りが見る発言は利用者の言葉（text）のまま。"""
         raise NotImplementedError
 
-    async def refused(self, text: str, why: str, via: str = ""):
+    async def refused(self, text: str, why: str, via: str = "", admitted: int | None = None):
         """利用者の発言 text を、本体が送らずに断った（via は発言の来た所。機械なら "device"）（添付の形・宛先など。理由 why）。断った発言も台帳と記録に載せ、承認・閉じるの文脈を失効させる
-        （利用者が最後に聞いたのは本体の断り。前の問い・確認への答えに、次の発言を使わせない）。"""
+        （利用者が最後に聞いたのは本体の断り。前の問い・確認への答えに、次の発言を使わせない）。admitted は admit の番号（台帳にはこの番号で載せる。
+        順番待ちの間に止めたら、その発言はもういまの発言ではない）。"""
         raise NotImplementedError
 
-    async def answered_here(self, text: str, answer: str, via: str = "") -> bool:
+    async def answered_here(self, text: str, answer: str, via: str = "", admitted: int | None = None) -> bool:
         """利用者の発言 text に、本体が決まった問いとしてその場で答えた（answer。LLM・頭を通していない。scripts/quick.py）。
         発言と答えを台帳と記録に載せる（「すぐ次の発言」を進める）。利用者が最後に聞いたのは本体の答えなので、次の発言の「聞いた文」は空にする
         （本体の答えのあとの「はい」を、その前に聞いた頭の問いへの答えに使わせない）。頭が次に受け取る発言には、本体が答えたことを添えて文脈を保つ。
-        記録に書けたかを返す。"""
+        admitted は refused と同じ。記録に書けたかを返す。"""
+        raise NotImplementedError
+
+    def delivered(self, admitted: int):
+        """admit の番号で受け付けた発言への返事を、画面に送り終えた。そのあとに利用者が話しかけた・止めていなければ、ここで返事を
+        「利用者が聞いた文」と台帳の返事の欄に置く（返事ができただけでは置かない。送る前に話しかけ直した・止めたなら、返事は聞いていない）。"""
+        return None
+
+    def stopped(self):
+        """利用者が画面・顔で「止める」を押した（読み上げと返事待ちを止めた）。利用者は、いま読まれていた返事と、まだ届いていない返事を聞いていない。
+        受け付けの番号を進め、承認に答える・閉じるの守りが「利用者が聞いた問い」として読む文（直前に聞いた文と、台帳の最新の返事）を空にする。
+        止める前に受け付けた往復の返事は、あとで届いても「聞いた文」にしない（記録には残す。止めたあとの「はい」を、聞いていない問いへの答えに使わせない。2026-11-24）。"""
         raise NotImplementedError
 
     def put_attachment(self, name: str, data: bytes) -> str:

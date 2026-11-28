@@ -12,6 +12,8 @@
   - 通知・リンクで件・受け箱を開いたら、顔を閉じて中身を見せる
   - 録音中は、再生のタップ待ちがあっても、顔のタップで録音を止めて送る
   - 「停止」で再生を止めたら、口を閉じる。録音中は、再生の始まり・終わり・停止でも「聞いている」のまま
+  - 考えている・話している顔のときに押す（Esc でも）と止める（録音は始めない。本体が止めたと返したら届いた印に縁が光り、顔の下に「止めました」）。
+    再生のタップ待ちより先に止める。考え中に自動の再生を断られたら、ふつうの顔に戻る。録音中・ふつうの顔の Esc では止めない
   - タップのときに画面を消さない許可を頼み、外されたら画面に戻ったときに取り直す。顔を閉じたら手放し（頼んでいる途中でも）、取り直さない
   - 件・受け箱の場所つき（/?face#inbox など）で開いたときも、顔を閉じて中身を見せる
   - 顔の表示中は、裏の画面をフォーカス・操作できない（閉じたら戻る）
@@ -72,6 +74,8 @@ async def nothing(*a, **k):
 
 s.boot_ensure_hub = s.keep_gateway_token = s.watch_blocked = s.watch_delegation = s.hermes.watch_hermes_skills = nothing
 s.list_agents = lambda: [{"pane": "w1:p1", "title": "記事", "cwd": "/x/blog", "kind": "claude", "session": "s1", "status": "idle", "name": "", "hub": False}]
+SENT_TO_HERDR: list = []
+s.herdr = lambda *a, **k: (SENT_TO_HERDR.append(a), {"error": {"code": "test", "message": "この試験では本物の herdr を呼ばない"}})[1]  # 文字の発言を送る確かめが、本物のセッションに届かないように（codex-review 7e79726）
 s.jsonl_path = lambda a: None
 s.transcribe = lambda audio, filename: ""  # 作り物の録音は聞き取りに出さない（聞き取れなかった扱い）
 
@@ -84,10 +88,16 @@ for _ in range(200):
     time.sleep(0.05)
 
 # 画面が送る hello を拾う
-CATCH = """(() => { window.__hello = []; const o = WebSocket.prototype.send;
+CATCH = """(() => { window.__hello = []; window.__types = []; const o = WebSocket.prototype.send;
   WebSocket.prototype.send = function (m) {
     let d = null; try { d = typeof m === 'string' ? JSON.parse(m) : null; } catch {}
     if (d && d.type === 'hello') window.__hello.push(d);
+    if (d && d.type) window.__types.push(d.type);
+    if (m instanceof ArrayBuffer) (window.__bins = window.__bins || []).push(m.byteLength);  // 送った声の大きさ
+    if (d && d.type === 'turn') window.__turn = d;  // 声の発言の頭
+    if (d && d.type === 'text') window.__text = d;  // 文字の発言
+    if (d && d.type === 'begin') window.__begin = d;  // 発言を始めた合図
+    if (d && d.type === 'stop' && window.__dropStop) return;  // 止める合図が本体に届かなかった（届いた印を出さないかを見る）
     return o.call(this, m);
   }; })()"""
 
@@ -184,6 +194,23 @@ with sync_playwright() as pw:
     pg.locator("#face svg").click()
     check("顔: 再生にタップが要るときは、録音でなく再生を押す", (pg.evaluate("window.__tap"), pg.evaluate("window.__talk")), (1, 0))
     pg.evaluate("stopPlayback()")
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__talk = 0; window.__tap = 0; window.__types.length = 0; queue.push(new ArrayBuffer(8)); showTap(true); face('think')")
+    pg.locator("#face svg").click()
+    check("顔: 考え中の顔では、再生のタップ待ちがあっても、押したら止める（再生を始めない）",
+          (pg.evaluate("window.__tap"), pg.evaluate("window.__types.includes('stop')")), (0, True))
+    pg.evaluate("stopPlayback()")
+    pg.wait_for_timeout(600)  # 止めたことへの本体の返事が届き終わってから
+    pg.evaluate("window.__talk = 0; window.__tap = 0; window.__types.length = 0; face('think');"
+                "const op = player.play; player.play = function () { player.play = op; return Promise.reject(new DOMException('blocked', 'NotAllowedError')); };"
+                "queue.push(new ArrayBuffer(8)); playNext()")
+    pg.wait_for_function("document.getElementById('tap').style.display === 'inline-block'", timeout=5000)
+    rejected_face = pg.evaluate("document.getElementById('face').dataset.s")
+    pg.locator("#face svg").click()
+    check("顔: 考え中に自動の再生を断られたら、ふつうの顔に戻り、押すと再生を始める（止めない）",
+          (rejected_face, pg.evaluate("window.__tap"), pg.evaluate("window.__types.includes('stop')")), ("idle", 1, False))
+    pg.evaluate("stopPlayback()")
+    pg.wait_for_timeout(300)
 
     # 「停止」（PC では Esc）で再生を止めたら、口を閉じる（codex-review b5a95ff）
     pg.evaluate("face('speak'); document.getElementById('stop').click()")
@@ -193,6 +220,55 @@ with sync_playwright() as pw:
                 "f.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', repeat: true, bubbles: true }));"
                 "f.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', repeat: true, bubbles: true }))")
     check("顔: キーの長押しの繰り返しでは「話す」を押さない", pg.evaluate("window.__talk"), 0)
+
+    # 考えている・話しているときに顔を押すと止める（R12。録音は始めない。届いた印に縁が白く一瞬光る。2026-11-24）
+    for st in ("speak", "think"):
+        pg.wait_for_timeout(600)  # 前の「停止」への本体の返事（stopped。顔を「ふつう」に戻す）が届き終わってから
+        pg.evaluate(f"window.__talk = 0; window.__types.length = 0; face('{st}')")
+        check(f"顔: （前提）{st} の顔になっている", pg.evaluate("document.getElementById('face').dataset.s"), st)
+        pg.locator("#face svg").click()
+        acked = True
+        try:
+            pg.wait_for_function("document.getElementById('face').classList.contains('ack')", timeout=3000)  # 本体が止めたと返してから光る
+        except Exception:
+            acked = False
+        check(f"顔: {st} の顔のときに押すと止める（停止を送り、録音は始めず、本体が止めたと返したら届いた印が光る）",
+              (pg.evaluate("window.__types.includes('stop')"), pg.evaluate("window.__talk"), acked,
+               pg.evaluate("document.getElementById('face').dataset.s")), (True, 0, True, "idle"))
+    pg.wait_for_function("document.getElementById('faceCap').textContent === '止めました'", timeout=5000)
+    check("顔: 止めたら、顔の下に「止めました」", pg.evaluate("document.getElementById('faceCap').textContent"), "止めました")
+    gone = True
+    try:
+        pg.wait_for_function("!document.getElementById('face').classList.contains('ack')", timeout=3000)  # 決め打ちの時間で待たない（CI で揺れた）
+    except Exception:
+        gone = False
+    check("顔: 届いた印は一瞬で消える", gone, True)
+    # 止める合図が本体に届かなかったら、届いた印を出さず、「止めました」とも言わない（手元の再生は止める。codex-review 44b3c2e）
+    pg.evaluate("window.__dropStop = true; face('speak')")
+    pg.locator("#face svg").click()
+    pg.wait_for_timeout(150)
+    early = pg.evaluate("document.getElementById('face').classList.contains('ack')")
+    pg.wait_for_timeout(650)
+    check("顔: 止める合図に本体が返さなければ、届いた印を出さず「止めています…」のまま（手元の再生は止める）",
+          (early, pg.evaluate("document.getElementById('face').classList.contains('ack')"), pg.evaluate("document.getElementById('faceCap').textContent"),
+           pg.evaluate("document.getElementById('face').dataset.s")), (False, False, "止めています…", "idle"))
+    pg.evaluate("window.__dropStop = false; faceAckWait = false")
+    pg.evaluate("window.__talk = 0; window.__types.length = 0; face('think')")
+    check("顔: （前提）think の顔になっている", pg.evaluate("document.getElementById('face').dataset.s"), "think")
+    pg.locator("#face").press("Escape")
+    check("顔: 机の顔（PC の 3 列でない幅）でも、Esc で止める（録音は始めない）", (pg.evaluate("window.__types.includes('stop')"), pg.evaluate("window.__talk")), (True, 0))
+    pg.wait_for_timeout(600)  # 止めたことへの本体の返事が届き終わってから
+    # 録音中・ふつうの顔の Esc では止めない（止めたと出しても録音は続き、次のタップで送られてしまう。画面全体の Esc にも回さない。codex-review fde6e2e）
+    esc = {}
+    for label, setup in [("録音中", "rec = { state: 'recording', stop() {} }; face('think')"), ("ふつうの顔", "rec = null; face('idle')")]:
+        pg.evaluate(f"window.__talk = 0; window.__types.length = 0; faceAckWait = false; {setup}")
+        shown = pg.evaluate("document.getElementById('face').dataset.s")
+        pg.locator("#face").press("Escape")
+        pg.wait_for_timeout(200)
+        esc[label] = (shown, pg.evaluate("window.__types.includes('stop')"), pg.evaluate("faceAckWait"))
+    pg.evaluate("rec = null; face('idle')")
+    check("顔: 録音中（聞いている顔）・ふつうの顔の Esc では、止める合図を送らない",
+          (esc["録音中"], esc["ふつうの顔"]), (("listen", False, False), ("idle", False, False)))
 
     # 代理からの知らせは、縁と一言で示し、タップしたら聞いたことにする（前の「停止」への本体の返事が届き終わってから）
     pg.wait_for_timeout(500)
@@ -256,6 +332,319 @@ with sync_playwright() as pw:
     pg.wait_for_function("window.__released >= 1", timeout=5000)
     check("顔: 許可を頼んでいる途中で閉じても、届いたらすぐ手放す", pg.evaluate("window.__released"), 1)
     pg.evaluate("if (rec && rec.state === 'recording') stopRec()")
+    # 録音中に「停止」を押したら、その録音は送らない（「止めました」と出したあとの次のタップで送らない）。
+    # 顔で録っている途中に顔を閉じたら、その録音は送らない（顔で録った声を画面からの発言として送らない）。a2a 3752b7a5
+
+    def rec_case(act, open_face=False):
+        if open_face:
+            pg.goto(BASE + "/?face")
+            pg.wait_for_function("document.getElementById('face').dataset.s === 'idle'", timeout=10000)
+            pg.evaluate(PICK)  # この試験の環境にはハブが居ないので、録った声を送れる相手を選んでおく
+        pg.wait_for_function("!rec || rec.state === 'inactive'", timeout=5000)
+        pg.evaluate("window.__types.length = 0; startRec()")
+        pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+        pg.wait_for_timeout(1500)  # 短すぎて捨てられる長さ（2000 バイト未満）より長く録る
+        pg.evaluate(act)
+        pg.wait_for_function("rec.state === 'inactive'", timeout=5000)
+        pg.wait_for_timeout(600)
+        return pg.evaluate("window.__types.includes('turn')")
+
+    PICK = "(() => { const a = document.getElementById('agent'); a.value = [...a.options].map(o => o.value).find(v => v) || ''; return a.value; })()"
+    picked = pg.evaluate(PICK)
+    check("録音: （前提）ふつうの画面で話し相手を選んだ", bool(picked), True)
+    sent_plain = rec_case("stopRec()")
+    sent_stop = rec_case("document.getElementById('stop').click()")
+    # 閉じた直後に話し相手を顔のときのまま戻す（話し相手が空で送られない、という別の理由で通らないように）
+    sent_close = rec_case("(() => { window.__ct = 0; const ct = cancelTopic; cancelTopic = function () { window.__ct++; return ct.apply(this, arguments); };"
+                          " const a = document.getElementById('agent'), hv = a.value; document.getElementById('faceBack').click(); a.value = hv;"
+                          " window.__hv = [hv, a.value]; })()", open_face=True)
+    check("録音: 顔で録っている途中に顔を閉じたら、捨てる録音のために件の読み込みを取り消さない", pg.evaluate("window.__ct"), 0)
+    check("録音: （前提）顔を閉じたあとも話し相手は顔のときのまま", pg.evaluate("Boolean(window.__hv[0]) && window.__hv[0] === window.__hv[1]"), True)
+    check("録音: ふつうに止めたら送る（前提）・「停止」で止めたら送らない・顔で録っている途中に顔を閉じたら送らない",
+          (sent_plain, sent_stop, sent_close), (True, False, False))
+    # 顔で録った声の終わりを処理する前に、ふつうの画面で次の録音を始めても、顔で録った声は送らない（録音ごとに顔の表示を控える。a2a 3752b7a5 の 2 回目）
+    pg.goto(BASE + "/?face")
+    pg.wait_for_function("document.getElementById('face').dataset.s === 'idle'", timeout=10000)
+    pg.evaluate(PICK)
+    pg.evaluate("window.__types.length = 0; startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    pg.wait_for_timeout(1500)
+    pg.evaluate("(() => { const a = document.getElementById('agent'), hv = a.value; window.__r1 = rec; document.getElementById('faceBack').click(); a.value = hv; startRec(); })()")
+    pg.wait_for_function("window.__r1.state === 'inactive' && rec !== window.__r1 && rec && rec.state === 'recording'", timeout=5000)
+    pg.wait_for_timeout(800)
+    overlap = pg.evaluate("window.__types.includes('turn')")
+    pg.evaluate("document.getElementById('stop').click()")  # 次の録音は「停止」で捨てる
+    pg.wait_for_function("rec.state === 'inactive'", timeout=5000)
+    check("録音: 顔で録った声の処理の前に次の録音を始めても、顔で録った声は送らない", overlap, False)
+    # マイクの許可を待つ間に何度押しても始めるのは 1 つ。待つ間に「停止」を押したら、許可が返っても録音を始めない（a2a 3752b7a5 の 2 回目）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__gum = 0; const g = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);"
+                "navigator.mediaDevices.getUserMedia = c => { window.__gum++; return new Promise(r => setTimeout(r, 500)).then(() => g(c)); };"
+                "window.__r0 = rec; window.__types.length = 0; startRec(); startRec(); document.getElementById('stop').click()")
+    pg.wait_for_timeout(1500)
+    pg.evaluate("delete navigator.mediaDevices.getUserMedia")  # 差し替えを外して、もとのマイクに戻す
+    check("録音: 許可を待つ間に重ねて押しても始めるのは 1 つで、待つ間に止めたら録音を始めず、「止めました」と出る",
+          (pg.evaluate("window.__gum"), pg.evaluate("rec === window.__r0 || !rec || rec.state !== 'recording'"), pg.evaluate("window.__types.includes('turn')"),
+           pg.evaluate("document.getElementById('statusText').textContent")), (1, True, False, "止めました"))
+    # 声の本体を用意する間に「停止」を押したら、頭も声も送らない（頭と本体は、止めていないのを確かめてから続けて送る。a2a 3752b7a5 の 3 回目）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__types.length = 0; window.__bins = []; startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    pg.wait_for_timeout(1500)
+    pg.evaluate("window.__ab = Blob.prototype.arrayBuffer; Blob.prototype.arrayBuffer = function () { const p = window.__ab.call(this);"
+                " return new Promise(r => setTimeout(() => r(p), 500)); }; stopRec(); setTimeout(() => document.getElementById('stop').click(), 150)")
+    pg.wait_for_timeout(1200)
+    pg.evaluate("() => { Blob.prototype.arrayBuffer = window.__ab; }")
+    check("録音: 声の本体を用意する間に止めたら、頭も声も送らない", (pg.evaluate("window.__types.includes('turn')"), len(pg.evaluate("window.__bins"))), (False, 0))
+    # 捨てた録音の最後の音声片が遅れて届いても、次の録音には混ざらない（音声片は録音ごと）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__types.length = 0; window.__bins = []; startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    pg.evaluate("window.__rA = rec; document.getElementById('stop').click()")
+    pg.wait_for_function("window.__rA.state === 'inactive'", timeout=5000)
+    pg.wait_for_timeout(600)
+    pg.evaluate("startRec()")
+    pg.wait_for_function("rec && rec !== window.__rA && rec.state === 'recording'", timeout=5000)
+    pg.evaluate("window.__rA.ondataavailable({ data: new Blob([new Uint8Array(300000)]) })")  # 前の録音の片が、次の録音の間に届いた
+    pg.wait_for_timeout(1500)
+    pg.evaluate("stopRec()")
+    pg.wait_for_function("window.__bins.length > 0", timeout=5000)
+    check("録音: 捨てた録音の音声片が遅れて届いても、次の録音の声には混ざらない", pg.evaluate("window.__bins[0] < 200000"), True)
+    # 声の発言の頭には、録音を始めたときに受け取っていた返事の番号を付ける（録音の途中に届いた返事の番号ではない。a2a 3752b7a5 の 4 回目）
+    pg.wait_for_timeout(600)
+    pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'reply', pane: document.getElementById('agent').value, text: '問いです', hid: 5, saved: false }) })")
+    got_hid = pg.evaluate("heardId")
+    pg.evaluate("window.__turn = null; startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'reply', pane: document.getElementById('agent').value, text: '録音の途中に届いた問い', hid: 9, saved: false }) })")
+    pg.wait_for_timeout(1500)
+    pg.evaluate("stopRec()")
+    pg.wait_for_function("window.__turn", timeout=5000)
+    check("録音: 返事の番号を控え、声の頭には録音を始めたときの番号を付ける", (got_hid, pg.evaluate("window.__turn.hid")), (5, 5))
+    # 発言を始めた接続と送る接続が違えば（つなぎ直した。本体を起動し直すと番号を数え直す）、送らずに録り直しを頼む（本体は前の接続の合図を
+    # 照らせずに捨てる。番号を付けずに送る形（a2a 38ef4720）から、送らない形にした。codex-review 624d2d4）
+    pg.wait_for_timeout(300)
+    pg.evaluate("heardId = 5; window.__turn2 = null; startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    pg.wait_for_timeout(1500)
+    pg.evaluate("window.__realws = ws; ws = { readyState: 1, send: m => { try { const d = JSON.parse(m); if (d.type === 'turn') window.__turn2 = d; } catch {} } }; heardId = 5; stopRec()")
+    pg.wait_for_function("window.__turn2 || document.getElementById('statusText').textContent.includes('つなぎ直した')", timeout=5000)
+    pg.evaluate("() => { ws = window.__realws; }")
+    check("録音: 録音を始めた接続と送る接続が違えば、送らずに録り直しを頼む", pg.evaluate("window.__turn2"), None)
+    # 文字の発言には、送るを押した時点で受け取っていた返事の番号を付ける（添付を送る間に届いた返事の番号ではない。a2a 3752b7a5 の 5 回目）
+    pg.wait_for_timeout(300)
+    pg.evaluate("heardId = 5; window.__text = null; window.__types.length = 0; window.__sa = sendAttach;"
+                "sendAttach = async (...a) => { heardId = 9; return window.__sa(...a); };"  # 添付を送る間に、次の返事が届いた
+                "document.getElementById('typed').value = 'はい（文字）'; document.getElementById('typedForm').requestSubmit()")
+    pg.wait_for_function("window.__text", timeout=5000)
+    pg.evaluate("() => { sendAttach = window.__sa; }")
+    check("文字: 送るを押した時点で受け取っていた返事の番号を付ける", pg.evaluate("[window.__text.hid, heardId]"), [5, 9])
+    check("文字: 送るを押した時点で、本文より前に発言を始めた合図（begin）を送り、本文にも同じ番号を付ける",
+          pg.evaluate("[window.__types.indexOf('begin') >= 0 && window.__types.indexOf('begin') < window.__types.indexOf('text'), typeof window.__text.begin]"), [True, "number"])
+    check("文字: 合図には宛先と、押した時点で受け取っていた返事の番号を付ける",
+          pg.evaluate("[window.__begin.b === window.__text.begin, window.__begin.pane === window.__text.pane, window.__begin.hid]"), [True, True, 5])
+    # 録音を始めたときに合図（begin）を送り、返信先は始めたときのものに固定する（録音の前に選んだ返信先は付け、途中で選んだ返信先は付けない。a2a 4135f4c2）
+    def reply_rec(before, during):
+        pg.wait_for_timeout(600)
+        pg.evaluate(PICK)
+        pg.evaluate(f"window.__hubSaved = curAgent().hub; curAgent().hub = true; setReplyTarget({before}); window.__types.length = 0; window.__turn = null; startRec()")
+        pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+        began = pg.evaluate("window.__types.includes('begin')")
+        pg.evaluate(f"setReplyTarget({during})")
+        pg.wait_for_timeout(1500)
+        pg.evaluate("stopRec()")
+        pg.wait_for_function("window.__turn || document.getElementById('statusText').textContent.includes('返信先が変わった')", timeout=5000)
+        got = pg.evaluate("window.__turn ? [window.__turn.reply_at ?? null, typeof window.__turn.begin] : '送らない'")
+        pg.evaluate("setReplyTarget(null); curAgent().hub = window.__hubSaved")
+        return began, got
+    # 再生中に録音を始めたら、再生だけを止める合図を、録音を始めた合図より先に送る（あとだと、この録音の受け付けまで失効させる。codex-review bb7be2c）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__types.length = 0; queue.push(new ArrayBuffer(8)); startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    order = pg.evaluate("[window.__types.indexOf('stop'), window.__types.indexOf('begin')]")
+    pg.evaluate("document.getElementById('stop').click()")
+    pg.wait_for_function("rec.state === 'inactive'", timeout=5000)
+    check("録音: 再生中に録音を始めたら、再生だけを止める合図を、録音を始めた合図より先に送る", order[0] >= 0 and order[0] < order[1], True)
+    picked_before = reply_rec("{ at: 111.5, about: '前の報告' }", "{ at: 111.5, about: '前の報告' }")
+    picked_during = reply_rec("null", "{ at: 222.5, about: '録音の途中に届いた報告' }")
+    picked_changed = reply_rec("{ at: 111.5, about: '前の報告' }", "{ at: 333.5, about: '別の報告' }")
+    picked_cleared = reply_rec("{ at: 111.5, about: '前の報告' }", "null")
+    picked_back = reply_rec("{ at: 111.5, about: '前の報告' }", "{ at: 444.5, about: '別の報告' }); setReplyTarget({ at: 111.5, about: '前の報告' }")
+    check("録音: 録音を始めたときに合図を送り、返信先が録音の途中で変わったら（途中で選んだ・選び直した・外れた・別のを選んで戻した）送らない（codex-review 62a9436・69257ea）",
+          (picked_before, picked_during, picked_changed, picked_cleared, picked_back),
+          ((True, [111.5, "number"]), (True, "送らない"), (True, "送らない"), (True, "送らない"), (True, "送らない")))
+    # ほかの画面で止めた（停止の回数が進んだ）ら、それより前に始めた、まだ送っていない録音は止めて捨てる（codex-review 8a47002）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__types.length = 0; window.__turn = null; startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    pg.wait_for_timeout(800)
+    pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'stopgen', n: Math.max(stopGen, 0) + 1 }), target: ws })")
+    pg.wait_for_timeout(1200)
+    check("録音: ほかの画面で止めたら、録音を止めて送らない",
+          (pg.evaluate("rec.state"), pg.evaluate("window.__types.includes('turn')"), pg.evaluate("document.getElementById('statusText').textContent.includes('ほかの画面で止めた')")),
+          ("inactive", False, True))
+    # 録り終えた声を用意する間にほかの画面で止めたら、その録音は送らない（codex-review 52a66a0）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__types.length = 0; startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    pg.wait_for_timeout(800)
+    pg.evaluate("window.__ab3 = Blob.prototype.arrayBuffer; Blob.prototype.arrayBuffer = function () { const p = window.__ab3.call(this);"
+                " return new Promise(r => setTimeout(() => r(p), 600)); }; stopRec();"
+                " setTimeout(() => ws.onmessage({ data: JSON.stringify({ type: 'stopgen', n: Math.max(stopGen, 0) + 1 }), target: ws }), 150)")
+    pg.wait_for_timeout(1500)
+    pg.evaluate("() => { Blob.prototype.arrayBuffer = window.__ab3; }")
+    check("録音: 声を用意する間にほかの画面で止めたら、その録音は送らない",
+          (pg.evaluate("window.__types.includes('turn')"), pg.evaluate("document.getElementById('statusText').textContent.includes('ほかの画面で止めた')")), (False, True))
+    # 開いた直後、最初の停止の回数を受け取るまでは録音を始めない（受け取る前の合図は、本体が停止をまたいだ声として捨てる。codex-review e6c4298）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__sgSaved = stopGen; stopGen = -1; window.__types.length = 0; window.__turn = null; startRec()")
+    pg.wait_for_timeout(800)
+    early = (pg.evaluate("!!(rec && rec.state === 'recording')"), pg.evaluate("window.__types.includes('begin')"),
+             pg.evaluate("document.getElementById('statusText').textContent.includes('つないでいる')"))
+    pg.evaluate("stopGen = window.__sgSaved")
+    check("録音: 最初の停止の回数を受け取るまでは録音を始めない", early, (False, False, True))
+    # マイクの許可を待つ間にほかの画面で止めたら、録音を始めずにマイクを放す（codex-review 83aa65b）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__gum = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);"
+                " navigator.mediaDevices.getUserMedia = c => new Promise(r => setTimeout(() => r(window.__gum(c)), 600));"
+                " window.__types.length = 0; startRec();"
+                " setTimeout(() => ws.onmessage({ data: JSON.stringify({ type: 'stopgen', n: Math.max(stopGen, 0) + 1 }), target: ws }), 150)")
+    pg.wait_for_timeout(1500)
+    mic_rec = pg.evaluate("!!(rec && rec.state === 'recording')")
+    mic_status = pg.evaluate("document.getElementById('statusText').textContent.includes('ほかの画面で止めた')")
+    pg.evaluate("() => { navigator.mediaDevices.getUserMedia = window.__gum; if (rec && rec.state === 'recording') stopRec(); }")
+    check("録音: マイクの許可を待つ間にほかの画面で止めたら、録音を始めない", (mic_rec, mic_status), (False, True))
+    # 止めて抜けた読み上げの終わりの知らせでは、停止の結果の表示（確かめの頼み）を「話し終わりました」で上書きしない（codex-review 10a2010）
+    pg.evaluate("setStatus('止めたか確かめられませんでした（試験）'); ws.onmessage({ data: JSON.stringify({ type: 'done', sentences: 0, stopped: true }), target: ws })")
+    check("停止: 止めて抜けた読み上げの終わりでは、停止の結果の表示を変えない",
+          pg.evaluate("document.getElementById('statusText').textContent"), "止めたか確かめられませんでした（試験）")
+    # 録音の途中で話し相手が変わったら、送らずに録り直しを頼む（返信先が変わったときと同じ。codex-review 5fff07e）
+    pg.wait_for_timeout(600)
+    pg.evaluate(PICK)
+    pg.evaluate("window.__types.length = 0; window.__turn = null; window.__pane0 = $('agent').value; startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    other_pane = pg.evaluate("(() => { const o = document.createElement('option'); o.value = 'w9:other'; o.textContent = '別の相手（試験）'; o.id = 'otherOpt';"
+                             " $('agent').appendChild(o); return o.value; })()")  # 録音の途中で選べる別の相手（試験の中だけ）
+    pg.evaluate(f"$('agent').value = {json.dumps(other_pane)}")
+    pg.wait_for_timeout(800)
+    pg.evaluate("stopRec()")
+    pg.wait_for_function("window.__turn || document.getElementById('statusText').textContent.includes('話し相手が変わった')", timeout=5000)
+    pane_changed = (bool(other_pane), pg.evaluate("!!window.__turn"), pg.evaluate("document.getElementById('statusText').textContent.includes('話し相手が変わった')"))
+    pg.evaluate("$('agent').value = window.__pane0; document.getElementById('otherOpt')?.remove()")
+    check("録音: 録音の途中で話し相手が変わったら、送らずに録り直しを頼む", pane_changed, (True, False, True))
+    # 録音の途中で話し相手を切り替えて戻しても、送らない（codex-review a63098a）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__types.length = 0; window.__turn = null; window.__pane1 = $('agent').value;"
+                " (() => { const o = document.createElement('option'); o.value = 'w9:other2'; o.textContent = '別の相手（試験）'; o.id = 'otherOpt2'; $('agent').appendChild(o); })(); startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    pg.evaluate("$('agent').value = 'w9:other2'")
+    pg.wait_for_timeout(500)
+    pg.evaluate("$('agent').value = window.__pane1")
+    pg.wait_for_timeout(500)
+    pg.evaluate("stopRec()")
+    pg.wait_for_function("window.__turn || document.getElementById('statusText').textContent.includes('話し相手が変わった')", timeout=5000)
+    back_got = (pg.evaluate("!!window.__turn"), pg.evaluate("document.getElementById('statusText').textContent.includes('話し相手が変わった')"))
+    pg.evaluate("document.getElementById('otherOpt2')?.remove()")
+    check("録音: 録音の途中で話し相手を切り替えて戻しても、送らない", back_got, (False, True))
+    # 取り消しの知らせが、いま表示している発言のものなら、「送りました・考え中」を「送っていません」に直す（停止の結果・ほかの発言の表示は変えない。codex-review a63098a）
+    notice_got = pg.evaluate("""() => {
+      const st = () => document.getElementById('statusText').textContent, out = [];
+      const tell = (b, pg) => ws.onmessage({ data: JSON.stringify({ type: 'notice', text: '送る前に取り消したので、セッションへの前の指示は送っていません', b, pg }), target: ws });
+      setStatus('エージェントに送りました。考え中…'); tell(beginSeq, PAGE); out.push(st());
+      setStatus('止めました'); tell(beginSeq, PAGE); out.push(st());
+      setStatus('エージェントに送りました。考え中…'); tell(beginSeq + 100, PAGE); out.push(st());
+      setStatus('エージェントに送りました。考え中…'); tell(beginSeq, 'oldpage'); out.push(st());  // 読み込み直す前の発言の知らせ（番号が同じでも印が違う）
+      setStatus('エージェントに送りました。考え中…');
+      ws.onmessage({ data: JSON.stringify({ type: 'notice', text: '送信できませんでした: 届かなかった', b: beginSeq, pg: PAGE, status: '送信できませんでした' }), target: ws }); out.push(st());
+      setStatus('止めたか確かめられませんでした（試験）');
+      ws.onmessage({ data: JSON.stringify({ type: 'notice', text: '送信できませんでした: 遅れて届いた', b: beginSeq, pg: PAGE, status: '送信できませんでした' }), target: ws }); out.push(st());
+      setStatus('聞き取り中…'); tell(beginSeq, PAGE); out.push(st());  // 聞き取ったあと送らずに取り消した録音の指示（codex-review 84a5fa0）
+      return out; }""")
+    check("取り消しの知らせは、いま表示している発言（番号と読み込みの印が合う）のものだけ状態の欄を直す（聞き取り中も）", notice_got,
+          ["送っていません", "止めました", "エージェントに送りました。考え中…", "エージェントに送りました。考え中…", "送信できませんでした", "止めたか確かめられませんでした（試験）", "送っていません"])
+    # 録音を始めたあとにつなぎ直したら、送らずに録り直しを頼み、返信先は残す（codex-review 624d2d4）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__types.length = 0; window.__turn = null; setReplyTarget({ at: 555.5, about: 'つなぎ直しの前の報告' }); startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    pg.evaluate("window.__oldws = ws; ws = new WebSocket(ws.url)")  # 録音の間につなぎ直した
+    pg.wait_for_function("ws.readyState === 1", timeout=5000)
+    pg.wait_for_timeout(600)
+    pg.evaluate("stopRec()")
+    pg.wait_for_function("window.__turn || document.getElementById('statusText').textContent.includes('つなぎ直した')", timeout=5000)
+    recon_got = (pg.evaluate("!!window.__turn"), pg.evaluate("document.getElementById('statusText').textContent.includes('つなぎ直した')"),
+                 pg.evaluate("replyTarget && replyTarget.at"))
+    pg.evaluate("() => { try { ws.close(); } catch {} ws = window.__oldws; setReplyTarget(null); }")
+    check("録音: 録音を始めたあとにつなぎ直したら、送らずに録り直しを頼み、返信先は残す", recon_got, (False, True, 555.5))
+    # 録音の途中で、同じ場所のセッションが入れ替わったら（一覧の更新で印が変わったら）、送らない（codex-review 66730ac）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__types.length = 0; window.__turn = null; window.__key0 = curAgent().key; startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    pg.evaluate("curAgent().key = 'other-session'")
+    pg.wait_for_timeout(1500)  # 短すぎない録音にする
+    pg.evaluate("stopRec()")
+    pg.wait_for_function("window.__turn || document.getElementById('statusText').textContent.includes('話し相手が変わった')", timeout=5000)
+    key_got = (pg.evaluate("!!window.__turn"), pg.evaluate("document.getElementById('statusText').textContent.includes('話し相手が変わった')"))
+    pg.evaluate("curAgent().key = window.__key0")
+    check("録音: 録音の途中で同じ場所のセッションが入れ替わったら、送らない", key_got, (False, True))
+    # 最初の停止の回数を受け取るまでは、文字の発言も送らない（打った文は欄に残す。codex-review 66730ac）
+    pg.evaluate("window.__sgSaved2 = stopGen; stopGen = -1; window.__types.length = 0; document.getElementById('typed').value = '開いた直後の文字'; document.getElementById('typedForm').requestSubmit()")
+    pg.wait_for_timeout(300)
+    text_early = (pg.evaluate("window.__types.includes('text')"), pg.evaluate("document.getElementById('typed').value"),
+                  pg.evaluate("document.getElementById('statusText').textContent.includes('つないでいる')"))
+    pg.evaluate("stopGen = window.__sgSaved2; document.getElementById('typed').value = ''")
+    check("文字: 最初の停止の回数を受け取るまでは送らず、打った文は欄に残す", text_early, (False, "開いた直後の文字", True))
+    # 本体が、止めたか確かめられないと返したら、「止めました」と出さずに確かめを頼む（codex-review 57c6291）
+    pg.evaluate("ws.onmessage({ data: JSON.stringify({ type: 'stopped', n: 1e9, unsure: true }), target: ws })")
+    check("停止: 止めたか確かめられないと返されたら、「止めました」と出さずに確かめを頼む",
+          pg.evaluate("document.getElementById('statusText').textContent.includes('確かめられませんでした')"), True)
+    # 次の発言を始めたあとに届いた古い停止の返事でも、確かめられないなら、確かめを頼む（表示のほかは変えない。codex-review 9d641dc）
+    pg.evaluate("setStatus('考え中'); ws.onmessage({ data: JSON.stringify({ type: 'stopped', n: -1, unsure: true }), target: ws })")
+    check("停止: 次の発言を始めたあとに届いた古い返事でも、確かめられないなら確かめを頼む",
+          pg.evaluate("document.getElementById('statusText').textContent.includes('確かめられませんでした')"), True)
+    # 名乗りで同期に応じると伝え、本体からの同期の合図は、届いた接続にすぐ返す（codex-review 62a9436）
+    pg.evaluate("window.__types.length = 0; ws.onmessage({ data: JSON.stringify({ type: 'sync', n: 7 }), target: ws })")
+    pg.wait_for_timeout(200)
+    check("同期: 名乗りで同期に応じると伝え、同期の合図はすぐ返す",
+          (pg.evaluate("window.__hello.length > 0 && window.__hello[window.__hello.length - 1].sync === true"), pg.evaluate("window.__types.includes('sync')")), (True, True))
+    # 録り終えた声を本体に送っている間は、文字の発言を送らない（声の本体を用意する間に送った文字を、あとの古い声で取り消さない）。
+    # 発言を始めた合図には、本体から知らされた停止の回数を付ける（codex-review 6b2ddfe）
+    pg.wait_for_timeout(600)
+    pg.evaluate("window.__types.length = 0; startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    sg_sent = pg.evaluate("window.__begin && window.__begin.sg")
+    pg.wait_for_timeout(1500)
+    pg.evaluate("window.__ab2 = Blob.prototype.arrayBuffer; Blob.prototype.arrayBuffer = function () { const p = window.__ab2.call(this);"
+                " return new Promise(r => setTimeout(() => r(p), 600)); }; stopRec();"
+                " setTimeout(() => { document.getElementById('typed').value = '声を送る間の文字'; document.getElementById('typedForm').requestSubmit(); }, 150)")
+    pg.wait_for_timeout(1200)
+    pg.evaluate("() => { Blob.prototype.arrayBuffer = window.__ab2; }")
+    check("録音: 声を送っている間は文字の発言を送らず（打った文は欄に残す）、合図には停止の回数を付ける",
+          (pg.evaluate("window.__types.includes('text')"), pg.evaluate("document.getElementById('typed').value"), type(sg_sent) is int and sg_sent >= 0),
+          (False, "声を送る間の文字", True))
+    pg.evaluate("document.getElementById('typed').value = ''")
+    # 前の「止めた」への返事が、次の録音を始めたあとに届いても、「止めました」と出さず印も光らせない（録音は続いている。codex-review 6096e1d）
+    pg.wait_for_timeout(600)
+    pg.evaluate("startRec()")
+    pg.wait_for_function("rec && rec.state === 'recording'", timeout=5000)
+    pg.evaluate("setStatus('録音中の目印'); faceAckWait = true; ws.onmessage({ data: JSON.stringify({ type: 'stopped', n: utterStops }) })")  # 録音を始める前の停止への返事
+    late = (pg.evaluate("document.getElementById('statusText').textContent"), pg.evaluate("faceAckWait"),
+            pg.evaluate("document.getElementById('face').classList.contains('ack')"), pg.evaluate("rec.state"))
+    pg.evaluate("document.getElementById('stop').click()")  # この録音は捨てる
+    pg.wait_for_function("rec.state === 'inactive'", timeout=5000)
+    check("録音: 録音の最中に前の「止めた」への返事が届いても、「止めました」と出さず印も光らせない", late, ("録音中の目印", False, False, "recording"))
+    # 停止の番号で見分ける: 次の発言を始めたあとの古い返事・話し始めるときの再生だけの停止への返事では、表示も顔も変えない。発言を始めたあとの停止への返事なら変える
+    # （codex-review 6096e1d・dad00a5・f73d1be）
+    pg.wait_for_timeout(600)
+    def stopped_case(payload):
+        pg.evaluate(f"setStatus('目印'); face('think'); ws.onmessage({{ data: JSON.stringify({payload}) }})")
+        return (pg.evaluate("document.getElementById('statusText').textContent"), pg.evaluate("document.getElementById('face').dataset.s"))
+    pg.evaluate("utterStops = recStops")
+    stale = stopped_case("{ type: 'stopped', n: utterStops }")
+    talkonly = stopped_case("{ type: 'stopped', scope: 'talk' }")
+    fresh = stopped_case("{ type: 'stopped', n: utterStops + 1 }")
+    check("止めた: 次の発言を始める前の停止・話し始めるときの停止への返事では変えず、発言を始めたあとの停止への返事なら止めました",
+          (stale, talkonly, fresh), (("目印", "think"), ("目印", "think"), ("止めました", "idle")))
+    pg.evaluate("face('idle')")
     # 再生にタップが要るとき（報告を聞くだけの使い方）のタップでも、画面を消さない許可を頼む
     pg.goto(BASE + "/?face")
     pg.wait_for_function("document.getElementById('face').dataset.s === 'idle'", timeout=10000)

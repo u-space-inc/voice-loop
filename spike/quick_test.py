@@ -223,10 +223,10 @@ def until(w, kind):
     return seen
 
 
-def say(w, text):
+def say(w, text, hid=None):
     """発言を送り、その発言への返事（報告ではない reply）か失敗（error）を受けてから、話し終わり（done）までを受け取る
-    （前の報告の読み残しの done で、早く戻らないように）。"""
-    w.send_json({"type": "text", "text": text, "pane": HP, "speaker": 0})
+    （前の報告の読み残しの done で、早く戻らないように）。hid は、画面が送るを押した時点で受け取っていた返事の番号（画面と同じに付ける）。"""
+    w.send_json({"type": "text", "text": text, "pane": HP, "speaker": 0, **({"hid": hid} if hid is not None else {})})
     seen = []
     while text and not (seen and (seen[-1]["type"] == "error" or (seen[-1]["type"] == "reply" and not seen[-1].get("report")))):
         seen.append(w.receive_json())
@@ -255,10 +255,10 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
 
         # 守り: 頭が承認の問いを出した → 本体が決まった問いに答えた → 次の「はい」の直前に聞いた文は空
         plan.append("shop の承認、許可しますか？")
-        say(a, "shop の様子を見て")
+        asked = say(a, "shop の様子を見て")
         check("前提: 頭の問いが、利用者の聞いた文になっている", s.hermes.HERMES_HEARD["text"], "shop の承認、許可しますか？")
         n_calls = len(calls)
-        msgs = say(a, "次は？")
+        msgs = say(a, "次は？", next((m.get("hid") for m in asked if m["type"] == "reply"), None))  # 画面は、受け取った問いの番号を付けて送る
         reply = next((m for m in msgs if m["type"] == "reply"), {})
         check("S2: 決まった問いは本体が答える（Hermes に送らない）", (len(calls) - n_calls, reply.get("text")),
               (0, "次は、shop（受注）が承認待ちです。このあと 1 件あります。"))

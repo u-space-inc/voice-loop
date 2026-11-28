@@ -5,6 +5,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 TMP = tempfile.mkdtemp()
@@ -85,7 +87,7 @@ def answer(keep=False, **body):
     state["sent"].clear()
     if not keep:
         s.ANSWERED.clear()
-    r = json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "sess-1", **body})).body)
+    r = json.loads(asyncio.run(page_answer({"pane": "w9:p1", "key": "sess-1", **body})).body)
     return r, list(state["sent"])
 
 
@@ -93,6 +95,10 @@ def case(name, **st):
     state.update({"status": "blocked", "screen": PERMISSION, "trust": False, **st})
     return name
 
+
+
+def page_answer(body):  # 画面のボタンからの答え（押したときの停止の回数 sg を、画面と同じく添える）
+    return s.api_answer({"sg": s.STOP_GEN["n"], **body})
 
 results = []
 
@@ -134,7 +140,7 @@ for name, key in (("別のセッション", "sess-2"), ("key が空", ""), ("key
     state["sent"].clear()
     s.ANSWERED.clear()
     req = {"pane": "w9:p1", "fp": fp, "choice": "allow", **({} if key is None else {"key": key})}
-    r = json.loads(asyncio.run(s.api_answer(req)).body)
+    r = json.loads(asyncio.run(page_answer(req)).body)
     check(f"{name}には送らない", (r["reason"], state["sent"]), ("gone", []))
 check("問いの読み取りも key が要る", prompt(""), {"kind": "gone"})
 
@@ -147,7 +153,7 @@ check("同じ問いに、続けて断るも送らない", (r["reason"], sent), (
 
 
 async def both():
-    return await asyncio.gather(*(s.api_answer({"pane": "w9:p1", "key": "sess-1", "fp": fp, "choice": "allow"}) for _ in range(2)))
+    return await asyncio.gather(*(page_answer({"pane": "w9:p1", "key": "sess-1", "fp": fp, "choice": "allow"}) for _ in range(2)))
 state["sent"].clear()
 s.ANSWERED.clear()
 rs = sorted(json.loads(r.body).get("reason", "ok") for r in asyncio.run(both()))
@@ -247,6 +253,7 @@ check("ハブ経由の答えは、画面のボタンの返答の鍵が空くま�
 s.hub_turns = lambda n=1: [("t2", "はい")]  # 利用者の最後の発言（本体は引数なしでも呼ぶ: hub_human_turn）
 s.hub_heard = lambda turn: "proj の承認、許可しますか？"  # その直前に利用者が聞いたハブの返答
 s.hub_via = lambda turn: ""  # その発言は画面から（台帳に無い発言は、本体が「機械から」とみなして断る）
+s.hub_current = lambda turn: True  # その発言のあとに、利用者は止めていない・次の発言をしていない（台帳に無い発言は、本体が断る）
 s.jsonl_path = lambda a: None
 s.start_watch = lambda *a, **k: None
 
@@ -260,12 +267,122 @@ for order in ("ハブ → ボタン", "ボタン → ハブ"):
     fp = prompt()["fp"]
     s.ANSWERED.clear(); s._answer_lock = asyncio.Lock(); state["sent"].clear()
     s.SEEN_PROMPT["w9:p1"] = (fp, "t1", "sess-1")  # ハブは前の発言で問いを見て、利用者に伝えた
-    page = lambda: json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "sess-1", "fp": fp, "choice": "allow"})).body)
+    page = lambda: json.loads(asyncio.run(page_answer({"pane": "w9:p1", "key": "sess-1", "fp": fp, "choice": "allow"})).body)
     first, second = (hub("yes"), page()) if order == "ハブ → ボタン" else (page(), hub("yes"))
     check(f"{order}: 画面が古い問いのままでも、送るのは 1 回だけ", (first.get("ok"), second.get("reason"), state["sent"]), (True, "answered", ["1"]))
     s.SEEN_PROMPT["w9:p1"] = (fp, "t1", "sess-1")
     check(f"{order}: そのあとハブが断る（いいえ）も、同じ問いには送らない", (hub("no").get("reason"), state["sent"]), ("answered", ["1"]))
+# ハブからの答えのキーを送ったあと、herdr の結果が分からなければ、送れなかったとは言わず（unsure）、同じ問いに重ねて送らない。送っていないと分かれば送れなかったとする（codex-review 373435a）
+outs_hub = []
+real_h_hub = s.herdr
+for resp in ({"raw": "中身の分からない返事", "code": 0}, {"error": {"code": "spawn_failed", "message": "起動できなかった"}}):
+    case("結果が分からない", screen=PERMISSION)
+    fp = prompt()["fp"]
+    s.ANSWERED.clear(); s._answer_lock = asyncio.Lock(); state["sent"].clear()
+    s.SEEN_PROMPT["w9:p1"] = (fp, "t1", "sess-1")
+    s.herdr = lambda *a, resp=resp, **k: resp if a[:2] == ("agent", "send-keys") else real_h_hub(*a, **k)
+    try:
+        rh = hub("yes")
+    finally:
+        s.herdr = real_h_hub
+    outs_hub.append((rh.get("reason"), "確かめて" in (rh.get("why") or ""), s.answered("w9:p1", fp)))
+check("ハブからの答えのキーの結果が分からなければ unsure（重ねて送らない）、送っていないと分かれば送れなかったとする",
+      outs_hub, [("unsure", True, True), ("herdr が応答しません", False, False)])
 s.ANSWERED.clear()
+# 答えに使う発言のあとに、利用者が止めた・次の発言をしたら、頭が回の途中で答えを送らない（a2a 30fd5b94）
+case("止めたあと", screen=PERMISSION)
+fp = prompt()["fp"]
+s.SEEN_PROMPT["w9:p1"] = (fp, "t1", "sess-1"); state["sent"].clear(); s._answer_lock = asyncio.Lock()
+s.hub_current = lambda turn: False
+check("止めたあと: 答えに使う発言のあとに止めた・次の発言をしたなら、答えを送らない", (hub("yes").get("reason"), state["sent"]), ("stopped", []))
+s.hub_current = lambda turn: True
+s.ANSWERED.clear()
+# いまの発言の画面が同期の合図を返すまでは答えない。返す前に切れた発言でも答えない。返したら答える（codex-review 62a9436・5fabc67 の P1）
+limit0, s.SETTLE_LIMIT, s.SETTLE_LAST["n"] = s.SETTLE_LIMIT, 0.2, 777
+sync_got = []
+for name, entry in (("返事を待っている", [threading.Event(), None]), ("返事の前に切れた", [threading.Event(), False]), ("返事が来た", [threading.Event(), True])):
+    if entry[1] is not None:
+        entry[0].set()
+    s.SETTLING[777] = entry
+    s.SEEN_PROMPT["w9:p1"] = (fp, "t1", "sess-1"); state["sent"].clear(); s.ANSWERED.clear(); s._answer_lock = asyncio.Lock()
+    sync_got.append((name, hub("yes").get("reason"), list(state["sent"])))
+s.SETTLING.pop(777, None)
+# 答えの途中（セッションを読む間）に次の発言が入り、その発言の画面がまだ返していない。入口ではなく、使う発言が決まってから待つ
+real_worker = s._worker
+
+
+def worker_then_next(pane):
+    s.SETTLE_LAST["n"] = 778
+    s.SETTLING[778] = [threading.Event(), None]
+    return real_worker(pane)
+
+
+s._worker = worker_then_next
+s.SETTLE_LAST["n"] = 777
+s.SEEN_PROMPT["w9:p1"] = (fp, "t1", "sess-1"); state["sent"].clear(); s.ANSWERED.clear(); s._answer_lock = asyncio.Lock()
+sync_got.append(("途中で次の発言", hub("yes").get("reason"), list(state["sent"])))
+s._worker = real_worker
+s.SETTLING.pop(778, None)
+# 同期の待ちは、セッションと問いを読む前（待つ間に問いが進んでも、読むのは返事のあと。codex-review 2eccfb5 の P1）
+s.SETTLE_LIMIT, s.SETTLE_LAST["n"] = 2.0, 779
+late = [threading.Event(), None]
+s.SETTLING[779] = late
+
+
+def came_later():
+    time.sleep(0.2)
+    late[1] = True
+    late[0].set()
+
+
+read_after = []
+s._worker = lambda pane: (read_after.append(late[0].is_set()), real_worker(pane))[1]
+threading.Thread(target=came_later).start()
+s.SEEN_PROMPT["w9:p1"] = (fp, "t1", "sess-1"); state["sent"].clear(); s.ANSWERED.clear(); s._answer_lock = asyncio.Lock()
+sync_got.append(("待ちのあとに読む", hub("yes").get("reason"), list(state["sent"]), read_after[:1]))
+s._worker = real_worker
+s.SETTLING.pop(779, None)
+s.SETTLE_LIMIT, s.SETTLE_LAST["n"] = limit0, -1
+# 取り消しにくい操作の聞き返しは、登録する直前にもいまの発言か確かめる（読み取りの間に止めたら、止める前の要求で登録し直さない。codex-review ab8a5e5 の P1）
+case("取り消しにくい承認（読み取りの間に止めた）", screen=RISKY)
+fp_r = prompt()["fp"]
+s.SEEN_PROMPT["w9:p1"] = (fp_r, "t1", "sess-1"); state["sent"].clear(); s.ANSWERED.clear(); s._answer_lock = asyncio.Lock()
+s.CONFIRMING.pop("w9:p1", None)
+cur_calls = []
+s.hub_current = lambda turn: (cur_calls.append(1), len(cur_calls) == 1)[1]  # 1 回目（入口の後）はいまの発言、そのあと止めた
+risky_got = (hub("yes").get("reason"), "w9:p1" in s.CONFIRMING, list(state["sent"]))
+s.hub_current = lambda turn: True
+check("取り消しにくい操作の聞き返しは、登録する直前に止めていたら登録しない", risky_got, ("stopped", False, []))
+case("止めたあと", screen=PERMISSION)  # 続く試験の画面に戻す
+# 画面との同期は、画面のボタンと共有する鍵を取る前に待つ（待つ間に、ほかの画面のボタンを止めない。codex-review 8093b0b）
+s.SETTLE_LIMIT, s.SETTLE_LAST["n"] = 0.6, 780
+s.SETTLING[780] = [threading.Event(), None]
+s._answer_lock = asyncio.Lock()
+
+
+async def lock_free_while_waiting():
+    t = asyncio.create_task(s.hub_answer({"pane": "w9:p1", "answer": "yes"}))
+    await asyncio.sleep(0.2)
+    free = not s._answer_lock.locked()
+    r = json.loads((await t).body)
+    return free, r.get("reason")
+
+
+lock_got = asyncio.run(lock_free_while_waiting())
+s.SETTLING.pop(780, None)
+s.SETTLE_LIMIT, s.SETTLE_LAST["n"] = limit0, -1
+check("画面との同期は、画面のボタンと共有する鍵を取る前に待つ", lock_got, (True, "unconfirmed"))
+# ほかの操作の途中（鍵が使われている）で送らなかったら、止めたのではなく busy と返す（codex-review 5fff07e）
+real_if_still = s._if_still
+s._if_still = lambda *a: s.BUSY
+s.SEEN_PROMPT["w9:p1"] = (fp, "t1", "sess-1"); state["sent"].clear(); s.ANSWERED.clear(); s._answer_lock = asyncio.Lock()
+busy_got = (hub("yes").get("reason"), list(state["sent"]))
+s._if_still = real_if_still
+s.ANSWERED.clear()
+check("ほかの操作の途中で送らなかったら busy と返す", busy_got, ("busy", []))
+s.ANSWERED.clear()
+check("同期: 返事を待っている・返事の前に切れた発言では答えず、返事が来たら答える",
+      sync_got, [("返事を待っている", "unconfirmed", []), ("返事の前に切れた", "unconfirmed", []), ("返事が来た", None, ["1"]), ("途中で次の発言", "unconfirmed", []), ("待ちのあとに読む", None, ["1"], [True])])
 
 # セッションの立て直し（key はセッション ID で見分ける）
 AGENT_RE = {**AGENT, "session": "old-session"}
@@ -274,9 +391,9 @@ case("立て直す前の承認")
 fp = s._asked("w9:p1", "old-session")[1]["fp"]
 AGENT_RE["session"] = "new-session"  # 同じ pane でセッションが立て直された（画面の文字は同じ）
 state["sent"].clear(); s.ANSWERED.clear()
-r = json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "old-session", "fp": fp, "choice": "allow"})).body)
+r = json.loads(asyncio.run(page_answer({"pane": "w9:p1", "key": "old-session", "fp": fp, "choice": "allow"})).body)
 check("立て直されたセッションには、古い欄から送らない", (r["reason"], state["sent"]), ("gone", []))
-r = json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "hub", "fp": fp, "choice": "allow"})).body)
+r = json.loads(asyncio.run(page_answer({"pane": "w9:p1", "key": "hub", "fp": fp, "choice": "allow"})).body)
 check("herdr のセッションを、ハブの鍵 \"hub\" で指しても送らない", (r["reason"], state["sent"]), ("gone", []))
 AGENT_RE["session"] = None  # セッション ID が無い
 check("セッション ID が無ければボタンを出さない", s._ask_of({**AGENT_RE, "status": "blocked"})["kind"], "unknown")
