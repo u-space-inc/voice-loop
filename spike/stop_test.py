@@ -2241,8 +2241,8 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         finally:
             s._asked, s.subprocess.Popen = real_asked21, real_popen21
             s.ANSWERED.clear()
-        check("押したあとの停止が先に届いても、承認のキーは送らない。回数を持たない画面からも送らない",
-              (r21d.get("reason"), r21e.get("reason"), sent21d), ("stopped", "old_page", []))
+        check("押したあとの停止が先に届いても、承認のキーは送らない。回数を持たない画面からも送らず、読み込み直しを案内する（更新前の画面にも why で）",
+              (r21d.get("reason"), r21e.get("reason"), "読み込み直して" in (r21e.get("why") or ""), sent21d), ("stopped", "old_page", True, []))
         # 何も出さずにふつうに終わった送り（pane send-text の成功）は、送れたものとする（止める側で確かめられないとしない。codex-review 8d5b6fa）
         class SilentProc:
             returncode = 0
@@ -2250,15 +2250,39 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             def communicate(self, timeout=None):
                 return "", ""
 
-        s.UNSURE_UNTIL["t"] = 0.0
+        silent_unsure = []
         s.subprocess.Popen = lambda *a, **k: SilentProc()
         try:
-            s._if_still(lambda: True, s._HERDR, "pane", "send-text", "w9:p1", "自由記入")
+            for args in (("pane", "send-text", "w9:p1", "自由記入"), ("agent", "send-keys", "w9:p1", "1")):
+                s.UNSURE_UNTIL["t"] = 0.0
+                s._if_still(lambda: True, s._HERDR, *args)
+                silent_unsure.append(s.UNSURE_UNTIL["t"] > time.monotonic())
         finally:
             s.subprocess.Popen = real_popen21
-        silent_unsure = s.UNSURE_UNTIL["t"] > time.monotonic()
+            s.UNSURE_UNTIL["t"] = 0.0
+        check("何も出さずにふつうに終わった文字の送りは送れたものとし、ほかの操作の空の返事は分からないとする（codex-review e9c4f46）", silent_unsure, [False, True])
+        # 届いたか分からない期限は、鍵の中で延ばす（並んだワーカーが、短い期限で長い期限を上書きしない。codex-review e9c4f46）
+        class OddProc:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return "中身の分からない返事", ""
+
+        s.subprocess.Popen = lambda *a, **k: OddProc()
         s.UNSURE_UNTIL["t"] = 0.0
-        check("何も出さずにふつうに終わった送りは、送れたものとする", silent_unsure, False)
+        s.UNSURE_LOCK.acquire()  # ほかのワーカーが期限を書いている途中
+        try:
+            th = threading.Thread(target=lambda: s._if_still(lambda: True, s._HERDR, "agent", "send-keys", "w9:p1", "1"), daemon=True)
+            th.start()
+            th.join(0.5)
+            during = (th.is_alive(), s.UNSURE_UNTIL["t"] > 0)
+        finally:
+            s.UNSURE_LOCK.release()
+        th.join(5)
+        s.subprocess.Popen = real_popen21
+        after = s.UNSURE_UNTIL["t"] > time.monotonic()
+        s.UNSURE_UNTIL["t"] = 0.0
+        check("届いたか分からない期限は、鍵の中で延ばす", (during, after), ((True, False), True))
         check("画面のボタンからのキーも送り始めの道を通し、確定待ちの停止があれば送らない",
               (btn_calls, r21.get("reason"), r21b.get("ok"), sent21), ([("agent", "send-keys"), ("agent", "send-keys")], "busy", True, [("agent", "send-keys")]))
         # 合図の無い更新前の画面の添付つきの直接の指示は、届くまでに止めたか分からないので送らず、読み込み直しを頼む

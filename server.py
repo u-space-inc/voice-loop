@@ -260,6 +260,13 @@ HELD_TIMEOUT = 15  # 返事を待たない操作（承認のキー・閉じる�
 HELD_MARGIN = 5  # 停止が送り途中の操作を待つのは、HELD_TIMEOUT よりこれだけ長く
 UNSURE_HOLD = 60  # herdr の待ちを打ち切ってから、これだけの間の停止は、止めたか確かめられないと返す（打ち切っても herdr があとで操作することがある）
 UNSURE_UNTIL = {"t": 0.0}
+UNSURE_LOCK = threading.Lock()  # 期限の読み取りと書き戻しを直列にする（並んだワーカーが、短い期限で長い期限を上書きしない。codex-review e9c4f46）
+
+
+def _mark_unsure() -> None:
+    """届いたか分からない操作があった。これから UNSURE_HOLD 秒の停止は、止めたか確かめられないと返す（延ばすだけで、縮めない）。"""
+    with UNSURE_LOCK:
+        UNSURE_UNTIL["t"] = max(UNSURE_UNTIL["t"], time.monotonic() + UNSURE_HOLD)
 HELD_OPS: set[threading.Event] = set()  # 起動して、まだ返っていない承認のキー・閉じる（返ったら立つ印）
 
 
@@ -359,11 +366,11 @@ def _herdr_gated(still, args: tuple, timeout: float | None, hold: bool = False, 
             # 待ちを打ち切った（herdr が返らなかった）・待つ途中で失敗したら、操作が届いたか分からない。停止は「止めました」と言わずに、
             # 止めたか確かめられないと返す（codex-review d9db7c8 の P1）
             try:
-                ev.ok = _herdr_sure(r)
+                ev.ok = _herdr_sure(r, args)
             except Exception:  # 確かめに失敗しても、印は必ず外す（以降の停止を待たせない。codex-review 8093b0b）
                 ev.ok = False
             if not ev.ok:  # 印が一覧から外れたあとに来た停止にも、しばらくは確かめられないと返す（codex-review 9d641dc の P1）
-                UNSURE_UNTIL["t"] = max(UNSURE_UNTIL["t"], time.monotonic() + UNSURE_HOLD)
+                _mark_unsure()
             ev.set()
             HELD_OPS.discard(ev)
 
@@ -375,15 +382,15 @@ SEND_REJECTS = {"agent_blocked", "agent_not_found", "agent_not_running"}
 SEND_ABORTED = {"session_changed", "check_failed", "stop_pending", "spawn_failed"}  # 本体が herdr を起動する前にやめた・起動できなかった（送っていない）
 
 
-def _herdr_sure(r) -> bool:
+def _herdr_sure(r, args: tuple = ()) -> bool:
     """herdr の返事から、操作が届いた・届いていないと確かめられたか。結果（result）か、実行していないと分かる拒否だけ。打ち切り・中身の分からない
     返事・ほかの error（応答待ちの打ち切りなど）は、届いたか分からない（codex-review e7ab276・711ce71 の P1）"""
     if not isinstance(r, dict) or r.get("timeout"):
         return False
     if "result" in r:
         return True
-    if r.get("raw") == "" and r.get("code") == 0:  # 何も出さずにふつうに終わった（pane send-text の成功。codex-review 8d5b6fa）
-        return True
+    if tuple(args[:2]) == ("pane", "send-text") and r.get("raw") == "" and r.get("code") == 0:
+        return True  # 文字の送りが何も出さずにふつうに終わった（pane send-text の成功。ほかの操作の空の返事は分からない。codex-review 8d5b6fa・e9c4f46）
     err = r.get("error")
     code = err.get("code") if isinstance(err, dict) else None
     # 形の違う欄は分からない（codex-review 8093b0b）。送っていないと分かる断りは、指示の送り（ask）と同じく確かめられたとする（codex-review fbf6e98）
@@ -3401,8 +3408,8 @@ async def _answer(body: dict):
     # ボタンを押したときに画面が知っていた停止の回数（sg）。キーを送る直前ごとに照らし、押したあとに止めていたら送らない
     # （停止が答えより先に本体に届いても。codex-review b743362 の P1）。持たない画面（更新前の版）は、止めたあとに押したのかを見分けられないので送らない
     sg0 = body.get("sg")
-    if type(sg0) is not int or sg0 < 0:
-        return JSONResponse({"ok": False, "reason": "old_page"})
+    if type(sg0) is not int or sg0 < 0:  # 更新前の画面は old_page を知らないので、案内を why で添える（codex-review e9c4f46）
+        return JSONResponse({"ok": False, "reason": "old_page", "why": "この画面は古い版です。読み込み直してから押してください"})
     if STOP_GEN["n"] != sg0:
         return JSONResponse({"ok": False, "reason": "stopped"})
     a, asked = await asyncio.to_thread(_asked, pane, key)
