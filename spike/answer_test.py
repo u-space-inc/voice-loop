@@ -272,6 +272,22 @@ for order in ("ハブ → ボタン", "ボタン → ハブ"):
     check(f"{order}: 画面が古い問いのままでも、送るのは 1 回だけ", (first.get("ok"), second.get("reason"), state["sent"]), (True, "answered", ["1"]))
     s.SEEN_PROMPT["w9:p1"] = (fp, "t1", "sess-1")
     check(f"{order}: そのあとハブが断る（いいえ）も、同じ問いには送らない", (hub("no").get("reason"), state["sent"]), ("answered", ["1"]))
+# ハブからの答えのキーを送ったあと、herdr の結果が分からなければ、送れなかったとは言わず（unsure）、同じ問いに重ねて送らない。送っていないと分かれば送れなかったとする（codex-review 373435a）
+outs_hub = []
+real_h_hub = s.herdr
+for resp in ({"raw": "中身の分からない返事", "code": 0}, {"error": {"code": "spawn_failed", "message": "起動できなかった"}}):
+    case("結果が分からない", screen=PERMISSION)
+    fp = prompt()["fp"]
+    s.ANSWERED.clear(); s._answer_lock = asyncio.Lock(); state["sent"].clear()
+    s.SEEN_PROMPT["w9:p1"] = (fp, "t1", "sess-1")
+    s.herdr = lambda *a, resp=resp, **k: resp if a[:2] == ("agent", "send-keys") else real_h_hub(*a, **k)
+    try:
+        rh = hub("yes")
+    finally:
+        s.herdr = real_h_hub
+    outs_hub.append((rh.get("reason"), "確かめて" in (rh.get("why") or ""), s.answered("w9:p1", fp)))
+check("ハブからの答えのキーの結果が分からなければ unsure（重ねて送らない）、送っていないと分かれば送れなかったとする",
+      outs_hub, [("unsure", True, True), ("herdr が応答しません", False, False)])
 s.ANSWERED.clear()
 # 答えに使う発言のあとに、利用者が止めた・次の発言をしたら、頭が回の途中で答えを送らない（a2a 30fd5b94）
 case("止めたあと", screen=PERMISSION)

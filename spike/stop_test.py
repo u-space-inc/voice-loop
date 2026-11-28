@@ -1773,6 +1773,79 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.herdr, s.attachment_lines, s.list_agents = real_herdr35, real_attach35, real_agents
         check("ハブを使わない構成でも、合図の無い文字を受けたら、ほかの画面の前の指示を取り消す",
               (dropped35, any("画面 A の前の指示（ハブなし）" in x for x in prompts35)), (True, False))
+        # 画面 A の合図が受け付けの鍵を待つ間に、別の画面 B の合図を受けても、A の受け付けの回数は鍵を待つ前のもの（A の指示は、あとの B のあとに届けば送らない。codex-review 373435a）
+        check("（前提）前の試験の直接の指示が片づいている（鍵を待つ間の別の画面の合図）", wait_idle(), True)
+        real_admit36 = s.admit_async
+        gate36, slow36 = threading.Event(), {"on": False}
+
+        async def slow_admit36(seen=None):
+            if slow36["on"]:
+                slow36["on"] = False  # 最初の 1 回（画面 A の合図）だけ待たせる
+                await asyncio.to_thread(gate36.wait, 5)
+            return await real_admit36(seen)
+
+        prompts36, sent36 = [], None
+        real_herdr36 = s.herdr
+        s.herdr = lambda *a, **k: (prompts36.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
+        s.admit_async = slow_admit36
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winadm0001"}))
+                slow36["on"] = True
+                wa.send_text(json.dumps({"type": "begin", "b": 1, "pane": "w9:p1", "hid": -1, "sg": s.STOP_GEN["n"]}))  # A の合図が鍵を待つ
+                time.sleep(0.3)
+                with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+                    wb.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winadm0002"}))
+                    wb.send_text(json.dumps({"type": "begin", "b": 1, "pane": hm.HERMES_PANE, "hid": -1, "sg": s.STOP_GEN["n"]}))  # B の合図（あと）
+                    time.sleep(0.3)
+                    gate36.set()
+                    time.sleep(0.2)
+                    wa.send_text(json.dumps({"type": "text", "text": "画面 A の前の指示（鍵を待った合図）", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 1}))
+                    time.sleep(0.5)
+                    wait_idle()
+                    sent36 = any("画面 A の前の指示（鍵を待った合図）" in x for x in prompts36)
+        finally:
+            gate36.set()
+            s.admit_async, s.herdr, s.list_agents = real_admit36, real_herdr36, real_agents
+        check("合図が鍵を待つ間に受けた別の画面の合図より前の指示は、送らない", sent36, False)
+        # 録音中に打った新しい文字の指示は、先に始めた録音の頭で取り消さない。あとから録り終えた録音の指示は送らずに知らせる（codex-review 373435a）
+        check("（前提）前の試験の直接の指示が片づいている（録音中に打った文字）", wait_idle(), True)
+        att_go37, att_in37 = threading.Event(), threading.Event()
+
+        async def held_attach37(ids, talker, pane=""):
+            att_in37.set()
+            await asyncio.to_thread(att_go37.wait, 5)
+            return "", ""
+
+        prompts37, dropped37, got37 = [], None, []
+        real_herdr37, real_attach37, real_tr37 = s.herdr, s.attachment_lines, s.transcribe
+        s.herdr = lambda *a, **k: (prompts37.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
+        s.attachment_lines = held_attach37
+        s.transcribe = lambda audio, filename: "先に始めた録音の指示"
+        s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+        try:
+            with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winrec0001"}))
+                wa.send_text(json.dumps({"type": "begin", "b": 1, "pane": "w9:p1", "hid": -1, "sg": s.STOP_GEN["n"]}))  # 録音を始めた
+                wa.send_text(json.dumps({"type": "begin", "b": 2, "pane": "w9:p1", "hid": -1, "sg": s.STOP_GEN["n"]}))  # 録音中に文字を送った
+                wa.send_text(json.dumps({"type": "text", "text": "録音中に打った新しい指示", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 2}))
+                check("（前提）録音中に打った指示が添付の用意で止まっている", att_in37.wait(5), True)
+                entry37 = next(iter(s.DIRECT_PENDING.values()), None)
+                wa.send_text(json.dumps({"type": "turn", "pane": "w9:p1", "speaker": 0, "filename": "a.webm", "begin": 1}))  # 録り終えた
+                wa.send_bytes(b"0" * 4000)
+                time.sleep(0.5)
+                dropped37 = entry37["dropped"] if entry37 else None
+                att_go37.set()
+                time.sleep(0.3)
+                wait_idle()
+                got37 = read_notice(wa, lambda t, x: "送っていません" in x, 140)
+        finally:
+            att_go37.set()
+            s.herdr, s.attachment_lines, s.transcribe, s.list_agents = real_herdr37, real_attach37, real_tr37, real_agents
+        check("録音中に打った新しい指示は、先に始めた録音の頭で取り消さずに送り、あとから録り終えた録音の指示は送らずに知らせる",
+              (dropped37, any("録音中に打った新しい指示" in x for x in prompts37), any("先に始めた録音の指示" in x for x in prompts37), any("送っていません" in x for t, x in got37)),
+              (False, True, False, True))
         # 指示の送りの、確定待ちの停止の上限は、鍵を取る前から数える（ほかの操作が鍵を長く持っていても、上限で送らずに返る。codex-review 31c9e1c）
         dl_started = []
         real_popen5 = s.subprocess.Popen
@@ -2392,6 +2465,26 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         finally:
             s._asked, s.subprocess.Popen = real_asked21, real_popen21
             s.ANSWERED.clear()
+        # 承認のボタンのキーを送ったあと、herdr の結果が分からなければ、送れなかったとは言わず、画面を確かめるよう案内する。起動できなければ送っていない（codex-review 373435a）
+        class OddBtnProc(BtnProc):
+            def communicate(self, input=None, timeout=None):
+                return "中身の分からない返事", ""
+
+        outs38 = []
+        s._asked = lambda pane, key: ({"pane": "w9:p1", "cwd": "/x/proj", "session": "s1", "status": "blocked"}, {"kind": "permission", "fp": "fpbtn", "risky": False})
+        try:
+            for fake in (lambda *a, **k: OddBtnProc(), lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("herdr"))):
+                s.subprocess.Popen = fake
+                s._answer_lock = asyncio.Lock()
+                s.ANSWERED.clear()
+                r38 = json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "s1", "fp": "fpbtn", "sg": s.STOP_GEN["n"], "choice": "allow"})).body)
+                outs38.append((r38.get("reason"), "確かめて" in (r38.get("why") or ""), s.answered("w9:p1", "fpbtn")))
+        finally:
+            s._asked, s.subprocess.Popen = real_asked21, real_popen21
+            s.ANSWERED.clear()
+            s.UNSURE_UNTIL["t"] = 0.0
+        check("承認のキーの結果が分からなければ、画面を確かめるよう案内し（押し直させない）、起動できなければ送っていないとする",
+              outs38, [("unsure", True, True), ("herdr", False, False)])
         check("押したあとの停止が先に届いても、承認のキーは送らない。回数を持たない画面からも送らず、読み込み直しを案内する（更新前の画面にも why で）",
               (r21d.get("reason"), r21e.get("reason"), "読み込み直して" in (r21e.get("why") or ""), sent21d), ("stopped", "old_page", True, []))
         # 何も出さずにふつうに終わった送り（pane send-text の成功）は、送れたものとする（止める側で確かめられないとしない。codex-review 8d5b6fa）

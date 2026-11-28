@@ -899,7 +899,7 @@ const ASK_HEAD = {
 const ANSWER_FAIL = {
   changed: '画面が変わっていました。出し直したので、確かめてから押してください', none: 'もう止まっていません',
   gone: 'セッションが入れ替わっていました', not_permission: '承認の画面と見分けられませんでした', trust: 'フォルダの信頼は端末で答えてください',
-  unreadable: '画面を読めませんでした', confirm: 'もう一度押してください', unreachable: '接続できません', herdr: 'herdr が応答しません', busy: 'ほかの操作の途中でした。少し待ってから、もう一度押してください', stopped: '止めたので、送っていません。もう一度押してください',
+  unreadable: '画面を読めませんでした', confirm: 'もう一度押してください', unreachable: '接続できません', herdr: 'herdr が応答しません', busy: 'ほかの操作の途中でした。少し待ってから、もう一度押してください', stopped: '止めたので、送っていません。もう一度押してください', unsure: 'herdr の返事を確かめられませんでした',
   bad_choice: 'そのボタンでは答えられません', answered: 'もう答えています',
   not_form: '問いを読み取れませんでした。端末で答えてください',
   stuck: '画面が思った形にならなかったので、送らずに（途中なら、それ以上送らずに）止めました。端末で確かめてください',
@@ -1023,6 +1023,7 @@ async function answer(pane, choice, n) {
   catch { r = { ok: false, reason: 'unreachable' }; }
   item.busy = false; el.remove(); asks.delete(pane);
   if (r.ok) { if (!act) answered[pane] = [q.fp, Date.now()]; sys(`${q.name} に「${r.said}」を送りました`); }
+  else if (r.reason === 'unsure') sys(`⚠ ${q.name} への答えが届いたか確かめられませんでした（${r.why || '押し直す前に、セッションの画面を確かめてください'}）`); // 送れなかったとは言わない
   else sys(`⚠ ${q.name} に答えを送れませんでした: ` + (ANSWER_FAIL[r.reason] || r.reason) + (r.why ? `（${r.why}）` : ''));
   if (act) setTimeout(loadAsks, 200); // 1 問ずつ: 次の 1 問をすぐ出す
   setTimeout(loadAsks, 1500); // 出し直す（問いが変わっていれば、新しい中身で）

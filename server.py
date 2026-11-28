@@ -397,6 +397,21 @@ def _herdr_sure(r, args: tuple = ()) -> bool:
     return isinstance(code, str) and (code in SURE_REJECTS or code in SEND_REJECTS or code in SURE_ACCEPTED)
 
 
+def _key_outcome(r, args: tuple = ()) -> str:
+    """キー・文字の送りの結果。"ok"（届いた）・"unsent"（送っていない: 起動する前にやめた・はっきり断られた）・"unsure"（届いたか分からない）。
+    起動したあとの時間切れ・中身の分からない返事は、届いているかもしれない（送っていないと言うと、押し直して二重になる。codex-review 373435a）"""
+    if not isinstance(r, dict):
+        return "unsure"
+    if isinstance(r.get("result"), dict) or (tuple(args[:2]) == ("pane", "send-text") and r.get("raw") == "" and r.get("code") == 0):
+        return "ok"
+    if _err_code(r) in SEND_ABORTED or _err_code(r) in SEND_REJECTS:
+        return "unsent"
+    return "unsure"
+
+
+KEY_UNSURE = "herdr の返事を確かめられませんでした。届いているかもしれないので、押し直す前にセッションの画面を確かめてください"
+
+
 def wait_inflight(evs: list) -> bool:
     """送り途中の操作（承認のキー・閉じる・指示を送る）が返るのを待つ（ワーカーのスレッドで呼ぶ）。herdr の待ちの上限（HELD_TIMEOUT 秒で打ち切って
     印を立てる）より少し長く待つ。全部ふつうに返ったら True。返らない・打ち切った・待つ途中で失敗したなら False（止めたか確かめられない）"""
@@ -3209,10 +3224,13 @@ async def _hub_answer(body: dict):
             return JSONResponse({"ok": False, "reason": "busy"})
         if r is None:  # スレッドの空きを待つ間に止めた・次の発言をした（送っていない）
             return JSONResponse({"ok": False, "reason": "stopped"})
-        hlog(f"answer → {pane} ({project}): {said} {'ok' if 'result' in r else 'ERR'}", flush=True)
-        if "result" not in r:
+        out = _key_outcome(r)
+        hlog(f"answer → {pane} ({project}): {said} {out}", flush=True)
+        if out == "unsent":
             return JSONResponse({"ok": False, "reason": "herdr が応答しません"})
-        mark_answered(pane, fp)
+        mark_answered(pane, fp)  # 届いたかもしれないときも、重ねて送らない
+        if out == "unsure":  # 起動したあと、結果を確かめられなかった（codex-review 373435a）
+            return JSONResponse({"ok": False, "reason": "unsure", "why": KEY_UNSURE})
     SEEN_PROMPT.pop(pane, None)
     CONFIRMING.pop(pane, None)
     if not WATCHING.get(pane):  # ハブ経由で頼んだ件でなければ見張りが無いので、答えたあとの結果を知らせるために付ける
@@ -3441,10 +3459,13 @@ async def _answer(body: dict):
         return JSONResponse({"ok": False, "reason": "busy"})
     if r is None:  # ボタンを押したあとに止めた（送っていない）
         return JSONResponse({"ok": False, "reason": "stopped"})
-    hlog(f"answer(画面) → {pane} ({a['cwd'].rsplit('/', 1)[-1]}): {said} {'ok' if 'result' in r else 'ERR'}", flush=True)
-    if "result" not in r:
+    out = _key_outcome(r)
+    hlog(f"answer(画面) → {pane} ({a['cwd'].rsplit('/', 1)[-1]}): {said} {out}", flush=True)
+    if out == "unsent":
         return JSONResponse({"ok": False, "reason": "herdr"})
-    mark_answered(pane, fp)
+    mark_answered(pane, fp)  # 届いたかもしれないときも、すぐには押し直させない
+    if out == "unsure":  # 起動したあと、結果を確かめられなかった。送れなかったとは言わない（codex-review 373435a）
+        return JSONResponse({"ok": False, "reason": "unsure", "why": KEY_UNSURE})
     return JSONResponse({"ok": True, "said": said})
 
 
@@ -3489,8 +3510,9 @@ async def step_answer(a: dict, asked: dict, body: dict, confirmed: bool, sg0: in
             raise ask_form.Stuck("ほかの操作の途中です。少し待ってから答え直してください")
         if r is None:  # 答え始めたあとに止めた（残りのキーは送らない）
             raise ask_form.Stuck("止めたので、残りの答えは送っていません")
-        if "result" not in r:
-            raise ask_form.Stuck("herdr が応答しない")
+        out = _key_outcome(r)
+        if out != "ok":
+            raise ask_form.Stuck("herdr がこのキーを送れませんでした" if out == "unsent" else KEY_UNSURE)
 
     async def text(t):
         tried[0] += 1
@@ -3501,8 +3523,9 @@ async def step_answer(a: dict, asked: dict, body: dict, confirmed: bool, sg0: in
             raise ask_form.Stuck("ほかの操作の途中です。少し待ってから答え直してください")
         if r is None:
             raise ask_form.Stuck("止めたので、残りの答えは送っていません")
-        if "result" not in r and r.get("code") != 0:  # send-text はうまくいくと何も出さない（終わりの数 0）。2026-11-17 実機で確かめた
-            raise ask_form.Stuck("herdr が応答しない")
+        out = _key_outcome(r, ("pane", "send-text"))  # send-text はうまくいくと何も出さない（終わりの数 0）。2026-11-17 実機で確かめた
+        if out != "ok":
+            raise ask_form.Stuck("herdr がこの文字を送れませんでした" if out == "unsent" else KEY_UNSURE)
 
     prev = ANSWERED.get(pane)
     mark_answered(pane, sfp, asked["fp"], by="step")  # 送り始めたら、同じ画面に重ねて送らない（途中で止まっても。ハブの経路からも）
@@ -3980,6 +4003,17 @@ async def ws(sock: WebSocket):
         # via: 発言を受けたその場の発言元（機械なら "device"）。無ければいまの名乗りから決める（声は頭のときに控える。頭と声の間に
         #      「画面に戻る」の名乗りが届いても、顔で録った発言を画面からの発言にしない。a2a 3752b7a5）
         nonlocal cancel, current
+        talker0 = TALKERS.get(pane)
+        if acc is not None and acc != ACCEPT["n"] and not (talker0 and talker0.on()):
+            # あとの発言を受け付けたあとに届いた、前の発言のハブ以外への指示（聞き取りの間に別の画面で話した・録音中に打った文字のあとに録り終えた）。
+            # 送らずに元の画面に知らせ、あとの発言のターン・指示・読み上げには触れない（codex-review 7bded3f・373435a）
+            b_ok = isinstance(begin_b, int) and not isinstance(begin_b, bool)
+            pg_ok = begin_pg if b_ok and isinstance(begin_pg, str) and re.fullmatch(r"[a-z0-9]{1,16}", begin_pg) else None
+            if device_drop:
+                notify_unsent("機械からの声のセッションへの指示は、止めたかを確かめられないので送っていません。ハブに頼むか、画面から送ってください")
+            else:
+                notify_unsent("このあとの発言を先に受け付けたので、この指示はセッションに送っていません", b=begin_b if b_ok else None, pg=pg_ok)
+            return
         client.speaker = speaker
         WIN_SPOKE[win_of(client)] = client.last_turn = time.time()  # この窓に最後に話しかけた（報告の声はここで鳴らす）
         cancel.set()  # 前のターンの読み上げが残っていれば止める
@@ -4023,17 +4057,14 @@ async def ws(sock: WebSocket):
         if job is None and not (talker and talker.on()):  # ハブ以外への指示。送るのは画面のターンの中なので、送ったかを本体の一覧で控える
             DIRECT_SEQ["n"] += 1
             direct = direct_turn["d"] = DIRECT_PENDING[DIRECT_SEQ["n"]] = {
-                "key": DIRECT_SEQ["n"], "sent": False, "dropped": False, "handed": False, "lock": threading.Lock(),
+                "key": DIRECT_SEQ["n"], "sent": False, "dropped": False, "handed": False, "lock": threading.Lock(), "acc": acc,
                 "b": begin_b if isinstance(begin_b, int) and not isinstance(begin_b, bool) else None,
                 "pg": begin_pg if isinstance(begin_pg, str) and re.fullmatch(r"[a-z0-9]{1,16}", begin_pg) else None,
                 # 取り消しの知らせに、どの発言の指示か（画面の合図の番号）を付ける（画面は、その発言をまだ表示していれば状態の欄を直す。codex-review a63098a）
                 # 読み込みの印（pg）も返す（読み込み直した画面の新しい発言と、番号だけで取り違えない。codex-review 4908670）
                 "notify": functools.partial(notify_unsent, b=begin_b, pg=begin_pg if isinstance(begin_pg, str) and re.fullmatch(r"[a-z0-9]{1,16}", begin_pg) else None)
                 if isinstance(begin_b, int) and not isinstance(begin_b, bool) else notify_unsent}
-            # 発言を始めたあと・声の頭を受けたあと（聞き取りの間）に、どこかの画面で止めた。または、どこかの画面のあとの発言を受け付けた
-            # （聞き取りの間に受けたあとの発言でも、前の指示は送らない。codex-review 7bded3f）
-            superseded = acc is not None and acc != ACCEPT["n"]
-            if crossed or legacy_drop or (stopgen is not None and stopgen != STOP_GEN["n"]) or superseded:
+            if crossed or legacy_drop or (stopgen is not None and stopgen != STOP_GEN["n"]):  # 発言を始めたあと・声の頭を受けたあと（聞き取りの間）に、どこかの画面で止めた
                 if device_drop:  # 機械の口からの声のハブ以外への指示。録音を始めた時点が分からないので送らない
                     direct["notify"] = lambda: notify_unsent("機械からの声のセッションへの指示は、止めたかを確かめられないので送っていません。ハブに頼むか、画面から送ってください")
                 elif legacy and (crossed or legacy_drop):  # 合図の無い更新前の画面の添付つき・声の指示。確かめられないので送らず、読み込み直しを頼む
@@ -4045,11 +4076,14 @@ async def ws(sock: WebSocket):
     direct_turn: dict = {"d": None}  # いまの画面のターンが、ハブ以外への指示ならその印 {"sent": 送り始めたか}
     my_settle: set[int] = set()  # この接続が同期の返事を返していない発言の受け付けの番号
 
-    def drop_direct(everywhere: bool = False):
+    def drop_direct(everywhere: bool = False, before: int | None = None):
         # この接続の画面のターンを次の発言で取り消す前に呼ぶ。ハブ以外への指示をまだ送っていなければ、送らせず、送っていないと画面に知らせる
         # （「送りました」と出たまま、黙って消さない。codex-review e460a4f）
-        d, direct_turn["d"] = direct_turn["d"], None
-        if d is not None:
+        # before: この発言を受け付けたときの回数。分かれば、それより前に受け付けた指示だけを取り消す（録音中に打った新しい文字の指示を、
+        # 先に始めた録音の頭で取り消さない。codex-review 373435a）
+        d = direct_turn["d"]
+        if d is not None and (before is None or d.get("acc") is None or d["acc"] < before):
+            direct_turn["d"] = None
             drop_pending(d)
         if everywhere:  # 次の発言を受け付けた。ほかの画面の、まだ送っていない前の指示も（本体が受け取った順で前のもの）、送らずに元の画面に知らせる（codex-review c30584e）
             ACCEPT["n"] += 1  # まだ指示になっていない前の発言（聞き取りの間など）は、指示を作るときにこの回数で見分ける（codex-review 7bded3f）
@@ -4197,10 +4231,11 @@ async def ws(sock: WebSocket):
                         if stopped_in_block():  # 聞き取りで受信が止まっていた間に届いていたかもしれない合図。その間に止めていたら、止まり始めた時点のものにする
                             stop_now = min(stop_now, blocked["stop"])
                         drop_direct(everywhere=True)
+                        acc_now = ACCEPT["n"]  # 受け付けの回数は、鍵を待つ前に控える（待つ間に受けたほかの画面の発言の回数にしない。codex-review 373435a）
                         adm = await admit_async(heard_seen(d))
                         if d.get("pane"):  # 宛先が分かるときだけ（ハブ以外宛てなら前の問いを消す）
                             left_hub(str(d["pane"]))
-                        begins[b] = {"stop": stop_now, "adm": adm, "acc": ACCEPT["n"]}
+                        begins[b] = {"stop": stop_now, "adm": adm, "acc": acc_now}
                         while len(begins) > 32:
                             begins.pop(next(iter(begins)))
                     continue
@@ -4224,7 +4259,7 @@ async def ws(sock: WebSocket):
                     # 次の発言を読んだ。この画面の前の、まだ送っていないハブ以外への指示は、鍵を待つ前に送らずに知らせる（codex-review c72fbbe・31c9e1c）。
                     # ほかの画面の指示まで取り消すのは、この頭が受け付けの時点のとき（合図の無い頭）だけ。合図を受けた録音の順は合図で決め、遅れて届いた
                     # 頭で、合図のあとに受けたほかの画面の新しい指示を取り消さない（codex-review c30584e・a592e9a）
-                    drop_direct(everywhere=legacy)
+                    drop_direct(everywhere=legacy, before=None if legacy else d.get("_acc"))
                     if legacy:
                         d["_acc"] = ACCEPT["n"]
                     pending = {**d, "_admitted": adm if adm is not None else await admit_async(heard_seen(d)), "_via": "device" if client.kind == "device" else "",
