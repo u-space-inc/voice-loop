@@ -171,7 +171,7 @@ real_h = s.herdr
 s.herdr = lambda *a, **k: {"raw": "error: no such pane", "code": 1} if a[:2] == ("pane", "send-text") else real_h(*a, **k)
 r = press(act="free", text="駅前の店")
 s.herdr = real_h
-check("文字を送る herdr が失敗で終わったら止まり、Enter を送らない", (r.get("reason"), st["tui"].log), ("stuck", ["down", "down"]))
+check("文字を送る herdr が見知らぬ失敗で終わったら止まり、Enter を送らない（届いたか分からないので unsure。codex-review 289b4ec）", (r.get("reason"), st["tui"].log), ("unsure", ["down", "down"]))
 # 答え始めたあとに止めたら、残りのキー・文字は送らない（ボタンを受け付けたときの停止の回数で照らす。codex-review 8d5b6fa の P1）
 setup(REAL_SHOP_INPUT)
 real_h2 = s.herdr
@@ -209,13 +209,22 @@ for label in ("ほかの操作の途中で断った", "最初のキーの前に�
         s.read_dialog, s._if_still = real_read, real_if_still
     r2 = press(prompt(), act="pick", n=2)
     check(f"キーを送らずに終わったら、答えた印を外して押し直せる（{label}）", (r1.get("reason"), log1, r2.get("ok"), st["tui"].log), ("stuck", [], True, ["2"]))
+# キーを送ったあと herdr の結果を確かめられなければ、送れなかったとは言わず（unsure）、画面を確かめるよう案内し、印は残す（codex-review 289b4ec）
+setup()
+real_h3 = s.herdr
+s.herdr = lambda *a, **k: (real_h3(*a, **k), {"raw": "中身の分からない返事", "code": 0})[1] if a[:2] == ("agent", "send-keys") else real_h3(*a, **k)
+q = prompt()
+r = press(q, act="pick", n=2)
+s.herdr = real_h3
+check("キーの結果を確かめられなければ unsure として返し、画面を確かめるよう案内し、印は残す",
+      (r.get("reason"), "確かめて" in (r.get("why") or ""), s.answered("w9:p1", q["sfp"])), ("unsure", True, True))
 check("キー・文字を送る herdr の呼び出しには、5 秒以下の時間切れを付ける", bool(TIMEOUTS) and all(t is not None and 0 < t <= 5 for t in TIMEOUTS), True)
 setup()
 real = s.read_dialog
 s.read_dialog = lambda pane, *_: (_ for _ in ()).throw(__import__("subprocess").TimeoutExpired("herdr", 5)) if st["tui"].log else real(pane)
 r = press(act="pick", n=2)
 s.read_dialog = real
-check("送ったあとの読み取りが失敗したら、送れたとせず「結果が分からない」と返す", (r.get("ok"), r.get("reason"), "結果が分からない" in (r.get("why") or "")), (False, "stuck", True))
+check("送ったあとの読み取りが失敗したら、送れたとせず「結果が分からない」と返す（unsure。codex-review 289b4ec）", (r.get("ok"), r.get("reason"), "結果が分からない" in (r.get("why") or "")), (False, "unsure", True))
 
 setup()
 q = prompt()

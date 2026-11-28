@@ -262,10 +262,20 @@ class Fake(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_POST(self):  # hubctl answer への答え（試験ごとに ANSWER_REPLY で決める）
+        n = int(self.headers.get("Content-Length") or 0)
+        self.rfile.read(n)
+        body = json.dumps(ANSWER_REPLY[0]).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+
     def log_message(self, *a):
         pass
 
 
+ANSWER_REPLY = [{}]
 with socket.socket() as probe:
     busy = probe.connect_ex(("127.0.0.1", 8792)) == 0
 if busy:
@@ -293,6 +303,14 @@ else:
     out = hubctl("read", "w1:p1", "-n", "2")
     check("hubctl: --task が無ければ、今までどおり（▼ ユーザー、注意は出さない）",
           ("task" in asked_q[-1], "▼ ユーザー" in out.splitlines(), "混ぜないでください" in out), (False, True, False))
+    # hubctl answer: 届いたか分からない答え（unsure・途中で止めた stuck）に「送っていません」と付けない。送っていないものには付ける（codex-review 289b4ec）
+    errs = []
+    for reply in ({"ok": False, "reason": "unsure", "why": "確かめられませんでした"}, {"ok": False, "reason": "stuck", "why": "途中"},
+                  {"ok": False, "reason": "busy"}):
+        ANSWER_REPLY[0] = reply
+        errs.append(subprocess.run([sys.executable, str(ROOT / "hubctl"), "answer", "w1:p1", "yes"], capture_output=True, text=True, env=env, timeout=60).stderr)
+    check("hubctl answer: 届いたか分からない答えに「送っていません」と付けず、送っていないものには付ける",
+          [(e.startswith("答えが届いたか分かりません"), "答えは送っていません:" in e) for e in errs], [(True, False), (True, False), (False, True)])
     srv.shutdown()
 
 ok_n = sum(r[1] for r in results)

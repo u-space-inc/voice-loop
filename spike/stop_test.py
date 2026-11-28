@@ -1843,9 +1843,55 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         finally:
             att_go37.set()
             s.herdr, s.attachment_lines, s.transcribe, s.list_agents = real_herdr37, real_attach37, real_tr37, real_agents
-        check("録音中に打った新しい指示は、先に始めた録音の頭で取り消さずに送り、あとから録り終えた録音の指示は送らずに知らせる",
-              (dropped37, any("録音中に打った新しい指示" in x for x in prompts37), any("先に始めた録音の指示" in x for x in prompts37), any("送っていません" in x for t, x in got37)),
-              (False, True, False, True))
+        check("録音中に打った新しい指示は、先に始めた録音の頭で取り消さずに送り、あとから録り終えた録音の指示は、聞き取った文を「送りました」と出さずに、文を添えて送らずに知らせる",
+              (dropped37, any("録音中に打った新しい指示" in x for x in prompts37), any("先に始めた録音の指示" in x for x in prompts37),
+               any("送っていません" in x and "先に始めた録音の指示" in x for t, x in got37), any(t == "transcript" and "先に始めた録音の指示" in x for t, x in got37)),
+              (False, True, False, True, False))
+        # あとの発言の受け付け（回数を進める）と、前の指示の送る直前の確かめが入れ替わっても、前の指示は送らずに知らせる（codex-review 289b4ec）
+        # 停止をまたいだ古い合図が遅れて届いても、停止のあとに出したほかの画面の新しい指示は取り消さない（codex-review 289b4ec）
+        for label in ("受け付けが送る直前の確かめと入れ替わった", "停止をまたいだ古い合図が遅れて届いた"):
+            check(f"（前提）前の試験の直接の指示が片づいている（{label}）", wait_idle(), True)
+            att_go39, att_in39 = threading.Event(), threading.Event()
+
+            async def held_attach39(ids, talker, pane="", go=att_go39, inn=att_in39):
+                inn.set()
+                await asyncio.to_thread(go.wait, 5)
+                return "", ""
+
+            prompts39, dropped39, got39 = [], None, []
+            real_herdr39, real_attach39 = s.herdr, s.attachment_lines
+            s.herdr = lambda *a, **k: (prompts39.append(a[3]) if a[:2] == ("agent", "prompt") else None, {"result": {"agent": {"agent_status": "idle"}}})[1]
+            s.attachment_lines = held_attach39
+            s.list_agents = lambda: [{"pane": "w9:p1", "cwd": "/x/proj", "agent": "claude", "session": "s1"}]
+            try:
+                with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wa:
+                    wa.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winord0001"}))
+                    wa.send_text(json.dumps({"type": "begin", "b": 1, "pane": "w9:p1", "hid": -1, "sg": s.STOP_GEN["n"]}))
+                    wa.send_text(json.dumps({"type": "text", "text": f"画面 A の指示（{label}）", "pane": "w9:p1", "speaker": 0, "hid": -1, "begin": 1}))
+                    check(f"（前提）画面 A の指示が添付の用意で止まっている（{label}）", att_in39.wait(5), True)
+                    entry39 = next(iter(s.DIRECT_PENDING.values()), None)
+                    if label.startswith("受け付け"):
+                        s.ACCEPT["n"] += 1  # あとの発言の受け付けが回数を進めた（取り消しが印の鍵を取る前に、送る側が確かめる）
+                    else:
+                        with c.websocket_connect("/ws", headers={"host": "127.0.0.1:8790"}) as wb:
+                            wb.send_text(json.dumps({"type": "hello", "speaker": 0, "win": "winord0002"}))
+                            wb.send_text(json.dumps({"type": "begin", "b": 1, "pane": "w9:p1", "hid": -1, "sg": s.STOP_GEN["n"] - 1}))  # 止める前に始めた録音の合図
+                            time.sleep(0.4)
+                    dropped39 = entry39["dropped"] if entry39 else None
+                    att_go39.set()
+                    time.sleep(0.3)
+                    wait_idle()
+                    sent39 = any(f"画面 A の指示（{label}）" in x for x in prompts39)
+                    if label.startswith("受け付け"):
+                        got39 = read_notice(wa, lambda t, x: "送っていません" in x, 150)
+            finally:
+                att_go39.set()
+                s.herdr, s.attachment_lines, s.list_agents = real_herdr39, real_attach39, real_agents
+            if label.startswith("受け付け"):
+                check("あとの発言の受け付けと送る直前の確かめが入れ替わっても、前の指示は送らずに知らせる",
+                      (sent39, any("送っていません" in x for t, x in got39)), (False, True))
+            else:
+                check("停止をまたいだ古い合図が遅れて届いても、停止のあとのほかの画面の新しい指示は取り消さない", (dropped39, sent39), (False, True))
         # 指示の送りの、確定待ちの停止の上限は、鍵を取る前から数える（ほかの操作が鍵を長く持っていても、上限で送らずに返る。codex-review 31c9e1c）
         dl_started = []
         real_popen5 = s.subprocess.Popen

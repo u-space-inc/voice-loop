@@ -3539,11 +3539,15 @@ async def step_answer(a: dict, asked: dict, body: dict, confirmed: bool, sg0: in
     except Exception as e:  # 送る前に止めた・途中で止めた（Stuck）か、読み取り・送信の失敗
         why = str(e) if isinstance(e, ask_form.Stuck) else f"結果が分からない（{type(e).__name__}）"
         hlog(f"answer(画面・1 問ずつ) → {pane} ({project}): 止めました: {why}", flush=True)
+        # キー・文字を送ったあと、届いたか確かめられなかった。送れなかったとは言わず、画面を確かめるよう案内する（codex-review 289b4ec）
+        unsure = tried[0] > 0 and (why == KEY_UNSURE or "届いたか分からない" in why or not isinstance(e, ask_form.Stuck))
         if not tried[0] and ANSWERED.get(pane) is mine:  # キーも文字も 1 つも送っていない。答えた印を外す（押し直しを 15 秒止めない。codex-review b743362）
             if prev:
                 ANSWERED[pane] = prev
             else:
                 ANSWERED.pop(pane, None)
+        if unsure:
+            return {"ok": False, "reason": "unsure", "why": KEY_UNSURE if why == KEY_UNSURE else f"{why}。{KEY_UNSURE}"}
         return {"ok": False, "reason": "stuck", "why": why}
     hlog(f"answer(画面・1 問ずつ) → {pane} ({project}): {said} ok", flush=True)
     return {"ok": True, "said": said, "project": project, "title": a.get("title", "")}
@@ -3928,6 +3932,12 @@ async def ws(sock: WebSocket):
                     with direct["lock"]:
                         if direct["dropped"]:
                             return False
+                        if direct.get("acc") is not None and direct["acc"] != ACCEPT["n"]:
+                            # あとの発言を受け付けた（取り消しが、この印の鍵を取る前）。送らず、ここで取り消して知らせる（取り消しの側は、
+                            # 取り消し済みを見て重ねて知らせない。受け付けは回数を進めてから取り消すので、どちらが先でも送らない。codex-review 289b4ec）
+                            direct["dropped"] = True
+                            loop.call_soon_threadsafe(direct["notify"])
+                            return False
                         direct["sent"] = True
                 # 直接送った話の問いを、前の件のリンクで見せない。印は送ると決めたときだけ付ける（送らずに取り消したら、前の件のリンクを
                 # 外さない。codex-review 3b75d56）。ワーカーのスレッドからなので、イベントループに頼む
@@ -4230,7 +4240,9 @@ async def ws(sock: WebSocket):
                             stop_now = min(stop_now, sg)
                         if stopped_in_block():  # 聞き取りで受信が止まっていた間に届いていたかもしれない合図。その間に止めていたら、止まり始めた時点のものにする
                             stop_now = min(stop_now, blocked["stop"])
-                        drop_direct(everywhere=True)
+                        # 停止をまたいだ合図（止める前に始めた発言。あとで捨てる）は、ほかの画面の新しい指示を取り消さず、受け付けの回数も進めない
+                        # （この画面の前の指示は取り消す。codex-review 289b4ec）
+                        drop_direct(everywhere=stop_now == STOP_GEN["n"])
                         acc_now = ACCEPT["n"]  # 受け付けの回数は、鍵を待つ前に控える（待つ間に受けたほかの画面の発言の回数にしない。codex-review 373435a）
                         adm = await admit_async(heard_seen(d))
                         if d.get("pane"):  # 宛先が分かるときだけ（ハブ以外宛てなら前の問いを消す）
@@ -4317,6 +4329,14 @@ async def ws(sock: WebSocket):
                         await send(type="error", text="聞き取れませんでした")
                         continue
                     text = await asyncio.to_thread(fix_heard, said)  # 画面とハブ・セッションに渡す文。守りの台帳には直す前の said を載せる
+                    hub_t = TALKERS.get(str(head["pane"]))
+                    if head.get("_acc") is not None and head["_acc"] != ACCEPT["n"] and not (hub_t and hub_t.on()):
+                        # あとの発言を受け付けたあとに届いた、前の録音のハブ以外への指示。聞き取った文を画面に出さず（出すと「送りました・考え中」に
+                        # 戻る）、送らずに文を添えて知らせる（codex-review 289b4ec）
+                        b_h = head.get("begin") if isinstance(head.get("begin"), int) and not isinstance(head.get("begin"), bool) else None
+                        pg_h = head.get("pg") if b_h is not None and isinstance(head.get("pg"), str) and re.fullmatch(r"[a-z0-9]{1,16}", head["pg"]) else None
+                        notify_unsent(f"このあとの発言を先に受け付けたので、録音の指示「{text[:80]}」はセッションに送っていません", b=b_h, pg=pg_h)
+                        continue
                     await send(type="transcript", pane=head["pane"], text=text)
                     start_turn(text, head["pane"], int(head["speaker"]), head.get("key"), reply_at_of(head), attachments_of(head),
                                reply_item_of(head), said if text != said else None, admitted=head["_admitted"], via=head["_via"], stopgen=head["_stopgen"],
