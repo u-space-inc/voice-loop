@@ -3387,18 +3387,24 @@ async def api_answer(body: dict):
     守ること: 画面に出したのと同じ問いにだけ答える（指紋で確かめる）。許可は「今回だけ」（1）で、「今後は聞かずに許可」は選ばない。
     取り消しにくい操作に見えるときは、もう一度押してから（confirmed）。承認の画面と見分けられないもの（質問・フォルダの信頼など）には答えない。
     同じ問いに二度答えない。"""
-    sg0 = STOP_GEN["n"]  # ボタンを受け付けたときの停止の回数。キーを送る直前ごとに照らす（そのあと止めたら送らない。codex-review 8d5b6fa の P1）
     async with _answer_lock:
-        return await _answer(body, sg0)
+        return await _answer(body)
 
 
-async def _answer(body: dict, sg0: int | None = None):
+async def _answer(body: dict):
     pane, key, fp = str(body.get("pane", "")), str(body.get("key", "")), str(body.get("fp", ""))
     choice, confirmed = str(body.get("choice", "")), bool(body.get("confirmed"))
     if answered(pane, fp, by="step" if choice == "step" else ""):  # 二度押し・重ねた送信（1 問ずつの答えどうしは、step_answer が sfp で見る）
         return JSONResponse({"ok": False, "reason": "answered"})
     if choice not in ("allow", "deny", "step"):  # 選択肢の問いには step だけ（前の choose は 0.26.1 で外した）
         return JSONResponse({"ok": False, "reason": "bad_choice"})
+    # ボタンを押したときに画面が知っていた停止の回数（sg）。キーを送る直前ごとに照らし、押したあとに止めていたら送らない
+    # （停止が答えより先に本体に届いても。codex-review b743362 の P1）。持たない画面（更新前の版）は、止めたあとに押したのかを見分けられないので送らない
+    sg0 = body.get("sg")
+    if type(sg0) is not int or sg0 < 0:
+        return JSONResponse({"ok": False, "reason": "old_page"})
+    if STOP_GEN["n"] != sg0:
+        return JSONResponse({"ok": False, "reason": "stopped"})
     a, asked = await asyncio.to_thread(_asked, pane, key)
     if asked["kind"] in ("gone", "none", "unreadable", "trust"):
         return JSONResponse({"ok": False, "reason": asked["kind"]})
@@ -3416,7 +3422,7 @@ async def _answer(body: dict, sg0: int | None = None):
         keys, said = "esc", "断る"
     # 画面のボタンのキーも、停止の確定と同じ鍵の中で送り始め、返るまで送り途中の印を持つ（停止は返るのを待ってから「止めました」と返す。
     # 確定待ちの停止があれば送らない。codex-review ebdea92 の P1）
-    not_stopped = (lambda: True) if sg0 is None else (lambda: STOP_GEN["n"] == sg0)  # 確定待ちの停止は、送り始めの道が見る（あれば busy）
+    not_stopped = lambda: STOP_GEN["n"] == sg0  # 確定待ちの停止は、送り始めの道が見る（あれば busy）
     r = await asyncio.to_thread(_if_still, not_stopped, herdr, "agent", "send-keys", pane, keys)
     if r is BUSY:
         return JSONResponse({"ok": False, "reason": "busy"})
@@ -3436,7 +3442,7 @@ async def _answer(body: dict, sg0: int | None = None):
 STEP_ACTS = ("pick", "toggle", "next", "free", "submit")
 
 
-async def step_answer(a: dict, asked: dict, body: dict, confirmed: bool, sg0: int | None = None) -> dict:
+async def step_answer(a: dict, asked: dict, body: dict, confirmed: bool, sg0: int) -> dict:
     """1 回押したぶんを送る。見せたのと同じ画面（指紋）にだけ。取り消しにくい問いは、印の付け外しのほかは、もう一度押してから。呼ぶのは _answer_lock の中。"""
     if "step" not in asked:
         return {"ok": False, "reason": "not_form"}
@@ -3456,11 +3462,16 @@ async def step_answer(a: dict, asked: dict, body: dict, confirmed: bool, sg0: in
     async def read():
         return await asyncio.to_thread(read_dialog, pane, ask_form.READ_MAX)
 
-    # 答え始めたあとに止めたら、残りのキー・文字は送らない（受け付けたときの停止の回数で照らす。codex-review 8d5b6fa の P1）
-    not_stopped = (lambda: True) if sg0 is None else (lambda: STOP_GEN["n"] == sg0)
+    # 答え始めたあとに止めたら、残りのキー・文字は送らない（押したときの停止の回数で照らす。codex-review 8d5b6fa・b743362 の P1）
+    not_stopped = lambda: STOP_GEN["n"] == sg0
+    tried = [0]  # herdr を起動したかもしれない数（BUSY・None は起動していない。それ以外は、届いたかもしれない）
+    send = functools.partial(herdr, timeout=ask_form.READ_MAX)  # herdr そのもの（包むと、送り始めの道が本物の herdr と見分けられない）
 
     async def keys(k):  # 画面のボタンのキーも、送り始めの道を通す（停止と直列にし、送り途中の印を持つ。codex-review ebdea92 の P1）
-        r = await asyncio.to_thread(_if_still, not_stopped, functools.partial(herdr, timeout=ask_form.READ_MAX), "agent", "send-keys", pane, k)
+        tried[0] += 1
+        r = await asyncio.to_thread(_if_still, not_stopped, send, "agent", "send-keys", pane, k)
+        if r is BUSY or r is None or (isinstance(r, dict) and _err_code(r) in SEND_ABORTED):  # 起動していない
+            tried[0] -= 1
         if r is BUSY:
             raise ask_form.Stuck("ほかの操作の途中です。少し待ってから答え直してください")
         if r is None:  # 答え始めたあとに止めた（残りのキーは送らない）
@@ -3469,7 +3480,10 @@ async def step_answer(a: dict, asked: dict, body: dict, confirmed: bool, sg0: in
             raise ask_form.Stuck("herdr が応答しない")
 
     async def text(t):
-        r = await asyncio.to_thread(_if_still, not_stopped, functools.partial(herdr, timeout=ask_form.READ_MAX), "pane", "send-text", pane, t)
+        tried[0] += 1
+        r = await asyncio.to_thread(_if_still, not_stopped, send, "pane", "send-text", pane, t)
+        if r is BUSY or r is None or (isinstance(r, dict) and _err_code(r) in SEND_ABORTED):  # 起動していない
+            tried[0] -= 1
         if r is BUSY:
             raise ask_form.Stuck("ほかの操作の途中です。少し待ってから答え直してください")
         if r is None:
@@ -3477,7 +3491,9 @@ async def step_answer(a: dict, asked: dict, body: dict, confirmed: bool, sg0: in
         if "result" not in r and r.get("code") != 0:  # send-text はうまくいくと何も出さない（終わりの数 0）。2026-11-17 実機で確かめた
             raise ask_form.Stuck("herdr が応答しない")
 
+    prev = ANSWERED.get(pane)
     mark_answered(pane, sfp, asked["fp"], by="step")  # 送り始めたら、同じ画面に重ねて送らない（途中で止まっても。ハブの経路からも）
+    mine = ANSWERED.get(pane)
     SEEN_PROMPT.pop(pane, None)  # ハブがこの前に見た問いへの答えを、このあとの問いに送らない（ハブは問いを見直してから答える）
     CONFIRMING.pop(pane, None)
     STEPPING[pane] = time.time()
@@ -3487,6 +3503,11 @@ async def step_answer(a: dict, asked: dict, body: dict, confirmed: bool, sg0: in
     except Exception as e:  # 送る前に止めた・途中で止めた（Stuck）か、読み取り・送信の失敗
         why = str(e) if isinstance(e, ask_form.Stuck) else f"結果が分からない（{type(e).__name__}）"
         hlog(f"answer(画面・1 問ずつ) → {pane} ({project}): 止めました: {why}", flush=True)
+        if not tried[0] and ANSWERED.get(pane) is mine:  # キーも文字も 1 つも送っていない。答えた印を外す（押し直しを 15 秒止めない。codex-review b743362）
+            if prev:
+                ANSWERED[pane] = prev
+            else:
+                ANSWERED.pop(pane, None)
         return {"ok": False, "reason": "stuck", "why": why}
     hlog(f"answer(画面・1 問ずつ) → {pane} ({project}): {said} ok", flush=True)
     return {"ok": True, "said": said, "project": project, "title": a.get("title", "")}

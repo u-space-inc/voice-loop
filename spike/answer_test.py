@@ -87,7 +87,7 @@ def answer(keep=False, **body):
     state["sent"].clear()
     if not keep:
         s.ANSWERED.clear()
-    r = json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "sess-1", **body})).body)
+    r = json.loads(asyncio.run(page_answer({"pane": "w9:p1", "key": "sess-1", **body})).body)
     return r, list(state["sent"])
 
 
@@ -95,6 +95,10 @@ def case(name, **st):
     state.update({"status": "blocked", "screen": PERMISSION, "trust": False, **st})
     return name
 
+
+
+def page_answer(body):  # 画面のボタンからの答え（押したときの停止の回数 sg を、画面と同じく添える）
+    return s.api_answer({"sg": s.STOP_GEN["n"], **body})
 
 results = []
 
@@ -136,7 +140,7 @@ for name, key in (("別のセッション", "sess-2"), ("key が空", ""), ("key
     state["sent"].clear()
     s.ANSWERED.clear()
     req = {"pane": "w9:p1", "fp": fp, "choice": "allow", **({} if key is None else {"key": key})}
-    r = json.loads(asyncio.run(s.api_answer(req)).body)
+    r = json.loads(asyncio.run(page_answer(req)).body)
     check(f"{name}には送らない", (r["reason"], state["sent"]), ("gone", []))
 check("問いの読み取りも key が要る", prompt(""), {"kind": "gone"})
 
@@ -149,7 +153,7 @@ check("同じ問いに、続けて断るも送らない", (r["reason"], sent), (
 
 
 async def both():
-    return await asyncio.gather(*(s.api_answer({"pane": "w9:p1", "key": "sess-1", "fp": fp, "choice": "allow"}) for _ in range(2)))
+    return await asyncio.gather(*(page_answer({"pane": "w9:p1", "key": "sess-1", "fp": fp, "choice": "allow"}) for _ in range(2)))
 state["sent"].clear()
 s.ANSWERED.clear()
 rs = sorted(json.loads(r.body).get("reason", "ok") for r in asyncio.run(both()))
@@ -263,7 +267,7 @@ for order in ("ハブ → ボタン", "ボタン → ハブ"):
     fp = prompt()["fp"]
     s.ANSWERED.clear(); s._answer_lock = asyncio.Lock(); state["sent"].clear()
     s.SEEN_PROMPT["w9:p1"] = (fp, "t1", "sess-1")  # ハブは前の発言で問いを見て、利用者に伝えた
-    page = lambda: json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "sess-1", "fp": fp, "choice": "allow"})).body)
+    page = lambda: json.loads(asyncio.run(page_answer({"pane": "w9:p1", "key": "sess-1", "fp": fp, "choice": "allow"})).body)
     first, second = (hub("yes"), page()) if order == "ハブ → ボタン" else (page(), hub("yes"))
     check(f"{order}: 画面が古い問いのままでも、送るのは 1 回だけ", (first.get("ok"), second.get("reason"), state["sent"]), (True, "answered", ["1"]))
     s.SEEN_PROMPT["w9:p1"] = (fp, "t1", "sess-1")
@@ -371,9 +375,9 @@ case("立て直す前の承認")
 fp = s._asked("w9:p1", "old-session")[1]["fp"]
 AGENT_RE["session"] = "new-session"  # 同じ pane でセッションが立て直された（画面の文字は同じ）
 state["sent"].clear(); s.ANSWERED.clear()
-r = json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "old-session", "fp": fp, "choice": "allow"})).body)
+r = json.loads(asyncio.run(page_answer({"pane": "w9:p1", "key": "old-session", "fp": fp, "choice": "allow"})).body)
 check("立て直されたセッションには、古い欄から送らない", (r["reason"], state["sent"]), ("gone", []))
-r = json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "hub", "fp": fp, "choice": "allow"})).body)
+r = json.loads(asyncio.run(page_answer({"pane": "w9:p1", "key": "hub", "fp": fp, "choice": "allow"})).body)
 check("herdr のセッションを、ハブの鍵 \"hub\" で指しても送らない", (r["reason"], state["sent"]), ("gone", []))
 AGENT_RE["session"] = None  # セッション ID が無い
 check("セッション ID が無ければボタンを出さない", s._ask_of({**AGENT_RE, "status": "blocked"})["kind"], "unknown")

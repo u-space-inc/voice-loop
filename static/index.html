@@ -899,7 +899,7 @@ const ASK_HEAD = {
 const ANSWER_FAIL = {
   changed: '画面が変わっていました。出し直したので、確かめてから押してください', none: 'もう止まっていません',
   gone: 'セッションが入れ替わっていました', not_permission: '承認の画面と見分けられませんでした', trust: 'フォルダの信頼は端末で答えてください',
-  unreadable: '画面を読めませんでした', confirm: 'もう一度押してください', unreachable: '接続できません', herdr: 'herdr が応答しません', busy: 'ほかの操作の途中でした。少し待ってから、もう一度押してください', stopped: '止めたので、送っていません。もう一度押してください',
+  unreadable: '画面を読めませんでした', confirm: 'もう一度押してください', unreachable: '接続できません', herdr: 'herdr が応答しません', busy: 'ほかの操作の途中でした。少し待ってから、もう一度押してください', stopped: '止めたので、送っていません。もう一度押してください', old_page: 'この画面は古い版です。読み込み直してから押してください',
   bad_choice: 'そのボタンでは答えられません', answered: 'もう答えています',
   not_form: '問いを読み取れませんでした。端末で答えてください',
   stuck: '画面が思った形にならなかったので、送らずに（途中なら、それ以上送らずに）止めました。端末で確かめてください',
@@ -1015,8 +1015,10 @@ async function answer(pane, choice, n) {
     return;
   }
   const confirmed = !!item.armed; disarm(item);
+  if (stopGen < 0) { sys('⚠ つないでいるところです。少し待ってから、もう一度押してください'); return; } // 押したときの停止の回数が分からないうちは送らない
   item.busy = true; el.querySelectorAll('button, input').forEach(b => { b.disabled = true; }); // 二重に送らない
-  const sendBody = { pane: q.pane, key: q.key, fp: q.fp, choice, confirmed, ...(act ? { sfp: q.sfp, ...act } : {}) };
+  // 押したときの停止の回数（sg）を添える。本体は、押したあとに止めていたら送らない（停止が先に届いても。codex-review b743362）
+  const sendBody = { pane: q.pane, key: q.key, fp: q.fp, choice, confirmed, sg: stopGen, ...(act ? { sfp: q.sfp, ...act } : {}) };
   let r; try { r = await (await fetch('/api/answer', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sendBody) })).json(); }
   catch { r = { ok: false, reason: 'unreachable' }; }
   item.busy = false; el.remove(); asks.delete(pane);

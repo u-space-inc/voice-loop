@@ -2200,11 +2200,11 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
             s.PENDING["stop"] = 1  # 本体が停止を読んだが、まだ確定していない
             s._answer_lock = asyncio.Lock()
             s.ANSWERED.clear()
-            r21 = json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "s1", "fp": "fpbtn", "choice": "deny"})).body)
+            r21 = json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "s1", "fp": "fpbtn", "sg": s.STOP_GEN["n"], "choice": "deny"})).body)
             s.PENDING["stop"] = 0
             s._answer_lock = asyncio.Lock()
             s.ANSWERED.clear()
-            r21b = json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "s1", "fp": "fpbtn", "choice": "deny"})).body)
+            r21b = json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "s1", "fp": "fpbtn", "sg": s.STOP_GEN["n"], "choice": "deny"})).body)
         finally:
             s.PENDING["stop"] = 0
             s._if_still, s._asked, s.subprocess.Popen = real_if_still21, real_asked21, real_popen21
@@ -2221,11 +2221,28 @@ with TestClient(s.app, base_url="http://127.0.0.1:8790") as c:
         try:
             s._answer_lock = asyncio.Lock()
             s.ANSWERED.clear()
-            r21c = json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "s1", "fp": "fpbtn", "choice": "allow"})).body)
+            r21c = json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "s1", "fp": "fpbtn", "sg": s.STOP_GEN["n"], "choice": "allow"})).body)
         finally:
             s._asked, s.subprocess.Popen = real_asked21, real_popen21
             s.ANSWERED.clear()
         check("ボタンを押したあと問いを読む間に止めたら、承認のキーは送らない", (r21c.get("reason"), sent21b), ("stopped", []))
+        # 押したあとの停止が、答えより先に本体に届いても、押したときの停止の回数で照らして送らない。回数を持たない画面（更新前の版）からも送らない（codex-review b743362 の P1）
+        sent21d = []
+        s.subprocess.Popen = lambda cmd, *a, **k: (sent21d.append(tuple(cmd[1:3])), BtnProc())[1]
+        s._asked = lambda pane, key: ({"pane": "w9:p1", "cwd": "/x/proj", "session": "s1", "status": "blocked"}, {"kind": "permission", "fp": "fpbtn", "risky": False})
+        try:
+            pressed = s.STOP_GEN["n"]  # 押したとき
+            s.STOP_GEN["n"] += 1  # 押したあとに止めて、その停止が先に届いた
+            s._answer_lock = asyncio.Lock()
+            s.ANSWERED.clear()
+            r21d = json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "s1", "fp": "fpbtn", "sg": pressed, "choice": "allow"})).body)
+            s.ANSWERED.clear()
+            r21e = json.loads(asyncio.run(s.api_answer({"pane": "w9:p1", "key": "s1", "fp": "fpbtn", "choice": "allow"})).body)
+        finally:
+            s._asked, s.subprocess.Popen = real_asked21, real_popen21
+            s.ANSWERED.clear()
+        check("押したあとの停止が先に届いても、承認のキーは送らない。回数を持たない画面からも送らない",
+              (r21d.get("reason"), r21e.get("reason"), sent21d), ("stopped", "old_page", []))
         # 何も出さずにふつうに終わった送り（pane send-text の成功）は、送れたものとする（止める側で確かめられないとしない。codex-review 8d5b6fa）
         class SilentProc:
             returncode = 0
